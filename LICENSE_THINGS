@@ -29,7 +29,8 @@ Data bundled in the package (src/anny/data and src/opensculptboy/data)
                                  Joo, J. FairFace: Face Attribute Dataset for Balanced Race, Gender, and Age.
                                  WACV 2021. Used for the benchmark of face proportions only.
                                MediaPipe Face Landmarker and canonical face model, Apache License, Version 2.0.
-  opensculptboy/data/vrm/    The VRM expression mixes (expressions.json). The work of this project.
+  opensculptboy/data/vrm/    The VRM expression mixes (expressions.json) and the skin-weight edits for the
+                             folds of the T-pose (skin_weights.safetensors). The work of this project.
                              Apache License, Version 2.0.
 
 Tools and libraries used at authoring time only (not part of the package)
