@@ -21,8 +21,17 @@ The pipeline of the body:
    the local changes and every face shape baked in and no facial action, and one row for each
    facial action at 1. Face shapes are never morph targets of a VRM file: they move the bone
    heads, and a VRM skeleton is fixed.
-2. The skin weights of :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights`, truncated to
-   the strongest 4 bones of each vertex.
+2. The skin weights of the file, 4 bones per vertex: those of
+   :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights` (Anny's weights, with the
+   eyelids moved to the head and the twist bones merged) truncated to the strongest 4 and,
+   with the inverse bind and ``refine_weights`` (the defaults), refined for the character's
+   body around the folds of the T-pose
+   (:func:`~opensculptboy.export.authoring.refine.body_skin_weights`: the rows of
+   ``data/vrm/skin_weights.safetensors`` for its phenotype, optimised against the folds and
+   collapsed triangles of its T-posed bind while its fists, hand signs and library poses stay
+   within the gates of that module; about 1 to 25 s). With the forward bind the file keeps
+   the weights without the refinement. The scene extras record the outcome
+   (``options.skin_weights``).
 3. The T-pose rebind (:func:`~opensculptboy.export.tpose.rebind`): the bind mesh, its targets
    and the T-pose bone matrices T_j. The ``eyeLook*`` targets become lid-only, so that the eye
    bones alone turn the eyeballs.
@@ -91,7 +100,7 @@ FRAMES = {
 }
 # The bind that the export uses by default. On the arms-down poses (``relaxed``, ``walk``) of the
 # default body, measured with the file's weights by :func:`opensculptboy.export.tpose.bind_error`,
-# the inverse bind lands a third closer to Anny's own posed mesh than the forward bind: p99 8.5 mm
+# the inverse bind lands a third closer to Anny's own posed mesh than the forward bind: p99 8.3 mm
 # against 12.5 mm, a maximum of 11.6 to 14.3 mm against 21 mm, and normals within 14 to 18
 # degrees at p99 against 28 to 29 degrees.
 DEFAULT_BIND = "inverse"
@@ -488,6 +497,7 @@ def vrm_spec(
     bind: str = DEFAULT_BIND,
     keep_leg_spread: bool = False,
     keep_anny_vertex: bool = False,
+    refine_weights: bool = True,
 ) -> VrmSpec:
     """
     The content of a VRM file of a character (see :func:`export_vrm` for the arguments).
@@ -543,7 +553,24 @@ def vrm_spec(
     base, offsets = rest[0], rest[1:] - rest[0]
     B = output["rest_bone_poses"][0].detach().double().cpu().numpy()
 
-    weights, indices = vrm_tables.vrm_skin_weights(model, twist)
+    # The file's skin weights. The inverse bind takes them refined for the body; the forward
+    # bind skins Anny's rest mesh into the T-pose with Anny's own weights, and the file then
+    # takes the weights of vrm_skin_weights as they are.
+    if bind == "inverse":
+        from opensculptboy.export.authoring.refine import body_skin_weights
+
+        weights, indices, refinement = body_skin_weights(
+            model,
+            twist,
+            base,
+            B,
+            phenotype=character.phenotype,
+            keep_leg_spread=keep_leg_spread,
+            refine=refine_weights,
+        )
+    else:
+        weights, indices = vrm_tables.vrm_skin_weights(model, twist)
+        refinement = "forward bind" if refine_weights else "off"
     w4, i4, _ = top_skin_weights(weights, indices, 4)
     w4 = w4.astype(np.float64)
     w4 /= w4.sum(axis=1, keepdims=True)
@@ -643,6 +670,8 @@ def vrm_spec(
             "keep_leg_spread": bool(keep_leg_spread),
             "thumbnail": thumbnail_kind,
             "anny_vertex": bool(keep_anny_vertex),
+            "refine_weights": bool(refine_weights),
+            "skin_weights": refinement,
         },
         "morph_targets": list(actions),
         "max_influences": 4,
@@ -1227,6 +1256,7 @@ def export_vrm(
     keep_leg_spread: bool = False,
     budget: str = "warn",
     keep_anny_vertex: bool = False,
+    refine_weights: bool = True,
 ) -> dict:
     """
     Write a character as a VRM file.
@@ -1251,11 +1281,21 @@ def export_vrm(
             or ``"merge"`` (the 0.x default: the twist bones' weights move to their parents).
             VRM 0.x files cannot carry constraints, so ``"constraint"`` raises ValueError
             there. The scene extras and the summary record the mode in use.
-        bind: ``"forward"`` or ``"inverse"`` (see :func:`opensculptboy.export.tpose.rebind`).
+        bind: ``"inverse"`` (the default: the bind mesh that the file's weights skin back
+            onto Anny's rest mesh exactly) or ``"forward"`` (Anny's rest mesh skinned into
+            the T-pose with Anny's own weights); see :func:`opensculptboy.export.tpose.rebind`.
         keep_leg_spread: keep the rig's leg spread in the T-pose.
         budget: ``"strict"``, ``"warn"`` or ``"off"`` (see :mod:`opensculptboy.export.budget`).
         keep_anny_vertex: write the ``_ANNY_VERTEX`` attribute (the Anny vertex of each file
             vertex), which VRM files leave out by default.
+        refine_weights: with the inverse bind, refine the file's skin weights for the
+            character's body, which reduces the folds of the skin in the T-pose at the webs
+            of the fingers, the groin and the neck and keeps fists, hand signs and the library
+            poses within the gates of :mod:`opensculptboy.export.authoring.refine` (about 1 to
+            25 s; deterministic). False keeps the weights of
+            :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights`. When the data file
+            ``data/vrm/skin_weights.safetensors`` is missing or was made for another model,
+            the export warns and keeps those weights. The forward bind never refines.
 
     Returns:
         A summary: counts, the file size, the version and the budget messages.
@@ -1283,6 +1323,7 @@ def export_vrm(
         bind=bind,
         keep_leg_spread=keep_leg_spread,
         keep_anny_vertex=keep_anny_vertex,
+        refine_weights=refine_weights,
     )
     return write_vrm(spec, path, budget=budget)
 
