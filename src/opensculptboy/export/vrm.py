@@ -1292,7 +1292,8 @@ def export_vrm(
             character's body, which reduces the folds of the skin in the T-pose at the webs
             of the fingers, the groin and the neck and keeps fists, hand signs and the library
             poses within the gates of :mod:`opensculptboy.export.authoring.refine` (about 1 to
-            25 s; deterministic). False keeps the weights of
+            25 s; the same card gives the same file on the same machine, and a CPU with other
+            vector instructions can give slightly other weights). False keeps the weights of
             :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights`. When the data file
             ``data/vrm/skin_weights.safetensors`` is missing or was made for another model,
             the export warns and keeps those weights. The forward bind never refines.

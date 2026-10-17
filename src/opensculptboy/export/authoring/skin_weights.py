@@ -3,7 +3,7 @@
 """
 The skin-weight edits of the VRM files (``data/vrm/skin_weights.safetensors``).
 
-    python -m opensculptboy.export.authoring.skin_weights           # optimise, write, report
+    python -m opensculptboy.export.authoring.skin_weights --force   # optimise, write, report
     python -m opensculptboy.export.authoring.skin_weights --report  # report on the data file
 
 The inverse bind of the VRM T-pose (:func:`opensculptboy.export.tpose.rebind`) is the mesh

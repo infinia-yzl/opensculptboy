@@ -36,7 +36,10 @@ of the file with a :class:`Refiner`, which specialises the loss of that module t
   weights that passes them.
 
 The steps run in float64 on :data:`THREADS` threads from inputs that the body fixes, so the
-same body gives the same weights, bit for bit.
+same body gives the same weights, bit for bit, on the same machine with the same build of
+torch. A CPU with other vector instructions (AVX2 against AVX-512, for example) rounds the sums
+of the steps differently and can give other weights for the same body: up to 0.2 of weight on
+a few dozen rows of an extreme body.
 
 Measured in the gate report of :func:`main` with the defaults below, for VRM 1.0 and 0.x
 (with the model's weights: 1293 new folds and 274 collapsed triangles over the default body,
@@ -81,6 +84,7 @@ import numpy as np
 import torch
 
 from opensculptboy.export import mesh_checks, tpose, vrm_tables
+from opensculptboy.export.body import triangulated_faces
 from opensculptboy.export.authoring import skin_weights as sw
 
 
@@ -584,7 +588,9 @@ class Refiner:
     # The check of the hand gates.
 
     def _hand_context(self, body: sw.Body) -> dict:
-        key = (body.name, id(body))
+        # Keyed on the content of the body, so that another body can never take the context of
+        # an earlier one (a new Body object may reuse the address of a freed one).
+        key = _body_digest(body)
         if self._hand_key != key:
             W = self.hand_poses(body)
             anny = dense_skin(
@@ -704,8 +710,8 @@ class Refiner:
         raise AssertionError("The model's weights pass their own hand gates.")
 
 
-# The number of threads of the refinement: the sums of the steps run in an order that the
-# thread count sets, so a fixed count gives the same weights on every machine.
+# The number of threads of the refinement, set for its duration and restored afterwards, so
+# that its sums do not depend on the caller's setting.
 THREADS = 4
 # The names of the sources of safe_weights in the outcome of body_skin_weights.
 _SOURCES = {
@@ -718,13 +724,34 @@ _REFINERS: dict = {}
 _WEIGHTS: dict = {}
 
 
+def _digest(*arrays) -> str:
+    """The SHA-256 of arrays: their types, shapes and bytes."""
+    digest = hashlib.sha256()
+    for array in arrays:
+        array = np.ascontiguousarray(array)
+        digest.update(f"{array.dtype}{array.shape}".encode())
+        digest.update(array.tobytes())
+    return digest.hexdigest()
+
+
+def _body_digest(body: sw.Body) -> str:
+    """The digest of what a body fixes: its phenotype, rest mesh, rest bone poses and T-pose."""
+    phenotype = json.dumps(sorted((k, float(v)) for k, v in body.phenotype.items()))
+    return phenotype + _digest(body.rest, body.rest_bone_poses, body.t_pose)
+
+
 def _refiner(model, twist: str, edits: dict) -> Refiner:
-    """The :class:`Refiner` of a model and twist mode, kept for the next body."""
-    key = (id(model), twist)
+    """
+    The :class:`Refiner` of a model, twist mode and data file, kept for the next body of the
+    same model. The refiners of the most recent model alone are kept (one per twist mode and
+    data file), since a Refiner holds its model and about 400 MB of tables, and an export
+    that builds its own model never meets that model again.
+    """
+    key = (id(model), twist, _digest(*edits[twist]))
     held = _REFINERS.get(key)
     if held is None or held[0] is not model:
-        if len(_REFINERS) >= 4:
-            _REFINERS.pop(next(iter(_REFINERS)))
+        for other in [k for k, (m, _) in _REFINERS.items() if m is not model]:
+            del _REFINERS[other]
         held = _REFINERS[key] = (model, Refiner(model, twist, edits))
     return held[1]
 
@@ -765,8 +792,9 @@ def body_skin_weights(
     a file without the refinement exactly.
 
     The refinement runs in float64 on :data:`THREADS` threads, from inputs that the body
-    fixes, so the same body gives the same weights; they are kept for the rest of the process
-    (the shared exports of the tests reuse them).
+    fixes, so the same body gives the same weights on the same machine (another CPU can round
+    the steps differently, see the module docstring); they are kept for the rest of the
+    process (the shared exports of the tests reuse them).
     """
     today = vrm_tables.vrm_skin_weights(model, twist)
     if not refine:
@@ -777,13 +805,15 @@ def body_skin_weights(
     rest = np.ascontiguousarray(rest_vertices, dtype=np.float64)
     B = np.ascontiguousarray(rest_bone_poses, dtype=np.float64)
     features = vrm_tables.edit_features(phenotype, data[twist][2].shape[-1])
-    digest = hashlib.sha256()
-    for array in (rest, B, features):
-        digest.update(np.ascontiguousarray(array).tobytes())
+    # The key holds everything that the result depends on: the model's weights and topology
+    # (anny and anny-quads share the digest of the data file but split their quads into
+    # other triangles), the data file, the body and the settings.
     key = (
         vrm_tables.skin_weight_digest(model),
+        _digest(triangulated_faces(model)[0]),
+        _digest(*data[twist]),
         twist,
-        digest.hexdigest(),
+        _digest(rest, B, features),
         bool(keep_leg_spread),
         repr(settings),
     )

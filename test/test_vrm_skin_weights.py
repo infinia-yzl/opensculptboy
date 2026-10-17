@@ -21,14 +21,23 @@ import torch
 from opensculptboy.export import tpose, vrm_tables
 from opensculptboy.export.authoring import refine, skin_weights
 from test import vrm_fixtures
+from test.markers import local_only
 
 VERSIONS = {"1.0": "constraint", "0.x": "merge"}
 # Three corners of the six default phenotypes (in the order of skin_weights.PHENOTYPES:
-# gender, age, muscle, weight, height, proportions), among them the Compact corner 010100,
-# whose fingers fold most with the model's own weights. Their refinements take 9 to 12 s
-# each, so the test checks them in VRM 1.0 alone; the default and fixture bodies in both
-# versions.
-CORNERS = ("corner 010100", "corner 100101", "corner 010101")
+# gender, age, muscle, weight, height, proportions): 010101 (Elongated, heavy, proportions 1),
+# 010100 (Elongated, heavy) and 100101 (Compact, heavy, proportions 1). Their refinements take 8
+# to 12 s each, so CI checks the first in VRM 1.0 alone, and the other two run locally; the
+# default and fixture bodies run in both versions.
+CORNERS = ("corner 010101", "corner 010100", "corner 100101")
+CI_CASES = [
+    ("1.0", "default"),
+    ("1.0", "fixture"),
+    ("0.x", "default"),
+    ("0.x", "fixture"),
+    ("1.0", "corner 010101"),
+]
+LOCAL_CASES = [("1.0", "corner 010100"), ("1.0", "corner 100101")]
 # The new folds and collapsed triangles of the inverse bind with the refined weights, as
 # measured over the gate report of the refinement (October 2026): (version, body) -> the
 # largest count the test allows (the measured folds and 2 more for the corners; none on the
@@ -77,25 +86,27 @@ class TestVrmSkinWeights(unittest.TestCase):
         cls.labels = list(cls.model.bone_labels)
         cls.mesh = skin_weights.Mesh(cls.model)
         cls.bodies = bodies_of(cls.model)
-        cls.cases = [(v, b) for v, b in MEASURED_FOLDS]
-        # The file's weights of each case: refined for the body (the export's default), and
-        # the model's weights (refine_weights=False).
-        cls.weights, cls.seconds = {}, {}
-        for version, name in cls.cases:
-            phenotype, rest, B = cls.bodies[name]
-            for refined in (True, False):
-                start = time.perf_counter()
-                cls.weights[(version, name, refined)] = tpose.body_file_weights(
-                    cls.model,
-                    version,
-                    VERSIONS[version],
-                    "inverse",
-                    rest,
-                    B,
-                    phenotype=phenotype,
-                    refine_weights=refined,
-                )
-                cls.seconds[(version, name, refined)] = time.perf_counter() - start
+        # The file's weights of each case, computed on first use: refined for the body (the
+        # export's default), and the model's weights (refine_weights=False).
+        cls._weights, cls.seconds = {}, {}
+
+    def weights(self, version, name, refined):
+        key = (version, name, refined)
+        if key not in self._weights:
+            phenotype, rest, B = self.bodies[name]
+            start = time.perf_counter()
+            self._weights[key] = tpose.body_file_weights(
+                self.model,
+                version,
+                VERSIONS[version],
+                "inverse",
+                rest,
+                B,
+                phenotype=phenotype,
+                refine_weights=refined,
+            )
+            self.seconds[key] = time.perf_counter() - start
+        return self._weights[key]
 
     def body(self, name) -> skin_weights.Body:
         phenotype, rest, B = self.bodies[name]
@@ -103,16 +114,27 @@ class TestVrmSkinWeights(unittest.TestCase):
         return skin_weights.Body(name, phenotype, rest, B, T)
 
     def test_tpose_folds(self):
+        self.check_tpose_folds(CI_CASES)
+
+    def test_hand_poses(self):
+        self.check_hand_poses(CI_CASES)
+
+    @local_only("the refinements of two more corners take about 20 s")
+    def test_more_corners(self):
+        self.check_tpose_folds(LOCAL_CASES)
+        self.check_hand_poses(LOCAL_CASES)
+
+    def check_tpose_folds(self, cases):
         # The inverse bind of the refined weights folds no edge (a bend over 120 degrees
         # where Anny's rest mesh bends 120 degrees or less) and collapses no triangle (below
         # a quarter of its rest area) on the default and fixture bodies, and few on the
         # corners, where the model's weights fold the webs of the fingers and the groin.
-        for version, name in self.cases:
+        for version, name in cases:
             body = self.body(name)
             counts = {}
             for refined in (True, False):
                 bind = skin_weights.inverse_bind(
-                    body, *self.weights[(version, name, refined)]
+                    body, *self.weights(version, name, refined)
                 )
                 new, small = skin_weights.tpose_problems(self.mesh, body, bind)
                 counts[refined] = (int(new.sum()), int(small.sum()))
@@ -127,14 +149,14 @@ class TestVrmSkinWeights(unittest.TestCase):
                 self.assertEqual(counts[True][1], 0)
                 self.assertGreater(counts[False][0], counts[True][0])
 
-    def test_hand_poses(self):
+    def check_hand_poses(self, cases):
         # Fists and hand signs (skin_weights.HAND_POSES, and Anny's rest pose with every
         # finger joint curled by 75 and 90 degrees, skin_weights.CURLS): the file posed
         # through W_j T_j^-1 against Anny's own posed mesh. With the refined weights it folds
         # no more edges and collapses no more triangles than with the model's weights, and
         # the distances of the hand from Anny's mesh stay within 10 % of theirs, at the
         # largest and at the 99th percentile.
-        for version, name in self.cases:
+        for version, name in cases:
             twist = VERSIONS[version]
             plain = vrm_tables.vrm_skin_weights(self.model, twist)
             hand = skin_weights.hand_mask(
@@ -146,7 +168,7 @@ class TestVrmSkinWeights(unittest.TestCase):
                     self.model,
                     self.mesh,
                     body,
-                    *self.weights[(version, name, refined)],
+                    *self.weights(version, name, refined),
                     hand,
                 )
                 for refined in (False, True)
@@ -168,11 +190,11 @@ class TestVrmSkinWeights(unittest.TestCase):
     def test_off_keeps_the_model_weights(self):
         # Without the refinement, the file's weights are those of vrm_skin_weights (the
         # eyelids moved to the head, the twist bones merged), truncated to 4 bones, exactly.
-        for version, name in self.cases:
+        for version, name in CI_CASES:
             twist = VERSIONS[version]
             expected = tpose.file_skin_weights(self.model, version, twist)
             with self.subTest(version=version, body=name):
-                for a, b in zip(self.weights[(version, name, False)], expected):
+                for a, b in zip(self.weights(version, name, False), expected):
                     np.testing.assert_array_equal(a, b)
                 phenotype, rest, B = self.bodies[name]
                 *_, outcome = refine.body_skin_weights(
@@ -194,6 +216,25 @@ class TestVrmSkinWeights(unittest.TestCase):
             else:
                 np.testing.assert_array_equal(a, b)
         self.assertIn(cached[2], ("refined", "data file"))
+
+    def test_body_keys(self):
+        # The hand context of a refiner is keyed on the content of the body: two Body objects
+        # of the same body share the key, and a body that differs in one vertex or in its
+        # phenotype gets its own key (a new Body may reuse the address of a freed one).
+        phenotype, rest, B = self.bodies["fixture"]
+        T = np.tile(np.eye(4), (len(B), 1, 1))
+        key = refine._body_digest(skin_weights.Body("export", phenotype, rest, B, T))
+        same = skin_weights.Body(
+            "export", dict(phenotype), rest.copy(), B.copy(), T.copy()
+        )
+        self.assertEqual(refine._body_digest(same), key)
+        moved = rest.copy()
+        moved[0, 0] += 1e-12
+        other = skin_weights.Body("export", phenotype, moved, B, T)
+        self.assertNotEqual(refine._body_digest(other), key)
+        changed = dict(phenotype, weight=float(phenotype.get("weight", 0.5)) + 0.1)
+        other = skin_weights.Body("export", changed, rest, B, T)
+        self.assertNotEqual(refine._body_digest(other), key)
 
     def test_data_file(self):
         # The data file of the edits carries the digest of the mesh, rig and skin weights it
