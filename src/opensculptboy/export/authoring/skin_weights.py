@@ -78,7 +78,13 @@ and the fixture body 11. The trade-off measured in October 2026:
   99th percentile and the largest distance of the hand grow by 10 to 80 % in fists and finger
   curls on the corners. Unfolding a web moves its vertices in the bind, and the same vertices
   then land further from Anny in a fist;
-- four rings of vertices around the folds instead of two: slower, and no better.
+- four rings of vertices around the folds instead of two: slower, and no better;
+- the hand gates of the hard-capped set, checked on all 66 bodies and 16 random ones instead
+  of the five of :data:`HAND_BODIES`, fail on 36 of the 82 (by one to five extra folds or
+  collapsed triangles in a fist or a sign);
+- a refinement of that set for each body (:mod:`opensculptboy.export.authoring.refine`),
+  which checks the hand gates on the body itself: 232 folds (VRM 1.0) and 266 (VRM 0.x) over
+  the 66 bodies, with every other gate held on every body, in 9 to 26 s per body.
 """
 
 from __future__ import annotations
@@ -760,8 +766,12 @@ class Loss:
         bind = t["bind"].index_copy(1, self.place, p)
         bend, area = _angles(bind, self.triangles, self.pairs)
         limit = torch.clamp(t["rest_bend"], min=s.floor)
+        fold = torch.relu(bend - limit) ** 2
+        if "fold_w" in t:
+            # A factor per edge (B, E), as the refinement of one body may give.
+            fold = t["fold_w"] * fold
         terms = dict(
-            fold=s.fold_weight * (torch.relu(bend - limit) ** 2).sum(),
+            fold=s.fold_weight * fold.sum(),
             shrink=s.area_weight
             * (torch.relu(s.area_floor - area / t["rest_area"]) ** 2).sum(),
         )
@@ -777,7 +787,11 @@ class Loss:
         limit = torch.maximum(
             torch.clamp(t["hand_bend"], min=s.hand_floor), t["hand_file_bend"]
         )
-        terms["hand_fold"] = s.hand_fold_weight * (torch.relu(bend - limit) ** 2).sum()
+        fold = torch.relu(bend - limit) ** 2  # (B, H, E)
+        if "hand_pose_w" in t:
+            # A factor per hand pose (H,).
+            fold = t["hand_pose_w"][None, :, None] * fold
+        terms["hand_fold"] = s.hand_fold_weight * fold.sum()
         floor = torch.clamp(t["hand_file_ratio"], max=s.area_floor)
         terms["hand_shrink"] = (
             s.area_weight * (torch.relu(floor - area / t["hand_area"]) ** 2).sum()
@@ -1258,10 +1272,12 @@ def validation_bodies(count: int = 16, seed: int = 1) -> dict[str, dict[str, flo
     }
 
 
-def gate_report(model, edits: dict, log=print) -> tuple[dict, bool]:
+def gate_report(model, edits, log=print) -> tuple[dict, bool]:
     """
     The gates of the edits ``{twist: (vertices, bones, logits)}`` against the model's
     weights, for both twist modes; returns the report and whether every gate holds.
+    ``edits`` may instead be a function ``(version, twist, body) -> (weights, indices)``
+    that gives the file's 4 weights of each :class:`Body`, such as a refinement per body.
     """
     mesh = Mesh(model)
     labels = list(model.bone_labels)
@@ -1278,7 +1294,9 @@ def gate_report(model, edits: dict, log=print) -> tuple[dict, bool]:
     for version, twist in VERSIONS.items():
         log(f"== VRM {version} ({twist})")
 
-        def weights_of(kind):
+        def weights_of(kind, version=version, twist=twist):
+            if kind == "after" and callable(edits):
+                return lambda body: edits(version, twist, body)
             chosen = False if kind == "before" else edits
             return lambda body: tpose.file_skin_weights(
                 model, version, twist, edits=chosen, phenotype=body.phenotype
@@ -1421,8 +1439,12 @@ def gate_report(model, edits: dict, log=print) -> tuple[dict, bool]:
             body.rest,
             zero,
             body.rest_bone_poses,
-            *tpose.file_skin_weights(
-                model, "1.0", "constraint", edits=e, phenotype=body.phenotype
+            *(
+                edits("1.0", "constraint", body)
+                if callable(e)
+                else tpose.file_skin_weights(
+                    model, "1.0", "constraint", edits=e, phenotype=body.phenotype
+                )
             ),
             method="forward",
         ).vertices
