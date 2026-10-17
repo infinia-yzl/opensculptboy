@@ -62,7 +62,9 @@ gates, and the command writes the data file only when all of them hold (or with 
   those bodies within 10 %;
 - the forward bind keeps Anny's own weights.
 
-No weight set has met them all, so no data file ships. With the model's weights the inverse
+No weight set meets them all on its own. The hard-capped set below ships as the data file,
+and the VRM export refines it for each body (:mod:`opensculptboy.export.authoring.refine`),
+which checks the hand gates on the body itself. With the model's weights the inverse
 bind folds 1293 edges over the 66 bodies (1000 at the webs of the fingers, 179 at the groin,
 50 at the neck, 30 at the thumb) and collapses 274 triangles; the default body folds 8 edges
 and the fixture body 11. The trade-off measured in October 2026:
@@ -84,7 +86,8 @@ and the fixture body 11. The trade-off measured in October 2026:
   collapsed triangles in a fist or a sign);
 - a refinement of that set for each body (:mod:`opensculptboy.export.authoring.refine`),
   which checks the hand gates on the body itself: 232 folds (VRM 1.0) and 266 (VRM 0.x) over
-  the 66 bodies, with every other gate held on every body, in 9 to 26 s per body.
+  the 66 bodies, with every other gate held on every body, in 0.4 to 25 s per body (8 s at
+  the median). The VRM export runs it by default.
 """
 
 from __future__ import annotations

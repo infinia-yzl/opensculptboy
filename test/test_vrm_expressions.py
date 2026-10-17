@@ -370,11 +370,11 @@ class TestSkinWeights(unittest.TestCase):
                 )
 
     def test_edits_from_a_data_file(self):
-        # vrm_skin_weights applies the edits of SKIN_WEIGHT_EDITS for the body of the given
-        # phenotype when the digest of the file is that of the model; models of either
-        # precision share the digest, and a model with other weights keeps them, with a
-        # warning. No edits ship (opensculptboy.export.authoring.skin_weights measures why),
-        # so the test writes a file of its own: two rows, the first with an age term.
+        # vrm_skin_weights(..., edits=True) applies the edits of SKIN_WEIGHT_EDITS for the
+        # body of the given phenotype when the digest of the file is that of the model;
+        # models of either precision share the digest, and a model with other weights keeps
+        # them, with a warning. The test writes a file of its own: two rows, the first with
+        # an age term (test_vrm_skin_weights checks the shipped file).
         from opensculptboy.export.authoring import skin_weights
 
         head, neck = self.labels.index("head"), self.labels.index("neck01")
@@ -420,7 +420,10 @@ class TestSkinWeights(unittest.TestCase):
                         with self.subTest(twist=twist, age=age):
                             after = self.dense(
                                 *vt.vrm_skin_weights(
-                                    self.model, twist, phenotype={"age": age}
+                                    self.model,
+                                    twist,
+                                    edits=True,
+                                    phenotype={"age": age},
                                 )
                             )
                             expected = np.zeros((2, len(self.labels)))
@@ -433,16 +436,17 @@ class TestSkinWeights(unittest.TestCase):
                 with warnings.catch_warnings(record=True) as caught:
                     warnings.simplefilter("always")
                     self.assertIsNone(vt.skin_weight_edits(other))
-                    kept = vt.vrm_skin_weights(other)
+                    kept = vt.vrm_skin_weights(other, edits=True)
                 self.assertTrue(any("another mesh" in str(w.message) for w in caught))
                 for a, b in zip(kept, vt.vrm_skin_weights(other, edits=False)):
                     np.testing.assert_array_equal(a, b)
-        # Without the data file, the weights are those of the eyelid and twist moves alone.
+        # Without the data file, the weights are those of the eyelid and twist moves alone,
+        # which are also those without edits (the default).
         missing = pathlib.Path("/nonexistent/skin_weights.safetensors")
         with mock.patch.object(vt, "SKIN_WEIGHT_EDITS", missing):
             for a, b in zip(
+                vt.vrm_skin_weights(self.model, edits=True),
                 vt.vrm_skin_weights(self.model),
-                vt.vrm_skin_weights(self.model, edits=False),
             ):
                 np.testing.assert_array_equal(a, b)
 

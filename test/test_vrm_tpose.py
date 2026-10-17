@@ -47,23 +47,24 @@ CORNERS = {
     "heavy tall": dict(gender=1.0, weight=1.0, muscle=1.0, height=1.0),
     "heavy": dict(gender=0.0, weight=1.0),
 }
-# The measured bind errors with the file's weights (the same for VRM 1.0 with twist
-# "constraint" and VRM 0.x with "merge", within 0.02 mm): (body, method, pose) -> (max mm,
-# 99th percentile mm, 99th percentile of the normal angle in degrees). The test holds each
-# value between 0.9 and 1.1 times these.
+# The measured bind errors with the file's weights, as the VRM export takes them (the inverse
+# bind refines them for the body; the same for VRM 1.0 with twist "constraint" and VRM 0.x
+# with "merge", within 0.01 mm): (body, method, pose) -> (max mm, 99th percentile mm, 99th
+# percentile of the normal angle in degrees). The test holds each value between 0.9 and 1.1
+# times these.
 MEASURED_BIND_ERROR = {
     ("default", "forward", "relaxed"): (21.08, 12.49, 28.21),
     ("default", "forward", "walk"): (21.45, 12.53, 29.33),
-    ("default", "inverse", "relaxed"): (11.62, 8.45, 14.32),
-    ("default", "inverse", "walk"): (14.28, 7.86, 18.13),
+    ("default", "inverse", "relaxed"): (11.62, 8.32, 14.34),
+    ("default", "inverse", "walk"): (14.28, 7.63, 18.13),
     ("heavy tall", "forward", "relaxed"): (26.05, 15.24, 27.99),
     ("heavy tall", "forward", "walk"): (25.94, 15.60, 31.27),
-    ("heavy tall", "inverse", "relaxed"): (15.68, 11.11, 14.68),
-    ("heavy tall", "inverse", "walk"): (19.27, 10.22, 18.80),
+    ("heavy tall", "inverse", "relaxed"): (15.68, 10.96, 14.80),
+    ("heavy tall", "inverse", "walk"): (19.27, 10.02, 18.74),
     ("heavy", "forward", "relaxed"): (24.42, 14.44, 30.35),
     ("heavy", "forward", "walk"): (24.24, 14.14, 32.69),
-    ("heavy", "inverse", "relaxed"): (12.01, 8.71, 15.45),
-    ("heavy", "inverse", "walk"): (13.70, 8.30, 19.94),
+    ("heavy", "inverse", "relaxed"): (12.01, 8.51, 15.33),
+    ("heavy", "inverse", "walk"): (13.70, 8.06, 19.90),
 }
 VERSIONS = {"1.0": "constraint", "0.x": "merge"}
 # VRM T-pose definition 1.8 in Anny's frame (the figure faces -Y): the thumb nail faces
@@ -136,8 +137,10 @@ class TestVrmTPose(unittest.TestCase):
             B = out["rest_bone_poses"][0].numpy()
             cls.rest[name] = (vertices[0], vertices[1:] - vertices[0], B)
             cls.poses[name] = tpose.vrm_t_pose(cls.model, torch.from_numpy(B)).numpy()
-        # The weights of a VRM 1.0 file (the eyelids moved to the head, the upper twist bones
-        # merged), as the file stores them.
+        # The weights of vrm_skin_weights for VRM 1.0 (the eyelids moved to the head, the
+        # upper twist bones merged), as a file without the refinement of the weights stores
+        # them; the geometry of the T-pose and the binds does not depend on the refinement
+        # (test_vrm_skin_weights checks the refined weights).
         cls.vrm_weights = vrm_tables.vrm_skin_weights(cls.model, "constraint")
         cls.file_weights, cls.file_indices, _ = top_skin_weights(*cls.vrm_weights, 4)
         # Anny's skin into the T-pose (the forward bind) and the inverse bind of each body,
@@ -850,7 +853,8 @@ class TestVrmTPose(unittest.TestCase):
         # through W_j T_j^-1, against Anny's own posed vertices and normals. The measured
         # values bound the errors from both sides, so that other weights (Anny's own strongest
         # 4, say) fail as surely as a worse bind, and the default weights of bind_error are
-        # those of the file.
+        # those of the export: refined for the body with the inverse bind, those of
+        # vrm_skin_weights with the forward bind (tpose.body_file_weights).
         bodies = {"default": None, **CORNERS}
         for version, twist in VERSIONS.items():
             for body, phenotype in bodies.items():
@@ -858,7 +862,7 @@ class TestVrmTPose(unittest.TestCase):
                 for method in ("forward", "inverse"):
                     start = time.perf_counter()
                     with mock.patch.object(
-                        tpose, "file_skin_weights", wraps=tpose.file_skin_weights
+                        tpose, "body_file_weights", wraps=tpose.body_file_weights
                     ) as weights:
                         report[method] = tpose.bind_error(
                             self.model,
@@ -868,7 +872,15 @@ class TestVrmTPose(unittest.TestCase):
                             twist=twist,
                         )
                     weights.assert_called_once_with(
-                        self.model, version, twist, phenotype=phenotype
+                        self.model,
+                        version,
+                        twist,
+                        method,
+                        mock.ANY,
+                        mock.ANY,
+                        phenotype=phenotype,
+                        keep_leg_spread=False,
+                        refine_weights=True,
                     )
                     seconds = time.perf_counter() - start
                     for pose, e in report[method].items():

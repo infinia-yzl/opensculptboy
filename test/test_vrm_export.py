@@ -763,6 +763,28 @@ class TestVrmExtension(unittest.TestCase):
                 )
                 self.assertEqual(extras["options"]["twist"], summary["twist"])
 
+    def test_refined_skin_weights(self):
+        # With the inverse bind the file takes the skin weights refined for the body (the
+        # default), and the extras record the outcome; refine_weights=False keeps the
+        # weights of vrm_skin_weights, truncated to 4 bones, exactly.
+        from opensculptboy.export import tpose
+
+        model = vrm_fixtures.model()
+        for version in VERSIONS:
+            with self.subTest(version=version):
+                spec = vrm_fixtures.vrm_build(version)
+                options = spec.extras["options"]
+                self.assertIs(options["refine_weights"], True)
+                self.assertNotIn(options["skin_weights"], ("off", "no data"))
+                plain = vrm_fixtures.vrm_build(version, refine_weights=False)
+                self.assertIs(plain.extras["options"]["refine_weights"], False)
+                self.assertEqual(plain.extras["options"]["skin_weights"], "off")
+                weights, indices = tpose.file_skin_weights(model, version)
+                np.testing.assert_array_equal(plain.skin_weights, weights)
+                np.testing.assert_array_equal(plain.skin_indices, indices)
+                changed = np.abs(spec.skin_weights - plain.skin_weights).max(axis=1)
+                self.assertGreater((changed > 1e-6).sum(), 100)
+
     def test_topology(self):
         """
         VRM export takes the MakeHuman body mesh with its eyes, and refuses every other
@@ -1096,6 +1118,7 @@ class TestCommandLine(unittest.TestCase):
                         "0",
                         "--budget",
                         "strict",
+                        "--no-refine-weights",
                     ]
                 )
             self.assertEqual(code, 0)
@@ -1111,6 +1134,9 @@ class TestCommandLine(unittest.TestCase):
             self.assertEqual(
                 read_character(out).to_dict(), vrm_fixtures.CHARACTER.to_dict()
             )
+            options = g["scenes"][0]["extras"]["opensculptboy"]["options"]
+            self.assertIs(options["refine_weights"], False)
+            self.assertEqual(options["skin_weights"], "off")
 
     def test_errors(self):
         """
@@ -1145,6 +1171,7 @@ class TestCommandLine(unittest.TestCase):
                 (vrm_file + ["--meta", str(tmp / "meta.json")], "needs an author"),
                 (by_a + ["--animation", "walk"], "--animation"),
                 (glb_file + ["--author", "a"], "--author"),
+                (glb_file + ["--refine-weights"], "--refine-weights"),
                 (by_a + ["--influences", "8"], "--influences"),
                 (vrm_file + ["--meta", str(tmp / "enum.json")], "commercial_usage"),
                 (vrm_file + ["--meta", str(tmp / "flag.json")], "allow_redistribution"),

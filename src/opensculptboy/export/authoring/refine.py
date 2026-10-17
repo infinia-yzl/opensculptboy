@@ -1,55 +1,62 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-A refinement of the skin-weight edits for one body, measured in October 2026; nothing ships.
+The refinement of the VRM skin weights for each body, which the VRM export runs by default.
 
-    python -m opensculptboy.export.authoring.refine --edits candidate.safetensors
+    python -m opensculptboy.export.authoring.refine --edits FILE   # the gate report
 
-The edits of :mod:`opensculptboy.export.authoring.skin_weights` give each edited vertex
-logits quadratic in the six default phenotypes, so one data file serves every body.
-:class:`Refiner` specialises the loss of that module to one body and optimises the weights of
-the edited rows from there:
+The edits of :mod:`opensculptboy.export.authoring.skin_weights` (the data file
+``data/vrm/skin_weights.safetensors``) give each of 1124 vertices in and around the folds of
+the T-pose logits quadratic in the six default phenotypes, so one data file serves every
+body; alone they fail the hand gates of 36 of 82 bodies. :func:`body_skin_weights`, which
+``opensculptboy.export.vrm.vrm_spec`` calls for the inverse bind, refines them for the body
+of the file with a :class:`Refiner`, which specialises the loss of that module to one body:
 
 - the start is the data file's weights for the body's phenotype; each row may take the 4
   bones of the file and, with ``candidates`` above 4, its own and its neighbours' bones of the
   model's weights (they start 6 below the weakest logit of the row, and a last phase keeps the
-  strongest 4);
+  strongest 4). When the start already passes the check below, the file takes it as it is;
 - the terms are those of ``skin_weights.Loss`` for this body alone: the folds and collapsed
   triangles of its T-posed bind, its hand poses against its own posed Anny mesh, the mean
   distances of both binds over the library frames, and the caps of every library entry;
 - the caps of the hand poses and of the library may stand a margin above those of the model's
   weights (the gates allow 10 % on the hand distances and the worst library distance, and 5 %
   on ``bind_error``);
-- after the steps, a check measures the hand gates on the body itself (the 5 hand poses and
-  the 2 finger curls: no more folds and collapsed triangles than with the model's weights, and
-  the largest and the 99th-percentile distance of the hand within 10 %). A pose that fails
-  weighs ``repair_factor`` times more in the fold term of the hand poses, its caps tighten by
-  5 %, and ``repair_steps`` more steps follow, at most ``repairs`` times;
+- the check: the T-pose of the weights cut to 4 bones has no new fold and no collapsed
+  triangle, and the hand poses pass their gates on the body itself (the 5 hand poses and the
+  2 finger curls: no more folds and collapsed triangles than with the model's weights, and the
+  largest and the 99th-percentile distance of the hand within 10 %). It runs every 50 steps
+  and ends the refinement early when it passes;
+- after the steps, a hand pose that fails its gate weighs ``repair_factor`` times more in the
+  fold term of the hand poses, its caps tighten by 5 %, and ``repair_steps`` more steps
+  follow, at most ``repairs`` times;
 - :meth:`Refiner.safe_weights` then takes the refined weights or, if the hand gates still
-  fail, the weights refined from the model's own weights (in the same rows and bones), or the
-  first blend toward the data file's weights and then toward the model's weights that passes
-  them.
+  fail, the weights refined in the same way from the model's own weights (in the same rows
+  and bones), or the first blend toward the data file's weights and then toward the model's
+  weights that passes them.
 
-The steps run in float64 from fixed inputs, so the same body gives the same weights with the
-same number of threads (two runs agree bit for bit).
+The steps run in float64 on :data:`THREADS` threads from inputs that the body fixes, so the
+same body gives the same weights, bit for bit.
 
-Measured with the best static candidate of the authoring module (quadratic logits, hard caps;
-1293 new folds and 274 collapsed triangles with the model's weights over the default body, the
-fixture body and the 64 corners of the six default phenotypes, 266 and 1 with the candidate),
-in the gate report of :func:`main` with the defaults below, for VRM 1.0 and 0.x:
+Measured in the gate report of :func:`main` with the defaults below, for VRM 1.0 and 0.x
+(with the model's weights: 1293 new folds and 274 collapsed triangles over the default body,
+the fixture body and the 64 corners of the six default phenotypes; with the data file alone:
+266 and 1):
 
-- the T-pose: 232 and 266 new folds over the 66 bodies (the gates ask for 65 at most) and 8
-  collapsed triangles; none on the default and fixture bodies; 37 and 35 over 16 random
-  bodies (233 with the model's weights, 64 with the candidate). Of the 232 folds of VRM 1.0,
-  134 lie at the webs of the fingers and 90 at the groin;
+- the T-pose: 232 and 266 new folds over the 66 bodies and 8 collapsed triangles; none on the
+  default and fixture bodies; 37 and 35 over 16 random bodies (233 with the model's weights).
+  Of the 232 folds of VRM 1.0, 134 lie at the webs of the fingers and 90 at the groin. The
+  plan's gate asked for 65 at most; the user chose to ship this trade-off;
 - every other gate holds: the 35 hand cases (the largest distance of the hand within 1.098
-  times the model's, the 99th percentile within 1.085, and 196 fewer folds and 33 fewer
+  times the model's, the 99th percentile within 1.085, and 201 fewer folds and 31 fewer
   collapsed triangles in all), ``bind_error`` within 1.009, ``humanoid_error`` within 1.000,
-  and the worst distance of every library pose and clip within 1.048. The hand gates also hold
-  on all 82 bodies, where the static candidate alone fails them on 36 (by one to five extra
-  folds or collapsed triangles in a fist or a sign);
-- the time on 4 CPUs: 8.6 to 9 s per body at the median, about 20 s for the bodies that need
-  the second start (10 to 16 of 84), 26 s at most. 3 bodies keep the model's weights.
+  and the worst distance of every library pose and clip within 1.007; the hand gates hold on
+  all 82 bodies;
+- the time on 4 CPUs: 8.3 and 7.9 s per body at the median; of the 84 bodies of each
+  version, 11 take the data file's weights as they are (0.4 s), 7 and 13 need the second
+  start (about 20 s), and 3 keep the model's weights. A VRM export of the default character takes 1.5 to 2.2 s with the
+  refinement (0.4 to 0.6 s without), the fixture body of the tests 4 to 6 s, corner 010100
+  11 s, and the slowest bodies 19 to 23 s.
 
 Without the posing terms, the refinement opens all but 11 of the 192 folds of the six hardest
 bodies, and then every hand pose fails its gate on them: unfolding a finger web moves its
@@ -66,6 +73,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import time
 
@@ -128,6 +136,16 @@ class RefineSettings:
     repairs: int = 2
     repair_steps: int = 50
     repair_factor: float = 30.0
+    # An early stop: every ``check_every`` steps of the first phase (0: never), the weights
+    # cut to 4 bones whose T-pose has no new fold and no collapsed triangle and whose hand
+    # poses pass their gates end the refinement. ``check_start``: the data file's weights for
+    # the body are taken as they are when they pass the same check.
+    check_every: int = 50
+    check_start: bool = True
+    # The steps of the first phase and the repairs of the second start, from the model's
+    # own weights (see :meth:`Refiner.safe_weights`).
+    second_steps: int = 150
+    second_repairs: int = 2
 
     def loss_settings(self) -> sw.Settings:
         names = {f.name for f in dataclasses.fields(sw.Settings)}
@@ -531,6 +549,17 @@ class Refiner:
                 lambda k, n=steps: 0.1 + 0.45 * (1.0 + np.cos(np.pi * k / max(n, 1))),
             )
             for step in range(steps):
+                if (
+                    phase == 0
+                    and settings.check_every
+                    and step
+                    and step % settings.check_every == 0
+                ):
+                    current = rows_now()
+                    if self.passes(body, *self.weights_of(current)):
+                        if log:
+                            log(f"  early stop at step {step}")
+                        return current
                 if step % settings.refresh == 0:
                     with torch.no_grad():
                         sw.active_pairs(
@@ -599,6 +628,18 @@ class Refiner:
             collapsed=small.sum(axis=1),
         )
 
+    def passes(self, body: sw.Body, weights, indices) -> bool:
+        """
+        Whether the file's 4 weights of a body give a T-pose without new folds and collapsed
+        triangles and hand poses that pass their gates.
+        """
+        new, small = sw.tpose_problems(
+            self.mesh, body, sw.inverse_bind(body, weights, indices)
+        )
+        if new.any() or small.any():
+            return False
+        return bool(self.hand_passes(body, weights, indices).all())
+
     def hand_passes(self, body: sw.Body, weights, indices) -> np.ndarray:
         """Whether each hand pose (H,) passes its hand gate against the model's weights."""
         before = self._hand_context(body)["today"]
@@ -624,8 +665,13 @@ class Refiner:
         first blend toward the warm start, then toward the model's weights, whose hand poses
         pass the hand gates (``(first, second, share)``).
         """
+        settings = settings or RefineSettings()
         J = len(self.model.bone_labels)
         from_today = self.start == "today"
+        if settings.check_start and not from_today:
+            warm = self.warm_weights(body)
+            if self.passes(body, *warm):
+                return warm, ("warm", "warm", 1.0)
         dense = {
             "refined": sw.dense_weights(
                 *self.weights_of(self.refine(body, settings, log, from_today)), J
@@ -641,7 +687,12 @@ class Refiner:
         chain += [("warm", "today", a) for a in shares] + [("today", "today", 1.0)]
         for first, second, a in chain:
             if first == "from today" and first not in dense:
-                rows = self.refine(body, settings, log, from_today=True)
+                again = dataclasses.replace(
+                    settings,
+                    steps=settings.second_steps,
+                    repairs=settings.second_repairs,
+                )
+                rows = self.refine(body, again, log, from_today=True)
                 dense[first] = sw.dense_weights(*self.weights_of(rows), J)
             d = a * dense[first] + (1.0 - a) * dense[second]
             order = np.argsort(-d, axis=1, kind="stable")[:, :4]
@@ -651,6 +702,110 @@ class Refiner:
             if self.hand_passes(body, w, i).all():
                 return (w, i), (first, second, a)
         raise AssertionError("The model's weights pass their own hand gates.")
+
+
+# The number of threads of the refinement: the sums of the steps run in an order that the
+# thread count sets, so a fixed count gives the same weights on every machine.
+THREADS = 4
+# The names of the sources of safe_weights in the outcome of body_skin_weights.
+_SOURCES = {
+    "refined": "refined",
+    "from today": "refined from the model's weights",
+    "warm": "data file",
+    "today": "model's weights",
+}
+_REFINERS: dict = {}
+_WEIGHTS: dict = {}
+
+
+def _refiner(model, twist: str, edits: dict) -> Refiner:
+    """The :class:`Refiner` of a model and twist mode, kept for the next body."""
+    key = (id(model), twist)
+    held = _REFINERS.get(key)
+    if held is None or held[0] is not model:
+        if len(_REFINERS) >= 4:
+            _REFINERS.pop(next(iter(_REFINERS)))
+        held = _REFINERS[key] = (model, Refiner(model, twist, edits))
+    return held[1]
+
+
+def outcome_name(choice) -> str:
+    """The outcome of :meth:`Refiner.safe_weights` as text, e.g. "refined"."""
+    first, second, share = choice
+    if share == 1.0 or first == second:
+        return _SOURCES[first]
+    return f"{share:g} {_SOURCES[first]} + {1.0 - share:g} {_SOURCES[second]}"
+
+
+def body_skin_weights(
+    model,
+    twist: str,
+    rest_vertices: np.ndarray,
+    rest_bone_poses: np.ndarray,
+    phenotype=None,
+    keep_leg_spread: bool = False,
+    refine: bool = True,
+    settings: RefineSettings | None = None,
+):
+    """
+    The skin weights and bone indices of the VRM file of a body for the inverse bind, before
+    the file's truncation to 4 bones, and the outcome of their refinement as text.
+
+    With ``refine`` (the default of the VRM export), the rows of the data file
+    (``vrm_tables.skin_weight_data``) start :meth:`Refiner.safe_weights` for the body: its
+    rest vertices (V, 3) and rest bone poses (J, 4, 4), its phenotype values (the features of
+    the data file's logits) and its T-pose (``keep_leg_spread``). The outcome names the
+    weights that the file takes: "refined", "refined from the model's weights", "data file"
+    (the data file's weights pass as they are), a blend such as "0.75 refined + 0.25 data
+    file", or "model's weights"; these weights have 4 bones per vertex (V, 4). Without
+    ``refine``, or when the data file is missing or was made for another model (with a
+    warning), the weights are those of ``vrm_tables.vrm_skin_weights`` as they are (V, K):
+    the model's weights with the moves of the eyelids and the twist bones, with the outcome
+    "off" or "no data". Truncated as the VRM writer truncates them, they give the weights of
+    a file without the refinement exactly.
+
+    The refinement runs in float64 on :data:`THREADS` threads, from inputs that the body
+    fixes, so the same body gives the same weights; they are kept for the rest of the process
+    (the shared exports of the tests reuse them).
+    """
+    today = vrm_tables.vrm_skin_weights(model, twist)
+    if not refine:
+        return (*today, "off")
+    data = vrm_tables.skin_weight_data(model, warn_missing=True)
+    if data is None:
+        return (*today, "no data")
+    rest = np.ascontiguousarray(rest_vertices, dtype=np.float64)
+    B = np.ascontiguousarray(rest_bone_poses, dtype=np.float64)
+    features = vrm_tables.edit_features(phenotype, data[twist][2].shape[-1])
+    digest = hashlib.sha256()
+    for array in (rest, B, features):
+        digest.update(np.ascontiguousarray(array).tobytes())
+    key = (
+        vrm_tables.skin_weight_digest(model),
+        twist,
+        digest.hexdigest(),
+        bool(keep_leg_spread),
+        repr(settings),
+    )
+    if key not in _WEIGHTS:
+        threads = torch.get_num_threads()
+        torch.set_num_threads(THREADS)
+        try:
+            refiner = _refiner(model, twist, data)
+            T = tpose.vrm_t_pose(model, torch.from_numpy(B), keep_leg_spread)
+            phenotype = {
+                k: float(np.asarray(torch.as_tensor(v).detach().cpu()).reshape(-1)[0])
+                for k, v in dict(phenotype or {}).items()
+            }
+            body = sw.Body("export", phenotype, rest, B, T.double().cpu().numpy())
+            (weights, indices), choice = refiner.safe_weights(body, settings)
+        finally:
+            torch.set_num_threads(threads)
+        if len(_WEIGHTS) >= 16:
+            _WEIGHTS.pop(next(iter(_WEIGHTS)))
+        _WEIGHTS[key] = (weights, indices, outcome_name(choice))
+    weights, indices, outcome = _WEIGHTS[key]
+    return weights.copy(), indices.copy(), outcome
 
 
 def main(argv=None) -> None:
