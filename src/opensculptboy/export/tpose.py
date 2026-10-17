@@ -622,17 +622,21 @@ def _strongest_four(weights: np.ndarray, indices: np.ndarray):
 
 
 def file_skin_weights(
-    model, version: str = "1.0", twist: str | None = None
+    model, version: str = "1.0", twist: str | None = None, edits=True, phenotype=None
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     The (V, 4) skin weights (float64, rows summing to 1) and bone indices of a VRM file: those
     of ``vrm_tables.vrm_skin_weights`` for ``twist`` (by default :func:`default_twist` of
-    ``version``), truncated to the strongest 4 bones and renormalised, as the VRM writer does.
+    ``version``), ``edits`` and ``phenotype`` (the edited weights of the folds, which depend
+    on the body; see there), truncated to the strongest 4 bones and renormalised, as the VRM
+    writer does.
     """
     from opensculptboy.export import vrm_tables
 
     twist = twist or default_twist(version)
-    return _strongest_four(*vrm_tables.vrm_skin_weights(model, twist))
+    return _strongest_four(
+        *vrm_tables.vrm_skin_weights(model, twist, edits=edits, phenotype=phenotype)
+    )
 
 
 def skin_normals(
@@ -775,7 +779,8 @@ def bind_error(
         phenotype_kwargs, local_changes_kwargs, face_shape_kwargs: the body.
         file_weights, file_indices: (V, K) weights of the file, of which the strongest 4 of
             each vertex count; by default those of a VRM file of ``version`` and ``twist``
-            (:func:`file_skin_weights`: the eyelids moved to the head, the twist bones merged).
+            for the body (:func:`file_skin_weights`: the eyelids moved to the head, the twist
+            bones merged, the edited weights of the folds).
         keep_leg_spread: passed to :func:`vrm_t_pose`.
         frame_step: the step between the frames of a clip that are compared.
         version, twist: the VRM version and twist mode of the default file weights.
@@ -790,7 +795,9 @@ def bind_error(
     kwargs = _body_kwargs(phenotype_kwargs, local_changes_kwargs, face_shape_kwargs)
     vertices, B = _rest_body(model, kwargs)
     if file_weights is None or file_indices is None:
-        weights, indices = file_skin_weights(model, version, twist)
+        weights, indices = file_skin_weights(
+            model, version, twist, phenotype=phenotype_kwargs
+        )
     else:
         weights, indices = _strongest_four(file_weights, file_indices)
     rb = rebind(
@@ -840,6 +847,8 @@ def humanoid_error(
     poses=None,
     constraints=None,
     region: np.ndarray | None = None,
+    file_weights: np.ndarray | None = None,
+    file_indices: np.ndarray | None = None,
 ) -> dict[str, dict[str, dict[str, float]]]:
     """
     How far a VRM file lands from Anny's posed mesh when a VRM app turns its humanoid bones
@@ -875,6 +884,9 @@ def humanoid_error(
             axis of the VRM 1.0 file, weight): by default those of the file, and ``[]`` for an
             app that ignores ``VRMC_node_constraint``.
         region: a (V,) boolean mask of the vertices whose distances count; all by default.
+        file_weights, file_indices: (V, K) weights of the file, of which the strongest 4 of
+            each vertex count; by default :func:`file_skin_weights` of ``version``,
+            ``twist`` and the body's phenotype.
         The other arguments are those of :func:`bind_error`.
 
     Returns:
@@ -887,7 +899,12 @@ def humanoid_error(
     twist = twist or default_twist(version)
     kwargs = _body_kwargs(phenotype_kwargs, local_changes_kwargs, face_shape_kwargs)
     vertices, B = _rest_body(model, kwargs)
-    weights, indices = file_skin_weights(model, version, twist)
+    if file_weights is None or file_indices is None:
+        weights, indices = file_skin_weights(
+            model, version, twist, phenotype=phenotype_kwargs
+        )
+    else:
+        weights, indices = _strongest_four(file_weights, file_indices)
     rb = rebind(
         model,
         vertices,

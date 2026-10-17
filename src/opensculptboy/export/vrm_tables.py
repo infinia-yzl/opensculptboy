@@ -32,19 +32,40 @@ weight.
 The eyeballs are the vertices of MakeHuman's eye helpers, found by their MakeHuman base-mesh
 indices, so the VRM export supports the topologies that keep those indices
 (:data:`VRM_TOPOLOGIES`); :func:`eyeball_vertices` refuses the others.
+
+The inverse bind of the T-pose (:func:`opensculptboy.export.tpose.rebind`) folds the skin
+where the T-pose straightens the fingers and the legs: at the webs of the fingers and the
+thumb, the groin and the neck. ``data/vrm/skin_weights.safetensors`` may hold new skin weights
+for the vertices in and around those folds, made by
+``python -m opensculptboy.export.authoring.skin_weights``: for each twist mode, the bones of
+each edited vertex and logits that depend on the six default phenotypes, since the webs of the
+fingers fold differently from one body to the next (:func:`edit_weights`).
+:func:`vrm_skin_weights` applies them when the digest of the file matches the model's mesh and
+skin weights (:func:`skin_weight_digest`). No such file ships: no weight set has yet opened the
+folds of every body without moving fists and hand signs further from Anny (the authoring
+module gives the measured trade-off), so the files keep the weights above.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import functools
+import hashlib
 import json
 import pathlib
+import warnings
 
 import numpy as np
 import torch
 
 DATA_DIR = pathlib.Path(__file__).resolve().parents[1] / "data" / "vrm"
+# The edited skin weights of the fold regions, when the file exists (see the module
+# docstring).
+SKIN_WEIGHT_EDITS = DATA_DIR / "skin_weights.safetensors"
+# The format of SKIN_WEIGHT_EDITS, in its metadata.
+SKIN_WEIGHT_FORMAT = "opensculptboy/vrm-skin-weights@1"
+# The phenotypes whose values the logits of the edits take (see edit_features).
+EDIT_PHENOTYPES = ("gender", "age", "muscle", "weight", "height", "proportions")
 
 VERSIONS = ("1.0", "0.x")
 
@@ -315,7 +336,126 @@ def file_parents(model, version: str, twist: str) -> list[int]:
     return parents
 
 
-def vrm_skin_weights(model, twist: str = "constraint") -> tuple[np.ndarray, np.ndarray]:
+def skin_weight_digest(model) -> str:
+    """
+    The SHA-256 digest (hex) of what the skin-weight edits rest on: the bone labels and
+    parents, the vertices of the mesh (their MakeHuman base-mesh indices, which the faces
+    stand in for on a model without them) and the model's skin weights (rounded to float32,
+    so that models of either precision agree) and bone indices. The edits name vertices and
+    bones, so a mesh with the same vertices and other faces (``anny-quads``) shares them.
+    """
+    from opensculptboy.export.body import triangulated_faces
+
+    base = getattr(model, "base_mesh_vertex_indices", None)
+    if base is None:
+        vertices = np.asarray(triangulated_faces(model)[0], dtype=np.int64)
+    else:
+        vertices = torch.as_tensor(base).detach().cpu().numpy().astype(np.int64)
+    digest = hashlib.sha256()
+    digest.update("\n".join(model.bone_labels).encode())
+    for array in (
+        np.asarray([int(p) for p in model.bone_parents], dtype=np.int64),
+        vertices,
+        model.vertex_bone_indices.detach().cpu().numpy().astype(np.int64),
+        model.vertex_bone_weights.detach().cpu().numpy().astype(np.float32),
+    ):
+        digest.update(np.ascontiguousarray(array).tobytes())
+    return digest.hexdigest()
+
+
+@functools.lru_cache(maxsize=4)
+def _read_skin_weight_edits(path: str) -> tuple[dict, dict]:
+    from safetensors import safe_open
+
+    with safe_open(path, framework="numpy") as f:
+        metadata = dict(f.metadata() or {})
+        tensors = {key: f.get_tensor(key) for key in f.keys()}
+    return metadata, tensors
+
+
+def edit_features(phenotype=None, count: int = 1 + len(EDIT_PHENOTYPES)) -> np.ndarray:
+    """
+    The first ``count`` features of a phenotype for the logits of the edits: 1, then each
+    value x_i of :data:`EDIT_PHENOTYPES` less 0.5 (a missing value counts as its default,
+    0.5), then the products x_i x_j (i <= j, in that order). The values may be numbers or
+    tensors of one element.
+    """
+    phenotype = phenotype or {}
+    x = [
+        float(
+            np.asarray(torch.as_tensor(phenotype[name]).detach().cpu()).reshape(-1)[0]
+        )
+        - 0.5
+        if name in phenotype
+        else 0.0
+        for name in EDIT_PHENOTYPES
+    ]
+    products = [x[i] * x[j] for i in range(len(x)) for j in range(i, len(x))]
+    features = np.array([1.0, *x, *products])
+    if count > len(features):
+        raise ValueError(f"The edits have {count} features; at most {len(features)}.")
+    return features[:count]
+
+
+def edit_weights(bones: np.ndarray, values: np.ndarray, phenotype=None) -> np.ndarray:
+    """
+    The weights (E, 4) of edited rows: ``values`` themselves when they are weights (E, 4),
+    or, for logits (E, 4, D), the softmax over the slots that hold a bone (``bones`` >= 0) of
+    the logits times :func:`edit_features` of ``phenotype``.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim == 2:
+        return values
+    logits = values @ edit_features(phenotype, values.shape[-1])
+    logits = np.where(np.asarray(bones) >= 0, logits, -np.inf)
+    logits -= logits.max(axis=1, keepdims=True)
+    weights = np.exp(logits)
+    return weights / weights.sum(axis=1, keepdims=True)
+
+
+def skin_weight_edits(
+    model, twist: str = "constraint", path=None, phenotype=None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """
+    The edited rows of the VRM skin weights for ``twist`` and a body of ``phenotype`` (the
+    default body by default): the vertex indices (E,) and, for each, its bones (E, 4) and
+    weights (E, 4) (:func:`edit_weights`; a weight of 0 and the bone 0 pad the rows of fewer
+    bones, and a bone may fill two slots), read from :data:`SKIN_WEIGHT_EDITS` (or ``path``).
+
+    Returns None when the file is missing, and None with a warning when its digest differs
+    from :func:`skin_weight_digest` of the model (another mesh, rig or skin weights): the
+    edits name vertices and bones of the mesh they were made for.
+    """
+    _check_twist(twist)
+    path = pathlib.Path(path or SKIN_WEIGHT_EDITS)
+    if not path.is_file():
+        return None
+    metadata, tensors = _read_skin_weight_edits(str(path))
+    if metadata.get("format") != SKIN_WEIGHT_FORMAT:
+        raise ValueError(
+            f"{path.name} has the format {metadata.get('format')!r}, where "
+            f"{SKIN_WEIGHT_FORMAT!r} is expected."
+        )
+    if metadata.get("digest") != skin_weight_digest(model):
+        warnings.warn(
+            f"The VRM skin-weight edits of {path.name} were made for another mesh or other "
+            "skin weights; the VRM export keeps the model's weights, and the T-pose of the "
+            "file may fold at the fingers, the groin and the neck.",
+            stacklevel=3,
+        )
+        return None
+    bones = tensors[f"{twist}.bones"].astype(np.int64)
+    weights = edit_weights(bones, tensors[f"{twist}.logits"], phenotype)
+    return (
+        tensors[f"{twist}.vertices"].astype(np.int64),
+        np.maximum(bones, 0),
+        np.where(bones >= 0, weights, 0.0),
+    )
+
+
+def vrm_skin_weights(
+    model, twist: str = "constraint", edits=True, phenotype=None
+) -> tuple[np.ndarray, np.ndarray]:
     """
     (V, K) skin weights and bone indices for a VRM file, before the truncation to 4 bones.
 
@@ -330,6 +470,12 @@ def vrm_skin_weights(model, twist: str = "constraint") -> tuple[np.ndarray, np.n
       arm, thigh and shin) follows its parent in the file without a turn of its own, so the
       move leaves the skinning of the file as it was and frees influences for the
       truncation. ``twist="merge"`` (the VRM 0.x default) moves them all.
+    - The rows of :func:`skin_weight_edits` for the body of ``phenotype`` (the character's
+      phenotype values; the default body by default) then replace those of the vertices in
+      and around the folds of the T-pose, with 4 bones or fewer each. ``edits`` selects them:
+      True (the data file, when it matches the model), False (none), or edits of the
+      authoring tools, ``{twist: (vertices, bones, weights or logits)}`` (see
+      :func:`edit_weights`).
 
     Weights of the same bone on one vertex add up. Each row holds the model's K slots sorted
     from the strongest bone down; empty slots have weight 0 and bone 0. Rows sum to 1.
@@ -356,6 +502,22 @@ def vrm_skin_weights(model, twist: str = "constraint") -> tuple[np.ndarray, np.n
     np.add.at(
         dense, (np.repeat(np.arange(V), K), moved.reshape(-1)), weights.reshape(-1)
     )
+    if edits is True:
+        edits = skin_weight_edits(model, twist, phenotype=phenotype)
+    elif isinstance(edits, dict):
+        edits = edits.get(twist)
+        if edits is not None:
+            rows, bones, values = (np.asarray(a) for a in edits)
+            values = np.where(bones >= 0, edit_weights(bones, values, phenotype), 0.0)
+            edits = rows, np.maximum(bones, 0), values
+    if edits is not None and edits is not False:
+        rows, bones, values = (np.asarray(a) for a in edits)
+        dense[rows] = 0.0
+        np.add.at(
+            dense,
+            (np.repeat(rows, bones.shape[1]), bones.reshape(-1)),
+            values.reshape(-1).astype(np.float64),
+        )
     order = np.argsort(-dense, axis=1, kind="stable")[:, :K]
     result = np.take_along_axis(dense, order, axis=1)
     result /= result.sum(axis=1, keepdims=True)

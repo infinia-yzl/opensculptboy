@@ -29,6 +29,7 @@ from opensculptboy.export.body import (
     triangulated_faces,
     vertex_normals,
 )
+from opensculptboy.export.mesh_checks import adjacent_triangles, areas, bends
 from opensculptboy.export.vrm import FRAMES
 from test import vrm_fixtures
 
@@ -94,31 +95,6 @@ def unit(v):
 def across(v, axis):
     """The part of ``v`` perpendicular to the unit ``axis``."""
     return v - (v @ axis) * axis
-
-
-def adjacent_triangles(triangles):
-    """The pairs of triangles (E, 2) that share an edge."""
-    edges = np.sort(triangles[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
-    faces = np.repeat(np.arange(len(triangles)), 3)
-    order = np.lexsort((edges[:, 1], edges[:, 0]))
-    edges, faces = edges[order], faces[order]
-    same = np.all(edges[1:] == edges[:-1], axis=1)
-    return np.stack([faces[:-1][same], faces[1:][same]], axis=1)
-
-
-def bends(vertices, triangles, pairs):
-    """
-    The dihedral angle of each pair of adjacent triangles, in degrees: the angle between their
-    normals, 0 on a flat surface and 180 where the surface folds back onto itself.
-    """
-    a, b, c = (vertices[triangles[:, k]] for k in range(3))
-    normals = np.cross(b - a, c - a)
-    return tpose.angles(normals[pairs[:, 0]], normals[pairs[:, 1]])
-
-
-def areas(vertices, triangles):
-    a, b, c = (vertices[triangles[:, k]] for k in range(3))
-    return np.linalg.norm(np.cross(b - a, c - a), axis=1) / 2.0
 
 
 class TestVrmTPose(unittest.TestCase):
@@ -891,7 +867,9 @@ class TestVrmTPose(unittest.TestCase):
                             version=version,
                             twist=twist,
                         )
-                    weights.assert_called_once_with(self.model, version, twist)
+                    weights.assert_called_once_with(
+                        self.model, version, twist, phenotype=phenotype
+                    )
                     seconds = time.perf_counter() - start
                     for pose, e in report[method].items():
                         print(

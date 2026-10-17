@@ -21,8 +21,8 @@ The pipeline of the body:
    the local changes and every face shape baked in and no facial action, and one row for each
    facial action at 1. Face shapes are never morph targets of a VRM file: they move the bone
    heads, and a VRM skeleton is fixed.
-2. The skin weights of :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights`, truncated to
-   the strongest 4 bones of each vertex.
+2. The skin weights of :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights` for the
+   character's phenotype, truncated to the strongest 4 bones of each vertex.
 3. The T-pose rebind (:func:`~opensculptboy.export.tpose.rebind`): the bind mesh, its targets
    and the T-pose bone matrices T_j. The ``eyeLook*`` targets become lid-only, so that the eye
    bones alone turn the eyeballs.
@@ -543,7 +543,9 @@ def vrm_spec(
     base, offsets = rest[0], rest[1:] - rest[0]
     B = output["rest_bone_poses"][0].detach().double().cpu().numpy()
 
-    weights, indices = vrm_tables.vrm_skin_weights(model, twist)
+    weights, indices = vrm_tables.vrm_skin_weights(
+        model, twist, phenotype=character.phenotype
+    )
     w4, i4, _ = top_skin_weights(weights, indices, 4)
     w4 = w4.astype(np.float64)
     w4 /= w4.sum(axis=1, keepdims=True)

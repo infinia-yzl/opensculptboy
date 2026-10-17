@@ -8,8 +8,12 @@ skin weights, the expressions (names, mixes and override flags, and the mouth sh
 visemes measured on the mesh), the look-at ranges and the lid-only look targets.
 """
 
+import pathlib
+import tempfile
 import types
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import torch
@@ -309,13 +313,15 @@ class TestSkinWeights(unittest.TestCase):
             )
 
     def test_weights(self):
+        # The moves of the eyelids and the twist bones, without the edits of the folds (see
+        # test_edited_rows).
         head = self.labels.index("head")
         on_eyeball = np.zeros(len(self.before), dtype=bool)
         for rows in self.eyes.values():
             on_eyeball[rows] = True
         for twist in vt.TWIST_MODES:
             with self.subTest(twist=twist):
-                weights, indices = vt.vrm_skin_weights(self.model, twist)
+                weights, indices = vt.vrm_skin_weights(self.model, twist, edits=False)
                 self.assertEqual(
                     weights.shape, tuple(self.model.vertex_bone_weights.shape)
                 )
@@ -362,6 +368,127 @@ class TestSkinWeights(unittest.TestCase):
                 np.testing.assert_allclose(
                     after[:, others], expected[:, others], atol=1e-12
                 )
+
+    def test_edits_from_a_data_file(self):
+        # vrm_skin_weights applies the edits of SKIN_WEIGHT_EDITS for the body of the given
+        # phenotype when the digest of the file is that of the model; models of either
+        # precision share the digest, and a model with other weights keeps them, with a
+        # warning. No edits ship (opensculptboy.export.authoring.skin_weights measures why),
+        # so the test writes a file of its own: two rows, the first with an age term.
+        from opensculptboy.export.authoring import skin_weights
+
+        head, neck = self.labels.index("head"), self.labels.index("neck01")
+        rows = np.array([100, 101])
+        bones = np.array([[head, neck, -1, -1], [neck, -1, -1, -1]])
+        logits = np.zeros((2, 4, 7))
+        logits[0, 1, 0] = np.log(3.0)
+        logits[0, 1, 2] = 2.0  # (age - 0.5) times 2
+        edits = {twist: (rows, bones, logits) for twist in vt.TWIST_MODES}
+        attributes = (
+            "bone_labels",
+            "bone_parents",
+            "faces",
+            "face_texture_coordinate_indices",
+            "vertex_bone_indices",
+            "vertex_bone_weights",
+            "base_mesh_vertex_indices",
+            "template_vertices",
+            "template_bone_heads",
+        )
+        stub = {name: getattr(self.model, name) for name in attributes}
+        single = types.SimpleNamespace(
+            **{**stub, "vertex_bone_weights": stub["vertex_bone_weights"].float()}
+        )
+        weights = stub["vertex_bone_weights"].clone()
+        weights[0] = weights[0].flip(0)
+        other = types.SimpleNamespace(**{**stub, "vertex_bone_weights": weights})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "skin_weights.safetensors"
+            skin_weights.save_edits(path, self.model, edits)
+            with mock.patch.object(vt, "SKIN_WEIGHT_EDITS", path):
+                self.assertEqual(
+                    vt.skin_weight_digest(single), vt.skin_weight_digest(self.model)
+                )
+                for twist in vt.TWIST_MODES:
+                    plain = self.dense(
+                        *vt.vrm_skin_weights(self.model, twist, edits=False)
+                    )
+                    for age, neck_weight in (
+                        (0.5, 0.75),
+                        (1.0, 3 * np.e / (1 + 3 * np.e)),
+                    ):
+                        with self.subTest(twist=twist, age=age):
+                            after = self.dense(
+                                *vt.vrm_skin_weights(
+                                    self.model, twist, phenotype={"age": age}
+                                )
+                            )
+                            expected = np.zeros((2, len(self.labels)))
+                            expected[0, [head, neck]] = [1 - neck_weight, neck_weight]
+                            expected[1, neck] = 1.0
+                            np.testing.assert_allclose(after[rows], expected, atol=1e-6)
+                            np.testing.assert_array_equal(
+                                np.delete(after, rows, 0), np.delete(plain, rows, 0)
+                            )
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    self.assertIsNone(vt.skin_weight_edits(other))
+                    kept = vt.vrm_skin_weights(other)
+                self.assertTrue(any("another mesh" in str(w.message) for w in caught))
+                for a, b in zip(kept, vt.vrm_skin_weights(other, edits=False)):
+                    np.testing.assert_array_equal(a, b)
+        # Without the data file, the weights are those of the eyelid and twist moves alone.
+        missing = pathlib.Path("/nonexistent/skin_weights.safetensors")
+        with mock.patch.object(vt, "SKIN_WEIGHT_EDITS", missing):
+            for a, b in zip(
+                vt.vrm_skin_weights(self.model),
+                vt.vrm_skin_weights(self.model, edits=False),
+            ):
+                np.testing.assert_array_equal(a, b)
+
+    def test_edit_weights(self):
+        # Edits name rows, their bones (-1 for an empty slot) and their weights, or logits
+        # over features of the phenotype: 1, the six default phenotypes less 0.5, and their
+        # products.
+        x = np.array([0.0, 0.5, 0.0, -0.5, 0.0, 0.0])
+        products = [x[i] * x[j] for i in range(6) for j in range(i, 6)]
+        np.testing.assert_allclose(
+            vt.edit_features({"age": 1.0, "weight": torch.tensor([0.0])}, 28),
+            [1.0, *x, *products],
+        )
+        np.testing.assert_allclose(vt.edit_features(None, 7), [1.0] + [0.0] * 6)
+        bones = np.array([[3, 5, -1, -1]])
+        logits = np.zeros((1, 4, 7))
+        logits[0, 0, 2] = 2.0  # the age term of the first slot
+        e = np.e
+        for age, first in ((0.0, 1.0 / (1.0 + e)), (1.0, e / (1.0 + e))):
+            with self.subTest(age=age):
+                np.testing.assert_allclose(
+                    vt.edit_weights(bones, logits, {"age": age}),
+                    [[first, 1.0 - first, 0.0, 0.0]],
+                    atol=1e-12,
+                )
+        # vrm_skin_weights replaces the edited rows alone, for the twist mode of the edits.
+        head, neck = self.labels.index("head"), self.labels.index("neck01")
+        edits = {
+            "constraint": (
+                np.array([100]),
+                np.array([[head, neck, -1, -1]]),
+                np.array([[[0.0], [np.log(3.0)], [0.0], [0.0]]]),
+            )
+        }
+        plain = self.dense(*vt.vrm_skin_weights(self.model, "constraint", edits=False))
+        after = self.dense(*vt.vrm_skin_weights(self.model, "constraint", edits=edits))
+        expected = np.zeros(len(self.labels))
+        expected[[head, neck]] = [0.25, 0.75]
+        np.testing.assert_allclose(after[100], expected, atol=1e-12)
+        np.testing.assert_array_equal(
+            np.delete(after, 100, 0), np.delete(plain, 100, 0)
+        )
+        merged = self.dense(*vt.vrm_skin_weights(self.model, "merge", edits=edits))
+        np.testing.assert_array_equal(
+            merged, self.dense(*vt.vrm_skin_weights(self.model, "merge", edits=False))
+        )
 
 
 def _batched(kwargs: dict, n: int, dtype) -> dict:
