@@ -330,8 +330,8 @@ def main(argv=None) -> int:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="refine the skin weights for the character's body, which reduces the skin "
-        "folds of the T-pose at the fingers, the groin and the neck and costs about 10 s "
-        "(up to 25 s on some bodies); on by default, with the inverse bind only",
+        "folds of the T-pose at the fingers, the groin and the neck and adds about 3 s to "
+        "the export (up to 30 s on some bodies); on by default, with the inverse bind only",
     )
 
     p = sub.add_parser(
