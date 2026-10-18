@@ -4,6 +4,11 @@
 import torch
 import collections
 
+# Diagonals whose lengths differ by less than this fraction of the longer one tie. Diagonals
+# that are equal in exact arithmetic (many quads of the eyeballs) differ by a few units in the
+# last place, and those depend on the CPU's code path in the BLAS library.
+DIAGONAL_TIE = 1e-9
+
 
 def _split_quad1(data):
     a, b, c, d = data
@@ -20,12 +25,13 @@ def _split_quad(vertices, face_vertex_indices, face_texture_coordinate_indices=N
     Simple triangulation of a quad, consisting in splitting the face along its smaller diagonal.
     Remark: this leads to some interesting artefacts. See the link below for some interesting discussions.
     https://computergraphics.stackexchange.com/questions/10180/how-to-decide-which-way-to-triangulate-a-quad
+    Diagonals that tie within DIAGONAL_TIE split along b-d, so that every machine splits them alike.
     """
     assert len(face_vertex_indices) == 4
     v_a, v_b, v_c, v_d = [vertices[i] for i in face_vertex_indices]
     diag1 = torch.linalg.norm(v_a - v_c, dim=-1).item()
     diag2 = torch.linalg.norm(v_b - v_d, dim=-1).item()
-    if diag1 < diag2:
+    if diag1 < diag2 * (1.0 - DIAGONAL_TIE):
         if face_texture_coordinate_indices is None:
             return _split_quad1(face_vertex_indices)
         else:
