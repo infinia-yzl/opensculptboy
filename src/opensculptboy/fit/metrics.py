@@ -16,7 +16,17 @@ given, over the whole skin, with no mask, no visibility test and no distance cut
 - ``normal_angle``: the angle in degrees between each fitted vertex normal and the
   reference's interpolated normal at its closest point, both against the reference's
   geometric normals (``geometric``) and against the normals its file shades with (``file``,
-  the same when the source has none).
+  the same when the source has none);
+- ``face``: the centroid of each fitted triangle to the reference surface, unsigned, with the
+  share of triangles over 1 mm: a triangle that bridges a gap of the reference (the skin
+  stretched from the back of an ear to the head) has its corners on the reference and its
+  middle in the air, which the vertex measures miss;
+- ``folded_over_60deg``: the share of fitted vertices at an edge whose two triangles part by
+  more than 60 degrees (creases, crumples and spikes; the rim of a thin part folds too), and
+  ``folds_not_in_reference`` the share of those folded by 30 degrees more than the reference
+  within 3 mm of their closest point (:func:`fold_near`): the crumples and spikes of the fit;
+- ``ears_surround``: the reverse measure of the reference vertices within 15 mm of an ear
+  mask and outside it, where skin stretched from an ear to the head leaves the head uncovered.
 
 ``all`` holds every reference vertex for the reverse measure and every fitted vertex but those
 of anny's cavities for the others: the inside of anny's mouth and eye sockets has no
@@ -53,6 +63,11 @@ REGIONS = (
 )
 # reference vertices within this distance (metres) of a border shared by two skin parts
 SEAM_RADIUS = 0.01
+# reference vertices outside an ear mask within this distance (metres) of it
+SURROUND_RADIUS = 0.015
+# the neighbourhood (metres) of a fitted vertex's closest point in which a fold of the
+# reference counts as its own (fold_near)
+FOLD_RADIUS = 0.003
 
 
 def anny_regions(model, rest_vertices: np.ndarray | None = None) -> np.ndarray:
@@ -195,6 +210,19 @@ class Measures:
     # (N,) the largest angle in degrees between the normals of two triangles that share an
     # edge at the vertex: folds and crumples show as large values
     fold: np.ndarray | None = None
+    # (T,) the distance (metres) of each fitted triangle's centroid to the reference, and the
+    # region of each triangle: a triangle that bridges a gap (between the back of an ear and
+    # the head) has its corners on the reference and its middle in the air
+    face_distance: np.ndarray | None = None
+    face_regions: np.ndarray | None = None
+    # (R,) the reference vertices around the ears, outside the ear mask and within
+    # SURROUND_RADIUS of it: where skin stretched from an ear to the head leaves the head
+    # uncovered (summary entry "ears_surround", reverse only)
+    surround: np.ndarray | None = None
+    # (N,) the reference's largest fold near each fitted vertex's closest point (fold_near):
+    # "folds_not_in_reference" counts the fitted vertices folded by more than 60 degrees and
+    # by 30 more than the reference there, the crumples and spikes of the fit alone
+    reference_fold: np.ndarray | None = None
 
     def summary(self) -> dict:
         """mean / signed mean / p95 / max per region and over all, in mm and degrees."""
@@ -237,8 +265,32 @@ class Measures:
                 folds = folds[np.isfinite(folds)]
                 if len(folds):
                     entry["folded_over_60deg"] = round(float((folds > 60).mean()), 4)
+                if self.reference_fold is not None:
+                    own = self.fold[fwd]
+                    near = self.reference_fold[fwd]
+                    finite = np.isfinite(own) & np.isfinite(near)
+                    if finite.any():
+                        spurious = (own > 60) & (own > near + 30)
+                        entry["folds_not_in_reference"] = round(
+                            float(spurious[finite].mean()), 4
+                        )
+            if self.face_distance is not None:
+                faces = (
+                    (self.face_regions >= 0) & (self.face_regions != cavity)
+                    if name == "all"
+                    else self.face_regions == k - 1
+                )
+                entry["face_mm"] = stats(self.face_distance[faces], 1000.0)
+                if entry["face_mm"] is not None:
+                    entry["faces_over_1mm"] = round(
+                        float((self.face_distance[faces] > 0.001).mean()), 4
+                    )
             if any(v is not None for v in entry.values()):
                 out[name] = entry
+        if self.surround is not None and self.surround.any():
+            out["ears_surround"] = {
+                "reverse_mm": stats(self.reverse[self.surround], 1000.0)
+            }
         return out
 
 
@@ -288,12 +340,31 @@ def measure(
     rows = np.nonzero(measured)[0]
     regions[rows[special]] = source[special]
 
+    reference_fold = np.full(len(V), np.nan)
+    reference_fold[measured] = fold_near(
+        reference.vertices,
+        fold_angles(reference.vertices, reference.triangles),
+        C,
+        tree=reference.tree,
+    )
     fitted = T[measured[T].all(1)]
     tri_f, bary_f, _ = closest_triangles(reference.vertices, V, fitted)
     points = np.einsum("nk, nkd -> nd", bary_f, V[fitted[tri_f]])
     n_f = np.einsum("nk, nkd -> nd", bary_f, normals[fitted[tri_f]])
     n_f /= np.maximum(np.linalg.norm(n_f, axis=1, keepdims=True), 1e-12)
     reverse = -((reference.vertices - points) * n_f).sum(1)
+    _, _, face_distance, _, _ = reference.closest(V[fitted].mean(1))
+    surround = None
+    ear_mask = getattr(reference, "regions", {}).get("ear")
+    if ear_mask is not None and np.asarray(ear_mask).any():
+        from scipy.spatial import cKDTree
+
+        ear_mask = np.asarray(ear_mask, bool)
+        gap, _ = cKDTree(reference.vertices[ear_mask]).query(reference.vertices)
+        surround = ~ear_mask & (gap < SURROUND_RADIUS)
+    face_regions = regions[fitted[:, 0]].copy()
+    on_ears = (regions[fitted] == REGIONS.index("ears")).any(1)
+    face_regions[on_ears] = REGIONS.index("ears")
     return Measures(
         forward,
         reverse,
@@ -302,7 +373,30 @@ def measure(
         regions,
         reference_region,
         fold_angles(V, T),
+        face_distance,
+        face_regions,
+        surround,
+        reference_fold,
     )
+
+
+def fold_near(
+    vertices: np.ndarray,
+    folds: np.ndarray,
+    points: np.ndarray,
+    radius: float = FOLD_RADIUS,
+    tree=None,
+) -> np.ndarray:
+    """The largest of ``folds`` (one per vertex of ``vertices``) within ``radius`` of each of
+    ``points`` (of its 32 nearest vertices; 0 where none is that close): whether the reference
+    itself folds near a fitted vertex, as the rim of a thin ear does."""
+    from scipy.spatial import cKDTree
+
+    tree = tree or cKDTree(vertices)
+    d, k = tree.query(points, k=min(32, len(vertices)), distance_upper_bound=radius)
+    d, k = d.reshape(len(points), -1), k.reshape(len(points), -1)
+    padded = np.r_[np.asarray(folds, dtype=np.float64), 0.0]
+    return padded[np.where(np.isfinite(d), k, len(vertices))].max(1)
 
 
 def fold_angles(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
