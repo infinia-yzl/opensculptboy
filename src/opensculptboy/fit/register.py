@@ -23,8 +23,11 @@ Registration of anny to a reference mesh of any topology, in three stages.
    :func:`anny.faces.authoring.nicp.refine`: closest points pull the vertices, and a Laplacian
    term keeps the displacement smooth with a stiffness that decreases over the rounds. Region
    masks leave out the eyeballs, the eye sockets and the inside of the mouth, which follow the
-   skin around them. Each level of the detail layer then repeats the refinement on its
-   subdivided mesh, starting from the level below.
+   skin around them. With an ear mask (``masks.ear`` of the handoff), :class:`EarSplit` fits
+   anny's outer ears (:func:`pinna`) to the reference's ears alone and the rest to the rest,
+   in both stages, with the root of the ears on the attachment line, and :func:`fair_region`
+   and :func:`repair_folds` fair the ears on the reference. Each level of the detail layer
+   then repeats the refinement on its subdivided mesh, starting from the level below.
 
 The residuals (:mod:`opensculptboy.fit.residual`) of each level become the card's detail layer:
 :func:`fit_reference` returns a :class:`FitResult`, and :meth:`FitResult.write` writes the card
