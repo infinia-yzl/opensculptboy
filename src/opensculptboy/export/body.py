@@ -55,6 +55,20 @@ class BodyMesh:
     dropped_weight: (
         float  # the largest skin weight left out by the truncation to k bones
     )
+    # MikkTSpace tangents (N, 4) with the sign in w (add_tangents), written as TANGENT
+    tangents: np.ndarray | None = None
+
+    def add_tangents(self) -> None:
+        """Compute the MikkTSpace tangents of the mesh as the file holds it (positions,
+        normals and UVs of the split vertices), for its normal maps."""
+        from opensculptboy.texture.tangents import mikktspace
+
+        if self.uvs is None:
+            return
+        uv = np.stack(
+            [self.uvs[:, 0], 1.0 - self.uvs[:, 1]], 1
+        )  # OBJ: v = 0 at the bottom
+        self.tangents = mikktspace(self.positions, self.normals, uv, self.triangles)
 
 
 @dataclasses.dataclass
@@ -304,7 +318,8 @@ def body_attributes(
 ) -> dict:
     """
     Write the vertex data of a body mesh into a document and return the attributes of its
-    primitives: positions (plus ``translation``), normals, UVs, ``_ANNY_VERTEX`` and the
+    primitives: positions (plus ``translation``), normals, the tangents when the body has
+    them (:meth:`BodyMesh.add_tangents`), UVs, ``_ANNY_VERTEX`` and the
     JOINTS/WEIGHTS sets, 4 bones each. ``joint_type`` is the integer type of the joint indices;
     by default uint8 when they all fit, uint16 otherwise.
     """
@@ -315,6 +330,10 @@ def body_attributes(
         ),
         "NORMAL": doc.accessor(body.normals.astype(np.float32), ARRAY_BUFFER),
     }
+    if body.tangents is not None:
+        attributes["TANGENT"] = doc.accessor(
+            body.tangents.astype(np.float32), ARRAY_BUFFER
+        )
     if body.uvs is not None:
         attributes["TEXCOORD_0"] = doc.accessor(
             body.uvs.astype(np.float32), ARRAY_BUFFER
@@ -343,6 +362,17 @@ def body_targets(
     return [
         {"POSITION": doc.morph_accessor(t, sparse=sparse_targets)} for t in body.targets
     ]
+
+
+def head_tile_triangles(model, body: BodyMesh, topology: str = "anny"):
+    """The mask (T,) of the triangles of ``body`` on the head tile's UV island
+    (:mod:`opensculptboy.texture.tiles`), or None without UVs or a head island."""
+    from opensculptboy.texture.tiles import on_head_tile
+
+    if body.uvs is None:
+        return None
+    uv = np.stack([body.uvs[:, 0], 1.0 - body.uvs[:, 1]], 1)
+    return on_head_tile(model, uv, body.triangles, topology)
 
 
 def eyeball_triangles(model, body: BodyMesh, mesh=None) -> np.ndarray | None:

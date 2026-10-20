@@ -145,9 +145,19 @@ def resolve_within_budget(
     return None
 
 
-# the skin's base colour and normal map on anny's atlas, and the eyeballs' base colour on the
-# eye texture (opensculptboy.texture.eyes)
-TEXTURE_SLOTS = ("base_color", "normal", "eyes")
+# the skin's maps on anny's atlas, the eyeballs' base colour on the eye texture
+# (opensculptboy.texture.eyes) and the head tile's maps (opensculptboy.texture.tiles)
+TEXTURE_SLOTS = (
+    "base_color",
+    "normal",
+    "eyes",
+    "roughness",
+    "thickness",
+    "curvature",
+    "head_base_color",
+    "head_normal",
+    "head_roughness",
+)
 
 
 def texture_images(
@@ -158,9 +168,10 @@ def texture_images(
     ``"normal"`` on anny's atlas, ``"eyes"`` on the eye texture of
     :mod:`opensculptboy.texture.eyes`).
 
-    ``textures`` is None (the textures that the card's detail layer names, under
-    ``detail.textures``; none for a card without them), False (no texture), or a mapping of
-    slots to file paths or bytes. Relative paths of the card resolve against ``detail_dir``.
+    ``textures`` is None (the textures that the card names: its detail layer's, under
+    ``detail.textures``, and its skin material's, which take precedence; none for a card
+    without them), False (no texture), or a mapping of slots to file paths or bytes. Relative
+    paths of the card resolve against ``detail_dir``.
     """
     if textures is False:
         return {}
@@ -170,6 +181,9 @@ def texture_images(
             for k, v in character.detail.get("textures", {}).items()
             if k in TEXTURE_SLOTS
         }
+        skin = character.skin_material()
+        if skin is not None:
+            textures.update(skin.textures())
         base = None if detail_dir is None else pathlib.Path(detail_dir)
     else:
         base = None
