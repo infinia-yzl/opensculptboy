@@ -32,7 +32,7 @@ lint() {
 
 viewer() {
   step "viewer: type-check and rebuild the page from the committed model data"
-  (cd viewer && npm ci --no-audit --no-fund && npx tsc --noEmit && node build.mjs --reuse-data)
+  (cd viewer && npm ci --no-audit --no-fund && npx tsc --noEmit && npx tsc --noEmit -p test/vrm_page && node build.mjs --reuse-data)
   step "viewer: the committed page matches viewer/src and shell.html"
   if ! git diff --quiet -- viewer/dist/anny_viewer.html; then
     echo "viewer/dist/anny_viewer.html is stale: commit the rebuilt page (cd viewer && node build.mjs --reuse-data)." >&2
@@ -63,7 +63,7 @@ package() {
   uv venv --python "${python}" "${work}/venv"
   # --python names the new environment; UV_PYTHON (set in CI) would otherwise pick another one.
   uv pip install --python "${work}/venv/bin/python" --torch-backend cpu "${work}"/dist/*.whl
-  step "package: import, version and the opensculptboy command"
+  step "package: import, version and the opensculptboy command (GLB and VRM exports)"
   (
     cd "${work}"
     ./venv/bin/python - <<'EOF'
@@ -76,6 +76,10 @@ EOF
     ./venv/bin/opensculptboy names poses | head -3
     ./venv/bin/opensculptboy export smoke.glb --animation walk
     test -s smoke.glb
+    ./venv/bin/opensculptboy export smoke.vrm --author smoke
+    test -s smoke.vrm
+    ./venv/bin/opensculptboy export smoke0.vrm --author smoke --vrm-version 0
+    test -s smoke0.vrm
   )
 }
 

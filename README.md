@@ -4,7 +4,7 @@
 
 # OpenSculptBoy
 
-[![Tests](https://github.com/infinia-yzl/anny/actions/workflows/tests.yml/badge.svg)](https://github.com/infinia-yzl/anny/actions/workflows/tests.yml)
+[![Tests](https://github.com/infinia-yzl/opensculptboy/actions/workflows/tests.yml/badge.svg)](https://github.com/infinia-yzl/opensculptboy/actions/workflows/tests.yml)
 
 **OpenSculptBoy is an open toolkit for humanoid 3D characters: a differentiable body model in PyTorch, a web viewer and a glTF export for game engines. It is built on [Anny](https://github.com/naver/anny) by NAVER LABS Europe.**
 
@@ -37,6 +37,7 @@ The `opensculptboy` distribution holds two packages: `anny` (`src/anny`), the up
 - 103 face shapes with a random face sampler, 25 procedural hairstyles, 50 poses and 7 clips, and soft-tissue correctives.
 - A web viewer with a character editor.
 - Export to glTF 2.0 (`.glb`) with the skeleton, the skin weights, facial morph targets and animations (see [Export to glTF](#export-to-gltf)).
+- Export to VRM 1.0 and VRM 0.x (`.vrm`) for VTuber apps, with the humanoid bone map, expressions, perfect sync, look-at and toon materials (see [VTuber avatars (VRM)](#vtuber-avatars-vrm)).
 - Pose a character from a picture, and draw it flat as a silhouette, a line drawing or a toon picture (see [Pose from a picture](#pose-from-a-picture)).
 - Planned: a desktop companion.
 - Apache License 2.0, with CC0 and other permissive data (see [LICENSE_THINGS](LICENSE_THINGS)).
@@ -53,9 +54,9 @@ The `opensculptboy` distribution holds two packages: `anny` (`src/anny`), the up
 Install OpenSculptBoy from this repository. It adds the viewer, the face shapes, the hair, the poses and the correctives to Anny:
 
 ```bash
-pip install "opensculptboy @ git+https://github.com/infinia-yzl/anny.git"                 # the model, the export and the opensculptboy command
-pip install "opensculptboy[examples] @ git+https://github.com/infinia-yzl/anny.git"       # with the examples and tutorials
-pip install "opensculptboy[smpl,examples] @ git+https://github.com/infinia-yzl/anny.git"  # with the SMPL and SMPL-X wrappers (non-commercial data, see Disclaimer)
+pip install "opensculptboy @ git+https://github.com/infinia-yzl/opensculptboy.git"                 # the model, the export and the opensculptboy command
+pip install "opensculptboy[examples] @ git+https://github.com/infinia-yzl/opensculptboy.git"       # with the examples and tutorials
+pip install "opensculptboy[smpl,examples] @ git+https://github.com/infinia-yzl/opensculptboy.git"  # with the SMPL and SMPL-X wrappers (non-commercial data, see Disclaimer)
 uv sync --extra examples                                                             # in a clone of this repository
 ```
 
@@ -190,6 +191,44 @@ Accuracy, measured against Anny's own output on the walk, run, arms-crossed and 
 Tested so far: the [Khronos glTF validator](https://github.com/KhronosGroup/glTF-Validator) reports no errors and no warnings, and three.js (r186, `GLTFLoader`) draws the skeleton, the morph targets and the animations. Blender, Godot, Unity and Unreal Engine have not been tested yet.
 
 Not in the file yet: textures (the material is a plain skin colour), the hair, the soft-tissue correctives (the export uses plain skinning) and the eyes' shading.
+
+## VTuber avatars (VRM)
+
+`opensculptboy export` writes a VRM avatar when the output file ends in `.vrm`. VRM 1.0 is the default, for Warudo, VMagicMirror and three-vrm, and `--vrm-version 0` writes VRM 0.x for VSeeFace and 3tene:
+
+```bash
+opensculptboy export ada.vrm --character ada.json --author "Your name"                   # VRM 1.0
+opensculptboy export ada0.vrm --character ada.json --author "Your name" --vrm-version 0  # VRM 0.x
+opensculptboy export ada.vrm --author "Your name" --thumbnail auto --meta meta.json      # a rendered portrait, and licence fields from a file
+```
+
+```python
+from opensculptboy import Character, export_vrm
+
+export_vrm("ada.vrm", Character(name="ada", phenotype={"muscle": 0.7}), author="Your name")
+```
+
+The avatar rests in the VRM T-pose: the arms, hands and fingers point straight out to the sides with the palms down, the thumbs point level at 45 degrees toward the front with their nails turned outward, the legs hang straight and the feet point forward. The file holds:
+- the mesh with 4 skin weights per vertex, and the humanoid bone map of the `anny` rig;
+- expressions mixed from the 52 ARKit facial actions: the visemes aa, ih, ou, ee and oh, blink, blinkLeft and blinkRight, the emotions happy, angry, sad, relaxed and surprised, and neutral (in VRM 1.0 files an emotion damps blinking and lip sync in proportion to its weight and stops them at full weight, and VRM 0.x files carry no such rule);
+- the 52 facial actions as perfect-sync expressions named in PascalCase (`EyeBlinkLeft`), and in VRM 0.x files the VSeeFace visemes SIL, CH, DD, FF, KK, NN, PP, RR, SS and TH;
+- look-at on the eye bones, and MToon toon materials (VRM 0.x files store the colours with the exact sRGB curve that VSeeFace and 3tene decode, and three-vrm reads them within 0.009 in linear units);
+- the licence metadata with the credits, and an optional thumbnail;
+- the character card in the scene extras, so that `read_character("ada.vrm")` reads it back.
+
+A VRM file needs an author: pass `--author`, or `"authors"` in a `--meta` file of `VrmMeta` fields. The licence fields start restrictive: only the author may use the avatar, for personal non-profit use, without redistribution or modification. `--meta` changes them: the `allow_*` fields must be a JSON `true` or `false`, `avatar_permission`, `commercial_usage`, `credit_notation` and `modification` take one of their VRM 1.0 values, such as `"commercial_usage": "personalProfit"` (an invalid value prints the choices), and the text fields must be strings. `--thumbnail auto` renders a square portrait, and a given thumbnail must be a square PNG or JPEG file, as VRM 1.0 requires. Every file credits OpenSculptBoy, Anny (NAVER Corp., Apache 2.0), the MakeHuman, MPFB2 and Face Units assets (CC0) and ICT-FaceKit (MIT).
+
+A VRM file needs the `anny` rig and the MakeHuman body mesh with its eyes: the `anny` or `makehuman` topology, with modifiers such as `-quads` or `-full`. The export refuses the SMPL and SMPL-X topologies, whose data is non-commercial, and the retopologised meshes, on which it cannot find the eyes. The face shapes are baked into the mesh, because a VRM skeleton is fixed, and the facial actions become the expressions. VRM apps turn only the humanoid bones. A VRM 1.0 file therefore turns the forearm twist bones with roll constraints from the wrists (`--twist constraint`, for VRM 1.0 only), and it merges the other twist weights (upper arm, thigh and shin) into their bones. A VRM 0.x file has no constraints, so it merges every twist weight (`--twist merge`).
+
+The mesh of the file is the one that its 4 skin weights pose back onto the character's own rest pose exactly, normals included (`--bind inverse`, the default). The error in arms-down poses, the usual idle of a VTuber avatar, was measured with the file's weights on the default character: 99 % of the vertices land within 8.3 mm of the character's own posed mesh, and the worst vertices land within 11.6 mm on the `relaxed` pose and 14.3 mm on the `walk` clip. On heavy and tall characters these figures grow to about 11 mm and 19 mm. They assume that the app turns every bone of the file; an app that turns only the humanoid bones and folds the other turns into them lands within 9.4 mm (99 %) on `relaxed` and 16 mm on `walk`. `--bind forward` skins the character into the T-pose with its own weights (99 % within 12.5 mm), which gives a smoother T-pose and suits poses with raised arms. `--keep-leg-spread` keeps the legs at the rig's natural spread.
+
+Straightening the arms, the fingers and the legs into the T-pose folds the skin where two neighbouring bones turn toward each other: the webs between the fingers, the web of the thumb, the groin and, on some characters, the neck. The export therefore refines the file's skin weights for each character around those places (`--no-refine-weights` turns it off). The default character's T-pose then keeps no folded edge. Over the default character, a second test character and 64 extreme body shapes, 82 % of the folds go in VRM 1.0 files (232 of 1,293 remain, at the finger webs and the groin) and 79 % in VRM 0.x files (266 remain), while fists, hand signs and the library poses stay within 10 % of the unrefined file. The refinement adds about 3 s to an export of the default character and up to about 30 s on extreme body shapes.
+
+Each export prints its counts and checks the budget of its version: 70,000 triangles, 200 joints, 16 materials and 4096 px textures for VRM 1.0, and 32,000 triangles, 128 joints, 8 materials and 2048 px textures for VRM 0.x. `--budget strict` fails a file over its budget with exit status 1, and `--budget off` skips the check. Invalid options, metadata, thumbnails or cards end the command with one error line and exit status 2. The bare body has 27,420 triangles and 104 joints.
+
+Tested so far: the files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`); three-vrm loads both versions with their look-at and expressions and turns the forearm twist of VRM 1.0 files, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM have not been tested yet.
+
+Not in the file yet: textures (the materials use a plain skin colour), hair, teeth, eyelashes, outfits and spring bones.
 
 ## Pose from a picture
 
