@@ -384,6 +384,70 @@ class TestDetailExport(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown texture slots"):
             export_glb(path, Character(), self.model, textures={"albedo": image})
 
+    def test_eye_texture(self):
+        # the eyeballs take their own primitive and material, whose texture transform maps
+        # every eyeball UV of anny's atlas into the eye texture's square
+        from opensculptboy.export.vrm import export_vrm
+        from opensculptboy.texture.eyes import eye_texture_transform, eyeball_rows
+
+        image = png_bytes(np.full((4, 4, 3), 90, np.uint8))
+        eyes = png_bytes(np.full((4, 8, 3), 40, np.uint8))
+        transform = eye_texture_transform(self.model)
+        path = self.folder / "eyes.glb"
+        export_glb(
+            path,
+            Character(),
+            self.model,
+            textures={"base_color": image, "eyes": eyes},
+        )
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        self.assertIn("KHR_texture_transform", glb.json["extensionsUsed"])
+        skin, eye = glb.json["meshes"][0]["primitives"]
+        self.assertEqual(skin["attributes"], eye["attributes"])
+        material = glb.json["materials"][eye["material"]]
+        info = material["pbrMetallicRoughness"]["baseColorTexture"]
+        self.assertEqual(info["extensions"]["KHR_texture_transform"], transform)
+        indices = glb.accessor(eye["indices"]).reshape(-1, 3)
+        uvs = glb.accessor(eye["attributes"]["TEXCOORD_0"])[np.unique(indices)]
+        mapped = uvs * transform["scale"] + transform["offset"]
+        self.assertTrue(((mapped > 0) & (mapped < 1)).all())
+        # every eyeball triangle and nothing else
+        source = glb.accessor(eye["attributes"]["_ANNY_VERTEX"])
+        rows = set(eyeball_rows(self.model).tolist())
+        self.assertTrue(set(source[np.unique(indices)].tolist()) <= rows)
+        skin_indices = glb.accessor(skin["indices"]).reshape(-1, 3)
+        self.assertFalse(np.isin(source[skin_indices], list(rows)).all(1).any())
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for version in ("1.0", "0.x"):
+                with self.subTest(version=version):
+                    vrm = self.folder / f"eyes{version}.vrm"
+                    export_vrm(
+                        vrm,
+                        Character(),
+                        self.model,
+                        version=version,
+                        author="tests",
+                        refine_weights=False,
+                        textures={"base_color": image, "eyes": eyes},
+                    )
+                    glb = GLB(vrm)
+                    self.assertEqual(structure_errors(glb), [])
+                    self.assertEqual(len(glb.json["meshes"][0]["primitives"]), 2)
+                    self.assertEqual(len(glb.json["images"]), 2)
+                    material = glb.json["materials"][1]
+                    if version == "1.0":
+                        info = material["pbrMetallicRoughness"]["baseColorTexture"]
+                        self.assertEqual(
+                            info["extensions"]["KHR_texture_transform"], transform
+                        )
+                    else:
+                        props = glb.json["extensions"]["VRM"]["materialProperties"]
+                        st = props[1]["vectorProperties"]["_MainTex"]
+                        np.testing.assert_allclose(st[2:], transform["scale"])
+
 
 if __name__ == "__main__":
     unittest.main()

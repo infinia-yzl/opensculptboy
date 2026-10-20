@@ -34,6 +34,7 @@ from opensculptboy.fit.handoff import (
     write_handoff,
 )
 from opensculptboy.fit.reference import (
+    LANDMARKS,
     Reference,
     canonical_landmark,
     canonical_landmarks,
@@ -41,9 +42,15 @@ from opensculptboy.fit.reference import (
 )
 from opensculptboy.fit.register import (
     FitOptions,
+    ear_weights,
     excluded_vertices,
+    fit_model,
     fit_reference,
     follow_skin,
+    lip_margin,
+    project_onto,
+    relax_along,
+    shared_target_controls,
 )
 from opensculptboy.fit.residual import surface_error
 from test.fit_fixtures import synthetic_target
@@ -74,6 +81,10 @@ class TestLandmarkNames(unittest.TestCase):
             ("head_top", "crown"),
             ("Ankle.R", "ankle_r"),
             ("neck", "neck_base"),
+            ("ear_tip_l", "ear_top_l"),
+            ("RightEarLobe", "ear_lobe_r"),
+            ("postaurale.L", "ear_back_l"),
+            ("ear_l_rig", None),
             ("tail", None),
         ):
             with self.subTest(name=name):
@@ -94,6 +105,13 @@ class TestLandmarkNames(unittest.TestCase):
                 self.assertEqual(sorted(found), ["elbow_l", "mouth_corner_l"])
                 self.assertEqual(found["mouth_corner_l"][0], 2.0)
                 self.assertEqual(found["elbow_l"][0], 3.0)
+
+    def test_rig_dependent_joints_take_no_weight(self):
+        # the hips and the neck base sit 20 to 30 mm apart between rigs
+        for name in ("hip_l", "hip_r", "neck_base"):
+            self.assertEqual(LANDMARKS[name][2], 0.0)
+        for name in ("ear_top_l", "ear_lobe_r", "ear_back_l", "ear_lateral_r"):
+            self.assertEqual(LANDMARKS[name][0], "craniofacial")
 
     def test_part_roles(self):
         self.assertEqual(part_role("body"), "skin")
@@ -172,6 +190,87 @@ class TestEyes(unittest.TestCase):
         np.testing.assert_allclose(out[~excluded], vertices[~excluded])
 
 
+class TestFitRegions(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.model = fit_model()
+
+    def test_shared_targets(self):
+        # a face shape and a local change on the same MakeHuman target: the face shape alone
+        # is fitted, and the local changes of the body stay free
+        local, face = shared_target_controls(self.model)
+        labels = list(self.model.local_change_labels)
+        self.assertTrue(local[labels.index("chin-prominent-incr")])
+        self.assertTrue(local[labels.index("l-ear-shape-triangle")])
+        self.assertFalse(local[labels.index("l-upperarm-fat-incr")])
+        faces = list(self.model.face_shape_labels)
+        self.assertTrue(face[faces.index("chin-prominent")])
+        self.assertFalse(face[faces.index("detail-1")])
+        with self.assertRaisesRegex(ValueError, "shared_targets"):
+            fit_reference(
+                Reference.from_mesh(np.eye(3), np.array([[0, 1, 2]])),
+                detail=0,
+                options=FitOptions(shared_targets="neither", rounds=1, steps=1),
+                model=self.model,
+            )
+
+    def test_closed_parts_are_excluded(self):
+        # the eyeballs and the tongue take no data
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        faces = self.model.faces.numpy()
+        n = len(self.model.template_vertices)
+        edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]]])
+        graph = coo_matrix((np.ones(len(edges)), edges.T), shape=(n, n))
+        _, labels = connected_components(graph, directed=False)
+        body = np.argmax(np.bincount(labels))
+        excluded = excluded_vertices(self.model)
+        self.assertTrue(excluded[labels != body].all())
+        self.assertGreater((labels != body).sum(), 144)  # more than the eyeballs
+        margin = lip_margin(self.model, excluded)
+        self.assertTrue(margin.any())
+        self.assertFalse((margin & excluded).any())
+
+    def test_ear_weights(self):
+        w = ear_weights(self.model)
+        rest = self.model.template_vertices.numpy()
+        ears = rest[w > 0.99]
+        self.assertGreater(len(ears), 100)
+        # both sides, far from the midline, at the height of the head
+        self.assertGreater(np.abs(ears[:, 0]).min(), 0.05)
+        top = rest[:, 2].max()
+        self.assertGreater(ears[:, 2].min(), top - 0.3)
+        self.assertEqual(w[rest[:, 2] < top - 0.5].max(), 0.0)
+
+    def test_relax_and_project(self):
+        # a stretched patch of a plane spreads out evenly and stays on the plane
+        import trimesh
+
+        plane = trimesh.creation.box((0.2, 0.2, 0.01))
+        reference = Reference(plane.vertices, plane.faces)
+        grid = trimesh.creation.box((0.1, 0.1, 0.01)).subdivide().subdivide()
+        V = np.asarray(grid.vertices, dtype=np.float64)
+        top = V[:, 2] > 0
+        V[top, :2] = np.sign(V[top, :2]) * np.abs(V[top, :2]) ** 2 * 10  # bunch them up
+        relaxed = relax_along(
+            V, grid.faces, reference, top.astype(float), iterations=30
+        )
+        np.testing.assert_allclose(relaxed[top, 2], 0.005, atol=1e-9)
+        edges = grid.edges_unique
+        on_top = top[edges].all(1)
+
+        def spread(X):
+            length = np.linalg.norm(X[edges[:, 0]] - X[edges[:, 1]], axis=1)[on_top]
+            return length.std() / length.mean()
+
+        self.assertLess(spread(relaxed), 0.6 * spread(V))
+        lifted = V + [0, 0, 0.001]
+        projected = project_onto(lifted, grid.faces, reference, top, 0.002)
+        np.testing.assert_allclose(projected[top, 2], 0.005, atol=1e-9)
+        np.testing.assert_allclose(projected[~top], lifted[~top])
+
+
 class TestHandoff(unittest.TestCase):
     def test_round_trip_in_anny_frame(self):
         rng = np.random.default_rng(3)
@@ -193,6 +292,32 @@ class TestHandoff(unittest.TestCase):
             part.vertices[np.unique(part.triangles)], vertices[used], atol=1e-6
         )
         np.testing.assert_allclose(handoff.landmarks["nose_tip"], landmarks["nose_tip"])
+
+    def test_vertex_colours_stay_out_of_the_skin_colour(self):
+        # the DD2DA tools keep the game's masks in vertex colours, and a hair part's COLOR_0
+        # holds its albedo: the base colour of a part is its texture alone
+        import trimesh
+        from PIL import Image
+
+        texture = np.zeros((8, 8, 3), np.uint8)
+        texture[..., 1] = 200
+        box = trimesh.creation.box((0.1, 0.1, 0.1))
+        uv = np.random.default_rng(0).uniform(0.1, 0.9, (len(box.vertices), 2))
+        box.visual = trimesh.visual.TextureVisuals(
+            uv=uv, image=Image.fromarray(texture)
+        )
+        box.visual.vertex_attributes["color"] = np.tile(
+            [255, 0, 0, 255], (len(box.vertices), 1)
+        ).astype(np.uint8)
+        with tempfile.TemporaryDirectory() as tmp:
+            scene = trimesh.Scene()
+            scene.add_geometry(box, node_name="body", geom_name="body")
+            scene.export(str(pathlib.Path(tmp) / "replica.glb"))
+            raw = (pathlib.Path(tmp) / "replica.glb").read_bytes()
+            self.assertIn(b"COLOR_0", raw)
+            handoff = load_handoff(tmp)
+        (part,) = handoff.parts
+        np.testing.assert_array_equal(part.base_color[..., :3], texture)
 
     def test_missing_replica(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(FileNotFoundError):
