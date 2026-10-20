@@ -269,6 +269,8 @@ opensculptboy export fitted.glb --character fitted.json --detail 1
 
 The fit places anny by landmarks (or by the bounding geometry when there are none), fits the phenotypes, local changes, face shapes and pose, then moves the whole mesh onto the target with a non-rigid ICP on each level. On a synthetic target with another topology, level 1 of the detail layer lies 0.04 mm from the target on average (0.15 mm from the target to the fitted surface), and the fit takes about 70 s. The GLB export writes any level; the VRM export keeps within the triangle budget of its version by giving the finer level to the head and the neck alone, or by stepping down. `--textures` bakes the target's colour and normals onto anny's UVs for the glTF and MToon materials. [docs/reference-fit.md](docs/reference-fit.md) describes the handoff folder, the landmarks, the pipeline, the card format, the accuracy and the limits.
 
+One fitted character exports at four rendering budgets, each cut down from the master: master (level 2 with every map, for offline renders with Cycles subsurface skin), high (level 2 on the head, for engine subsurface skin), medium (level 1 on the head, with thickness and curvature maps for a cheap skin glow) and low (anny's own mesh as a VRM avatar with a toon skin and baked ambient occlusion). `opensculptboy bake-tiers` bakes the master's surface into normal maps for the coarser meshes, so that they keep its pores and folds, and `opensculptboy export --tier` writes each tier; `opensculptboy portraits` renders a portrait and an expression sheet for chat avatars. [docs/budget-tiers.md](docs/budget-tiers.md) gives the budgets, the measured gain of the bake and the notes for Unreal and Unity HDRP.
+
 ## Technical details
 
 ### Default `anny` rig
