@@ -12,8 +12,10 @@ it, and takes the nearest hit on the reference's skin within ``max_distance``. T
   the tangent space of the fitted mesh at the texel, encoded as a glTF normal texture (+X along
   increasing u, +Y along increasing v of the OBJ convention, which is up in the image).
 
-Texels that no ray reaches take the value of the nearest texel that one did, so that the seams
-of the atlas do not show. The rays use Embree through trimesh (``embreex``, the ``viewer``
+Texels of anny's eyeballs take the reference's eyes in the same way when the reference has them
+(``Reference.eye_reference``, the parts of role ``"eyes"``), so that the iris comes along with
+the skin. Texels that no ray reaches take the value of the nearest texel that one did, so that
+the seams of the atlas do not show. The rays use Embree through trimesh (``embreex``, the ``viewer``
 extra), as :mod:`anny.viewer.bake` does.
 
 Left for later (TODO): the reference's own normal map is not yet carried (the bake uses the
@@ -135,6 +137,73 @@ def _fill(image: np.ndarray, known: np.ndarray) -> np.ndarray:
     return image[iy, ix]
 
 
+def _hits(points, normals, target, max_distance):
+    """The nearest hit within ``max_distance`` of rays along ``normals`` through ``points``
+    (both ways) on a target :class:`~opensculptboy.fit.reference.Reference` whose triangle
+    faces the same way as the ray's normal: the rays that hit, their hit triangles and
+    barycentric coordinates."""
+    try:
+        from trimesh.ray.ray_pyembree import RayMeshIntersector
+    except ImportError as error:  # pragma: no cover - depends on the installed extras
+        raise ImportError(
+            "The texture bake needs Embree: install the viewer extra (embreex)."
+        ) from error
+    import trimesh
+
+    empty = np.zeros(0, np.int64)
+    if len(points) == 0:
+        return empty, empty, np.zeros((0, 3))
+    mesh = trimesh.Trimesh(target.vertices, target.triangles, process=False)
+    rays = RayMeshIntersector(mesh)
+    origins = points + normals * max_distance
+    locations, ray_ids, hit_triangles = rays.intersects_location(
+        origins, -normals, multiple_hits=True
+    )
+    gap = np.linalg.norm(locations - points[ray_ids], axis=1)
+    # a hit counts when the target faces the same way there: on a thin part (an ear) the
+    # nearest surface along the normal can be the other side
+    facing = (target.face_normals[hit_triangles] * normals[ray_ids]).sum(1) > 0.0
+    near = (gap <= max_distance) & facing
+    locations, ray_ids, hit_triangles, gap = (
+        locations[near],
+        ray_ids[near],
+        hit_triangles[near],
+        gap[near],
+    )
+    order = np.lexsort((gap, ray_ids))
+    ray_ids, keep = np.unique(ray_ids[order], return_index=True)
+    hits = order[keep]
+    locations, hit_triangles = locations[hits], hit_triangles[hits]
+    hit_bary = trimesh.triangles.points_to_barycentric(
+        target.vertices[target.triangles[hit_triangles]], locations
+    )
+    hit_bary = np.clip(hit_bary, 0.0, 1.0)
+    hit_bary /= hit_bary.sum(1, keepdims=True)
+    return ray_ids, hit_triangles, hit_bary
+
+
+def _colours(target, hit_triangles, hit_bary):
+    """Base colours (n, 3) at hits on a target's parts, and which of them are known."""
+    colours = np.zeros((len(hit_triangles), 3))
+    known = np.zeros(len(hit_triangles), bool)
+    parts = list(getattr(target, "parts", []) or [])
+    if not parts:
+        return colours, known
+    offsets = np.asarray(target.part_offsets)
+    triangle_offsets = np.cumsum([0] + [len(p.triangles) for p in parts])
+    part_of = np.searchsorted(triangle_offsets, hit_triangles, side="right") - 1
+    corners = target.triangles[hit_triangles]
+    for k, part in enumerate(parts):
+        pick = part_of == k
+        if part.base_color is None or part.uvs is None or not pick.any():
+            continue
+        local_corners = corners[pick] - offsets[k]
+        uv = np.einsum("nk, nkd -> nd", hit_bary[pick], part.uvs[local_corners])
+        colours[pick] = _sample(part.base_color, uv)[:, :3]
+        known[pick] = True
+    return colours, known
+
+
 def bake(
     vertices: np.ndarray,
     triangles: np.ndarray,
@@ -143,6 +212,7 @@ def bake(
     reference,
     size: int = 1024,
     max_distance: float = 0.01,
+    eye_triangles: np.ndarray | None = None,
 ) -> BakedTextures:
     """
     Bake the reference onto anny's atlas.
@@ -156,15 +226,10 @@ def bake(
             the UVs and the base colour textures (none: the base colour is not baked).
         size: the side of the square textures, in texels.
         max_distance: rays reach this far on each side of the fitted surface (metres).
+        eye_triangles: a mask (T,) of the fitted mesh's eyeball triangles, whose texels take
+            the reference's eyes (``reference.eye_reference``) instead of its skin; without
+            either, every texel takes the skin.
     """
-    try:
-        from trimesh.ray.ray_pyembree import RayMeshIntersector
-    except ImportError as error:  # pragma: no cover - depends on the installed extras
-        raise ImportError(
-            "The texture bake needs Embree: install the viewer extra (embreex)."
-        ) from error
-    import trimesh
-
     from opensculptboy.fit.reference import vertex_normals
 
     V = np.asarray(vertices, dtype=np.float64)
@@ -177,90 +242,73 @@ def bake(
     normals = np.einsum("nk, nkd -> nd", bary, N[T[tri]])
     normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
 
-    target = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
-    rays = RayMeshIntersector(target)
-    origins = points + normals * max_distance
-    locations, ray_ids, hit_triangles = rays.intersects_location(
-        origins, -normals, multiple_hits=True
-    )
-    gap = np.linalg.norm(locations - points[ray_ids], axis=1)
-    near = gap <= max_distance
-    locations, ray_ids, hit_triangles, gap = (
-        locations[near],
-        ray_ids[near],
-        hit_triangles[near],
-        gap[near],
-    )
-    order = np.lexsort((gap, ray_ids))
-    ray_ids, keep = np.unique(ray_ids[order], return_index=True)
-    hits = order[keep]
-    locations, hit_triangles = locations[hits], hit_triangles[hits]
-    hit_bary = trimesh.triangles.points_to_barycentric(
-        reference.vertices[reference.triangles[hit_triangles]], locations
-    )
-    hit_bary = np.clip(hit_bary, 0.0, 1.0)
-    hit_bary /= hit_bary.sum(1, keepdims=True)
-
-    # the normal: the reference's shading normal in the fitted mesh's tangent space
-    corners = reference.triangles[hit_triangles]
-    target_normals = np.einsum("nk, nkd -> nd", hit_bary, reference.normals[corners])
-    target_normals /= np.maximum(
-        np.linalg.norm(target_normals, axis=1, keepdims=True), 1e-12
-    )
-    tangent, bitangent = _tangent_frames(V, T, UT, UV)
-    n = normals[ray_ids]
-    t = tangent[tri[ray_ids]]
-    t = t - (t * n).sum(1, keepdims=True) * n
-    t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
-    b = np.cross(n, t)
-    b *= np.sign((b * bitangent[tri[ray_ids]]).sum(1, keepdims=True) + 1e-20)
-    local = np.stack(
-        [
-            (target_normals * t).sum(1),
-            (target_normals * b).sum(1),
-            (target_normals * n).sum(1),
-        ],
-        1,
-    )
-    local[:, 2] = np.maximum(local[:, 2], 0.0)
-    local /= np.maximum(np.linalg.norm(local, axis=1, keepdims=True), 1e-12)
+    eye_reference = getattr(reference, "eye_reference", None)
+    on_eye = np.zeros(len(tri), bool)
+    if eye_triangles is not None and eye_reference is not None:
+        on_eye = np.asarray(eye_triangles, bool)[tri]
+    groups = []
+    for target, pick in ((reference, ~on_eye), (eye_reference, on_eye)):
+        if target is None or not pick.any():
+            continue
+        texels = np.nonzero(pick)[0]
+        ids, hit_triangles, hit_bary = _hits(
+            points[texels], normals[texels], target, max_distance
+        )
+        groups.append((target, texels[ids], hit_triangles, hit_bary))
 
     coverage = np.zeros((size, size), bool)
-    coverage[rows[ray_ids], cols[ray_ids]] = True
     normal_image = np.zeros((size, size, 3))
     normal_image[..., 2] = 1.0
-    normal_image[rows[ray_ids], cols[ray_ids]] = local
+    colour_image = np.zeros((size, size, 3))
+    colour_known = np.zeros((size, size), bool)
+    any_colour = False
+    tangent, bitangent = _tangent_frames(V, T, UT, UV)
+    for target, ray_ids, hit_triangles, hit_bary in groups:
+        # the normal: the target's shading normal in the fitted mesh's tangent space
+        corners = target.triangles[hit_triangles]
+        target_normals = np.einsum("nk, nkd -> nd", hit_bary, target.normals[corners])
+        target_normals /= np.maximum(
+            np.linalg.norm(target_normals, axis=1, keepdims=True), 1e-12
+        )
+        n = normals[ray_ids]
+        t = tangent[tri[ray_ids]]
+        t = t - (t * n).sum(1, keepdims=True) * n
+        t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+        b = np.cross(n, t)
+        b *= np.sign((b * bitangent[tri[ray_ids]]).sum(1, keepdims=True) + 1e-20)
+        local = np.stack(
+            [
+                (target_normals * t).sum(1),
+                (target_normals * b).sum(1),
+                (target_normals * n).sum(1),
+            ],
+            1,
+        )
+        local[:, 2] = np.maximum(local[:, 2], 0.0)
+        local /= np.maximum(np.linalg.norm(local, axis=1, keepdims=True), 1e-12)
+        coverage[rows[ray_ids], cols[ray_ids]] = True
+        normal_image[rows[ray_ids], cols[ray_ids]] = local
+        colours, known = _colours(target, hit_triangles, hit_bary)
+        any_colour |= bool(getattr(target, "parts", None))
+        colour_image[rows[ray_ids[known]], cols[ray_ids[known]]] = colours[known]
+        colour_known[rows[ray_ids[known]], cols[ray_ids[known]]] = True
     normal_image = _fill(normal_image, coverage)
     normal_png = np.clip(np.round((normal_image * 0.5 + 0.5) * 255), 0, 255)
 
     base_png = None
     parts = list(getattr(reference, "parts", []) or [])
-    if parts and any(p.base_color is not None and p.uvs is not None for p in parts):
-        offsets = np.asarray(reference.part_offsets)
-        triangle_offsets = np.cumsum([0] + [len(p.triangles) for p in parts])
-        part_of = np.searchsorted(triangle_offsets, hit_triangles, side="right") - 1
-        colours = np.zeros((len(ray_ids), 3))
-        known = np.zeros(len(ray_ids), bool)
-        for k, part in enumerate(parts):
-            pick = part_of == k
-            if part.base_color is None or part.uvs is None or not pick.any():
-                continue
-            local_corners = corners[pick] - offsets[k]
-            uv = np.einsum("nk, nkd -> nd", hit_bary[pick], part.uvs[local_corners])
-            colours[pick] = _sample(part.base_color, uv)[:, :3]
-            known[pick] = True
-        colour_image = np.zeros((size, size, 3))
-        colour_known = np.zeros((size, size), bool)
-        colour_image[rows[ray_ids[known]], cols[ray_ids[known]]] = colours[known]
-        colour_known[rows[ray_ids[known]], cols[ray_ids[known]]] = True
+    if any_colour and any(
+        p.base_color is not None and p.uvs is not None for p in parts
+    ):
         colour_image = _fill(colour_image, colour_known)
         base_png = np.clip(np.round(colour_image), 0, 255).astype(np.uint8)
 
+    reached = sum(len(g[1]) for g in groups)
     return BakedTextures(
         base_color=base_png,
         normal=normal_png.astype(np.uint8),
         coverage=coverage,
-        covered_share=float(len(ray_ids) / max(len(rows), 1)),
+        covered_share=float(reached / max(len(rows), 1)),
     )
 
 
@@ -285,6 +333,8 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         )
     vertices = out["vertices"][0].numpy() @ result.rotation.T + result.translation
     topology = detailed.topology
+    if "eye_triangles" not in kwargs:
+        kwargs["eye_triangles"] = eyeball_triangles(model, topology)
     return bake(
         vertices,
         topology.triangles,
@@ -294,3 +344,18 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         size,
         **kwargs,
     )
+
+
+def eyeball_triangles(model, topology) -> np.ndarray | None:
+    """The mask of the eyeball triangles of a detail-layer mesh, or None when the model's
+    mesh has no eyeballs."""
+    from opensculptboy.export.vrm_tables import eyeball_vertices
+
+    try:
+        rows = np.concatenate(list(eyeball_vertices(model).values()))
+    except ValueError:
+        return None
+    eye = np.zeros(len(model.template_vertices))
+    eye[rows] = 1.0
+    fine = np.asarray(topology.apply(eye)) > 0.5
+    return fine[np.asarray(topology.triangles)].all(1)

@@ -185,6 +185,45 @@ def auto_landmark_vertices(vertices: np.ndarray) -> dict[str, np.ndarray]:
     return out
 
 
+def fit_sphere(points: np.ndarray) -> tuple[np.ndarray, float, float]:
+    """Least-squares sphere through points: centre, radius and the largest distance of a
+    point from the sphere."""
+    P = np.asarray(points, dtype=np.float64)
+    A = np.c_[2.0 * P, np.ones(len(P))]
+    x = np.linalg.lstsq(A, (P**2).sum(1), rcond=None)[0]
+    centre = x[:3]
+    radius = float(np.sqrt(max(x[3] + centre @ centre, 0.0)))
+    spread = float(np.abs(np.linalg.norm(P - centre, axis=1) - radius).max())
+    return centre, radius, spread
+
+
+def eye_spheres(parts: list, tolerance: float = 0.15) -> list:
+    """
+    The eyeballs of a reference as spheres [(centre, radius)]: one sphere per part whose
+    points lie within ``tolerance`` of a radius from it. Of spheres whose centres lie inside
+    one another (an eyeball made of a sclera and a cornea), the largest is the eyeball.
+    Parts of another shape (an eye made of flat cards) are left out.
+    """
+    spheres = []
+    for vertices in parts:
+        vertices = np.asarray(vertices, dtype=np.float64)
+        if len(vertices) < 10:
+            continue
+        centre, radius, spread = fit_sphere(vertices)
+        if not radius < 1.5 * np.linalg.norm(np.ptp(vertices, axis=0)):
+            continue  # a flat or nearly flat part: no sphere
+        if not spread < tolerance * radius:
+            continue
+        for k, (c, r) in enumerate(spheres):
+            if np.linalg.norm(centre - c) < max(radius, r):
+                if radius > r:
+                    spheres[k] = (centre, radius)
+                break
+        else:
+            spheres.append((centre, radius))
+    return spheres
+
+
 @dataclasses.dataclass
 class Reference:
     """
@@ -199,12 +238,23 @@ class Reference:
     auto: bool = False
     parts: list = dataclasses.field(default_factory=list)  # HandoffPart, skin only
     part_offsets: np.ndarray | None = None  # (P + 1,) first vertex of each part
+    # the eyeballs as spheres: [(centre (3,), radius)], from the parts of role "eyes"
+    eyes: list = dataclasses.field(default_factory=list)
+    # the parts of role "eyes" as a reference of their own, for the texture bake
+    eye_reference: "Reference | None" = None
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=np.float64)
         self.triangles = np.asarray(self.triangles, dtype=np.int64)
         self.normals = vertex_normals(self.vertices, self.triangles)
         self._tree = None
+
+    @property
+    def face_normals(self) -> np.ndarray:
+        """Unit normals (T, 3) of the triangles."""
+        p = self.vertices[self.triangles]
+        n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+        return n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-20)
 
     @classmethod
     def from_mesh(cls, vertices, triangles, landmarks: dict | None = None):
@@ -228,7 +278,29 @@ class Reference:
         auto = not landmarks
         if auto:
             landmarks = auto_landmarks(vertices)
-        return cls(vertices, triangles, landmarks, auto, list(parts), offsets)
+        eye_parts = [p for p in handoff.parts if p.role == "eyes"]
+        eyes = eye_spheres([p.vertices for p in eye_parts])
+        eye_reference = None
+        if eye_parts:
+            eye_offsets = np.cumsum([0] + [len(p.vertices) for p in eye_parts])
+            eye_reference = cls(
+                np.concatenate([p.vertices for p in eye_parts]),
+                np.concatenate(
+                    [p.triangles + eye_offsets[i] for i, p in enumerate(eye_parts)]
+                ),
+                parts=eye_parts,
+                part_offsets=eye_offsets,
+            )
+        return cls(
+            vertices,
+            triangles,
+            landmarks,
+            auto,
+            list(parts),
+            offsets,
+            eyes,
+            eye_reference,
+        )
 
     def transformed(self, rotation: np.ndarray, translation: np.ndarray):
         """The reference moved by x -> R x + t (the parts keep their own coordinates)."""
@@ -240,6 +312,10 @@ class Reference:
             self.auto,
             self.parts,
             self.part_offsets,
+            [(R @ c + t, r) for c, r in self.eyes],
+            None
+            if self.eye_reference is None
+            else self.eye_reference.transformed(R, t),
         )
         return moved
 
