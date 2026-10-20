@@ -688,12 +688,30 @@ def vrm_spec(
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
     if images:
         materials = [_textured_toon_material(images)]
+    primitives = [SpecPrimitive(material=0)]
+    eye_material = _eye_toon_material(images, model)
+    eye_triangles = None
+    if eye_material is not None:
+        from opensculptboy.export.body import eyeball_triangles
+
+        eye_triangles = eyeball_triangles(
+            model, body, None if detail is None else detail.topology
+        )
+    if eye_triangles is not None and eye_triangles.any():
+        # the eyeballs: the same vertices and targets, their own texture
+        materials.append(eye_material)
+        primitives = [
+            SpecPrimitive(material=0, triangles=body.triangles[~eye_triangles]),
+            SpecPrimitive(material=1, triangles=body.triangles[eye_triangles]),
+        ]
+    else:
+        images.pop("eyes", None)
     meshes = [
         SpecMesh(
             name="body",
             body=body,
             translation=offset,
-            primitives=[SpecPrimitive(material=0)],
+            primitives=primitives,
             target_names=actions,
         )
     ]
@@ -773,7 +791,9 @@ def vrm_spec(
         skin_indices=i4,
         parents=parents,
         images=[
-            (slot, images[slot]) for slot in ("base_color", "normal") if slot in images
+            (slot, images[slot])
+            for slot in ("base_color", "normal", "eyes")
+            if slot in images
         ],
     )
 
@@ -792,6 +812,28 @@ def _textured_toon_material(images: dict) -> mtoon.ToonMaterial:
         index += 1
     if "normal" in images:
         material.normal_texture = index
+    return material
+
+
+def _eye_toon_material(images: dict, model) -> mtoon.ToonMaterial | None:
+    """
+    The eyeballs' MToon material with the eye texture as the lit and the shade texture, behind
+    the texture transform of :func:`opensculptboy.texture.eyes.eye_texture_transform`, or None
+    without an eye texture. Its texture index follows the skin's textures in ``VrmSpec.images``.
+    """
+    from opensculptboy.texture.eyes import eye_texture_transform
+
+    if "eyes" not in images:
+        return None
+    transform = eye_texture_transform(model)
+    if transform is None:
+        return None
+    material = mtoon.soft_material("eyes", (1.0, 1.0, 1.0, 1.0))
+    material.shade_color = (0.85, 0.85, 0.85)
+    material.base_texture = material.shade_texture = sum(
+        slot in images for slot in ("base_color", "normal")
+    )
+    material.texture_transform = transform
     return material
 
 

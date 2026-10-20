@@ -194,14 +194,30 @@ def export_glb(
     else:
         material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
     joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
+    eye_material, eyes = _eye_material(
+        doc, model, body, images, None if detail is None else detail.topology
+    )
     primitive = body_primitive(
         doc,
         body,
         material,
+        triangles=None if eye_material is None else body.triangles[~eyes],
         joint_type=joint_type,
         anny_vertex=detail is None or detail.subdiv == 0,
     )
-    mesh = {"name": character.name, "primitives": [primitive]}
+    primitives = [primitive]
+    if eye_material is not None:  # the eyeballs: the same vertices, their own texture
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                eye_material,
+                triangles=body.triangles[eyes],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    mesh = {"name": character.name, "primitives": primitives}
     if targets:
         mesh["weights"] = [t.weight for t in targets]
         mesh["extras"] = {"targetNames": [t.name for t in targets]}
@@ -279,6 +295,30 @@ def export_glb(
     if detail is not None:
         summary["detail"] = detail.extras()
     return summary
+
+
+def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
+    """
+    The material of the eyeballs with the eye texture of ``images`` (its texture info carries
+    the ``KHR_texture_transform`` of :func:`opensculptboy.texture.eyes.eye_texture_transform`)
+    and the mask of the eyeball triangles, or (None, None) without an eye texture.
+    """
+    from opensculptboy.export.body import eyeball_triangles
+    from opensculptboy.texture.eyes import eye_texture_transform
+
+    if "eyes" not in images:
+        return None, None
+    transform = eye_texture_transform(model)
+    eyes = eyeball_triangles(model, body, mesh)
+    if transform is None or eyes is None or not eyes.any():
+        return None, None
+    data = images["eyes"]
+    texture = doc.add_texture(doc.add_image(data, mime_type(data), "eyes"))
+    material = pbr_material("eyes", (1.0, 1.0, 1.0, 1.0), 0.0, 0.3, texture=texture)
+    material["pbrMetallicRoughness"]["baseColorTexture"]["extensions"] = {
+        "KHR_texture_transform": transform
+    }
+    return doc.add_material(material), eyes
 
 
 def _textured_material(doc: GltfDocument, images: dict) -> dict:

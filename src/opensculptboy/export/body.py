@@ -345,6 +345,23 @@ def body_targets(
     ]
 
 
+def eyeball_triangles(model, body: BodyMesh, mesh=None) -> np.ndarray | None:
+    """
+    The mask (T,) of the triangles of ``body`` that lie on anny's eyeballs, or None for a mesh
+    without eyeballs. ``mesh`` is the detail mesh that ``body`` was built on, if any.
+    """
+    from opensculptboy.texture.eyes import eyeball_rows
+
+    rows = eyeball_rows(model)
+    if rows is None:
+        return None
+    eye = np.zeros(len(model.template_vertices))
+    eye[rows] = 1.0
+    if mesh is not None:
+        eye = np.asarray(mesh.apply(eye))
+    return (eye > 0.5)[body.source][body.triangles].all(1)
+
+
 def body_primitive(
     doc: GltfDocument,
     body: BodyMesh,

@@ -145,15 +145,18 @@ def resolve_within_budget(
     return None
 
 
-TEXTURE_SLOTS = ("base_color", "normal")
+# the skin's base colour and normal map on anny's atlas, and the eyeballs' base colour on the
+# eye texture (opensculptboy.texture.eyes)
+TEXTURE_SLOTS = ("base_color", "normal", "eyes")
 
 
 def texture_images(
     character, textures=None, detail_dir: str | pathlib.Path | None = None
 ) -> dict[str, bytes]:
     """
-    The PNG or JPEG files of the skin textures of a file, by slot (``"base_color"``,
-    ``"normal"``).
+    The PNG or JPEG files of the textures of a file, by slot (``"base_color"`` and
+    ``"normal"`` on anny's atlas, ``"eyes"`` on the eye texture of
+    :mod:`opensculptboy.texture.eyes`).
 
     ``textures`` is None (the textures that the card's detail layer names, under
     ``detail.textures``; none for a card without them), False (no texture), or a mapping of
