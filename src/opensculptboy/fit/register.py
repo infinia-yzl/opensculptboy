@@ -425,6 +425,22 @@ def mask_border(triangles: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return out & mask
 
 
+def _border_edges(triangles: np.ndarray) -> np.ndarray:
+    """The edges (E, 2), sorted, that only one triangle has."""
+    T = np.asarray(triangles)
+    e = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), 1)
+    unique, counts = np.unique(e, axis=0, return_counts=True)
+    return unique[counts == 1]
+
+
+def _rows_in(rows: np.ndarray, table: np.ndarray) -> np.ndarray:
+    """Mask of the rows (n, 2) of integers that ``table`` (m, 2) holds."""
+    if len(rows) == 0 or len(table) == 0:
+        return np.zeros(len(rows), bool)
+    key = int(max(rows.max(), table.max())) + 1
+    return np.isin(rows[:, 0] * key + rows[:, 1], table[:, 0] * key + table[:, 1])
+
+
 class EarSplit:
     """
     A reference cut at its ears: the triangles of its ``"ear"`` region (``masks.ear`` of the
@@ -465,6 +481,15 @@ class EarSplit:
         self.segments = reference.vertices[e]  # (S, 2, 3)
         self.attachment = attachment
         self._tree = None
+        # the vertices of each part along the cut: on a border of the part that is not a
+        # border of the reference
+        whole = _border_edges(T)
+        for part in (self.ear, self.head):
+            edges = part.source_vertices[_border_edges(part.triangles)]
+            cut = ~_rows_in(np.sort(edges, 1), whole)
+            part.cut = np.zeros(len(part.vertices), bool)
+            local = _border_edges(part.triangles)[cut]
+            part.cut[local.ravel()] = True
 
     def attach(self, points: np.ndarray):
         """The closest points (n, 3) of the attachment line and their distances."""
@@ -524,20 +549,36 @@ class Target:
         ear = self.anny_ear if rows is None else self.anny_ear[rows]
         return [(ear, self.split.ear), (~ear, self.split.head)]
 
-    def closest(self, points: np.ndarray, rows=None):
-        """Closest points, normals and distances of ``points``, the points of the fitted
-        mesh's vertices ``rows`` (all of them by default)."""
+    def closest(self, points: np.ndarray, rows=None, edge: bool = False):
+        """
+        Closest points, normals and distances of ``points``, the points of the fitted mesh's
+        vertices ``rows`` (all of them by default). With ``edge``, also the mask of the points
+        that lie past the cut of their part of a split reference: their closest point lies on
+        the cut (the attachment line), and the offset to it runs along the surface more than
+        across it and is over 0.2 mm. Those are the points of anny's head past the line, or of
+        its ears, which would all clamp onto it and crease there; their pairs drop out, as
+        Amberg et al. drop the pairs on the borders of a target, and the attachment term holds
+        the root of the ear on the line. All False without a split.
+        """
         points = np.asarray(points, dtype=np.float64)
         C = np.zeros_like(points)
         N = np.zeros_like(points)
         d = np.zeros(len(points))
+        off = np.zeros(len(points), bool)
         for mask, part in self.parts(rows):
             take = slice(None) if mask is None else np.nonzero(mask)[0]
             if mask is not None and len(take) == 0:
                 continue
-            c, n, dd, _, _ = part.closest(points[take], self.smooth, self.shading)
+            c, n, dd, tri, bary = part.closest(points[take], self.smooth, self.shading)
             C[take], N[take], d[take] = c, n, dd
-        return C, N, d
+            if edge and hasattr(part, "cut"):
+                corners = part.cut[part.triangles[tri]]
+                on_cut = (corners | (bary < 1e-6)).all(1)
+                offset = points[take] - c
+                across = np.abs((offset * n).sum(1))
+                along = np.sqrt(np.maximum(dd**2 - across**2, 0.0))
+                off[take] = on_cut & (along > 0.5 * dd) & (dd > 2e-4)
+        return (C, N, d, off) if edge else (C, N, d)
 
 
 def nicp(
@@ -613,9 +654,9 @@ def nicp(
         start = X.copy()
         smooth = alpha * (LtL @ start)
         for _ in range(iterations):
-            C, N, d = target.closest(X)
+            C, N, d, off = target.closest(X, edge=True)
             normals = vertex_normals(X, triangles)
-            ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
+            ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold) & ~off
             w = base * ok
             if border is not None and len(border):
                 C, w = _attach(
@@ -690,9 +731,9 @@ def project_onto(
     the reference's to ``normal_threshold`` moved onto their closest points."""
     target = reference if isinstance(reference, Target) else Target(reference)
     X = np.asarray(vertices, dtype=np.float64).copy()
-    C, N, d = target.closest(X)
+    C, N, d, off = target.closest(X, edge=True)
     normals = vertex_normals(X, triangles)
-    move = keep & (d < distance) & ((normals * N).sum(1) > normal_threshold)
+    move = keep & (d < distance) & ((normals * N).sum(1) > normal_threshold) & ~off
     X[move] = C[move]
     return X
 
@@ -832,9 +873,10 @@ def fair_region(
     Qrr = Q[rows][:, rows]
     Qro = Q[rows][:, others]
     for _ in range(iterations):
-        C, N, d = target.closest(X[rows], rows)
+        C, N, d, off = target.closest(X[rows], rows, edge=True)
         normals = vertex_normals(X, T)
         ok = (d < max_distance) & ((normals[rows] * N).sum(1) > normal_threshold)
+        ok &= ~off
         w = ok.astype(np.float64)
         r, P = _reverse_pairs(
             X, normals, pool_rows, target, max_distance, reverse_normal_threshold
@@ -1356,9 +1398,11 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
         if split_target is None:
             C, N, d, _, _ = reference.closest(X[fit_rows])
         else:
-            C, N, d = split_target.closest(X[fit_rows], fit_rows)
+            C, N, d, off = split_target.closest(X[fit_rows], fit_rows, edge=True)
         normals = vertex_normals(X, triangles)[fit_rows]
         ok = (d < limit) & ((normals * N).sum(1) > options.normal_threshold)
+        if split_target is not None:
+            ok &= ~off
         fwd_rows = fit_rows_t[torch.as_tensor(ok)]
         fwd_points = torch.as_tensor(C[ok])
         fwd_normals = torch.as_tensor(N[ok])
