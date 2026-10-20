@@ -37,8 +37,14 @@ from opensculptboy.fit.reference import (
     Reference,
     canonical_landmark,
     canonical_landmarks,
+    eye_spheres,
 )
-from opensculptboy.fit.register import FitOptions, excluded_vertices, fit_reference
+from opensculptboy.fit.register import (
+    FitOptions,
+    excluded_vertices,
+    fit_reference,
+    follow_skin,
+)
 from opensculptboy.fit.residual import surface_error
 from test.fit_fixtures import synthetic_target
 
@@ -124,6 +130,46 @@ class TestLandmarkNames(unittest.TestCase):
             "skin",
         )
         self.assertIsNone(_find_entry(entries, "torso_0"))
+
+
+def _sphere(centre, radius, cap=1.0, count=400, seed=0):
+    """Points of a sphere, or of its cap toward -Y when ``cap`` < 1 (a share of the polar
+    angle)."""
+    rng = np.random.default_rng(seed)
+    d = rng.normal(size=(count, 3))
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    d = d[np.arccos(-d[:, 1]) <= cap * np.pi]
+    return np.asarray(centre) + radius * d
+
+
+class TestEyes(unittest.TestCase):
+    def test_eye_spheres(self):
+        left = _sphere([0.03, -0.05, 1.5], 0.012, cap=0.4)
+        cornea = _sphere([0.03, -0.055, 1.5], 0.008, cap=0.2, seed=1)
+        right = _sphere([-0.03, -0.05, 1.5], 0.012, cap=0.4, seed=2)
+        card = np.random.default_rng(3).uniform(-0.01, 0.01, (50, 3)) * [1, 0, 1]
+        spheres = eye_spheres([left, cornea, right, card + [0, -0.1, 1.5]])
+        self.assertEqual(len(spheres), 2)
+        for (centre, radius), x in zip(
+            sorted(spheres, key=lambda e: -e[0][0]), (1, -1)
+        ):
+            np.testing.assert_allclose(centre, [0.03 * x, -0.05, 1.5], atol=5e-4)
+            self.assertAlmostEqual(radius, 0.012, delta=3e-4)
+
+    def test_eyeball_follows_reference_eye(self):
+        # a closed component (an eyeball) moves and scales onto the reference's eye sphere
+        import trimesh
+
+        ball = trimesh.creation.icosphere(2, 0.014)
+        skin = trimesh.creation.box((0.2, 0.01, 0.2))
+        vertices = np.concatenate([ball.vertices, skin.vertices + [0, 0.05, 0]])
+        triangles = np.concatenate([ball.faces, skin.faces + len(ball.vertices)])
+        excluded = np.arange(len(vertices)) < len(ball.vertices)
+        eye = (np.array([0.004, -0.002, 0.001]), 0.012)
+        out = follow_skin(vertices, vertices, excluded, triangles, eyes=[eye])
+        radii = np.linalg.norm(out[excluded] - eye[0], axis=1)
+        np.testing.assert_allclose(radii, eye[1], atol=1e-4)
+        np.testing.assert_allclose(out[~excluded], vertices[~excluded])
 
 
 class TestHandoff(unittest.TestCase):
