@@ -49,6 +49,7 @@ from opensculptboy.fit.reference import (
     LANDMARKS,
     Reference,
     auto_landmark_vertices,
+    fit_sphere,
     vertex_normals,
 )
 
@@ -68,6 +69,8 @@ MAJOR_BONES = (
     "lowerleg",
     "foot",
 )
+# Words of the finger bones, which :attr:`FitOptions.finger_rounds` keeps at rest at first.
+FINGER_BONES = ("finger", "metacarpal", "thumb")
 # Base-mesh face labels that the registration leaves out (with the eyeballs).
 EXCLUDED_LABELS = ("eye_cavity.L", "eye_cavity.R", "mouth_cavity")
 
@@ -81,6 +84,9 @@ class FitOptions:
     major_rounds: int = (
         3  # rounds that free only the placement, phenotypes and large joints
     )
+    # rounds that keep the fingers at rest (at least the major rounds): until the distance
+    # limit is short, so that a finger does not slide onto its neighbour
+    finger_rounds: int = 7
     reverse_samples: int = 20000
     landmark_weight: float = 1.0
     auto_landmark_weight: float = 0.2
@@ -252,10 +258,27 @@ def follow_skin(
     excluded: np.ndarray,
     triangles: np.ndarray,
     radius: float = 0.02,
+    neighbours: int = 16,
+    falloff: float = 0.005,
+    inside: float = 0.0005,
+    eyes: list | None = None,
 ) -> np.ndarray:
     """
-    Move each closed component of excluded vertices (the eyeballs) by the mean displacement
-    of the fitted vertices within ``radius`` of its centre, so that it follows the skin.
+    Move the excluded vertices with the fitted skin around them:
+
+    - each closed component of excluded vertices (an eyeball) onto the reference's eyeball
+      sphere whose centre lies within ``radius`` of it (``eyes``, as
+      :attr:`~opensculptboy.fit.reference.Reference.eyes` holds them: moved and scaled about
+      its own sphere's centre), or without one by the mean displacement of the fitted
+      vertices within ``radius`` of its centre;
+    - each excluded vertex of a component joined to the skin (the inside of the mouth and the
+      eye sockets) by the displacement of the ``neighbours`` nearest fitted vertices in space,
+      weighted by exp(-d / ``falloff``). Along the mesh, the inside of the mouth hangs from the
+      lips' inner margin alone, so when the fit pulls the lips back the Laplacian term leaves
+      the gums and the palate in front of the skin; the nearest skin in space carries them
+      back with the lips. A vertex of these that still lies in front of the fitted skin by more
+      than 0.4 ``inside`` (as anny's own mouth shapes can leave it) goes back to ``inside``
+      behind it.
     """
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
@@ -268,17 +291,69 @@ def follow_skin(
     _, labels = connected_components(graph, directed=False)
     out = after.copy()
     kept = np.nonzero(~excluded)[0]
+    if len(kept) == 0:
+        return out
     tree = cKDTree(before[kept])
     displacement = after - before
+    joined = []
     for label in np.unique(labels[excluded]):
         component = labels == label
         if (component & ~excluded).any():
-            continue  # joined to fitted skin: the Laplacian already carries it
+            joined.append(np.nonzero(component & excluded)[0])
+            continue
         centre = before[component].mean(0)
+        target = None
+        if eyes and component.sum() >= 10:
+            own, own_radius, _ = fit_sphere(before[component])
+            gaps = [np.linalg.norm(np.asarray(c) - own) for c, _ in eyes]
+            if min(gaps) < radius and own_radius > 0:
+                target = eyes[int(np.argmin(gaps))]
+        if target is not None:
+            scale = target[1] / own_radius
+            out[component] = np.asarray(target[0]) + (before[component] - own) * scale
+            continue
         near = tree.query_ball_point(centre, radius)
         if near:
             out[component] = before[component] + displacement[kept[near]].mean(0)
+    if joined:
+        rows = np.concatenate(joined)
+        k = min(neighbours, len(kept))
+        distance, nearest = tree.query(before[rows], k=k)
+        distance, nearest = (
+            distance.reshape(len(rows), k),
+            nearest.reshape(len(rows), k),
+        )
+        weights = np.exp(-(distance - distance[:, :1]) / falloff)
+        weights /= weights.sum(1, keepdims=True)
+        moved = np.einsum("nk, nkd -> nd", weights, displacement[kept[nearest]])
+        out[rows] = before[rows] + moved
+        out[rows] = _behind_skin(out, t, excluded, rows, inside)
     return out
+
+
+def _behind_skin(vertices, triangles, excluded, rows, inside: float) -> np.ndarray:
+    """The vertices ``rows`` moved to ``inside`` behind the skin (the triangles of vertices
+    that are not excluded) wherever they lie in front of it."""
+    from anny.hair import closest_triangles
+
+    skin = triangles[~excluded[triangles].any(1)]
+    if len(skin) == 0:
+        return vertices[rows]
+    used = np.unique(skin)
+    remap = np.full(len(vertices), -1)
+    remap[used] = np.arange(len(used))
+    V, T = vertices[used], remap[skin]
+    normals = vertex_normals(V, T)
+    tri, bary, _ = closest_triangles(vertices[rows], V, T)
+    closest = np.einsum("nk, nkd -> nd", bary, V[T[tri]])
+    normal = np.einsum("nk, nkd -> nd", bary, normals[T[tri]])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+    points = vertices[rows]
+    # strictly in front: the excluded vertices along the skin's border lie beside it
+    front = ((points - closest) * normal).sum(1) > 0.4 * inside
+    points = points.copy()
+    points[front] = closest[front] - inside * normal[front]
+    return points
 
 
 class _Parameters(torch.nn.Module):
@@ -293,6 +368,11 @@ class _Parameters(torch.nn.Module):
             k
             for k, i in enumerate(self.free)
             if any(word in labels[i] for word in MAJOR_BONES)
+        ]
+        self.fingers = [
+            k
+            for k, i in enumerate(self.free)
+            if any(word in labels[i] for word in FINGER_BONES)
         ]
         p = len(model.phenotype_labels)
         phenotype = torch.full((1, p), 0.5, dtype=dtype)
@@ -534,6 +614,10 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
                 mask = torch.zeros(len(params.free), 1, dtype=params.rotvec.dtype)
                 mask[params.major] = 1.0
                 params.rotvec.grad = params.rotvec.grad * mask
+            elif round_ < options.finger_rounds:
+                mask = torch.ones(len(params.free), 1, dtype=params.rotvec.dtype)
+                mask[params.fingers] = 0.0
+                params.rotvec.grad = params.rotvec.grad * mask
             optimizer.step()
             params.project()
         _log(
@@ -651,7 +735,9 @@ def fit_reference(
             options.nicp_max_distance,
             options.normal_threshold,
         )
-        fitted = follow_skin(posed, fitted, ~mask, topology.triangles)
+        fitted = follow_skin(
+            posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
+        )
         registered = R_.unpose(fitted, w, i, transforms, rotation, translation)
         offsets[subdiv] = R_.rest_offsets(registered, parametric)
         errors[subdiv] = R_.surface_error(
