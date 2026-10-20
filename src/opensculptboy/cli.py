@@ -257,7 +257,11 @@ def _fit(args, parser) -> int:
         from opensculptboy.texture.bake import bake_fit
 
         baked = bake_fit(
-            result, size=args.texture_size, head_size=args.head_size, skin_maps=True
+            result,
+            size=args.texture_size,
+            head_size=args.head_size,
+            skin_maps=True,
+            ear_tile=args.head_size > 0,
         )
         textures, material = _write_textures(baked, out, int(max(result.offsets)))
         result.character.material = _merge_material(material, args.material, parser)
@@ -286,6 +290,10 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int):
         path = card.parent / f"{stem}.{slot}.png"
         path.write_bytes(data)
         names[slot] = path.name
+    if baked.ear_uvs is not None:
+        path = card.parent / f"{stem}.ear_uvs.safetensors"
+        baked.ear_uvs.save(path)
+        names["ear_uvs"] = path.name
     textures = {"subdiv": subdiv}
     if "eyes" in names:
         textures["eyes"] = names["eyes"]
@@ -326,6 +334,7 @@ def _bake(args, parser) -> int:
             args.texture_size,
             head_size=args.head_size,
             skin_maps=True,
+            ear_tile=not args.no_ear_tile,
         )
     except (OSError, ValueError) as error:
         parser.error(_one_line(error))
@@ -571,7 +580,8 @@ def main(argv=None) -> int:
         "--head-size",
         type=int,
         default=0,
-        help="also bake the head tile, this many pixels high (0: none; 4096 for the finest)",
+        help="also bake the head tile, this many pixels high, and the ear tile (0: neither; "
+        "4096 for the finest)",
     )
     f.add_argument(
         "--material",
@@ -606,6 +616,11 @@ def main(argv=None) -> int:
     )
     b.add_argument(
         "--material", help="a JSON file of skin material values for the card"
+    )
+    b.add_argument(
+        "--no-ear-tile",
+        action="store_true",
+        help="keep the ears on the atlas's UVs (no ear tile for levels 1 and 2)",
     )
 
     n = sub.add_parser("names", help="list parameter, pose and clip names")

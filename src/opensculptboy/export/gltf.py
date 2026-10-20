@@ -39,7 +39,7 @@ from opensculptboy.export.body import (
     morph_target_rows,
     rest_rows,
 )
-from opensculptboy.export.detail import mime_type, texture_images
+from opensculptboy.export.detail import ear_mesh, mime_type, texture_images
 from opensculptboy.export.detail import resolve as resolve_detail
 from opensculptboy.export.document import GltfDocument, pbr_material, read_gltf_json
 
@@ -172,6 +172,9 @@ def export_glb(
 
     # Mesh: split the vertices at UV seams; normals come from the welded mesh.
     detail = resolve_detail(model, character, detail_level, detail_dir, detail_region)
+    images = texture_images(character, textures, detail_dir)
+    skin = character.skin_material()
+    mesh, ears = ear_mesh(character, skin, images, detail, detail_dir)
     if detail is None:
         body = build_body(
             model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
@@ -189,18 +192,20 @@ def export_glb(
             max_influences,
             weights,
             indices,
-            mesh=detail.topology,
+            mesh=mesh,
         )
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
-    images = texture_images(character, textures, detail_dir)
-    skin = character.skin_material()
-    head_material, head = None, None
+    head_material, head, ear_material = None, None, None
     if skin is not None:
         written: dict = {}  # slot -> texture index, so that each image is written once
         material = doc.add_material(_skin_material(doc, skin, images, written))
         head_material, head = _head_material(
             doc, model, body, skin, images, written, character.topology
         )
+        if ears is not None:
+            ear_material = doc.add_material(
+                _skin_material(doc, skin, images, written, "ears", "ears_")
+            )
     elif images:
         material = doc.add_material(_textured_material(doc, images))
     else:
@@ -214,6 +219,9 @@ def export_glb(
     rest = np.ones(len(body.triangles), bool)
     if eye_material is not None:
         rest &= ~eyes
+    if ear_material is not None:
+        ears &= rest
+        rest &= ~ears
     if head_material is not None:
         head &= rest
         rest &= ~head
@@ -226,6 +234,17 @@ def export_glb(
         anny_vertex=detail is None or detail.subdiv == 0,
     )
     primitives = [primitive]
+    if ear_material is not None:  # the ear tile: the outer ears on UVs of their own
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                ear_material,
+                triangles=body.triangles[ears],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
     if head_material is not None:  # the head tile: the same vertices, its own textures
         primitives.append(
             body_primitive(
@@ -313,6 +332,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["textures"] = sorted(images)
     if head_material is not None:
         doc.scene_extras["opensculptboy"]["head_tile"] = True
+    if ear_material is not None:
+        doc.scene_extras["opensculptboy"]["ear_tile"] = True
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -426,7 +447,11 @@ def _skin_material(
         ("thickness", "max_mm", skin.thickness_mm),
         ("curvature", "max_per_m", skin.curvature_per_m),
     ):
-        index = _texture(doc, images, slot, cache)
+        # the head tile keeps anny's UVs and reads the atlas's maps; the ear tile has its own
+        source = slot
+        if prefix + slot in images or prefix == "ears_":
+            source = prefix + slot
+        index = _texture(doc, images, source, cache)
         if index is not None:
             extras[slot] = {"index": index, "texCoord": 0, scale_key: float(scale)}
     material["extras"] = {SKIN_EXTRAS: extras}

@@ -146,7 +146,8 @@ def resolve_within_budget(
 
 
 # the skin's maps on anny's atlas, the eyeballs' base colour on the eye texture
-# (opensculptboy.texture.eyes) and the head tile's maps (opensculptboy.texture.tiles)
+# (opensculptboy.texture.eyes), the head tile's maps (opensculptboy.texture.tiles) and the ear
+# tile's (opensculptboy.texture.ears)
 TEXTURE_SLOTS = (
     "base_color",
     "normal",
@@ -157,6 +158,11 @@ TEXTURE_SLOTS = (
     "head_base_color",
     "head_normal",
     "head_roughness",
+    "ears_base_color",
+    "ears_normal",
+    "ears_roughness",
+    "ears_thickness",
+    "ears_curvature",
 )
 
 
@@ -203,6 +209,21 @@ def texture_images(
             raise ValueError(f"The {slot} texture is neither a PNG nor a JPEG file.")
         images[slot] = data
     return images
+
+
+def ear_mesh(character, skin, images: dict, detail, detail_dir):
+    """The mesh of a detail level with the outer ears on the ear tile's UVs
+    (:mod:`opensculptboy.texture.ears`) and the mask of their triangles, or (the level's own
+    mesh, None) for level 0, a card without the ear tile or an export without its textures."""
+    mesh = None if detail is None else detail.topology
+    if mesh is None or skin is None or not skin.ears:
+        return mesh, None
+    if not any(slot.startswith("ears_") for slot in images):
+        return mesh, None
+    from opensculptboy.texture.ears import card_ear_uvs, with_ear_uvs
+
+    table = card_ear_uvs(character, detail_dir)
+    return with_ear_uvs(mesh, table)
 
 
 def mime_type(data: bytes) -> str:

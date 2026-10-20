@@ -68,7 +68,12 @@ from opensculptboy.export.body import (
     top_skin_weights,
     triangulated_faces,
 )
-from opensculptboy.export.detail import mime_type, resolve_within_budget, texture_images
+from opensculptboy.export.detail import (
+    ear_mesh,
+    mime_type,
+    resolve_within_budget,
+    texture_images,
+)
 from opensculptboy.export.document import (
     ELEMENT_ARRAY_BUFFER,
     MORPH_EPSILON,
@@ -603,6 +608,9 @@ def vrm_spec(
         budget,
         detail_dir,
     )
+    images = texture_images(character, textures, detail_dir)
+    skin = character.skin_material()
+    ear_topology, ears = ear_mesh(character, skin, images, detail, detail_dir)
     if detail is None:
         targets = [
             vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
@@ -654,7 +662,7 @@ def vrm_spec(
             weights,
             indices,
             normals=rb.normals,
-            mesh=detail.topology,
+            mesh=ear_topology,
         )
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
@@ -684,14 +692,18 @@ def vrm_spec(
     inverse_bind = np.tile(np.eye(4), (len(labels), 1, 1))
     inverse_bind[:, :3, 3] = -joints
     skins = [SpecSkin(character.rig, list(range(len(labels))), inverse_bind, root)]
-    images = texture_images(character, textures, detail_dir)
-    skin = character.skin_material()
     # VRM files hold the base colour, the normal map, the eyes and the head tile's two maps
     for slot in [k for k in images if k not in VRM_TEXTURE_SLOTS]:
         images.pop(slot)
     if skin is None:
         images.pop("head_base_color", None)
         images.pop("head_normal", None)
+    ear_material = None
+    if ears is not None:
+        ear_material = _tile_toon_material("ears", images, skin, "ears_")
+    if ear_material is None:
+        images.pop("ears_base_color", None)
+        images.pop("ears_normal", None)
     head_material = _head_toon_material(images, model, skin, character.topology)
     if head_material is None:
         images.pop("head_base_color", None)
@@ -719,6 +731,11 @@ def vrm_spec(
         rest &= ~eye_triangles
     else:
         images.pop("eyes", None)
+    if ear_material is not None and (ears & rest).any():
+        ears = ears & rest
+        materials.append(ear_material)
+        extra.insert(0, SpecPrimitive(len(materials) - 1, body.triangles[ears]))
+        rest &= ~ears
     if head_material is not None:
         from opensculptboy.export.body import head_tile_triangles
 
@@ -819,7 +836,15 @@ def vrm_spec(
 
 
 # the textures of a VRM file, in the order of VrmSpec.images (their texture indices)
-VRM_TEXTURE_SLOTS = ("base_color", "normal", "eyes", "head_base_color", "head_normal")
+VRM_TEXTURE_SLOTS = (
+    "base_color",
+    "normal",
+    "eyes",
+    "head_base_color",
+    "head_normal",
+    "ears_base_color",
+    "ears_normal",
+)
 
 
 def _texture_index(images: dict, slot: str) -> int | None:
@@ -862,6 +887,27 @@ def _textured_toon_material(images: dict, skin=None) -> mtoon.ToonMaterial:
     return material
 
 
+def _tile_toon_material(name: str, images: dict, skin, prefix: str, transform=None):
+    """The MToon material of a tile of the skin (its base colour and normal map, slots
+    ``prefix + "base_color"`` and ``prefix + "normal"``) with the skin's ramp, or None when
+    the card has no skin material or the tile lacks either map (MToon 0.x applies one
+    transform to every texture of a material)."""
+    if (
+        skin is None
+        or prefix + "base_color" not in images
+        or prefix + "normal" not in images
+    ):
+        return None
+    material = mtoon.soft_material(name, (1.0, 1.0, 1.0, 1.0))
+    material.base_texture = material.shade_texture = _texture_index(
+        images, prefix + "base_color"
+    )
+    material.normal_texture = _texture_index(images, prefix + "normal")
+    material.texture_transform = transform
+    _skin_ramp(material, skin)
+    return material
+
+
 def _head_toon_material(images: dict, model, skin, topology: str):
     """
     The head tile's MToon material (:mod:`opensculptboy.texture.tiles`): the skin's ramp
@@ -871,19 +917,10 @@ def _head_toon_material(images: dict, model, skin, topology: str):
     """
     from opensculptboy.texture.tiles import head_texture_transform
 
-    if skin is None or "head_base_color" not in images or "head_normal" not in images:
-        return None
     transform = head_texture_transform(model, topology)
     if transform is None:
         return None
-    material = mtoon.soft_material("head", (1.0, 1.0, 1.0, 1.0))
-    material.base_texture = material.shade_texture = _texture_index(
-        images, "head_base_color"
-    )
-    material.normal_texture = _texture_index(images, "head_normal")
-    material.texture_transform = transform
-    _skin_ramp(material, skin)
-    return material
+    return _tile_toon_material("head", images, skin, "head_", transform)
 
 
 def _eye_toon_material(images: dict, model) -> mtoon.ToonMaterial | None:
