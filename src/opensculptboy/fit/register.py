@@ -102,6 +102,21 @@ class FitOptions:
     detail_stiffness: tuple = (1.0, 0.3, 0.1, 0.03)
     nicp_iterations: int = 3
     nicp_max_distance: float = 0.02
+    # the stiffness of the refinement on the outer ears, relative to the rest (ear_weights)
+    ear_stiffness: float = 3.0
+    # rounds of tangential relaxation of the outer ears after each refinement (0: none)
+    ear_relax_iterations: int = 10
+    # after each refinement, the vertices within this distance (metres) of the reference
+    # whose normals agree to project_normal_threshold move onto it, but on the ears (0: none)
+    project_distance: float = 0.002
+    project_normal_threshold: float = 0.8
+    # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
+    # of the inside of the mouth, which follow their neighbours when it is 0
+    lip_margin_weight: float = 0.0
+    lip_margin_rings: int = 1
+    # which family fits the MakeHuman targets that local changes and face shapes share:
+    # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
+    shared_targets: str = "face_shapes"
     seed: int = 0
     verbose: bool = False
 
@@ -186,8 +201,11 @@ def fit_model():
 
 
 def excluded_vertices(model) -> np.ndarray:
-    """Mask (V,) of the vertices that the registration leaves out: the eyeballs, the eye
-    sockets and the inside of the mouth."""
+    """Mask (V,) of the vertices that the registration leaves out: the eye sockets, the inside
+    of the mouth, and every closed part apart from the body (the eyeballs and the tongue)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
     from anny.faces.authoring.base_mesh import base_mesh
     from opensculptboy.export.vrm_tables import eyeball_vertices
 
@@ -202,7 +220,93 @@ def excluded_vertices(model) -> np.ndarray:
             excluded[rows] = True
     except ValueError:
         pass
+    faces = model.faces.cpu().numpy()
+    n = len(excluded)
+    edges = np.concatenate(
+        [faces[:, [k, (k + 1) % faces.shape[1]]] for k in range(faces.shape[1])]
+    )
+    graph = coo_matrix((np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n, n))
+    _, labels = connected_components(graph, directed=False)
+    counts = np.bincount(labels)
+    excluded |= labels != np.argmax(counts)
     return excluded
+
+
+SHARED_TARGETS = ("face_shapes", "local_changes", "both")
+
+
+def shared_target_controls(model) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Masks of the local changes (L,) and the face shapes (F,) that act on a MakeHuman target of
+    the other family: each face shape sums the left and right targets of a local change (the
+    face shape ``chin-prominent`` and the local change ``chin-prominent-incr`` move the same
+    vertices), so fitted together they would split one movement between two controls.
+    """
+    from anny.models.face_shapes import face_shape_spec
+
+    labels = list(model.blendshape_labels)
+    local_targets = {}
+    for i, pos in enumerate(model.local_change_labels):
+        row = labels.index(f"local_change:{pos}")
+        local_targets[i] = {pos, labels[row + 1].split(":", 1)[1]}
+    used = set().union(*local_targets.values()) if local_targets else set()
+    face_names = set(model.face_shape_labels)
+    face_targets = {}
+    for p in face_shape_spec():
+        if p.name in face_names:
+            face_targets[p.name] = {
+                t.rsplit("/", 1)[-1] for t in p.positive + p.negative
+            }
+    on_faces = set().union(*face_targets.values()) if face_targets else set()
+    local = np.array(
+        [
+            bool(local_targets[i] & on_faces)
+            for i in range(len(model.local_change_labels))
+        ],
+        dtype=bool,
+    )
+    face = np.array(
+        [bool(face_targets.get(n, set()) & used) for n in model.face_shape_labels],
+        dtype=bool,
+    )
+    return local, face
+
+
+def lip_margin(model, excluded: np.ndarray | None = None, rings: int = 1) -> np.ndarray:
+    """Mask (V,) of the lips' inner margin: the fitted vertices within ``rings`` faces of the
+    inside of the mouth (the base-mesh label ``mouth_cavity``)."""
+    from anny.faces.authoring.base_mesh import base_mesh
+
+    mesh = base_mesh()
+    base = model.base_mesh_vertex_indices.cpu().numpy()
+    cavity = np.zeros(len(mesh.V), bool)
+    cavity[np.unique(mesh.quads[mesh.face_labels == "mouth_cavity"])] = True
+    cavity = cavity[base]
+    if excluded is None:
+        excluded = excluded_vertices(model)
+    faces = model.faces.cpu().numpy()
+    out = cavity.copy()
+    for _ in range(rings):
+        out[np.unique(faces[out[faces].any(1)])] = True
+    return out & ~excluded
+
+
+def ear_weights(model) -> np.ndarray:
+    """
+    A weight (V,) of 1 on the outer ears that falls to 0 over the skin around them: the
+    displacement of MakeHuman's ear-translation targets (``l-ear-trans-up`` and
+    ``r-ear-trans-up``, which move the outer ear rigidly and fade out around it), relative to
+    their largest. Zero everywhere on a model without those local changes.
+    """
+    labels = list(model.blendshape_labels)
+    out = np.zeros(len(model.template_vertices))
+    for side in "lr":
+        label = f"local_change:{side}-ear-trans-up"
+        if label not in labels:
+            continue
+        d = model.blendshapes[labels.index(label)].detach().double().norm(dim=-1)
+        out = np.maximum(out, (d / d.max().clamp_min(1e-12)).cpu().numpy())
+    return out
 
 
 def nicp(
@@ -217,11 +321,12 @@ def nicp(
     anchor: float = 1e-4,
     reverse_weight: float = 1.0,
     reverse_normal_threshold: float = 0.5,
+    stiffness_scale: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Non-rigid ICP of a mesh onto the reference: in each round, solve
 
-        min_X sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + alpha |L (X - X_0)|^2
+        min_X sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + alpha |S^1/2 L (X - X_0)|^2
               + anchor |X - X_0|^2
 
     with c_i the closest point of the reference, L the uniform Laplacian of the mesh and X_0
@@ -229,6 +334,7 @@ def nicp(
     whose normals disagree (dot product under ``normal_threshold``) drop out; ``weights`` of 0
     leave a vertex to the smoothness term. The small ``anchor`` keeps closed parts without
     data (the eyeballs) where they are, which :func:`follow_skin` then corrects.
+    ``stiffness_scale`` (S, per vertex; 1 by default) makes a region stiffer than the rest.
 
     The reverse term pulls each vertex that is the nearest of some reference vertices to
     their mean p_i, with r_i = ``reverse_weight`` w_i (pairs within ``max_distance`` whose
@@ -243,8 +349,12 @@ def nicp(
 
     X = np.asarray(vertices, dtype=np.float64).copy()
     n = len(X)
-    L = uniform_laplacian(n, np.asarray(triangles))
-    LtL = (L.T @ L).tocsc()
+    tri = np.asarray(triangles)
+    L = uniform_laplacian(n, tri)
+    if stiffness_scale is not None:
+        LtL = (L.T @ scipy.sparse.diags(np.asarray(stiffness_scale, float)) @ L).tocsc()
+    else:
+        LtL = (L.T @ L).tocsc()
     base = np.asarray(weights, dtype=np.float64)
     kept = np.nonzero(base > 0)[0]
     for alpha in stiffness:
@@ -259,10 +369,75 @@ def nicp(
                 X, normals, kept, reference, max_distance, reverse_normal_threshold
             )
             r = reverse_weight * base * r
-            A = (scipy.sparse.diags(w + r + anchor) + alpha * LtL).tocsc()
+            diag = w + r + anchor
             rhs = w[:, None] * C + r[:, None] * P + anchor * start + smooth
+            A = (scipy.sparse.diags(diag) + alpha * LtL).tocsc()
             solve = scipy.sparse.linalg.factorized(A)
             X = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
+    return X
+
+
+def project_onto(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference: Reference,
+    keep: np.ndarray,
+    distance: float,
+    normal_threshold: float = 0.8,
+) -> np.ndarray:
+    """The vertices of ``keep`` within ``distance`` of the reference whose normals agree with
+    the reference's to ``normal_threshold`` moved onto their closest points."""
+    X = np.asarray(vertices, dtype=np.float64).copy()
+    C, N, d, _, _ = reference.closest(X)
+    normals = vertex_normals(X, triangles)
+    move = keep & (d < distance) & ((normals * N).sum(1) > normal_threshold)
+    X[move] = C[move]
+    return X
+
+
+def relax_along(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference: Reference,
+    weights: np.ndarray,
+    iterations: int = 10,
+    max_distance: float = 0.02,
+    step: float = 0.5,
+    normal_threshold: float = 0.5,
+) -> np.ndarray:
+    """
+    Spread the vertices of a region evenly over the reference: each round moves each vertex
+    by ``step`` times ``weights`` of its uniform umbrella vector (the mean of its neighbours
+    minus itself) within its tangent plane, then onto its closest point of the reference
+    (when that lies within ``max_distance`` and faces the same way). Where the reverse term
+    pulled the border of a part far out (the tip of a pointed ear), the triangles next to it
+    stretch far more than the rest; spread out, the stretch, and with it the stretch of the
+    texture, is shared by the whole part.
+    """
+    import scipy.sparse
+
+    X = np.asarray(vertices, dtype=np.float64).copy()
+    w = np.asarray(weights, dtype=np.float64)
+    rows = np.nonzero(w > 1e-3)[0]
+    if len(rows) == 0 or iterations <= 0:
+        return X
+    t = np.asarray(triangles)
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    e = np.concatenate([e, e[:, ::-1]])
+    n = len(X)
+    A = scipy.sparse.coo_matrix(
+        (np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)
+    ).tocsr()
+    A.data[:] = 1.0
+    degree = np.asarray(A.sum(1)).ravel()
+    for _ in range(iterations):
+        normals = vertex_normals(X, t)[rows]
+        umbrella = (A[rows] @ X) / np.maximum(degree[rows], 1)[:, None] - X[rows]
+        umbrella -= (umbrella * normals).sum(1, keepdims=True) * normals
+        moved = X[rows] + step * w[rows, None] * umbrella
+        C, N, d, _, _ = reference.closest(moved)
+        ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
+        X[rows] = np.where(ok[:, None], C, moved)
     return X
 
 
@@ -280,10 +455,11 @@ def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
     ok = (d < max_distance) & (
         (normals[rows] * reference.normals).sum(1) > normal_threshold
     )
+    points = reference.vertices[ok]
     rows = rows[ok]
     count = np.bincount(rows, minlength=len(X)).astype(np.float64)
     for k in range(3):
-        mean[:, k] = np.bincount(rows, reference.vertices[ok, k], minlength=len(X))
+        mean[:, k] = np.bincount(rows, points[:, k], minlength=len(X))
     hit = (count > 0).astype(np.float64)
     mean /= np.maximum(count, 1.0)[:, None]
     return hit, mean
@@ -307,7 +483,8 @@ def follow_skin(
       sphere whose centre lies within ``radius`` of it (``eyes``, as
       :attr:`~opensculptboy.fit.reference.Reference.eyes` holds them: moved and scaled about
       its own sphere's centre), or without one by the mean displacement of the fitted
-      vertices within ``radius`` of its centre;
+      vertices within ``radius`` of its centre (of the ``neighbours`` nearest fitted vertices
+      when none is that close, as for the tongue);
     - each excluded vertex of a component joined to the skin (the inside of the mouth and the
       eye sockets) by the displacement of the ``neighbours`` nearest fitted vertices in space,
       weighted by exp(-d / ``falloff``). Along the mesh, the inside of the mouth hangs from the
@@ -350,8 +527,9 @@ def follow_skin(
             out[component] = np.asarray(target[0]) + (before[component] - own) * scale
             continue
         near = tree.query_ball_point(centre, radius)
-        if near:
-            out[component] = before[component] + displacement[kept[near]].mean(0)
+        if not near:  # a part deep inside (the tongue): its nearest fitted vertices
+            near = np.atleast_1d(tree.query(centre, k=min(neighbours, len(kept)))[1])
+        out[component] = before[component] + displacement[kept[near]].mean(0)
     if joined:
         rows = np.concatenate(joined)
         k = min(neighbours, len(kept))
@@ -396,7 +574,14 @@ def _behind_skin(vertices, triangles, excluded, rows, inside: float) -> np.ndarr
 class _Parameters(torch.nn.Module):
     """The free parameters of the parameter stage."""
 
-    def __init__(self, model, rotation0, translation0, height0: float):
+    def __init__(
+        self,
+        model,
+        rotation0,
+        translation0,
+        height0: float,
+        shared_targets: str = "face_shapes",
+    ):
         super().__init__()
         dtype = model.template_vertices.dtype
         labels = list(model.bone_labels)
@@ -426,6 +611,25 @@ class _Parameters(torch.nn.Module):
         self.global_translation = torch.nn.Parameter(torch.zeros(3, dtype=dtype))
         self.register_buffer("rotation0", torch.as_tensor(rotation0, dtype=dtype))
         self.register_buffer("translation0", torch.as_tensor(translation0, dtype=dtype))
+        if shared_targets not in SHARED_TARGETS:
+            raise ValueError(
+                f"shared_targets must be one of {SHARED_TARGETS}; got {shared_targets!r}."
+            )
+        shared_local, shared_face = shared_target_controls(model)
+        free_local = ~shared_local if shared_targets == "face_shapes" else None
+        free_face = ~shared_face if shared_targets == "local_changes" else None
+        self.register_buffer(
+            "local_free",
+            torch.ones(len(model.local_change_labels), dtype=dtype)
+            if free_local is None
+            else torch.as_tensor(free_local, dtype=dtype),
+        )
+        self.register_buffer(
+            "face_free",
+            torch.ones(len(model.face_shape_labels), dtype=dtype)
+            if free_face is None
+            else torch.as_tensor(free_face, dtype=dtype),
+        )
         ranges = [model.face_shape_ranges[n] for n in model.face_shape_labels]
         self.register_buffer(
             "face_lo", torch.tensor([r[0] for r in ranges], dtype=dtype)
@@ -535,7 +739,9 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
     rotation0, translation0, height0 = _initial_placement(
         model, reference, regressor, options
     )
-    params = _Parameters(model, rotation0, translation0, height0)
+    params = _Parameters(
+        model, rotation0, translation0, height0, options.shared_targets
+    )
     excluded = excluded_vertices(model)
     fit_rows = np.nonzero(~excluded)[0]
     triangles = model.faces.cpu().numpy()
@@ -655,7 +861,10 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
                 mask = torch.zeros(len(params.free), 1, dtype=params.rotvec.dtype)
                 mask[params.major] = 1.0
                 params.rotvec.grad = params.rotvec.grad * mask
-            elif round_ < options.finger_rounds:
+            else:
+                params.local.grad = params.local.grad * params.local_free
+                params.face.grad = params.face.grad * params.face_free
+            if not major_only and round_ < options.finger_rounds:
                 mask = torch.ones(len(params.free), 1, dtype=params.rotvec.dtype)
                 mask[params.fingers] = 0.0
                 params.rotvec.grad = params.rotvec.grad * mask
@@ -731,18 +940,39 @@ def fit_reference(
         options: the settings; :class:`FitOptions` by default.
         model: the fit model; :func:`fit_model` by default.
     """
-    from opensculptboy.detail import detail_topology
-
     if detail not in (0, 1, 2):
         raise ValueError(f"detail must be 0, 1 or 2; got {detail!r}.")
     options = options or FitOptions()
     model = model or fit_model()
-    seconds = {}
     clock = time.perf_counter()
     params, _, rotation, translation = fit_parameters(model, reference, options)
     character = _character_from(model, params, name)
-    seconds["parameters"] = time.perf_counter() - clock
+    seconds = {"parameters": time.perf_counter() - clock}
+    return fit_levels(
+        reference, character, rotation, translation, detail, options, model, seconds
+    )
 
+
+def fit_levels(
+    reference: Reference,
+    character: Character,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+    detail: int = 1,
+    options: FitOptions | None = None,
+    model=None,
+    seconds: dict | None = None,
+) -> FitResult:
+    """
+    Stages 3 and 4 alone: the non-rigid refinement of each level for a card whose parameters
+    and placement are already fitted (``x_reference = rotation @ x_anny + translation``), as
+    :func:`fit_reference` runs them after the parameters.
+    """
+    from opensculptboy.detail import detail_topology
+
+    options = options or FitOptions()
+    model = model or fit_model()
+    seconds = dict(seconds or {})
     rest0, transforms = _card_rest(model, character)
     excluded = excluded_vertices(model)
     errors, offsets = {}, {}
@@ -750,6 +980,8 @@ def fit_reference(
     indices0 = model.vertex_bone_indices.cpu().numpy()
     previous = np.zeros_like(rest0)
     previous_level = 0
+    ears = ear_weights(model)
+    margin = lip_margin(model, excluded, options.lip_margin_rings).astype(np.float64)
     for subdiv in range(detail + 1):
         clock = time.perf_counter()
         topology = detail_topology(model, subdiv, "full", character.topology)
@@ -766,16 +998,46 @@ def fit_reference(
             errors["parametric"] = R_.surface_error(
                 posed, topology.triangles, reference, mask, seed=options.seed
             )
+        scale = None
+        if options.ear_stiffness != 1.0:
+            scale = 1.0 + (options.ear_stiffness - 1.0) * np.asarray(
+                topology.apply(ears)
+            )
+        data = mask.astype(np.float64)
+        if options.lip_margin_weight != 1.0:
+            data *= 1.0 - (1.0 - options.lip_margin_weight) * np.clip(
+                np.asarray(topology.apply(margin)), 0.0, 1.0
+            )
         fitted = nicp(
             posed,
             topology.triangles,
             reference,
-            mask.astype(np.float64),
+            data,
             options.stiffness if subdiv == 0 else options.detail_stiffness,
             options.nicp_iterations,
             options.nicp_max_distance,
             options.normal_threshold,
+            stiffness_scale=scale,
         )
+        if options.ear_relax_iterations > 0:
+            fitted = relax_along(
+                fitted,
+                topology.triangles,
+                reference,
+                np.asarray(topology.apply(ears)) * (data > 0),
+                options.ear_relax_iterations,
+                options.nicp_max_distance,
+            )
+        if options.project_distance > 0:
+            # not the outer ears, whose folds anny's ear does not share
+            fitted = project_onto(
+                fitted,
+                topology.triangles,
+                reference,
+                (data > 0) & (np.asarray(topology.apply(ears)) < 0.1),
+                options.project_distance,
+                options.project_normal_threshold,
+            )
         fitted = follow_skin(
             posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
         )
@@ -793,8 +1055,8 @@ def fit_reference(
         )
     return FitResult(
         character=character,
-        rotation=rotation,
-        translation=translation,
+        rotation=np.asarray(rotation),
+        translation=np.asarray(translation),
         parametric_rest=rest0,
         offsets=offsets,
         errors=errors,
