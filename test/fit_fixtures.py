@@ -184,3 +184,324 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
             levels=(l0.vertex_count, l1.vertex_count, two.vertex_count),
         ),
     )
+
+
+def _smoothed(values, triangles, iterations: int):
+    """``values`` (N,) averaged with their neighbours ``iterations`` times."""
+    t = np.asarray(triangles)
+    edges = np.unique(
+        np.sort(np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]]), 1), axis=0
+    )
+    degree = np.maximum(np.bincount(edges.ravel(), minlength=len(values)), 1)
+    out = np.asarray(values, dtype=np.float64).copy()
+    for _ in range(iterations):
+        total = np.bincount(edges[:, 0], out[edges[:, 1]], minlength=len(out))
+        total += np.bincount(edges[:, 1], out[edges[:, 0]], minlength=len(out))
+        out = 0.5 * out + 0.5 * total / degree
+    return out
+
+
+def point_ears(rest, ears, tip: float = 0.02, stand_off: float = 0.45):
+    """
+    Anny's rest vertices (N, 3) with pointed ears that stand off from the head. ``ears`` (N,)
+    weighs each vertex: 1 on the outer ear (:func:`~opensculptboy.fit.register.pinna`),
+    falling to 0 over the skin around its root. Each ear turns outward by ``stand_off`` radians
+    about a vertical hinge at the front of its root, which opens a gap between the back of the
+    ear and the head, and its upper half draws up and back into a tip, by ``tip`` metres at
+    the top, narrowing as it goes. The weight carries both, so the skin around the root
+    stretches smoothly, and the tip falls off faster toward the root, which stays in place.
+    """
+    V = np.asarray(rest, dtype=np.float64).copy()
+    w = np.asarray(ears, dtype=np.float64)
+    for s in (1.0, -1.0):
+        side = (w > 0) & (np.sign(V[:, 0]) == s)
+        core = side & (w > 0.9)
+        if not core.any():
+            continue
+        C = V[core]
+        hinge = np.array([s * np.abs(C[:, 0]).min(), C[:, 1].min(), 0.0])
+        z_mid, z_top = np.median(C[:, 2]), C[:, 2].max()
+        y_mid = np.median(C[:, 1])
+        rows = np.nonzero(side)[0]
+        x = V[rows]
+        # outward about the hinge: the back of the ear (+Y) swings away from the head
+        angle = -s * stand_off * w[rows]
+        dx, dy = x[:, 0] - hinge[0], x[:, 1] - hinge[1]
+        c, n = np.cos(angle), np.sin(angle)
+        x[:, 0] = hinge[0] + c * dx - n * dy
+        x[:, 1] = hinge[1] + n * dx + c * dy
+        # the upper half draws into a tip, up and back, and narrows toward it; the root
+        # stays on the head (w**4 falls faster than w over the skin around it)
+        t = np.clip((x[:, 2] - z_mid) / (z_top - z_mid), 0.0, 1.0) * w[rows] ** 4
+        x[:, 1] = y_mid + (x[:, 1] - y_mid) * (1.0 - 0.7 * t**2)
+        direction = np.array([0.25 * s, 0.55, 1.0])
+        direction /= np.linalg.norm(direction)
+        x += tip * (t**2.5)[:, None] * direction
+        V[rows] = x
+    return V
+
+
+def ear_outline(vertices, mask, rotation=None, translation=None) -> dict:
+    """The ear outline landmarks of the handoff proposal (docs/reference-fit.md) from the
+    vertices of an ear mask, in Anny's frame: highest, lowest, hindmost (+Y) and furthest from
+    the midline, per side, for a figure placed by ``rotation`` and ``translation`` (whose own
+    axes decide the sides and the directions)."""
+    R = np.eye(3) if rotation is None else np.asarray(rotation)
+    t = np.zeros(3) if translation is None else np.asarray(translation)
+    V = np.asarray(vertices)
+    own = (V - t) @ R  # the figure's own frame
+    out = {}
+    for side, s in (("l", 1.0), ("r", -1.0)):
+        rows = np.nonzero(np.asarray(mask) & (np.sign(own[:, 0]) == s))[0]
+        if len(rows) == 0:
+            continue
+        P = own[rows]
+        for name, k in (
+            ("top", np.argmax(P[:, 2])),
+            ("lobe", np.argmin(P[:, 2])),
+            ("back", np.argmax(P[:, 1])),
+            ("lateral", np.argmax(np.abs(P[:, 0]))),
+        ):
+            out[f"ear_{name}_{side}"] = V[rows[k]]
+    return out
+
+
+def decimate(vertices, triangles, size, passes: int = 16, relax: int = 4):
+    """
+    A manifold decimation of a triangle mesh to an edge length of about ``size`` (per vertex,
+    metres), as a game's mesh of another topology: each pass collapses a set of edges shorter
+    than 0.7 of their size whose one-rings do not touch, to their midpoints moved onto the
+    source surface, keeping each collapse that passes the link condition (no pinched
+    neighbourhood) and turns no triangle around it by more than 60 degrees. Border edges and
+    their vertices stay. ``relax`` rounds of tangential relaxation onto the source surface
+    follow. Returns the vertices, the triangles and the new vertex of each old one.
+    """
+    import scipy.sparse
+
+    from opensculptboy.fit.reference import Reference, vertex_normals
+
+    source = Reference(vertices, triangles)
+    V = np.asarray(vertices, dtype=np.float64).copy()
+    T = np.asarray(triangles).copy()
+    size = np.asarray(size, dtype=np.float64).copy()
+    n = len(V)
+    owner = np.arange(n)  # the vertex that each original vertex merged into
+
+    def edges_of(T):
+        e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+        e = np.sort(e, 1)
+        u, counts = np.unique(e, axis=0, return_counts=True)
+        return u, counts
+
+    def normals_of(X, T):
+        p = X[T]
+        m = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+        return m / np.maximum(np.linalg.norm(m, axis=1, keepdims=True), 1e-20)
+
+    for _ in range(passes):
+        E, counts = edges_of(T)
+        border = np.zeros(n, bool)
+        border[E[counts == 1].ravel()] = True
+        a, b = E[:, 0], E[:, 1]
+        length = np.linalg.norm(V[a] - V[b], axis=1)
+        short = (counts == 2) & ~border[a] & ~border[b]
+        short &= length < 0.7 * 0.5 * (size[a] + size[b])
+        if not short.any():
+            break
+        A = scipy.sparse.coo_matrix(
+            (np.ones(2 * len(E)), (np.r_[a, b], np.r_[b, a])), shape=(n, n)
+        ).tocsr()
+        A.data[:] = 1.0
+        rows = np.nonzero(short)[0]
+        common = np.asarray(A[a[rows]].multiply(A[b[rows]]).sum(1)).ravel()
+        rows = rows[common == 2][np.argsort(length[rows[common == 2]])]
+        locked = np.zeros(n, bool)
+        chosen = []
+        indptr, indices = A.indptr, A.indices
+        for k in rows:
+            i, j = a[k], b[k]
+            if locked[i] or locked[j]:
+                continue
+            chosen.append(k)
+            locked[indices[indptr[i] : indptr[i + 1]]] = True
+            locked[indices[indptr[j] : indptr[j + 1]]] = True
+            locked[i] = locked[j] = True
+        chosen = np.asarray(chosen, np.int64)
+        if len(chosen) == 0:
+            break
+        keep_i, gone_j = a[chosen], b[chosen]
+        middle = 0.5 * (V[keep_i] + V[gone_j])
+        middle, _, _, _, _ = source.closest(middle)
+        collapse = np.full(n, -1)
+        collapse[keep_i] = collapse[gone_j] = np.arange(len(chosen))
+        touched = (collapse[T] >= 0).any(1)
+        cid = collapse[T[touched]].max(1)
+        remap = np.arange(n)
+        remap[gone_j] = keep_i
+        X = V.copy()
+        X[keep_i] = middle
+        old = normals_of(V, T[touched])
+        newT = remap[T[touched]]
+        alive = (newT[:, 0] != newT[:, 1]) & (newT[:, 1] != newT[:, 2])
+        alive &= newT[:, 0] != newT[:, 2]
+        new = normals_of(X, newT)
+        bad = np.zeros(len(chosen), bool)
+        flip = alive & ((old * new).sum(1) < 0.5)
+        np.logical_or.at(bad, cid[flip], True)
+        good = ~bad
+        remap = np.arange(n)
+        remap[gone_j[good]] = keep_i[good]
+        V[keep_i[good]] = middle[good]
+        size[keep_i[good]] = np.minimum(size[keep_i[good]], size[gone_j[good]])
+        owner = remap[owner]
+        T = remap[T]
+        T = T[(T[:, 0] != T[:, 1]) & (T[:, 1] != T[:, 2]) & (T[:, 0] != T[:, 2])]
+    # tangential relaxation onto the source surface
+    E, counts = edges_of(T)
+    border = np.zeros(n, bool)
+    border[E[counts == 1].ravel()] = True
+    degree = np.maximum(np.bincount(E.ravel(), minlength=n), 1)
+    for _ in range(relax):
+        N = vertex_normals(V, T)
+        mean = np.zeros_like(V)
+        for k in range(3):
+            mean[:, k] = np.bincount(E[:, 0], V[E[:, 1], k], minlength=n)
+            mean[:, k] += np.bincount(E[:, 1], V[E[:, 0], k], minlength=n)
+        step = mean / degree[:, None] - V
+        step -= (step * N).sum(1, keepdims=True) * N
+        moved = V + 0.5 * step
+        used = np.unique(T)
+        used = used[~border[used]]
+        C, _, _, _, _ = source.closest(moved[used])
+        trial = V.copy()
+        trial[used] = C
+        # keep the step where it turns no triangle over
+        flipped = (normals_of(V, T) * normals_of(trial, T)).sum(1) < 0.5
+        back = np.zeros(n, bool)
+        back[T[flipped].ravel()] = True
+        V = np.where(back[:, None], V, trial)
+    used = np.unique(T)
+    index = -np.ones(n, np.int64)
+    index[used] = np.arange(len(used))
+    return V[used], index[T], index[owner]
+
+
+@functools.lru_cache(maxsize=2)
+def pointed_ear_target(
+    seed: int = 1,
+    cell: float = 0.006,
+    ear_cell: float = 0.002,
+    mask_threshold: float = 0.5,
+):
+    """
+    A synthetic reference with pointed ears that stand off from the head (:func:`point_ears`),
+    as the first real replica has them: random anny parameters and a small pose, a broad
+    random offset field of 1.5 mm RMS, the ears evaluated on level 2, posed, moved by a random
+    placement and decimated (:func:`decimate`) to edges of about ``cell``, and ``ear_cell`` on
+    and around the ears, into a manifold mesh of another topology in which the gap behind each
+    ear stays open. Its ``masks`` hold the handoff's ``masks.ear``: the target
+    vertices whose share of anny's outer ear is over ``mask_threshold`` (a different cut from
+    the fit's own, as a real mask is) and the ``attachment``, those of them along the line
+    where the ear meets the head. Its landmarks add the ear outline of the mask.
+    """
+    import anny
+    import roma
+
+    from opensculptboy.fit.reference import LANDMARKS
+    from opensculptboy.fit.register import (
+        ear_weights,
+        excluded_vertices,
+        mask_border,
+        pinna,
+    )
+
+    rng = np.random.default_rng(seed)
+    model = anny.Anny(local_changes="all", face_shapes="all", facial_actions="none").to(
+        dtype=torch.float64
+    )
+    phenotype = {k: float(rng.uniform(0.35, 0.65)) for k in model.phenotype_labels}
+    local = {
+        k: float(rng.uniform(-0.3, 0.3))
+        for k in rng.choice(model.local_change_labels, 8, replace=False)
+        if "ear" not in k
+    }
+    face = {}
+    for k in rng.choice(model.face_shape_labels, 8, replace=False):
+        lo, hi = model.face_shape_ranges[k]
+        face[str(k)] = float(np.clip(rng.uniform(-0.3, 0.3), lo, hi))
+    labels = list(model.bone_labels)
+    pose = torch.eye(4, dtype=torch.float64).repeat(1, len(labels), 1, 1)
+    for bone, scale in (("upperarm01.L", 0.1), ("upperarm01.R", 0.1), ("neck02", 0.05)):
+        rotvec = torch.as_tensor(rng.uniform(-scale, scale, 3))
+        pose[0, labels.index(bone), :3, :3] = roma.rotvec_to_rotmat(rotvec)
+    kwargs = dict(
+        pose_parameters=pose,
+        phenotype_kwargs=phenotype,
+        local_changes_kwargs=local,
+        face_shape_kwargs=face,
+    )
+    t0 = detail_topology(model, 0)
+    two = detail_topology(model, 2)
+    with torch.no_grad():
+        rest0 = model(**kwargs)["rest_vertices"][0].numpy()
+    broad = smooth_field(rest0, t0.triangles, rng, 30, 0.0015)
+    outer = pinna(model, rest0).astype(np.float64)
+    broad *= (1.0 - ear_weights(model))[:, None]  # the ears: point_ears alone
+    rest2 = np.asarray(two.apply(rest0))
+    ears2 = np.asarray(two.apply(outer))
+    weight = _smoothed(ears2, two.triangles, 12)
+    field2 = np.asarray(two.apply(broad)) + point_ears(rest2, weight) - rest2
+    detailed = DetailModel(model, 2, offsets=field2)
+    with torch.no_grad():
+        posed = detailed(**kwargs)["vertices"][0].numpy()
+
+    excluded = excluded_vertices(model)
+    excluded2 = np.asarray(detailed.topology.apply(excluded.astype(float))) > 0.01
+    triangles = detailed.triangles
+    triangles = triangles[~excluded2[triangles].any(1)]
+
+    angle = rng.uniform(-0.2, 0.2)
+    rotation = roma.rotvec_to_rotmat(torch.tensor([0.0, 0.0, angle])).numpy()
+    translation = rng.uniform(-0.3, 0.3, 3)
+    surface = posed @ rotation.T + translation
+    # finer on the ears and around them, as a game's head mesh has it
+    sizes = np.where(_smoothed(ears2, two.triangles, 24) > 0.01, ear_cell, cell)
+    vertices, faces, cluster = decimate(surface, triangles, sizes)
+    kept = cluster >= 0
+    share = np.bincount(cluster[kept], ears2[kept], minlength=len(vertices))
+    share /= np.maximum(np.bincount(cluster[kept], minlength=len(vertices)), 1)
+    ear = share > mask_threshold
+    attachment = mask_border(faces, ear)
+
+    from anny.keypoints import KeypointsRegressor
+
+    regressor = KeypointsRegressor.craniofacial(model)
+    with torch.no_grad():
+        out = model(**kwargs)
+    cranio = regressor(out)[0].numpy()
+    joints = out["bone_poses"][0, :, :3, 3].numpy()
+    landmarks = {}
+    for name, (kind, label, _) in LANDMARKS.items():
+        if name.startswith("ear_") and name not in ("ear_l", "ear_r"):
+            continue  # the outline comes from the mask below
+        point = (
+            joints[labels.index(label)]
+            if kind == "bone"
+            else cranio[regressor.labels.index(label)]
+        )
+        landmarks[name] = rotation @ point + translation + rng.normal(0.0, 0.001, 3)
+    landmarks.update(ear_outline(vertices, ear, rotation, translation))
+    return dict(
+        vertices=vertices,
+        triangles=faces,
+        landmarks=landmarks,
+        ear=ear,
+        attachment=attachment,
+        truth=dict(
+            phenotype=phenotype,
+            local_changes=local,
+            face_shapes=face,
+            rotation=rotation,
+            translation=translation,
+        ),
+    )

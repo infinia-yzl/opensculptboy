@@ -41,19 +41,28 @@ from opensculptboy.fit.reference import (
     eye_spheres,
 )
 from opensculptboy.fit.register import (
+    EarSplit,
     FitOptions,
+    Target,
+    _reverse_pairs,
     ear_weights,
     excluded_vertices,
+    fair_region,
+    fit_levels,
     fit_model,
+    fit_parameters,
     fit_reference,
+    fold_defects,
     follow_skin,
     lip_margin,
+    pinna,
     project_onto,
     relax_along,
+    repair_folds,
     shared_target_controls,
 )
 from opensculptboy.fit.residual import surface_error
-from test.fit_fixtures import synthetic_target
+from test.fit_fixtures import pointed_ear_target, synthetic_target
 
 # the bound of the mean surface error of level 1, both ways (mm)
 LEVEL1_BOUND_MM = 0.5
@@ -271,6 +280,110 @@ class TestFitRegions(unittest.TestCase):
         np.testing.assert_allclose(projected[~top], lifted[~top])
 
 
+def _hairpin(n_u: int = 41, n_v: int = 11, radius: float = 0.0015):
+    """A strip folded back over itself, in metres: a flat "head" at z = 0 for x in [0, 0.01],
+    a half turn of ``radius`` and a "flap" back over the head at z = 2 ``radius``, with a gap
+    between them; and the mask of the flap (from the top of the turn on)."""
+    turn = np.pi * radius
+    u = np.linspace(0.0, 0.02 + turn, n_u)
+    v = np.linspace(0.0, 0.01, n_v)
+    uu, vv = np.meshgrid(u, v, indexing="ij")
+    angle = np.clip((uu - 0.01) / radius, 0.0, np.pi)
+    x = np.where(uu <= 0.01, uu, 0.01 + radius * np.sin(angle))
+    x = np.where(uu >= 0.01 + turn, 0.01 - (uu - 0.01 - turn), x)
+    z = np.where(uu <= 0.01, 0.0, radius * (1.0 - np.cos(angle)))
+    V = np.stack([x, vv, z], -1).reshape(-1, 3)
+    k = np.arange(n_u * n_v).reshape(n_u, n_v)
+    a, b, c, d = k[:-1, :-1], k[1:, :-1], k[1:, 1:], k[:-1, 1:]
+    T = np.concatenate([np.stack([a, b, c], -1), np.stack([a, c, d], -1)]).reshape(
+        -1, 3
+    )
+    flap = (uu >= 0.01 + 0.5 * turn).ravel()
+    return V, T, flap
+
+
+class TestEarParts(unittest.TestCase):
+    """The pieces of the ear fit (EarSplit, pinna, fair_region, repair_folds) on small shapes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.model = fit_model()
+
+    def test_pinna(self):
+        # the outer ear proper: the vertices that the ear targets move in full, without the
+        # strip of the head's skin around the root, with the concha
+        rest = self.model.template_vertices.double().numpy()
+        core = ear_weights(self.model) > 0.99
+        outer = pinna(self.model, rest)
+        self.assertFalse((outer & ~core).any())
+        for side in (1.0, -1.0):
+            on = np.sign(rest[:, 0]) == side
+            self.assertGreater((outer & on).sum(), 0.8 * (core & on).sum())
+            self.assertLess((outer & on).sum(), (core & on).sum())
+        # mirror images: as many on each side
+        self.assertEqual(
+            (outer & (rest[:, 0] > 0)).sum(), (outer & (rest[:, 0] < 0)).sum()
+        )
+
+    def test_split_matches_ears_to_ears(self):
+        V, T, flap = _hairpin()
+        reference = Reference(V, T, regions={"ear": flap})
+        split = EarSplit(reference)
+        # the attachment defaults to the border of the mask, in the turn
+        self.assertTrue(split.attachment.any())
+        self.assertTrue((V[split.attachment, 2] > 0).all())
+        # a point in the gap, nearer the flap: as head it lands on the head, as ear on the flap
+        point = np.array([[0.005, 0.005, 0.002]])
+        for is_ear, height in ((False, 0.0), (True, 0.003)):
+            target = Target(reference, split=split, anny_ear=np.array([is_ear]))
+            C, _, _ = target.closest(point)
+            self.assertAlmostEqual(C[0, 2], height, delta=1e-9)
+        unsplit = Target(reference).closest(point)[0]
+        self.assertAlmostEqual(unsplit[0, 2], 0.003, delta=1e-9)
+        # the attachment line: the closest point of the turn's border
+        a, d = split.attach(np.array([[0.0115, 0.005, 0.0015]]))
+        self.assertLess(d[0], 0.0005)
+        # reverse pairs: no vertex of the flap pairs with a head vertex of the fit
+        fit = np.array([[0.005, 0.005, 0.0012], [0.005, 0.005, 0.0025]])
+        normals = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+        target = Target(reference, split=split, anny_ear=np.array([False, True]))
+        hit, mean = _reverse_pairs(fit, normals, np.arange(2), target, 0.02, -1.0)
+        self.assertTrue(hit.all())
+        self.assertLess(mean[0, 2], 0.001)  # the head's, the start of the turn with it
+        self.assertGreater(mean[1, 2], 0.0025)  # the flap's
+
+    def test_fair_and_repair_keep_a_crease(self):
+        # a tent (a crease of 90 degrees) is the reference's own fold: no defect; a crumple of
+        # the fit on it is one, and the repair takes it out and lays the sheet on the reference
+        n = 21
+        u = np.linspace(-0.02, 0.02, n)
+        xx, yy = np.meshgrid(u, u, indexing="ij")
+        V = np.stack([xx, yy, 0.5 * (0.02 - np.abs(xx))], -1).reshape(-1, 3)
+        k = np.arange(n * n).reshape(n, n)
+        a, b, c, d = k[:-1, :-1], k[1:, :-1], k[1:, 1:], k[:-1, 1:]
+        T = np.concatenate([np.stack([a, b, c], -1), np.stack([a, c, d], -1)])
+        T = T.reshape(-1, 3)
+        reference = Reference(V, T)
+        inner = (np.abs(V[:, :2]) < 0.015).all(1)
+        self.assertFalse(fold_defects(V, T, reference, inner).any())
+        crumpled = V.copy()
+        pit = np.nonzero((np.abs(V[:, 0] - 0.01) < 1e-9) & (np.abs(V[:, 1]) < 0.003))[0]
+        crumpled[pit, 2] -= 0.004  # pits that fold the sheet
+        found = fold_defects(crumpled, T, reference, inner)
+        self.assertTrue(found[pit].any())
+        repaired, first = repair_folds(crumpled, T, reference, inner)
+        self.assertGreater(first, 0)
+        self.assertFalse(fold_defects(repaired, T, reference, inner).any())
+        _, _, dist, _, _ = reference.closest(repaired[inner])
+        self.assertLess(dist.max(), 2e-4)
+        faired = fair_region(crumpled, T, reference, inner)
+        _, _, dist, _, _ = reference.closest(faired[inner])
+        self.assertLess(dist.max(), 5e-4)
+        # the crease stays where it is
+        ridge = inner & (np.abs(V[:, 0]) < 1e-9)
+        np.testing.assert_allclose(repaired[ridge, 2], V[ridge, 2], atol=2e-4)
+
+
 class TestHandoff(unittest.TestCase):
     def test_round_trip_in_anny_frame(self):
         rng = np.random.default_rng(3)
@@ -319,6 +432,26 @@ class TestHandoff(unittest.TestCase):
         (part,) = handoff.parts
         np.testing.assert_array_equal(part.base_color[..., :3], texture)
 
+    def test_ear_mask_and_attachment(self):
+        rng = np.random.default_rng(4)
+        vertices = rng.normal(size=(30, 3))
+        triangles = np.array([[0, 1, 2], [2, 3, 4], [5, 6, 7]])
+        ear = np.zeros(30, bool)
+        ear[[1, 2, 3]] = True
+        attachment = np.zeros(30, bool)
+        attachment[2] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            write_handoff(
+                tmp,
+                vertices,
+                triangles,
+                {"nose_tip": [0.0, -0.1, 1.6]},
+                masks={"ear": {"vertices": ear, "attachment": attachment}},
+            )
+            reference = Reference.from_handoff(load_handoff(tmp))
+        np.testing.assert_array_equal(reference.regions["ear"], ear[: len(ear)])
+        np.testing.assert_array_equal(reference.regions["ear_attachment"], attachment)
+
     def test_missing_replica(self):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(FileNotFoundError):
             load_handoff(tmp)
@@ -339,7 +472,10 @@ class TestSyntheticFit(unittest.TestCase):
         )
         handoff = load_handoff(cls.folder / "handoff")
         cls.reference = Reference.from_handoff(handoff)
-        cls.result = fit_reference(cls.reference, detail=1, name="synthetic")
+        cls.model = fit_model()
+        cls.result = fit_reference(
+            cls.reference, detail=1, name="synthetic", model=cls.model
+        )
         cls.card_path = cls.result.write(cls.folder / "card.json")
         _report(
             f"synthetic fit ({len(target['vertices'])} target vertices, "
@@ -390,6 +526,22 @@ class TestSyntheticFit(unittest.TestCase):
             measures["parametric"]["all"]["reverse_mm"]["mean"],
         )
 
+    def test_default_fit_without_ear_mask(self):
+        # the ear options act through masks.ear alone: without it, the refinement with them
+        # is the refinement without them, bit for bit; with it, the ears fit apart
+        self.assertNotIn("ear", self.reference.regions)
+        card, R, t = (
+            self.result.character,
+            self.result.rotation,
+            self.result.translation,
+        )
+        kwargs = dict(detail=0, model=self.model, options=FitOptions(measure=False))
+        split = fit_levels(self.reference, card, R, t, **kwargs)
+        kwargs["options"] = FitOptions(measure=False, ear_split=False)
+        plain = fit_levels(self.reference, card, R, t, **kwargs)
+        np.testing.assert_array_equal(split.offsets[0], plain.offsets[0])
+        np.testing.assert_array_equal(split.offsets[0], self.result.offsets[0])
+
     def test_card_reproduces_the_fit(self):
         card = Character.from_dict(json.loads(self.card_path.read_text()))
         self.assertEqual(card.detail_levels(), [0, 1])
@@ -438,6 +590,130 @@ class TestSyntheticFit(unittest.TestCase):
                 refine_weights=False,
             )
         self.assertLessEqual(vrm["triangles"], BUDGETS["vrm1"]["triangles"])
+
+
+class TestPointedEars(unittest.TestCase):
+    """
+    The fit of pointed ears that stand off from the head (``pointed_ear_target``: a gap behind
+    each ear, a tip 20 mm up and back, ``masks.ear`` with its attachment line), with the ear
+    split (the default with masks.ear) and without it, from the same fitted parameters. Without
+    it, the skin of the head behind the ear stretches up to the tip, which stays uncovered;
+    with it, the tip is reached, the gap stays open and the ears fold only where the reference
+    does. The measures are those of ``metrics.measure`` on the ears of the mask.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        folder = pathlib.Path(cls.tmp.name) / "handoff"
+        target = pointed_ear_target()
+        write_handoff(
+            folder,
+            target["vertices"],
+            target["triangles"],
+            target["landmarks"],
+            masks={
+                "ear": {"vertices": target["ear"], "attachment": target["attachment"]}
+            },
+        )
+        cls.reference = Reference.from_handoff(load_handoff(folder))
+        model = fit_model()
+        options = FitOptions()
+        params, _, R, t = fit_parameters(model, cls.reference, options)
+        from opensculptboy.fit.register import _character_from
+
+        card = _character_from(model, params, "pointed")
+        cls.after = fit_levels(cls.reference, card, R, t, 1, options, model)
+        before = FitOptions(ear_split=False)
+        cls.before = fit_levels(cls.reference, card, R, t, 1, before, model)
+        lines = ["pointed ears (ears of the mask; before -> after, mm and degrees):"]
+        for subdiv in (0, 1):
+            b, a = (
+                r.measures[subdiv]["final"]["ears"] for r in (cls.before, cls.after)
+            )
+            sb, sa = (
+                r.measures[subdiv]["final"]["ears_surround"]["reverse_mm"]
+                for r in (cls.before, cls.after)
+            )
+            lines.append(
+                f"  level {subdiv}: reverse mean {b['reverse_mm']['mean']:.3f} -> "
+                f"{a['reverse_mm']['mean']:.3f}, p95 {b['reverse_mm']['p95']:.3f} -> "
+                f"{a['reverse_mm']['p95']:.3f}, max {b['reverse_mm']['max']:.2f} -> "
+                f"{a['reverse_mm']['max']:.2f}; faces over 1 mm {b['faces_over_1mm']:.4f} "
+                f"-> {a['faces_over_1mm']:.4f}; folds {b['folded_over_60deg']:.4f} -> "
+                f"{a['folded_over_60deg']:.4f}, not in the reference "
+                f"{b['folds_not_in_reference']:.4f} -> {a['folds_not_in_reference']:.4f}; "
+                f"normal angle p95 {b['angle_geometric_deg']['p95']:.1f} -> "
+                f"{a['angle_geometric_deg']['p95']:.1f}, max "
+                f"{b['angle_geometric_deg']['max']:.1f} -> "
+                f"{a['angle_geometric_deg']['max']:.1f}; around the ears reverse mean "
+                f"{sb['mean']:.3f} -> {sa['mean']:.3f}, p95 {sb['p95']:.3f} -> "
+                f"{sa['p95']:.3f}"
+            )
+        print("\n" + "\n".join(lines), file=sys.stderr)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def ears(self, result, level):
+        return result.measures[level]["final"]["ears"]
+
+    def test_target(self):
+        self.assertIn("ear", self.reference.regions)
+        self.assertIn("ear_attachment", self.reference.regions)
+        self.assertIn("ear_top_l", self.reference.landmarks)
+
+    def test_tip_is_reached(self):
+        # the reference's ears lie on the fit: 0.15 and 0.45 mm (mean, p95) on level 1, where
+        # the fit without the split leaves the tip uncovered (0.36 and 1.8 mm)
+        for subdiv, mean, p95 in ((0, 0.65, 2.2), (1, 0.2, 0.6)):
+            with self.subTest(level=subdiv):
+                after = self.ears(self.after, subdiv)["reverse_mm"]
+                before = self.ears(self.before, subdiv)["reverse_mm"]
+                self.assertLess(after["mean"], mean)
+                self.assertLess(after["p95"], p95)
+                self.assertLess(after["p95"], 0.6 * before["p95"])
+                self.assertLess(after["max"], before["max"])
+
+    def test_no_skin_across_the_gap(self):
+        # a triangle that bridges the gap behind the ear has its middle in the air; the head
+        # around the ear stays covered (0.08 and 0.27 mm, mean and p95, on level 1)
+        after, before = self.ears(self.after, 1), self.ears(self.before, 1)
+        self.assertLess(after["faces_over_1mm"], 0.005)
+        self.assertLess(after["faces_over_1mm"], before["faces_over_1mm"])
+        around = self.after.measures[1]["final"]["ears_surround"]["reverse_mm"]
+        self.assertLess(around["mean"], 0.12)
+        self.assertLess(around["p95"], 0.4)
+
+    def test_folds_and_normals(self):
+        # the ears fold where the reference folds (the rim of the tip) and nowhere else: under
+        # 1.5 % of their vertices fold by 30 degrees more than the reference near them (0.7 %
+        # on level 1, 1.7 % on level 0); no vertex faces away from the reference (an angle
+        # over 90 degrees is a flipped sheet or a spike; 77 measured on level 1)
+        for subdiv, share in ((0, 0.025), (1, 0.015)):
+            with self.subTest(level=subdiv):
+                after = self.ears(self.after, subdiv)
+                before = self.ears(self.before, subdiv)
+                self.assertLess(after["folds_not_in_reference"], share)
+                self.assertLessEqual(
+                    after["folds_not_in_reference"],
+                    1.2 * before["folds_not_in_reference"],
+                )
+        angle = self.ears(self.after, 1)["angle_geometric_deg"]
+        self.assertLess(angle["max"], 90.0)
+        self.assertLess(angle["p95"], 15.0)
+
+    def test_rest_of_the_figure(self):
+        # the ear split leaves the rest of the fit as it was
+        for subdiv in (0, 1):
+            after = self.after.measures[subdiv]["final"]["all"]["reverse_mm"]
+            before = self.before.measures[subdiv]["final"]["all"]["reverse_mm"]
+            self.assertLess(after["mean"], before["mean"] * 1.02)
+        self.assertLess(
+            self.after.measures[1]["final"]["all"]["reverse_mm"]["mean"],
+            LEVEL1_BOUND_MM,
+        )
 
 
 class TestAutoLandmarks(unittest.TestCase):
