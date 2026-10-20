@@ -97,6 +97,7 @@ def export_glb(
     detail_region: str = "full",
     detail_dir: str | pathlib.Path | None = None,
     textures=None,
+    tier: dict | None = None,
 ) -> dict:
     """
     Write a character as a binary glTF 2.0 file.
@@ -136,7 +137,11 @@ def export_glb(
             (paths or bytes) laid out on anny's UVs. A card with a ``material`` section gets
             the skin material of :func:`_skin_material`, with the head tile's textures on a
             primitive of their own; a file with a normal texture carries MikkTSpace
-            ``TANGENT`` attributes.
+            ``TANGENT`` attributes, and an ``occlusion`` texture becomes the skin's
+            ``occlusionTexture``.
+        tier: the rendering-budget tier of the file (:meth:`opensculptboy.tiers.Tier.extras`),
+            recorded in the scene extras, whose ``shading`` names the skin shading it is
+            meant for in the skin materials' extras; None (the default) records nothing.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -310,13 +315,18 @@ def export_glb(
     head_material, head, ear_material = None, None, None
     if skin is not None:
         written: dict = {}  # slot -> texture index, so that each image is written once
-        material = doc.add_material(_skin_material(doc, skin, images, written))
+        shading = None if tier is None else tier.get("shading")
+        material = doc.add_material(
+            _skin_material(doc, skin, images, written, shading=shading)
+        )
         head_material, head = _head_material(
-            doc, model, body, skin, images, written, character.topology
+            doc, model, body, skin, images, written, character.topology, shading
         )
         if ears is not None:
             ear_material = doc.add_material(
-                _skin_material(doc, skin, images, written, "ears", "ears_")
+                _skin_material(
+                    doc, skin, images, written, "ears", "ears_", shading=shading
+                )
             )
     elif set(images) - EYE_SLOTS:
         material = doc.add_material(_textured_material(doc, images))
@@ -515,6 +525,8 @@ def export_glb(
     if toothed is not None:
         key = "teeth" if mouth is None else "inner_mouth"
         doc.scene_extras["opensculptboy"][key] = toothed.extras
+    if tier is not None:
+        doc.scene_extras["opensculptboy"]["tier"] = dict(tier)
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -529,6 +541,8 @@ def export_glb(
     )
     if detail is not None:
         summary["detail"] = detail.extras()
+    if tier is not None:
+        summary["tier"] = tier.get("name")
     return summary
 
 
@@ -820,6 +834,7 @@ def _skin_material(
     name: str = "skin",
     prefix: str = "",
     transform: dict | None = None,
+    shading: str | None = None,
 ) -> dict:
     """
     The glTF material of a card's skin (:class:`~opensculptboy.material.SkinMaterial`): the
@@ -828,7 +843,9 @@ def _skin_material(
     reflection (``KHR_materials_specular``, ``KHR_materials_ior``), and the subsurface
     settings with the thickness and curvature maps in the extras under :data:`SKIN_EXTRAS`
     (glTF has no ratified subsurface extension). ``cache`` maps the slots already written
-    to their textures.
+    to their textures. An ``occlusion`` image of the atlas becomes the ``occlusionTexture``
+    (the ear tile, on UVs of its own, takes none), and ``shading`` (a tier's skin shading,
+    :mod:`opensculptboy.tiers`) goes into the extras.
     """
 
     def info(slot):
@@ -857,6 +874,9 @@ def _skin_material(
     if normal is not None:
         normal["scale"] = float(skin.normal_scale)
         material["normalTexture"] = normal
+    occlusion = None if prefix else info("occlusion")
+    if occlusion is not None:
+        material["occlusionTexture"] = occlusion
     material["extensions"] = {
         "KHR_materials_specular": {
             "specularFactor": float(skin.specular),
@@ -876,12 +896,21 @@ def _skin_material(
         index = _texture(doc, images, source, cache)
         if index is not None:
             extras[slot] = {"index": index, "texCoord": 0, scale_key: float(scale)}
+    if shading is not None:
+        extras["shading"] = shading
     material["extras"] = {SKIN_EXTRAS: extras}
     return material
 
 
 def _head_material(
-    doc: GltfDocument, model, body, skin, images: dict, cache: dict, topology: str
+    doc: GltfDocument,
+    model,
+    body,
+    skin,
+    images: dict,
+    cache: dict,
+    topology: str,
+    shading: str | None = None,
 ):
     """
     The material of the head tile (:mod:`opensculptboy.texture.tiles`): the skin's settings
@@ -897,7 +926,9 @@ def _head_material(
     mask = head_tile_triangles(model, body, topology)
     if transform is None or mask is None or not mask.any():
         return None, None
-    material = _skin_material(doc, skin, images, cache, "head", "head_", transform)
+    material = _skin_material(
+        doc, skin, images, cache, "head", "head_", transform, shading
+    )
     # the slots that the head tile lacks fall back to the atlas, without the transform
     for slot, key in (
         ("base_color", "baseColorTexture"),
@@ -911,6 +942,10 @@ def _head_material(
         material["normalTexture"] = {
             "index": _texture(doc, images, "normal", cache),
             "scale": float(skin.normal_scale),
+        }
+    if "occlusion" in images:  # the atlas's occlusion, on anny's UVs
+        material["occlusionTexture"] = {
+            "index": _texture(doc, images, "occlusion", cache)
         }
     return doc.add_material(material), mask
 

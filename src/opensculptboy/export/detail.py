@@ -146,7 +146,7 @@ def resolve_within_budget(
 
 
 # the skin's maps on anny's atlas, the eyeballs' base colour and normals on the eye texture
-# (opensculptboy.texture.eyes), the head tile's maps (opensculptboy.texture.tiles) and the ear
+# (opensculptboy.texture.eyes), the head tile's maps (opensculptboy.texture.tiles), the ear
 # tile's (opensculptboy.texture.ears)
 TEXTURE_SLOTS = (
     "base_color",
@@ -165,6 +165,10 @@ TEXTURE_SLOTS = (
     "ears_thickness",
     "ears_curvature",
     "eye_base_color",
+    # the ambient occlusion of the master mesh on anny's atlas, and the shade texture of a
+    # toon tier (the base colour darkened by the occlusion; opensculptboy.tiers)
+    "occlusion",
+    "shade",
 )
 
 

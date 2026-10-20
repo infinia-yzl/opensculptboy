@@ -74,6 +74,7 @@ from opensculptboy.export.detail import (
     resolve_within_budget,
     texture_images,
 )
+from opensculptboy.export.detail import resolve as resolve_detail
 from opensculptboy.export.document import (
     ELEMENT_ARRAY_BUFFER,
     MORPH_EPSILON,
@@ -523,11 +524,15 @@ def vrm_spec(
     detail_dir: str | pathlib.Path | None = None,
     budget: str = "warn",
     textures=None,
+    detail_region: str | None = None,
+    tier: dict | None = None,
 ) -> VrmSpec:
     """
     The content of a VRM file of a character (see :func:`export_vrm` for the arguments).
     ``budget`` chooses the detail mesh within the budget of the version (see
-    :func:`opensculptboy.export.detail.resolve_within_budget`).
+    :func:`opensculptboy.export.detail.resolve_within_budget`), unless ``detail_region``
+    names the region of the level (``"full"`` or ``"head"``), which the file then takes as it
+    is (and :func:`write_vrm` checks against the budget).
     """
     # Every check runs before the model is built.
     version = vrm_version(version)
@@ -647,14 +652,19 @@ def vrm_spec(
         keep_leg_spread=keep_leg_spread,
     )
     eyes = vrm_tables.eyeball_vertices(model)
-    detail = resolve_within_budget(
-        model,
-        character,
-        detail_level,
-        "vrm1" if version == "1.0" else "vrm0",
-        budget,
-        detail_dir,
-    )
+    if detail_region is None:
+        detail = resolve_within_budget(
+            model,
+            character,
+            detail_level,
+            "vrm1" if version == "1.0" else "vrm0",
+            budget,
+            detail_dir,
+        )
+    else:
+        detail = resolve_detail(
+            model, character, detail_level, detail_dir, detail_region
+        )
     images = texture_images(character, textures, detail_dir)
     skin = character.skin_material()
     eye = character.eye_material()
@@ -995,6 +1005,8 @@ def vrm_spec(
         extras["teeth" if mouth is None else "inner_mouth"] = toothed.extras
     if images:
         extras["textures"] = sorted(images)
+    if tier is not None:
+        extras["tier"] = dict(tier)
     return VrmSpec(
         version=version,
         frame=G.copy(),
@@ -1038,6 +1050,9 @@ VRM_TEXTURE_SLOTS = (
     "eye_matcap",
     "mouth_base_color",
     "mouth_normal",
+    # a toon tier's shade texture: the base colour darkened by the baked ambient occlusion
+    # (opensculptboy.tiers); without it, the base colour is the shade texture too
+    "shade",
 )
 
 
@@ -1074,6 +1089,8 @@ def _textured_toon_material(images: dict, skin=None) -> mtoon.ToonMaterial:
         material.base_texture = material.shade_texture = _texture_index(
             images, "base_color"
         )
+        if "shade" in images:
+            material.shade_texture = _texture_index(images, "shade")
     if "normal" in images:
         material.normal_texture = _texture_index(images, "normal")
     if skin is not None:
@@ -1807,6 +1824,8 @@ def export_vrm(
     detail_level: int = 0,
     detail_dir: str | pathlib.Path | None = None,
     textures=None,
+    detail_region: str | None = None,
+    tier: dict | None = None,
 ) -> dict:
     """
     Write a character as a VRM file.
@@ -1856,7 +1875,12 @@ def export_vrm(
         detail_dir: the folder that the paths of the detail layer are relative to.
         textures: None for the skin textures of the card's detail layer, False for none, or
             a mapping of ``"base_color"`` and ``"normal"`` to PNG or JPEG files; they fill
-            the base, shade and normal slots of the skin's MToon material.
+            the base, shade and normal slots of the skin's MToon material. A ``"shade"``
+            file takes the shade slot instead of the base colour.
+        detail_region: None (the region that keeps within the budget, as above), or
+            ``"full"`` or ``"head"`` for that region of ``detail_level`` as it is.
+        tier: the rendering-budget tier of the file (:meth:`opensculptboy.tiers.Tier.extras`),
+            recorded in the scene extras; None records nothing.
 
     Returns:
         A summary: counts, the file size, the version and the budget messages.
@@ -1889,8 +1913,13 @@ def export_vrm(
         detail_dir=detail_dir,
         budget=budget,
         textures=textures,
+        detail_region=detail_region,
+        tier=tier,
     )
-    return write_vrm(spec, path, budget=budget)
+    summary = write_vrm(spec, path, budget=budget)
+    if tier is not None:
+        summary["tier"] = tier.get("name")
+    return summary
 
 
 def _anny_version() -> str:
