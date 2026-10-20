@@ -174,26 +174,43 @@ def export_glb(
     detail = resolve_detail(model, character, detail_level, detail_dir, detail_region)
     images = texture_images(character, textures, detail_dir)
     skin = character.skin_material()
+    eye = character.eye_material()
     mesh, ears = ear_mesh(character, skin, images, detail, detail_dir)
-    if detail is None:
+    eyed = None
+    if detail is None and eye is None:
         body = build_body(
             model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
         )
     else:
-        weights, indices = detail.skin_weights(
-            model.vertex_bone_weights.detach().cpu().double().numpy(),
-            model.vertex_bone_indices.cpu().numpy(),
-        )
+        weights = model.vertex_bone_weights.detach().cpu().double().numpy()
+        indices = model.vertex_bone_indices.cpu().numpy()
+        vertices, offsets = base, rest_vertices[1:] - base
+        if detail is not None:
+            weights, indices = detail.skin_weights(weights, indices)
+            vertices, offsets = detail.vertices(base), detail.targets(offsets)
+        normals = None
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import eyed_mesh
+
+            eyed = eyed_mesh(model, mesh, vertices, eye, "gltf")
+            normals = eyed.normals(vertices)
+            weights, indices = eyed.skin_weights(weights, indices)
+            vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
+            ears = eyed.extend_mask(ears)
+            mesh = eyed
         body = build_body(
             model,
-            detail.vertices(base),
-            detail.targets(rest_vertices[1:] - base),
+            vertices,
+            offsets,
             ANNY_TO_GLTF,
             max_influences,
             weights,
             indices,
+            normals=normals,
             mesh=mesh,
         )
+        if eyed is not None:
+            body.anny_source = eyed.anny_vertex()[body.source]
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
     head_material, head, ear_material = None, None, None
     if skin is not None:
@@ -206,19 +223,26 @@ def export_glb(
             ear_material = doc.add_material(
                 _skin_material(doc, skin, images, written, "ears", "ears_")
             )
-    elif images:
+    elif set(images) - EYE_SLOTS:
         material = doc.add_material(_textured_material(doc, images))
     else:
         material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
     if "normal" in images or "head_normal" in images:
         body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
     joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
-    eye_material, eyes = _eye_material(
-        doc, model, body, images, None if detail is None else detail.topology
-    )
+    eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
+    if eyed is not None:
+        eye_material, eyes = None, None
+        eye_parts = _eye_part_materials(doc, model, body, eyed, eye, images)
+    else:
+        eye_material, eyes = _eye_material(
+            doc, model, body, images, None if detail is None else detail.topology
+        )
     rest = np.ones(len(body.triangles), bool)
     if eye_material is not None:
         rest &= ~eyes
+    for _, part in eye_parts:
+        rest &= ~part
     if ear_material is not None:
         ears &= rest
         rest &= ~ears
@@ -263,6 +287,17 @@ def export_glb(
                 body,
                 eye_material,
                 triangles=body.triangles[eyes],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    for part_material, part in eye_parts:  # the eyes: eyeballs, corneas, the socket
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                part_material,
+                triangles=body.triangles[part],
                 attributes=primitive["attributes"],
                 targets=primitive.get("targets"),
             )
@@ -334,6 +369,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["head_tile"] = True
     if ear_material is not None:
         doc.scene_extras["opensculptboy"]["ear_tile"] = True
+    if eyed is not None:
+        doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -373,6 +410,90 @@ def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
         "KHR_texture_transform": transform
     }
     return doc.add_material(material), eyes
+
+
+# the texture slots of the eyes alone, which leave the skin's material as it is
+EYE_SLOTS = {"eyes", "eye_base_color"}
+# the key of the eye materials' settings in their extras
+EYE_EXTRAS = "opensculptboy_eye"
+EYE_EXTRAS_FORMAT = "opensculptboy/eye@1"
+
+
+def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict):
+    """
+    The materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (an
+    :class:`~opensculptboy.eyes.mesh.EyedMesh` behind ``body``):
+
+    - ``eyes``: the eye texture (:func:`opensculptboy.eyes.mesh.eye_texture`) on the eyeballs;
+      under a cornea a moist, fairly rough surface, and without one (``eye.cornea`` false) a
+      clear coat (``KHR_materials_clearcoat``) at the cornea's IOR for the wet highlight;
+    - ``cornea``: a clear, refracting shell (``KHR_materials_transmission``,
+      ``KHR_materials_volume`` with the depth of the anterior chamber as its thickness,
+      ``KHR_materials_ior``). As the transmission extension asks, it is OPAQUE: readers
+      without the extension draw it white, so ``eye.cornea`` false suits them better;
+    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat).
+
+    The extras of each hold :data:`EYE_EXTRAS` (``opensculptboy/eye@1``) with its ``role``
+    and the eye's settings, which :mod:`opensculptboy.export.blender_skin` reads.
+    """
+    from opensculptboy.eyes.geometry import CHAMBER_DEPTH_MM
+    from opensculptboy.eyes.mesh import eye_texture
+
+    settings = dict(eye.extras(), bulge={k: float(v) for k, v in eyed.bulge.items()})
+
+    def extras(role):
+        return {EYE_EXTRAS: {"format": EYE_EXTRAS_FORMAT, "role": role, **settings}}
+
+    if "eye_base_color" in images:
+        data = images["eye_base_color"]
+        source = {"source": "texture"}
+    else:
+        pixels, source = eye_texture(eye, eyed, model, images.get("eyes"))
+        from opensculptboy.export.document import png_bytes
+
+        data = png_bytes(pixels)
+    eyed.extras = {
+        "radius_mm": [float(f.radius * 1000) for f in eyed.frames.values()],
+        "bulge": settings["bulge"],
+        "cornea": bool(eye.cornea),
+        "caruncle": bool(eye.caruncle),
+        **source,
+    }
+    texture = doc.add_texture(doc.add_image(data, mime_type(data), "eye_base_color"))
+    out = []
+    eyeball = pbr_material(
+        "eyes", (1.0, 1.0, 1.0, 1.0), 0.0, eye.sclera_roughness, texture=texture
+    )
+    if not eye.cornea:
+        eyeball["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 1.0,
+                "clearcoatRoughnessFactor": float(eye.cornea_roughness),
+            },
+            "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
+        }
+    eyeball["extras"] = extras("eyeball")
+    out.append((doc.add_material(eyeball), eyed.part_mask("eyeball")))
+    if eye.cornea:
+        cornea = pbr_material("cornea", (1.0, 1.0, 1.0, 1.0), 0.0, eye.cornea_roughness)
+        cornea["extensions"] = {
+            "KHR_materials_transmission": {"transmissionFactor": 1.0},
+            "KHR_materials_volume": {"thicknessFactor": CHAMBER_DEPTH_MM / 1000.0},
+            "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
+        }
+        cornea["extras"] = extras("cornea")
+        out.append((doc.add_material(cornea), eyed.part_mask("cornea")))
+    if eye.caruncle:
+        pink = pbr_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,), 0.0, 0.5)
+        pink["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 0.8,
+                "clearcoatRoughnessFactor": 0.08,
+            }
+        }
+        pink["extras"] = extras("conjunctiva")
+        out.append((doc.add_material(pink), eyed.part_mask("caruncle", "socket")))
+    return out
 
 
 # the key of the skin's subsurface settings and real-time skin maps in a material's extras

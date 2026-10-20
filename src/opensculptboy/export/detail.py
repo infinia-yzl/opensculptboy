@@ -163,6 +163,7 @@ TEXTURE_SLOTS = (
     "ears_roughness",
     "ears_thickness",
     "ears_curvature",
+    "eye_base_color",
 )
 
 
@@ -190,6 +191,9 @@ def texture_images(
         skin = character.skin_material()
         if skin is not None:
             textures.update(skin.textures())
+        eye = character.eye_material()
+        if eye is not None and eye.base_color is not None:
+            textures["eye_base_color"] = eye.base_color  # opensculptboy.eyes.texture
         base = None if detail_dir is None else pathlib.Path(detail_dir)
     else:
         base = None

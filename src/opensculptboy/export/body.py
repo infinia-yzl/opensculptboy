@@ -57,6 +57,9 @@ class BodyMesh:
     )
     # MikkTSpace tangents (N, 4) with the sign in w (add_tangents), written as TANGENT
     tangents: np.ndarray | None = None
+    # the Anny vertex of each vertex for _ANNY_VERTEX, where it is not ``source`` (the eye
+    # parts of opensculptboy.eyes name the nearest Anny vertex of what they follow)
+    anny_source: np.ndarray | None = None
 
     def add_tangents(self) -> None:
         """Compute the MikkTSpace tangents of the mesh as the file holds it (positions,
@@ -341,8 +344,9 @@ def body_attributes(
     if anny_vertex:
         # The Anny vertex of each glTF vertex (float: glTF allows unsigned int for indices
         # only), so that keypoint regressors and other per-vertex data of Anny apply to the file.
+        source = body.source if body.anny_source is None else body.anny_source
         attributes["_ANNY_VERTEX"] = doc.accessor(
-            body.source.astype(np.float32), ARRAY_BUFFER
+            source.astype(np.float32), ARRAY_BUFFER
         )
     if joint_type is None:
         joint_type = np.uint8 if int(body.joints.max(initial=0)) < 256 else np.uint16
