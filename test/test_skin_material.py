@@ -436,3 +436,104 @@ class TestNormalMapBake(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEarTile(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from opensculptboy.detail import DetailModel, save_offsets
+        from opensculptboy.texture.ears import ear_triangles, ear_uv_table
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+        cls.card = Character(name="ears", local_changes={"l-ear-trans-up": 0.0})
+        cls.model = cls.card.build_model(dtype=torch.float64)
+        detailed = DetailModel(cls.model, 1)
+        with torch.no_grad():
+            cls.rest = detailed()["rest_vertices"][0].numpy()
+        cls.topology = detailed.topology
+        cls.ears = ear_triangles(cls.model, cls.topology)
+        cls.table = ear_uv_table(
+            cls.rest, cls.topology, cls.ears, np.sign(cls.rest[:, 0])
+        )
+        cls.table.save(cls.folder / "ears.ear_uvs.safetensors")
+        save_offsets(
+            cls.folder / "ears.detail1.safetensors", np.zeros((len(cls.rest), 3)), 1
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_unwrap(self):
+        from opensculptboy.texture.ears import EarUVs, density, with_ear_uvs
+
+        uv = self.table.uv
+        on = ~np.isnan(uv[:, 0])
+        self.assertGreater(on.sum(), 1000)
+        self.assertTrue(((uv[on] > 0) & (uv[on] < 1)).all())
+        # the left ear (+X) in the left half, the right ear in the right half
+        left = on & (self.rest[:, 0] > 0)
+        self.assertTrue((uv[left, 0] < 0.5).all())
+        self.assertTrue((uv[on & ~left, 0] > 0.5).all())
+        stats = density(self.rest, self.topology, self.table)
+        self.assertGreater(stats["p5"], 0.5 * stats["p50"])  # one texel size, about
+        mesh, mask = with_ear_uvs(self.topology, self.table)
+        self.assertGreaterEqual(mask.sum(), self.ears.sum())  # the closed set
+        q = mesh.uvs[mesh.uv_triangles[mask]]
+        signed = (q[:, 1, 0] - q[:, 0, 0]) * (q[:, 2, 1] - q[:, 0, 1]) - (
+            q[:, 1, 1] - q[:, 0, 1]
+        ) * (q[:, 2, 0] - q[:, 0, 0])
+        self.assertLess((signed < 0).mean(), 0.005)
+        loaded = EarUVs.load(self.folder / "ears.ear_uvs.safetensors")
+        np.testing.assert_allclose(loaded.uv, uv, atol=1e-6)
+        # level 0 keeps anny's UVs
+        from opensculptboy.detail import detail_topology
+
+        zero = detail_topology(self.model, 0)
+        self.assertIsNone(with_ear_uvs(zero, self.table)[1])
+
+    def test_export(self):
+        card = Character(
+            name="ears",
+            detail={"levels": [{"subdiv": 1, "offsets": "ears.detail1.safetensors"}]},
+            material={
+                "subsurface": {"weight": 0.2},
+                "ears": {
+                    "uvs": "ears.ear_uvs.safetensors",
+                    "base_color": "x.png",
+                    "normal": "y.png",
+                },
+            },
+        )
+        textures = {
+            "base_color": _png(150),
+            "normal": png_bytes(np.full((8, 8, 3), (128, 128, 255), np.uint8)),
+            "ears_base_color": _png(170, (8, 16)),
+            "ears_normal": png_bytes(np.full((8, 16, 3), (128, 128, 255), np.uint8)),
+            "ears_thickness": _png(30, (8, 16), 1),
+        }
+        path = self.folder / "ears.glb"
+        export_glb(
+            path,
+            card,
+            detail_level=1,
+            detail_dir=self.folder,
+            textures=textures,
+        )
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        names = [m["name"] for m in glb.json["materials"]]
+        self.assertEqual(names, ["skin", "ears"])
+        ears = glb.json["materials"][1]
+        self.assertNotIn("extensions", ears["pbrMetallicRoughness"]["baseColorTexture"])
+        extras = ears["extras"]["opensculptboy_skin"]
+        self.assertIn("thickness", extras)
+        skin, tile = glb.json["meshes"][0]["primitives"]
+        indices = glb.accessor(tile["indices"]).reshape(-1, 3)
+        self.assertGreaterEqual(len(indices), self.ears.sum())
+        uv = glb.accessor(tile["attributes"]["TEXCOORD_0"])[np.unique(indices)]
+        self.assertTrue(((uv > 0) & (uv < 1)).all())
+        self.assertEqual(
+            glb.json["scenes"][0]["extras"]["opensculptboy"]["ear_tile"], True
+        )
