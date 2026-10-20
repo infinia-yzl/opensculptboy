@@ -93,14 +93,19 @@ class Handoff:
         return [p for p in self.parts if p.is_skin]
 
     def mask(
-        self, region: str, parts: list[HandoffPart] | None = None
+        self,
+        region: str,
+        parts: list[HandoffPart] | None = None,
+        key: str = "vertices",
     ) -> np.ndarray | None:
         """
         The vertices of a region of ``masks`` in appearance.json (such as ``"ear"``) as a mask
         over the vertices of ``parts`` (the skin parts by default) laid end to end, or None
         when the handoff has no such mask. Each entry names its part (``"mesh"``, ``"node"``
         or ``"part"``, matched as the part names are) and lists ``"vertices"``, indices into
-        that part's vertices; entries of other parts are ignored.
+        that part's vertices; entries of other parts are ignored. ``key`` reads another list
+        of the entries instead, such as the ``"attachment"`` of an ear: its vertices along the
+        line where the ear meets the head.
         """
         entries = (self.appearance.get("masks") or {}).get(region)
         if not entries:
@@ -114,7 +119,7 @@ class Handoff:
                 continue
             names = [entry.get(k) for k in ("mesh", "node", "part")]
             names = [n for n in names if isinstance(n, str) and n]
-            rows = np.asarray(entry.get("vertices") or [], dtype=np.int64)
+            rows = np.asarray(entry.get(key) or [], dtype=np.int64)
             for k, part in enumerate(parts):
                 if part.name in names:
                     rows_k = rows[(rows >= 0) & (rows < len(part.vertices))]
@@ -319,10 +324,13 @@ def write_handoff(
     triangles: np.ndarray,
     landmarks: dict[str, np.ndarray] | None = None,
     name: str = "body",
+    masks: dict | None = None,
 ) -> pathlib.Path:
     """
     Write a one-part handoff folder from a mesh in Anny's frame (for tests and examples): the
-    mesh as replica.glb in glTF's frame and the landmarks in appearance.json.
+    mesh as replica.glb in glTF's frame and the landmarks in appearance.json. ``masks`` maps
+    a region (``"ear"``) to a vertex mask (V,) or to a dict of such masks by list name
+    (``{"vertices": ..., "attachment": ...}``), written as one entry of the mesh.
     """
     import trimesh
 
@@ -341,5 +349,13 @@ def write_handoff(
         "parts": [{"name": name, "role": "skin"}],
         "materials": {},
     }
+    if masks:
+        appearance["masks"] = {}
+        for region, value in masks.items():
+            lists = value if isinstance(value, dict) else {"vertices": value}
+            entry = {"mesh": name}
+            for k, m in lists.items():
+                entry[k] = [int(i) for i in np.nonzero(np.asarray(m, bool))[0]]
+            appearance["masks"][region] = [entry]
     (folder / "appearance.json").write_text(json.dumps(appearance, indent=2) + "\n")
     return folder

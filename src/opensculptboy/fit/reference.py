@@ -265,7 +265,8 @@ class Reference:
     eye_reference: "Reference | None" = None
     # the source's own vertex normals (V, 3), its shading; None: the geometric normals
     file_normals: np.ndarray | None = None
-    # named vertex masks (V,) of the source, such as "ear" (masks.ear of the handoff)
+    # named vertex masks (V,) of the source: "ear" (masks.ear of the handoff) and
+    # "ear_attachment" (its vertices along the line where each ear meets the head)
     regions: dict = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
@@ -276,6 +277,18 @@ class Reference:
             self.file_normals = np.asarray(self.file_normals, dtype=np.float64)
         self.regions = {k: np.asarray(v, bool) for k, v in (self.regions or {}).items()}
         self._tree = None
+        self._folds = None
+
+    @property
+    def folds(self) -> np.ndarray:
+        """The largest angle (degrees) between the normals of two triangles that share an edge
+        at each vertex (``opensculptboy.fit.metrics.fold_angles``): the reference's own
+        creases, such as the rim of a thin ear."""
+        if self._folds is None:
+            from opensculptboy.fit.metrics import fold_angles
+
+            self._folds = fold_angles(self.vertices, self.triangles)
+        return self._folds
 
     @property
     def shading_normals(self) -> np.ndarray:
@@ -325,6 +338,9 @@ class Reference:
         ear = handoff.mask("ear", list(parts)) if hasattr(handoff, "mask") else None
         if ear is not None and ear.any():
             regions["ear"] = ear
+            attachment = handoff.mask("ear", list(parts), "attachment")
+            if attachment is not None and attachment.any():
+                regions["ear_attachment"] = attachment
         eye_parts = [p for p in handoff.parts if p.role == "eyes"]
         eyes = eye_spheres([p.vertices for p in eye_parts])
         eye_reference = None
