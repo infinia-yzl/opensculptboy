@@ -17,11 +17,19 @@ role of each part (``"skin"`` or another role such as ``"hair"``), and the landm
 Anny's frame. The landmarks are optional: without them the fit places the reference by its
 bounding geometry (:func:`opensculptboy.fit.reference.auto_landmarks`).
 
-``parts`` may be a list of objects or an object keyed by part name; each entry names a mesh or
-node of the GLB file (``"name"``, ``"mesh"`` or ``"node"``) and may give its ``"role"`` (or
-``"kind"``, ``"type"``, ``"category"``). Parts without a role are skin unless their name says
-otherwise (hair, lashes, brows, beard, teeth, tongue, eyeballs, clothing): only the skin takes
-part in the fit, and the other parts attach later.
+Each primitive of the GLB file is one part, named after its mesh (the node's name when
+``parts`` names the node) and carrying its material's name. ``parts`` may be a list of objects
+or an object keyed by part name (the contract's ``{"body": {...}, "hair": {...}}``); each entry
+names a mesh or node of the GLB file (``"name"``, ``"mesh"``, ``"node"`` or ``"node_name"``,
+which also matches the nodes whose names start with it and an underscore, as the DD2DA tools
+split a part into ``<node_name>_group<N>_...`` nodes) and may give its ``"role"`` (or
+``"kind"``, ``"type"``, ``"category"``); without one, the key of an object names the role.
+``materials`` entries (``{"name": ..., "role": ...}``) may give a role per material. The role of
+a primitive is, in this order: its material's declared role; the role that its material's name
+names (:func:`name_role`: hair, lashes, brows, beard, teeth and the mouth, eyes, nails,
+clothing), so that the eyes, lashes and teeth inside a head part leave the skin; the declared
+role of its part; and the role that its own name names, else skin. Only the skin takes part in
+the fit, and the other parts attach later.
 """
 
 from __future__ import annotations
@@ -36,11 +44,19 @@ import numpy as np
 # glTF (x, y, z) -> Anny (x, -z, y): the inverse of opensculptboy.export.body.ANNY_TO_GLTF.
 GLTF_TO_ANNY = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 SKIN_ROLES = ("skin", "body", "head", "face", "hands", "hand", "feet", "foot")
-NOT_SKIN = re.compile(
-    r"hair|lash|brow|beard|moustache|mustache|teeth|tooth|tongue|eyeball|cornea|iris|"
-    r"pupil|(^|[^a-z])eyes?([^a-z]|$)|cloth|armou?r|outfit|weapon|accessor",
-    re.IGNORECASE,
+# The roles that a part or material name names, in order: the first match wins, so that
+# "eyelash" is lashes and "eyebrow" brows rather than eyes.
+NAMED_ROLES = (
+    ("lashes", r"lash"),
+    ("brows", r"brow"),
+    ("beard", r"beard|moustache|mustache"),
+    ("hair", r"hair"),
+    ("mouth", r"teeth|tooth|tongue|gum|mouth_?(interior|inside|cavity)"),
+    ("eyes", r"eyeball|cornea|iris|pupil|sclera|(^|[^a-z])eyes?([^a-z]|$)"),
+    ("nails", r"(^|[^a-z])(finger|toe)?nails?([^a-z]|$)"),
+    ("clothing", r"cloth|armou?r|outfit|weapon|accessor"),
 )
+_NAMED_ROLES = [(role, re.compile(rx, re.IGNORECASE)) for role, rx in NAMED_ROLES]
 
 
 @dataclasses.dataclass
@@ -54,6 +70,7 @@ class HandoffPart:
     uvs: np.ndarray | None = None  # (V, 2), glTF convention (v = 0 at the top)
     base_color: np.ndarray | None = None  # (H, W, 3 or 4) uint8, glTF row order
     normal_map: np.ndarray | None = None  # (H, W, 3) uint8, tangent space
+    material: str | None = None  # the glTF material's name
 
     @property
     def is_skin(self) -> bool:
@@ -73,34 +90,87 @@ class Handoff:
         return [p for p in self.parts if p.is_skin]
 
 
+def _declared_role(entry: dict | None) -> str | None:
+    for key in ("role", "kind", "type", "category"):
+        value = (entry or {}).get(key)
+        if isinstance(value, str) and value:
+            value = value.lower()
+            return "skin" if value in SKIN_ROLES else value
+    if (entry or {}).get("skin") is True:
+        return "skin"
+    return None
+
+
 def _part_entries(parts) -> dict[str, dict]:
-    """The ``parts`` of appearance.json by the mesh or node name they describe."""
+    """The ``parts`` of appearance.json by the mesh or node name they describe. An object
+    keyed by part name gives its key as the role of entries that declare none."""
     if isinstance(parts, dict):
-        items = [dict(v, name=v.get("name", k)) for k, v in parts.items()]
+        items = []
+        for k, v in parts.items():
+            v = dict(v) if isinstance(v, dict) else {}
+            if _declared_role(v) is None:
+                v["role"] = str(k)
+            items.append(dict(v, name=v.get("name", k)))
     elif isinstance(parts, list):
         items = [p if isinstance(p, dict) else {"name": str(p)} for p in parts]
     else:
         items = []
     entries = {}
     for item in items:
-        for key in ("mesh", "node", "name"):
-            if isinstance(item.get(key), str):
-                entries[item[key]] = item
+        for key in ("mesh", "node", "node_name", "name"):
+            if isinstance(item.get(key), str) and item[key]:
+                entries.setdefault(item[key], item)
     return entries
 
 
-def part_role(name: str, entry: dict | None = None) -> str:
-    """``"skin"`` or the declared role of a part; a part without a role is skin unless its
-    name names another kind of part."""
-    entry = entry or {}
-    for key in ("role", "kind", "type", "category"):
-        value = entry.get(key)
-        if isinstance(value, str) and value:
-            value = value.lower()
-            return "skin" if value in SKIN_ROLES else value
-    if entry.get("skin") is True:
-        return "skin"
-    return "other" if NOT_SKIN.search(name) else "skin"
+def _material_entries(materials) -> dict[str, dict]:
+    """The ``materials`` of appearance.json by material name."""
+    if isinstance(materials, dict):
+        return {k: v for k, v in materials.items() if isinstance(v, dict)}
+    if isinstance(materials, list):
+        return {
+            m["name"]: m
+            for m in materials
+            if isinstance(m, dict) and isinstance(m.get("name"), str)
+        }
+    return {}
+
+
+def _find_entry(entries: dict, *names: str) -> dict | None:
+    """The entry of a node or mesh name, exactly or as the prefix ``<entry>_`` of it."""
+    for name in names:
+        if name in entries:
+            return entries[name]
+    best = None
+    for key, entry in entries.items():
+        for name in names:
+            if name.startswith(key + "_") and (best is None or len(key) > len(best[0])):
+                best = (key, entry)
+    return best[1] if best else None
+
+
+def name_role(name: str | None) -> str | None:
+    """The role of :data:`NAMED_ROLES` that a name names, or None."""
+    for role, pattern in _NAMED_ROLES:
+        if name and pattern.search(name):
+            return role
+    return None
+
+
+def part_role(
+    name: str,
+    entry: dict | None = None,
+    material: str | None = None,
+    material_entry: dict | None = None,
+) -> str:
+    """``"skin"`` or another role of a part (see the module documentation)."""
+    return (
+        _declared_role(material_entry)
+        or name_role(material)
+        or _declared_role(entry)
+        or name_role(name)
+        or "skin"
+    )
 
 
 def _texture_array(image) -> np.ndarray | None:
@@ -131,11 +201,17 @@ def _visual(geometry):
     return uv, base, normal
 
 
-def load_glb_parts(path: str | pathlib.Path, entries: dict | None = None):
-    """The parts of a GLB file in Anny's frame (node transforms applied, skinning not)."""
+def load_glb_parts(
+    path: str | pathlib.Path,
+    entries: dict | None = None,
+    materials: dict | None = None,
+):
+    """The parts of a GLB file in Anny's frame (node transforms applied, skinning not), one
+    per primitive."""
     import trimesh
 
     entries = entries or {}
+    materials = materials or {}
     scene = trimesh.load(str(path), force="scene", process=False)
     parts = []
     for node in scene.graph.nodes_geometry:
@@ -145,20 +221,23 @@ def load_glb_parts(path: str | pathlib.Path, entries: dict | None = None):
             continue
         vertices = np.asarray(geometry.vertices, dtype=np.float64)
         vertices = vertices @ transform[:3, :3].T + transform[:3, 3]
-        entry = entries.get(node) or entries.get(geometry_name)
-        name = (
-            node if node in entries or geometry_name not in entries else geometry_name
-        )
+        entry = _find_entry(entries, node, geometry_name)
+        # trimesh names the nodes of a mesh's further primitives with a random suffix, so
+        # the part takes the geometry's name unless the entry names the node itself
+        name = node if node in entries else geometry_name
+        material = getattr(getattr(geometry, "visual", None), "material", None)
+        material = getattr(material, "name", None)
         uv, base, normal = _visual(geometry)
         parts.append(
             HandoffPart(
                 name=name,
-                role=part_role(name, entry),
+                role=part_role(name, entry, material, materials.get(material)),
                 vertices=vertices @ GLTF_TO_ANNY.T,
                 triangles=np.asarray(geometry.faces, dtype=np.int64),
                 uvs=uv,
                 base_color=base,
                 normal_map=normal,
+                material=material,
             )
         )
     return parts
@@ -178,7 +257,11 @@ def load_handoff(folder: str | pathlib.Path) -> Handoff:
     )
     if not isinstance(appearance, dict):
         raise ValueError(f"{appearance_path} must hold a JSON object.")
-    parts = load_glb_parts(glb, _part_entries(appearance.get("parts")))
+    parts = load_glb_parts(
+        glb,
+        _part_entries(appearance.get("parts")),
+        _material_entries(appearance.get("materials")),
+    )
     if not any(p.is_skin for p in parts):
         raise ValueError(f"{glb} has no skin part to fit (see the parts' roles).")
     landmarks = {}

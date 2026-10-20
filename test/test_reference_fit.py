@@ -26,8 +26,18 @@ import torch
 from opensculptboy import Character, export_glb
 from opensculptboy.detail import DetailModel, character_offsets, level
 from opensculptboy.export.budget import BUDGETS
-from opensculptboy.fit.handoff import load_handoff, part_role, write_handoff
-from opensculptboy.fit.reference import Reference, canonical_landmark
+from opensculptboy.fit.handoff import (
+    _find_entry,
+    _part_entries,
+    load_handoff,
+    part_role,
+    write_handoff,
+)
+from opensculptboy.fit.reference import (
+    Reference,
+    canonical_landmark,
+    canonical_landmarks,
+)
 from opensculptboy.fit.register import FitOptions, excluded_vertices, fit_reference
 from opensculptboy.fit.residual import surface_error
 from test.fit_fixtures import synthetic_target
@@ -63,13 +73,57 @@ class TestLandmarkNames(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertEqual(canonical_landmark(name), expected)
 
+    def test_surface_variants(self):
+        # a face landmark takes the point snapped to the skin, a joint centre the other
+        points = {
+            "mouth_corner_l": [1.0, 0.0, 0.0],
+            "mouth_corner_l_skin": [2.0, 0.0, 0.0],
+            "elbow_l": [3.0, 0.0, 0.0],
+            "elbow_l_skin": [4.0, 0.0, 0.0],
+            "nose_tip_joint": [5.0, 0.0, 0.0],
+        }
+        for order in (list(points), list(reversed(points))):
+            with self.subTest(order=order[0]):
+                found = canonical_landmarks({k: points[k] for k in order})
+                self.assertEqual(sorted(found), ["elbow_l", "mouth_corner_l"])
+                self.assertEqual(found["mouth_corner_l"][0], 2.0)
+                self.assertEqual(found["elbow_l"][0], 3.0)
+
     def test_part_roles(self):
         self.assertEqual(part_role("body"), "skin")
-        self.assertEqual(part_role("Hair_Long"), "other")
-        self.assertEqual(part_role("eye_L"), "other")
+        self.assertEqual(part_role("Hair_Long"), "hair")
+        self.assertEqual(part_role("eye_L"), "eyes")
         self.assertEqual(part_role("eyelid"), "skin")
+        self.assertEqual(part_role("eyebrows_mesh"), "brows")
         self.assertEqual(part_role("anything", {"role": "hair"}), "hair")
         self.assertEqual(part_role("hair_cap", {"role": "head"}), "skin")
+        # the material of a primitive overrides the role of its part
+        self.assertEqual(part_role("head_0", {"role": "head"}, "teeth_mat"), "mouth")
+        self.assertEqual(part_role("head_0", {"role": "head"}, "l_eye_mat"), "eyes")
+        self.assertEqual(part_role("body_0", {"role": "body"}, "nail_mat"), "nails")
+        self.assertEqual(part_role("body_0", {"role": "body"}, "body_mat"), "skin")
+        self.assertEqual(
+            part_role("head_0", {"role": "head"}, "x", {"role": "eyes"}), "eyes"
+        )
+
+    def test_contract_parts(self):
+        # the contract keys parts by kind, and the tools name nodes <node_name>_group<N>_...
+        entries = _part_entries(
+            {"hair": {"node_name": "hair_a"}, "head": {"node_name": "head_b"}}
+        )
+        self.assertEqual(
+            part_role(
+                "hair_a_group0_band_mat",
+                _find_entry(entries, "hair_a_group0_band_mat"),
+                "band_mat",
+            ),
+            "hair",
+        )
+        self.assertEqual(
+            part_role("head_b_group0", _find_entry(entries, "head_b_group0")),
+            "skin",
+        )
+        self.assertIsNone(_find_entry(entries, "torso_0"))
 
 
 class TestHandoff(unittest.TestCase):

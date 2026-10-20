@@ -16,8 +16,11 @@ The landmarks of the handoff contract and their counterparts on anny (:data:`LAN
 
 ``l`` and ``r`` are the figure's own left and right (+X and -X in both frames). Names are
 matched loosely (:func:`canonical_landmark`): ``LeftEyeOuter``, ``eye.outer.L`` and
-``left_eye_outer`` all name ``eye_outer_l``. Joint centres differ between rigs, so the fit
-weighs them less than the surface points of the face.
+``left_eye_outer`` all name ``eye_outer_l``. A ``skin`` or ``surface`` word marks a point
+snapped to the skin (``mouth_corner_l_skin``, as the DD2DA tools write next to the joint
+position ``mouth_corner_l``): when a source gives both, the surface point serves the face
+landmarks, which are skin points on anny, and the other serves the joint centres. Joint centres
+differ between rigs, so the fit weighs them less than the surface points of the face.
 """
 
 from __future__ import annotations
@@ -87,32 +90,53 @@ _SYNONYMS = {
 }
 
 
-def canonical_landmark(name: str) -> str | None:
-    """The name of :data:`LANDMARKS` that a landmark name means, or None."""
+SURFACE_WORDS = ("skin", "surface")
+
+
+def _landmark_key(name: str) -> tuple[str | None, bool]:
+    """The name of :data:`LANDMARKS` that a landmark name means (or None), and whether the
+    name marks a point snapped to the skin."""
     words = re.sub(r"([a-z])([A-Z])", r"\1_\2", name)
     tokens = [t for t in re.split(r"[^a-z0-9]+", words.lower()) if t]
     side = None
+    surface = False
     rest = []
     for token in tokens:
         if token in ("l", "left"):
             side = "l"
         elif token in ("r", "right"):
             side = "r"
+        elif token in SURFACE_WORDS:
+            surface = True
         else:
             rest.append(token)
     base = "_".join(rest)
     base = _SYNONYMS.get(base, base)
     candidate = f"{base}_{side}" if side else base
-    return candidate if candidate in LANDMARKS else None
+    return (candidate if candidate in LANDMARKS else None), surface
+
+
+def canonical_landmark(name: str) -> str | None:
+    """The name of :data:`LANDMARKS` that a landmark name means, or None."""
+    return _landmark_key(name)[0]
 
 
 def canonical_landmarks(landmarks: dict) -> dict[str, np.ndarray]:
-    """The landmarks under their names of :data:`LANDMARKS`; unknown names are left out."""
-    out = {}
+    """The landmarks under their names of :data:`LANDMARKS`; unknown names are left out.
+    Of two points for one landmark, a face landmark takes the one snapped to the skin and a
+    joint centre the other."""
+    out, chosen = {}, {}
     for name, point in landmarks.items():
-        key = canonical_landmark(name)
-        if key is not None:
-            out[key] = np.asarray(point, dtype=np.float64)
+        key, surface = _landmark_key(name)
+        if key is None:
+            continue
+        wanted = LANDMARKS[key][0] == "craniofacial"
+        if key in chosen and chosen[key] == wanted:
+            continue  # the preferred kind is already in
+        if key in chosen and surface != wanted:
+            continue  # keep the preferred one that came first
+        out[key] = np.asarray(point, dtype=np.float64)
+        chosen[key] = surface
     return out
 
 
