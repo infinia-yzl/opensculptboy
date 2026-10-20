@@ -476,7 +476,11 @@ def _initial_placement(model, reference: Reference, regressor, options):
         phenotype[0, labels.index("height")] = height0
         out = model(phenotype_kwargs=phenotype)
     anny_points = _landmark_points(model, out, regressor, reference, None)
-    names = [k for k in reference.landmarks if k in anny_points]
+    names = [
+        k
+        for k in reference.landmarks
+        if k in anny_points and (reference.auto or LANDMARKS[k][2] > 0)
+    ]
     src = np.stack([anny_points[k] for k in names])
     dst = np.stack([reference.landmarks[k] for k in names])
     if reference.auto or len(names) < 3:
@@ -559,7 +563,7 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
             kinds.append("vertices")
             rows.append(torch.as_tensor(auto_vertices[name]))
             weights.append(options.auto_landmark_weight)
-        elif name in LANDMARKS:
+        elif name in LANDMARKS and LANDMARKS[name][2] > 0:
             kind, label, weight = LANDMARKS[name]
             kinds.append(kind)
             rows.append(

@@ -8,8 +8,11 @@ The landmarks of the handoff contract and their counterparts on anny (:data:`LAN
 
 - the face, as craniofacial landmarks of :mod:`anny.faces.measurements` (surface points):
   ``eye_outer_l/r`` (exocanthion), ``eye_inner_l/r`` (endocanthion), ``nose_tip``
-  (pronasale), ``mouth_corner_l/r`` (cheilion), ``chin`` (gnathion), ``ear_l/r`` (tragion)
-  and ``crown`` (vertex, the top of the head);
+  (pronasale), ``mouth_corner_l/r`` (cheilion), ``chin`` (gnathion), ``ear_l/r`` (tragion),
+  ``crown`` (vertex, the top of the head), and the outline of the ear: ``ear_top_l/r``
+  (superaurale, the highest point of the ear, the tip of a pointed ear), ``ear_lobe_l/r``
+  (subaurale, the lowest point of the lobe), ``ear_back_l/r`` (postaurale, the hindmost point)
+  and ``ear_lateral_l/r`` (the point furthest from the head);
 - the body, as joint centres (the heads of anny's bones): ``neck_base`` (neck01),
   ``shoulder_l/r`` (upperarm01), ``elbow_l/r`` (lowerarm01), ``wrist_l/r`` (wrist),
   ``hip_l/r`` (upperleg01), ``knee_l/r`` (lowerleg01) and ``ankle_l/r`` (foot).
@@ -20,7 +23,8 @@ matched loosely (:func:`canonical_landmark`): ``LeftEyeOuter``, ``eye.outer.L`` 
 snapped to the skin (``mouth_corner_l_skin``, as the DD2DA tools write next to the joint
 position ``mouth_corner_l``): when a source gives both, the surface point serves the face
 landmarks, which are skin points on anny, and the other serves the joint centres. Joint centres
-differ between rigs, so the fit weighs them less than the surface points of the face.
+differ between rigs, so the fit weighs them less than the surface points of the face, and the
+neck base and the hips, which sit 20 to 30 mm apart between rigs, take no weight at all.
 """
 
 from __future__ import annotations
@@ -42,16 +46,25 @@ LANDMARKS = {
     "chin": ("craniofacial", "gn", 1.0),
     "ear_l": ("craniofacial", "t.L", 0.5),
     "ear_r": ("craniofacial", "t.R", 0.5),
+    "ear_top_l": ("craniofacial", "sa.L", 0.5),
+    "ear_top_r": ("craniofacial", "sa.R", 0.5),
+    "ear_lobe_l": ("craniofacial", "sba.L", 0.5),
+    "ear_lobe_r": ("craniofacial", "sba.R", 0.5),
+    "ear_back_l": ("craniofacial", "pa.L", 0.5),
+    "ear_back_r": ("craniofacial", "pa.R", 0.5),
+    "ear_lateral_l": ("craniofacial", "ela.L", 0.5),
+    "ear_lateral_r": ("craniofacial", "ela.R", 0.5),
     "crown": ("craniofacial", "v", 0.5),
-    "neck_base": ("bone", "neck01", 0.1),
+    # joint centres that sit 20 to 30 mm apart between rigs: read, reported, not fitted
+    "neck_base": ("bone", "neck01", 0.0),
     "shoulder_l": ("bone", "upperarm01.L", 0.1),
     "shoulder_r": ("bone", "upperarm01.R", 0.1),
     "elbow_l": ("bone", "lowerarm01.L", 0.2),
     "elbow_r": ("bone", "lowerarm01.R", 0.2),
     "wrist_l": ("bone", "wrist.L", 0.2),
     "wrist_r": ("bone", "wrist.R", 0.2),
-    "hip_l": ("bone", "upperleg01.L", 0.1),
-    "hip_r": ("bone", "upperleg01.R", 0.1),
+    "hip_l": ("bone", "upperleg01.L", 0.0),
+    "hip_r": ("bone", "upperleg01.R", 0.0),
     "knee_l": ("bone", "lowerleg01.L", 0.2),
     "knee_r": ("bone", "lowerleg01.R", 0.2),
     "ankle_l": ("bone", "foot.L", 0.2),
@@ -75,6 +88,14 @@ _SYNONYMS = {
     "gnathion": "chin",
     "chin_tip": "chin",
     "tragion": "ear",
+    "ear_tip": "ear_top",
+    "helix_tip": "ear_top",
+    "superaurale": "ear_top",
+    "earlobe": "ear_lobe",
+    "ear_lobe_bottom": "ear_lobe",
+    "subaurale": "ear_lobe",
+    "postaurale": "ear_back",
+    "ear_outer": "ear_lateral",
     "head_top": "crown",
     "top_of_head": "crown",
     "vertex": "crown",
