@@ -215,17 +215,26 @@ def nicp(
     max_distance: float = 0.02,
     normal_threshold: float = 0.2,
     anchor: float = 1e-4,
+    reverse_weight: float = 1.0,
+    reverse_normal_threshold: float = 0.5,
 ) -> np.ndarray:
     """
     Non-rigid ICP of a mesh onto the reference: in each round, solve
 
-        min_X sum_i w_i |x_i - c_i|^2 + alpha |L (X - X_0)|^2 + anchor |X - X_0|^2
+        min_X sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + alpha |L (X - X_0)|^2
+              + anchor |X - X_0|^2
 
     with c_i the closest point of the reference, L the uniform Laplacian of the mesh and X_0
     the mesh at the start of the stiffness ``alpha``. Pairs farther than ``max_distance`` or
     whose normals disagree (dot product under ``normal_threshold``) drop out; ``weights`` of 0
     leave a vertex to the smoothness term. The small ``anchor`` keeps closed parts without
     data (the eyeballs) where they are, which :func:`follow_skin` then corrects.
+
+    The reverse term pulls each vertex that is the nearest of some reference vertices to
+    their mean p_i, with r_i = ``reverse_weight`` w_i (pairs within ``max_distance`` whose
+    normals agree to ``reverse_normal_threshold``). Closest points alone never pull a surface
+    past its border, so without it a part of the reference that reaches beyond anny's (the
+    tip of a pointed ear, eyelids that cover more of the eye) stays uncovered.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -237,6 +246,7 @@ def nicp(
     L = uniform_laplacian(n, np.asarray(triangles))
     LtL = (L.T @ L).tocsc()
     base = np.asarray(weights, dtype=np.float64)
+    kept = np.nonzero(base > 0)[0]
     for alpha in stiffness:
         start = X.copy()
         smooth = alpha * (LtL @ start)
@@ -245,11 +255,38 @@ def nicp(
             normals = vertex_normals(X, triangles)
             ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
             w = base * ok
-            A = (scipy.sparse.diags(w + anchor) + alpha * LtL).tocsc()
-            rhs = w[:, None] * C + anchor * start + smooth
+            r, P = _reverse_pairs(
+                X, normals, kept, reference, max_distance, reverse_normal_threshold
+            )
+            r = reverse_weight * base * r
+            A = (scipy.sparse.diags(w + r + anchor) + alpha * LtL).tocsc()
+            rhs = w[:, None] * C + r[:, None] * P + anchor * start + smooth
             solve = scipy.sparse.linalg.factorized(A)
             X = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
     return X
+
+
+def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
+    """For each vertex of ``X``: 1 when it is the nearest vertex (of ``kept``) of reference
+    vertices within ``max_distance`` with agreeing normals, else 0, and their mean."""
+    from scipy.spatial import cKDTree
+
+    hit = np.zeros(len(X))
+    mean = np.zeros_like(X)
+    if len(kept) == 0:
+        return hit, mean
+    d, nearest = cKDTree(X[kept]).query(reference.vertices)
+    rows = kept[nearest]
+    ok = (d < max_distance) & (
+        (normals[rows] * reference.normals).sum(1) > normal_threshold
+    )
+    rows = rows[ok]
+    count = np.bincount(rows, minlength=len(X)).astype(np.float64)
+    for k in range(3):
+        mean[:, k] = np.bincount(rows, reference.vertices[ok, k], minlength=len(X))
+    hit = (count > 0).astype(np.float64)
+    mean /= np.maximum(count, 1.0)[:, None]
+    return hit, mean
 
 
 def follow_skin(
