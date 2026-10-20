@@ -72,8 +72,8 @@ def load_offsets(
         raise ValueError(f"{path} is not a detail offsets file ({OFFSETS_FORMAT}).")
     if int(meta.get("subdiv", -1)) != subdiv or meta.get("topology") != topology:
         raise ValueError(
-            f"{path} holds level {meta.get('subdiv')} of {meta.get('topology')!r}, not "
-            f"level {subdiv} of {topology!r}."
+            f"{path} holds level {meta.get('subdiv')} of {meta.get('topology')!r}; "
+            f"level {subdiv} of {topology!r} was asked for."
         )
     expected = level(topology, subdiv).vertex_count
     if offsets.shape != (expected, 3):

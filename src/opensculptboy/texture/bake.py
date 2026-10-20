@@ -17,8 +17,8 @@ of the atlas do not show. The rays use Embree through trimesh (``embreex``, the 
 extra), as :mod:`anny.viewer.bake` does.
 
 Left for later (TODO): the reference's own normal map is not yet carried (the bake uses the
-geometry of the reference alone), the tangent frames are per triangle, not MikkTSpace, and the
-other material maps (roughness, subsurface) are not baked.
+geometry of the reference alone), the tangent frames are per triangle (MikkTSpace would match
+engines exactly), and the other material maps (roughness, subsurface) are not baked.
 """
 
 from __future__ import annotations
