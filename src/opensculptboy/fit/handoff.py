@@ -71,6 +71,9 @@ class HandoffPart:
     base_color: np.ndarray | None = None  # (H, W, 3 or 4) uint8, glTF row order
     normal_map: np.ndarray | None = None  # (H, W, 3) uint8, tangent space
     material: str | None = None  # the glTF material's name
+    # the file's own vertex normals (unit, Anny's frame): the shading of the replica, which
+    # can differ from the normals of its geometry by tens of degrees
+    normals: np.ndarray | None = None
 
     @property
     def is_skin(self) -> bool:
@@ -88,6 +91,37 @@ class Handoff:
 
     def skin_parts(self) -> list[HandoffPart]:
         return [p for p in self.parts if p.is_skin]
+
+    def mask(
+        self, region: str, parts: list[HandoffPart] | None = None
+    ) -> np.ndarray | None:
+        """
+        The vertices of a region of ``masks`` in appearance.json (such as ``"ear"``) as a mask
+        over the vertices of ``parts`` (the skin parts by default) laid end to end, or None
+        when the handoff has no such mask. Each entry names its part (``"mesh"``, ``"node"``
+        or ``"part"``, matched as the part names are) and lists ``"vertices"``, indices into
+        that part's vertices; entries of other parts are ignored.
+        """
+        entries = (self.appearance.get("masks") or {}).get(region)
+        if not entries:
+            return None
+        parts = self.skin_parts() if parts is None else parts
+        offsets = np.cumsum([0] + [len(p.vertices) for p in parts])
+        out = np.zeros(offsets[-1], bool)
+        found = False
+        for entry in entries if isinstance(entries, list) else [entries]:
+            if not isinstance(entry, dict):
+                continue
+            names = [entry.get(k) for k in ("mesh", "node", "part")]
+            names = [n for n in names if isinstance(n, str) and n]
+            rows = np.asarray(entry.get("vertices") or [], dtype=np.int64)
+            for k, part in enumerate(parts):
+                if part.name in names:
+                    rows_k = rows[(rows >= 0) & (rows < len(part.vertices))]
+                    out[offsets[k] + rows_k] = True
+                    found = True
+                    break
+        return out if found else None
 
 
 def _declared_role(entry: dict | None) -> str | None:
@@ -228,6 +262,11 @@ def load_glb_parts(
         material = getattr(getattr(geometry, "visual", None), "material", None)
         material = getattr(material, "name", None)
         uv, base, normal = _visual(geometry)
+        # the file's NORMAL attribute when it has one (trimesh computes them otherwise)
+        shading = np.asarray(geometry.vertex_normals, dtype=np.float64)
+        shading = shading @ np.linalg.inv(transform[:3, :3])  # the inverse transpose
+        shading = shading @ GLTF_TO_ANNY.T
+        shading /= np.maximum(np.linalg.norm(shading, axis=1, keepdims=True), 1e-12)
         parts.append(
             HandoffPart(
                 name=name,
@@ -238,6 +277,7 @@ def load_glb_parts(
                 base_color=base,
                 normal_map=normal,
                 material=material,
+                normals=shading,
             )
         )
     return parts

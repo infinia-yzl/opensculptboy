@@ -263,12 +263,24 @@ class Reference:
     eyes: list = dataclasses.field(default_factory=list)
     # the parts of role "eyes" as a reference of their own, for the texture bake
     eye_reference: "Reference | None" = None
+    # the source's own vertex normals (V, 3), its shading; None: the geometric normals
+    file_normals: np.ndarray | None = None
+    # named vertex masks (V,) of the source, such as "ear" (masks.ear of the handoff)
+    regions: dict = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=np.float64)
         self.triangles = np.asarray(self.triangles, dtype=np.int64)
         self.normals = vertex_normals(self.vertices, self.triangles)
+        if self.file_normals is not None:
+            self.file_normals = np.asarray(self.file_normals, dtype=np.float64)
+        self.regions = {k: np.asarray(v, bool) for k, v in (self.regions or {}).items()}
         self._tree = None
+
+    @property
+    def shading_normals(self) -> np.ndarray:
+        """The normals that the source shades with: its own where it has them."""
+        return self.normals if self.file_normals is None else self.file_normals
 
     @property
     def face_normals(self) -> np.ndarray:
@@ -299,6 +311,20 @@ class Reference:
         auto = not landmarks
         if auto:
             landmarks = auto_landmarks(vertices)
+        file_normals = None
+        if any(p.normals is not None for p in parts):
+            file_normals = np.concatenate(
+                [
+                    p.normals
+                    if p.normals is not None
+                    else vertex_normals(p.vertices, p.triangles)
+                    for p in parts
+                ]
+            )
+        regions = {}
+        ear = handoff.mask("ear", list(parts)) if hasattr(handoff, "mask") else None
+        if ear is not None and ear.any():
+            regions["ear"] = ear
         eye_parts = [p for p in handoff.parts if p.role == "eyes"]
         eyes = eye_spheres([p.vertices for p in eye_parts])
         eye_reference = None
@@ -321,6 +347,8 @@ class Reference:
             offsets,
             eyes,
             eye_reference,
+            file_normals,
+            regions,
         )
 
     def transformed(self, rotation: np.ndarray, translation: np.ndarray):
@@ -337,6 +365,8 @@ class Reference:
             None
             if self.eye_reference is None
             else self.eye_reference.transformed(R, t),
+            None if self.file_normals is None else self.file_normals @ R.T,
+            self.regions,
         )
         return moved
 
@@ -348,10 +378,21 @@ class Reference:
             self._tree = cKDTree(self.vertices)
         return self._tree
 
-    def closest(self, points: np.ndarray):
+    def closest(self, points: np.ndarray, smooth: float = 0.0, shading: bool = False):
         """
         For each point: the closest point of the surface, the interpolated unit normal there,
         the distance, the triangle and the barycentric coordinates.
+
+        With ``smooth`` > 0 the surface is the reference's Phong tessellation (Boubekeur and
+        Alexa 2008) instead of its flat triangles: the closest point c of a triangle, with
+        barycentric coordinates b, moves to (1 - smooth) c + smooth sum_i b_i pi_i(c), where
+        pi_i projects onto the tangent plane of corner i. The vertices stay where they are and
+        the surface between them curves with the vertex normals, as the shading of a coarse
+        mesh suggests; a fine mesh fitted to the flat triangles would copy their facets.
+        ``shading`` takes the normals that the source shades with
+        (:attr:`shading_normals`) for the tessellation and the returned normals. A triangle
+        whose corner normals part by more than 60 degrees (the rim of a thin part such as an
+        ear) stays flat, and one between 37 and 60 degrees curves less.
         """
         from anny.hair import closest_triangles
 
@@ -359,9 +400,45 @@ class Reference:
         tri, bary, distance = closest_triangles(points, self.vertices, self.triangles)
         corners = self.triangles[tri]
         closest = np.einsum("nk, nkd -> nd", bary, self.vertices[corners])
-        normals = np.einsum("nk, nkd -> nd", bary, self.normals[corners])
+        vertex_normals_ = self.shading_normals if shading else self.normals
+        corner_normals = vertex_normals_[corners]
+        normals = np.einsum("nk, nkd -> nd", bary, corner_normals)
         normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+        if smooth > 0:
+            offsets = closest[:, None] - self.vertices[corners]
+            heights = (offsets * corner_normals).sum(-1)
+            # a triangle whose corner normals part by more than 60 degrees (the rim of a thin
+            # part, a crease) stays flat: its tessellation would overshoot
+            n0, n1, n2 = (corner_normals[:, k] for k in range(3))
+            agree = np.minimum.reduce(
+                [(n0 * n1).sum(1), (n1 * n2).sum(1), (n2 * n0).sum(1)]
+            )
+            share = smooth * np.clip((agree - 0.5) / 0.3, 0.0, 1.0)
+            closest = closest - np.einsum(
+                "n, nk, nk, nkd -> nd", share, bary, heights, corner_normals
+            )
+            distance = np.linalg.norm(points - closest, axis=1)
         return closest, normals, distance, tri, bary
+
+    def subset(self, triangles: np.ndarray) -> "Reference":
+        """The reference restricted to a mask of its triangles, with the normals of the whole
+        surface, its landmarks and its regions (compacted), for closest-point queries within a
+        region. ``source_vertices`` maps its vertices back."""
+        triangles = self.triangles[np.asarray(triangles, bool)]
+        used = np.unique(triangles)
+        remap = np.full(len(self.vertices), -1, np.int64)
+        remap[used] = np.arange(len(used))
+        out = Reference(
+            self.vertices[used],
+            remap[triangles],
+            dict(self.landmarks),
+            self.auto,
+            file_normals=None if self.file_normals is None else self.file_normals[used],
+            regions={k: v[used] for k, v in self.regions.items()},
+        )
+        out.normals = self.normals[used]  # the normals of the whole surface
+        out.source_vertices = used
+        return out
 
     def height(self) -> float:
         return float(np.ptp(self.vertices[:, 2]))

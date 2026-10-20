@@ -370,6 +370,26 @@ class TestSyntheticFit(unittest.TestCase):
                     errors[fine][side]["mean"], errors[coarse][side]["mean"]
                 )
 
+    def test_honest_measures(self):
+        # unmasked, signed, before the final projection: the projection cannot hide errors
+        measures = self.result.measures
+        self.assertEqual(set(measures), {"parametric", 0, 1})
+        before = measures[1]["before_projection"]["all"]
+        final = measures[1]["final"]["all"]
+        print(
+            f"\nhonest level 1: before projection forward {before['forward_mm']['mean']:.3f}"
+            f" reverse {before['reverse_mm']['mean']:.3f}; final forward "
+            f"{final['forward_mm']['mean']:.3f} reverse {final['reverse_mm']['mean']:.3f} mm",
+            file=sys.stderr,
+        )
+        for entry in (before, final):
+            self.assertLess(entry["forward_mm"]["mean"], LEVEL1_BOUND_MM)
+            self.assertLess(entry["reverse_mm"]["mean"], LEVEL1_BOUND_MM)
+        self.assertLess(
+            measures[1]["final"]["all"]["reverse_mm"]["mean"],
+            measures["parametric"]["all"]["reverse_mm"]["mean"],
+        )
+
     def test_card_reproduces_the_fit(self):
         card = Character.from_dict(json.loads(self.card_path.read_text()))
         self.assertEqual(card.detail_levels(), [0, 1])

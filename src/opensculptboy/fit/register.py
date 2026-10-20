@@ -117,6 +117,20 @@ class FitOptions:
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
+    # experimental, off by default (see docs/reference-fit.md, "Measuring a fit"): the
+    # surface of the refinement: the Phong tessellation of the reference's triangles
+    # with this share (0: the flat triangles, whose facets a fine level would copy), curved
+    # by the normals the source shades with when target_shading (else its geometric normals)
+    target_smooth: float = 0.0
+    target_shading: bool = False
+    # "vertex" (the nearest fitted vertex of each reference vertex) or "surface" (its closest
+    # point on the fitted triangles, spread over their corners); see nicp
+    reverse: str = "vertex"
+    # the normal agreement of the correspondences on the outer ears (ear_weights over 0.5),
+    # where the front and the back of a thin rim face apart
+    ear_normal_threshold: float = 0.2
+    # the measures of metrics.measure, before and after the projection, in FitResult.measures
+    measure: bool = True
     seed: int = 0
     verbose: bool = False
 
@@ -133,6 +147,12 @@ class FitResult:
     errors: dict  # "parametric" and each level -> surface_error() dict
     seconds: dict  # time of each stage
     reference: Reference | None = None
+    # "parametric" and each level -> {"before_projection", "final"} -> Measures.summary()
+    # (opensculptboy.fit.metrics: unmasked, signed, per region); empty without options.measure
+    measures: dict = dataclasses.field(default_factory=dict)
+    meshes: dict = dataclasses.field(
+        default_factory=dict
+    )  # level -> (vertices, triangles)
 
     def write(self, card_path: str | pathlib.Path, textures: dict | None = None):
         """
@@ -309,6 +329,28 @@ def ear_weights(model) -> np.ndarray:
     return out
 
 
+class Target:
+    """
+    The surface that the refinement fits: a :class:`Reference`, as its flat triangles or as
+    their Phong tessellation (``smooth``, curved by the normals the source shades with when
+    ``shading``; see :meth:`Reference.closest`).
+    """
+
+    def __init__(
+        self, reference: Reference, smooth: float = 0.0, shading: bool = False
+    ):
+        self.reference = reference
+        self.smooth = smooth
+        self.shading = shading
+        self.vertices = reference.vertices
+        self.normals = reference.shading_normals if shading else reference.normals
+
+    def closest(self, points: np.ndarray):
+        """Closest points, normals and distances of ``points``."""
+        C, N, d, _, _ = self.reference.closest(points, self.smooth, self.shading)
+        return C, N, d
+
+
 def nicp(
     vertices: np.ndarray,
     triangles: np.ndarray,
@@ -322,6 +364,7 @@ def nicp(
     reverse_weight: float = 1.0,
     reverse_normal_threshold: float = 0.5,
     stiffness_scale: np.ndarray | None = None,
+    reverse: str = "vertex",
 ) -> np.ndarray:
     """
     Non-rigid ICP of a mesh onto the reference: in each round, solve
@@ -336,17 +379,26 @@ def nicp(
     data (the eyeballs) where they are, which :func:`follow_skin` then corrects.
     ``stiffness_scale`` (S, per vertex; 1 by default) makes a region stiffer than the rest.
 
-    The reverse term pulls each vertex that is the nearest of some reference vertices to
-    their mean p_i, with r_i = ``reverse_weight`` w_i (pairs within ``max_distance`` whose
-    normals agree to ``reverse_normal_threshold``). Closest points alone never pull a surface
-    past its border, so without it a part of the reference that reaches beyond anny's (the
-    tip of a pointed ear, eyelids that cover more of the eye) stays uncovered.
+    The reverse term (``reverse="vertex"``) pulls each vertex that is the nearest of some
+    reference vertices to their mean, with weight ``reverse_weight`` times its data weight.
+    ``reverse="surface"`` (experimental) instead pulls the fitted surface onto the reference's
+    vertices: each reference
+    vertex p_j within ``max_distance`` of the surface, whose normal agrees with the surface's
+    there to ``reverse_normal_threshold``, adds ``reverse_weight`` m_j |sum_k b_jk x_k - p_j|^2
+    with b_j the barycentric coordinates of its closest point on the fitted triangle (of
+    vertices that all take data) and m_j the smallest data weight of its corners. Closest
+    points alone never pull a surface past its border, so without it a part of the reference
+    that reaches beyond anny's (the tip of a pointed ear, eyelids that cover more of the eye)
+    stays uncovered. Spread over the triangle, the pull does not drag single vertices: a level
+    finer than the reference has several vertices per reference vertex, and pulling the
+    nearest of them alone left pinched points along the rim of an ear.
     """
     import scipy.sparse
     import scipy.sparse.linalg
 
     from anny.faces.authoring.nicp import uniform_laplacian
 
+    target = reference if isinstance(reference, Target) else Target(reference)
     X = np.asarray(vertices, dtype=np.float64).copy()
     n = len(X)
     tri = np.asarray(triangles)
@@ -357,24 +409,69 @@ def nicp(
         LtL = (L.T @ L).tocsc()
     base = np.asarray(weights, dtype=np.float64)
     kept = np.nonzero(base > 0)[0]
+    fitted = tri[(base[tri] > 0).all(1)]
     for alpha in stiffness:
         start = X.copy()
         smooth = alpha * (LtL @ start)
         for _ in range(iterations):
-            C, N, d, _, _ = reference.closest(X)
+            C, N, d = target.closest(X)
             normals = vertex_normals(X, triangles)
             ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
             w = base * ok
-            r, P = _reverse_pairs(
-                X, normals, kept, reference, max_distance, reverse_normal_threshold
+            if reverse == "vertex":
+                r, P = _reverse_pairs(
+                    X, normals, kept, target, max_distance, reverse_normal_threshold
+                )
+                r = reverse_weight * base * r
+                rhs = w[:, None] * C + r[:, None] * P + anchor * start + smooth
+                A = (scipy.sparse.diags(w + r + anchor) + alpha * LtL).tocsc()
+                solve = scipy.sparse.linalg.factorized(A)
+                X = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
+                continue
+            B, P = _reverse_rows(
+                X,
+                normals,
+                fitted,
+                base,
+                target,
+                max_distance,
+                reverse_normal_threshold,
+                reverse_weight,
             )
-            r = reverse_weight * base * r
-            diag = w + r + anchor
-            rhs = w[:, None] * C + r[:, None] * P + anchor * start + smooth
-            A = (scipy.sparse.diags(diag) + alpha * LtL).tocsc()
+            rhs = w[:, None] * C + anchor * start + smooth + B.T @ P
+            A = (scipy.sparse.diags(w + anchor) + B.T @ B + alpha * LtL).tocsc()
             solve = scipy.sparse.linalg.factorized(A)
             X = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
     return X
+
+
+def _reverse_rows(
+    X, normals, fitted, base, target, max_distance, normal_threshold, weight
+):
+    """The rows of the reverse term of :func:`nicp`: a sparse (M, N) matrix of the weighted
+    barycentric coordinates of the closest points of M reference vertices on the fitted
+    triangles, and the weighted reference vertices (M, 3)."""
+    import scipy.sparse
+
+    from anny.hair import closest_triangles
+
+    n = len(X)
+    if len(fitted) == 0 or weight <= 0:
+        return scipy.sparse.csr_matrix((0, n)), np.zeros((0, 3))
+    points = target.vertices
+    t, bary, d = closest_triangles(points, X, fitted)
+    corners = fitted[t]
+    normal = np.einsum("nk, nkd -> nd", bary, normals[corners])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
+    ok = (d < max_distance) & ((normal * target.normals).sum(1) > normal_threshold)
+    rows = np.nonzero(ok)[0]
+    m = np.sqrt(weight * base[corners[rows]].min(1))
+    values = (m[:, None] * bary[rows]).ravel()
+    B = scipy.sparse.csr_matrix(
+        (values, (np.repeat(np.arange(len(rows)), 3), corners[rows].ravel())),
+        shape=(len(rows), n),
+    )
+    return B, m[:, None] * points[rows]
 
 
 def project_onto(
@@ -387,8 +484,9 @@ def project_onto(
 ) -> np.ndarray:
     """The vertices of ``keep`` within ``distance`` of the reference whose normals agree with
     the reference's to ``normal_threshold`` moved onto their closest points."""
+    target = reference if isinstance(reference, Target) else Target(reference)
     X = np.asarray(vertices, dtype=np.float64).copy()
-    C, N, d, _, _ = reference.closest(X)
+    C, N, d = target.closest(X)
     normals = vertex_normals(X, triangles)
     move = keep & (d < distance) & ((normals * N).sum(1) > normal_threshold)
     X[move] = C[move]
@@ -416,6 +514,7 @@ def relax_along(
     """
     import scipy.sparse
 
+    target = reference if isinstance(reference, Target) else Target(reference)
     X = np.asarray(vertices, dtype=np.float64).copy()
     w = np.asarray(weights, dtype=np.float64)
     rows = np.nonzero(w > 1e-3)[0]
@@ -435,7 +534,7 @@ def relax_along(
         umbrella = (A[rows] @ X) / np.maximum(degree[rows], 1)[:, None] - X[rows]
         umbrella -= (umbrella * normals).sum(1, keepdims=True) * normals
         moved = X[rows] + step * w[rows, None] * umbrella
-        C, N, d, _, _ = reference.closest(moved)
+        C, N, d = target.closest(moved)
         ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
         X[rows] = np.where(ok[:, None], C, moved)
     return X
@@ -982,6 +1081,12 @@ def fit_levels(
     previous_level = 0
     ears = ear_weights(model)
     margin = lip_margin(model, excluded, options.lip_margin_rings).astype(np.float64)
+    measures, meshes = {}, {}
+    regions0 = reference_region = None
+    if options.measure:
+        from opensculptboy.fit import metrics
+
+        regions0 = metrics.anny_regions(model, rest0)
     for subdiv in range(detail + 1):
         clock = time.perf_counter()
         topology = detail_topology(model, subdiv, "full", character.topology)
@@ -994,47 +1099,69 @@ def fit_levels(
             start_rest = parametric + _lift(previous, up, topology)
         posed = R_.pose_vertices(start_rest, w, i, transforms, rotation, translation)
         mask = np.asarray(topology.apply(excluded.astype(np.float64))) < 0.5
+        level_ears = np.asarray(topology.apply(ears))
+        regions = None
+        if options.measure:
+            regions = metrics.level_regions(topology, regions0)
+            if reference_region is None:
+                reference_region = metrics.reference_regions(reference, posed, regions)
         if subdiv == 0:
             errors["parametric"] = R_.surface_error(
                 posed, topology.triangles, reference, mask, seed=options.seed
             )
+            if options.measure:
+                measures["parametric"] = metrics.measure(
+                    posed, topology.triangles, regions, reference, reference_region
+                ).summary()
         scale = None
         if options.ear_stiffness != 1.0:
-            scale = 1.0 + (options.ear_stiffness - 1.0) * np.asarray(
-                topology.apply(ears)
-            )
+            scale = 1.0 + (options.ear_stiffness - 1.0) * level_ears
         data = mask.astype(np.float64)
         if options.lip_margin_weight != 1.0:
             data *= 1.0 - (1.0 - options.lip_margin_weight) * np.clip(
                 np.asarray(topology.apply(margin)), 0.0, 1.0
             )
+        threshold = np.where(
+            level_ears > 0.5,
+            max(options.ear_normal_threshold, options.normal_threshold),
+            options.normal_threshold,
+        )
+        target = Target(reference, options.target_smooth, options.target_shading)
         fitted = nicp(
             posed,
             topology.triangles,
-            reference,
+            target,
             data,
             options.stiffness if subdiv == 0 else options.detail_stiffness,
             options.nicp_iterations,
             options.nicp_max_distance,
-            options.normal_threshold,
+            threshold,
             stiffness_scale=scale,
+            reverse=options.reverse,
         )
         if options.ear_relax_iterations > 0:
             fitted = relax_along(
                 fitted,
                 topology.triangles,
-                reference,
-                np.asarray(topology.apply(ears)) * (data > 0),
+                target,
+                level_ears * (data > 0),
                 options.ear_relax_iterations,
                 options.nicp_max_distance,
             )
+        if options.measure:
+            before = follow_skin(
+                posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
+            )
+            before = metrics.measure(
+                before, topology.triangles, regions, reference, reference_region
+            ).summary()
         if options.project_distance > 0:
             # not the outer ears, whose folds anny's ear does not share
             fitted = project_onto(
                 fitted,
                 topology.triangles,
-                reference,
-                (data > 0) & (np.asarray(topology.apply(ears)) < 0.1),
+                target,
+                (data > 0) & (level_ears < 0.1),
                 options.project_distance,
                 options.project_normal_threshold,
             )
@@ -1046,6 +1173,14 @@ def fit_levels(
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
+        if options.measure:
+            measures[subdiv] = {
+                "before_projection": before,
+                "final": metrics.measure(
+                    fitted, topology.triangles, regions, reference, reference_region
+                ).summary(),
+            }
+        meshes[subdiv] = (fitted, topology.triangles)
         previous, previous_level = offsets[subdiv], subdiv
         seconds[f"level{subdiv}"] = time.perf_counter() - clock
         _log(
@@ -1062,6 +1197,8 @@ def fit_levels(
         errors=errors,
         seconds=seconds,
         reference=reference,
+        measures=measures,
+        meshes=meshes,
     )
 
 
