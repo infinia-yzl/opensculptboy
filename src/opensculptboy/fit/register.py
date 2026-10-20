@@ -129,6 +129,25 @@ class FitOptions:
     # the normal agreement of the correspondences on the outer ears (ear_weights over 0.5),
     # where the front and the back of a thin rim face apart
     ear_normal_threshold: float = 0.2
+    # the ears of a reference with an "ear" region (masks.ear of the handoff; see EarSplit):
+    # anny's outer ears (pinna, those vertices more than pinna_height off the head) fit the
+    # reference's ears alone and the rest the rest, the root of the ears takes the attachment
+    # line with this share of the data weight, and the ears are faired on the reference
+    # (fair_region) and their folds repaired (repair_folds) in place of ear_relax_iterations.
+    # False: the ears fit as without the region
+    ear_split: bool = True
+    pinna_height: float = 0.002
+    # the stiffness of the outer ears with the split, in place of ear_stiffness: the fairing
+    # and the repair keep the folds, and a stiffer ear reaches a pointed tip less
+    ear_split_stiffness: float = 1.0
+    ear_attachment_weight: float = 1.0
+    ear_attachment_reach: float = 0.0
+    ear_fair_iterations: int = 5
+    ear_fairness: float = 1.0
+    # the fairing also takes this many rings of the head's skin around the ears, on level 0
+    # (twice as many on each finer level), which then matches the reference's head alone
+    ear_fair_rings: int = 2
+    ear_repair_rounds: int = 3
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -329,25 +348,195 @@ def ear_weights(model) -> np.ndarray:
     return out
 
 
+def _adjacency(n: int, triangles: np.ndarray):
+    """The vertex adjacency (n, n) of a triangle mesh, as a CSR matrix of ones."""
+    from scipy.sparse import coo_matrix
+
+    t = np.asarray(triangles)
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    e = np.concatenate([e, e[:, ::-1]])
+    A = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)).tocsr()
+    A.data[:] = 1.0
+    return A
+
+
+def pinna(
+    model, rest_vertices: np.ndarray, ears: np.ndarray | None = None, height=0.002
+):
+    """
+    Mask (V,) of the outer ears proper on anny's level-0 rest mesh: of the vertices that the
+    ear-translation targets move in full (:func:`ear_weights` over 0.99, which also hold a
+    strip of the head's skin around the root, in front of the ear most), those that stand
+    more than ``height`` off the head, with the holes that they enclose (the concha). The
+    head's surface around each ear is a quadratic fitted to the skin around it (weights
+    between 0.2 and 0.95), in the frame of its mean normal.
+    """
+    from scipy.sparse.csgraph import connected_components
+
+    V = np.asarray(rest_vertices, dtype=np.float64)
+    T = model.faces.cpu().numpy()
+    w = ear_weights(model) if ears is None else np.asarray(ears)
+    core = w > 0.99
+    out = np.zeros(len(V), bool)
+    if not core.any():
+        return out
+    N = vertex_normals(V, T)
+    high = np.zeros(len(V), bool)
+    for s in (1.0, -1.0):
+        side = np.sign(V[:, 0]) == s
+        ring = side & (w > 0.2) & (w < 0.95)
+        rows = np.nonzero(side & core)[0]
+        if ring.sum() < 6 or len(rows) == 0:
+            continue
+        centre = V[ring].mean(0)
+        normal = N[ring].mean(0)
+        normal /= np.linalg.norm(normal)
+        a = np.cross(normal, [0.0, 0.0, 1.0])
+        a /= np.linalg.norm(a)
+        b = np.cross(normal, a)
+
+        def local(X):
+            d = X - centre
+            u, v = d @ a, d @ b
+            return np.c_[np.ones_like(u), u, v, u * u, u * v, v * v], d @ normal
+
+        M, z = local(V[ring])
+        coef = np.linalg.lstsq(M, z, rcond=None)[0]
+        M, z = local(V[rows])
+        high[rows] = z - M @ coef > height
+    A = _adjacency(len(V), T)
+    low = np.nonzero(~high)[0]
+    _, labels = connected_components(A[low][:, low], directed=False)
+    open_ = np.zeros(labels.max() + 1, bool)
+    open_[labels[~core[low]]] = True
+    out = high.copy()
+    out[low[~open_[labels]]] = True
+    return out
+
+
+def mask_border(triangles: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """The vertices of a vertex mask that share an edge with a vertex outside it."""
+    T = np.asarray(triangles)
+    mask = np.asarray(mask, bool)
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    cross = mask[e[:, 0]] != mask[e[:, 1]]
+    out = np.zeros(len(mask), bool)
+    out[e[cross].ravel()] = True
+    return out & mask
+
+
+class EarSplit:
+    """
+    A reference cut at its ears: the triangles of its ``"ear"`` region (``masks.ear`` of the
+    handoff) and the others, the head, which keep the triangles across the region's border.
+    The two meet only along the attachment line, the ``"ear_attachment"`` region of the
+    reference (``masks.ear[].attachment``), or the border of the ear region when the source
+    gives none. The fit matches anny's outer ears (:func:`pinna`) to the ear part alone and
+    the rest of anny to the head alone, so that neither reaches across the gap behind a
+    standing ear, and pulls the root of anny's ear onto the attachment line. Both parts hold
+    the reference's triangles within ``reach`` of the attachment line, where a mask and anny's
+    own outer ear may part by a few millimetres: there the skin of either may lie.
+    """
+
+    def __init__(self, reference: Reference, reach: float = 0.0):
+        from scipy.spatial import cKDTree
+
+        ear = np.asarray(reference.regions["ear"], bool)
+        T = reference.triangles
+        attachment = reference.regions.get("ear_attachment")
+        if attachment is None or not np.asarray(attachment).any():
+            attachment = mask_border(T, ear)
+        attachment = np.asarray(attachment, bool)
+        on_ear = ear[T].all(1)
+        shared = np.zeros(len(T), bool)
+        if reach > 0:
+            # both parts hold the strip of the reference along the attachment line
+            gap, _ = cKDTree(reference.vertices[attachment]).query(reference.vertices)
+            shared = (gap[T] < reach).any(1)
+        self.ear = reference.subset(on_ear)
+        self.head = reference.subset(~on_ear | shared)
+        e = np.unique(
+            np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), 1),
+            axis=0,
+        )
+        e = e[attachment[e].all(1)]
+        lone = np.setdiff1d(np.nonzero(attachment)[0], e.ravel())
+        e = np.concatenate([e, np.c_[lone, lone]])  # lone vertices as point segments
+        self.segments = reference.vertices[e]  # (S, 2, 3)
+        self.attachment = attachment
+        self._tree = None
+
+    def attach(self, points: np.ndarray):
+        """The closest points (n, 3) of the attachment line and their distances."""
+        from scipy.spatial import cKDTree
+
+        S = self.segments
+        if self._tree is None:
+            self._tree = cKDTree(S.mean(1))
+        points = np.asarray(points, dtype=np.float64)
+        k = min(8, len(S))
+        _, near = self._tree.query(points, k=k)
+        near = near.reshape(len(points), k)
+        a, b = S[near, 0], S[near, 1]
+        ab = b - a
+        t = ((points[:, None] - a) * ab).sum(-1) / np.maximum((ab * ab).sum(-1), 1e-20)
+        c = a + np.clip(t, 0.0, 1.0)[..., None] * ab
+        d = np.linalg.norm(c - points[:, None], axis=-1)
+        best = np.argmin(d, 1)
+        rows = np.arange(len(points))
+        return c[rows, best], d[rows, best]
+
+
 class Target:
     """
     The surface that the refinement fits: a :class:`Reference`, as its flat triangles or as
     their Phong tessellation (``smooth``, curved by the normals the source shades with when
-    ``shading``; see :meth:`Reference.closest`).
+    ``shading``; see :meth:`Reference.closest`). With an :class:`EarSplit` and the mask
+    ``anny_ear`` of the fitted mesh's outer ears, the closest points of anny's ears lie on the
+    reference's ears and those of the rest on the rest.
     """
 
     def __init__(
-        self, reference: Reference, smooth: float = 0.0, shading: bool = False
+        self,
+        reference: Reference,
+        smooth: float = 0.0,
+        shading: bool = False,
+        split: EarSplit | None = None,
+        anny_ear: np.ndarray | None = None,
     ):
         self.reference = reference
         self.smooth = smooth
         self.shading = shading
         self.vertices = reference.vertices
         self.normals = reference.shading_normals if shading else reference.normals
+        self.split = split
+        self.anny_ear = None if anny_ear is None else np.asarray(anny_ear, bool)
 
-    def closest(self, points: np.ndarray):
-        """Closest points, normals and distances of ``points``."""
-        C, N, d, _, _ = self.reference.closest(points, self.smooth, self.shading)
+    @property
+    def is_split(self) -> bool:
+        return self.split is not None and self.anny_ear is not None
+
+    def parts(self, rows=None):
+        """(mask of the points, the reference part they match) for the points of the fitted
+        mesh's vertices ``rows`` (all of them by default)."""
+        if not self.is_split:
+            return [(None, self.reference)]
+        ear = self.anny_ear if rows is None else self.anny_ear[rows]
+        return [(ear, self.split.ear), (~ear, self.split.head)]
+
+    def closest(self, points: np.ndarray, rows=None):
+        """Closest points, normals and distances of ``points``, the points of the fitted
+        mesh's vertices ``rows`` (all of them by default)."""
+        points = np.asarray(points, dtype=np.float64)
+        C = np.zeros_like(points)
+        N = np.zeros_like(points)
+        d = np.zeros(len(points))
+        for mask, part in self.parts(rows):
+            take = slice(None) if mask is None else np.nonzero(mask)[0]
+            if mask is not None and len(take) == 0:
+                continue
+            c, n, dd, _, _ = part.closest(points[take], self.smooth, self.shading)
+            C[take], N[take], d[take] = c, n, dd
         return C, N, d
 
 
@@ -361,10 +550,11 @@ def nicp(
     max_distance: float = 0.02,
     normal_threshold: float = 0.2,
     anchor: float = 1e-4,
-    reverse_weight: float = 1.0,
+    reverse_weight: float | np.ndarray = 1.0,
     reverse_normal_threshold: float = 0.5,
     stiffness_scale: np.ndarray | None = None,
     reverse: str = "vertex",
+    attachment_weight: float = 0.0,
 ) -> np.ndarray:
     """
     Non-rigid ICP of a mesh onto the reference: in each round, solve
@@ -380,7 +570,8 @@ def nicp(
     ``stiffness_scale`` (S, per vertex; 1 by default) makes a region stiffer than the rest.
 
     The reverse term (``reverse="vertex"``) pulls each vertex that is the nearest of some
-    reference vertices to their mean, with weight ``reverse_weight`` times its data weight.
+    reference vertices to their mean, with weight ``reverse_weight`` (a number, or one per
+    vertex) times its data weight.
     ``reverse="surface"`` (experimental) instead pulls the fitted surface onto the reference's
     vertices: each reference
     vertex p_j within ``max_distance`` of the surface, whose normal agrees with the surface's
@@ -392,6 +583,11 @@ def nicp(
     stays uncovered. Spread over the triangle, the pull does not drag single vertices: a level
     finer than the reference has several vertices per reference vertex, and pulling the
     nearest of them alone left pinched points along the rim of an ear.
+
+    A split ``reference`` (a :class:`Target` with an :class:`EarSplit`) matches anny's outer
+    ears to the reference's ears alone and the rest to the rest, in both terms, and with
+    ``attachment_weight`` pulls the border of anny's ears (their root) toward the closest
+    points of the attachment line, with that share of the data weight.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -410,6 +606,9 @@ def nicp(
     base = np.asarray(weights, dtype=np.float64)
     kept = np.nonzero(base > 0)[0]
     fitted = tri[(base[tri] > 0).all(1)]
+    border = None
+    if target.is_split and attachment_weight > 0:
+        border = np.nonzero(mask_border(tri, target.anny_ear) & (base > 0))[0]
     for alpha in stiffness:
         start = X.copy()
         smooth = alpha * (LtL @ start)
@@ -418,6 +617,10 @@ def nicp(
             normals = vertex_normals(X, triangles)
             ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
             w = base * ok
+            if border is not None and len(border):
+                C, w = _attach(
+                    X, border, target.split, C, w, base, attachment_weight, max_distance
+                )
             if reverse == "vertex":
                 r, P = _reverse_pairs(
                     X, normals, kept, target, max_distance, reverse_normal_threshold
@@ -456,7 +659,8 @@ def _reverse_rows(
     from anny.hair import closest_triangles
 
     n = len(X)
-    if len(fitted) == 0 or weight <= 0:
+    weight = np.broadcast_to(np.asarray(weight, dtype=np.float64), (n,))
+    if len(fitted) == 0 or not (weight > 0).any():
         return scipy.sparse.csr_matrix((0, n)), np.zeros((0, 3))
     points = target.vertices
     t, bary, d = closest_triangles(points, X, fitted)
@@ -465,7 +669,7 @@ def _reverse_rows(
     normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-12)
     ok = (d < max_distance) & ((normal * target.normals).sum(1) > normal_threshold)
     rows = np.nonzero(ok)[0]
-    m = np.sqrt(weight * base[corners[rows]].min(1))
+    m = np.sqrt((weight * base)[corners[rows]].min(1))
     values = (m[:, None] * bary[rows]).ravel()
     B = scipy.sparse.csr_matrix(
         (values, (np.repeat(np.arange(len(rows)), 3), corners[rows].ravel())),
@@ -534,17 +738,224 @@ def relax_along(
         umbrella = (A[rows] @ X) / np.maximum(degree[rows], 1)[:, None] - X[rows]
         umbrella -= (umbrella * normals).sum(1, keepdims=True) * normals
         moved = X[rows] + step * w[rows, None] * umbrella
-        C, N, d = target.closest(moved)
+        C, N, d = target.closest(moved, rows)
         ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold)
         X[rows] = np.where(ok[:, None], C, moved)
     return X
 
 
-def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
-    """For each vertex of ``X``: 1 when it is the nearest vertex (of ``kept``) of reference
-    vertices within ``max_distance`` with agreeing normals, else 0, and their mean."""
+def _attach(X, border, split, C, w, base, weight, max_distance):
+    """
+    The attachment term of :func:`nicp`, folded into its data term (targets C, weights w):
+    each vertex of the root of anny's ear (``border``) toward its closest point of the
+    attachment line, and each vertex of the line pulls the nearest root vertex, so that the
+    root covers the whole line, its ends included; both with ``weight`` times the data
+    weight.
+    """
     from scipy.spatial import cKDTree
 
+    a, da = split.attach(X[border])
+    target = np.where((da < max_distance)[:, None], a, 0.0)
+    count = (da < max_distance).astype(np.float64)
+    line = split.segments.reshape(-1, 3)
+    d, nearest = cKDTree(X[border]).query(line)
+    ok = d < max_distance
+    np.add.at(target, nearest[ok], line[ok])
+    np.add.at(count, nearest[ok], 1.0)
+    has = count > 0
+    rows = border[has]
+    point = target[has] / count[has, None]
+    share = weight * base[rows]
+    C = C.copy()
+    w = w.copy()
+    C[rows] = (w[rows, None] * C[rows] + share[:, None] * point) / np.maximum(
+        w[rows] + share, 1e-12
+    )[:, None]
+    w[rows] += share
+    return C, w
+
+
+def _mean_laplacian(n: int, triangles: np.ndarray):
+    """The mean-value Laplacian I - D^-1 A (n, n) of a triangle mesh's edge graph."""
+    import scipy.sparse
+
+    A = _adjacency(n, triangles)
+    degree = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
+    return (scipy.sparse.identity(n) - scipy.sparse.diags(1.0 / degree) @ A).tocsr()
+
+
+def fair_region(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    region: np.ndarray,
+    iterations: int = 5,
+    fairness: float = 1.0,
+    max_distance: float = 0.02,
+    normal_threshold: float = 0.0,
+    reverse_weight: float = 1.0,
+    reverse_normal_threshold: float = 0.5,
+    pool: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Fair the vertices of ``region`` on the reference, the others held: each round solves
+
+        min sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + fairness |B X|^2
+
+    over the region's vertices, with c_i the closest point of the reference (within
+    ``max_distance``, its normal agreeing to ``normal_threshold``), p_i the mean of the
+    reference vertices whose nearest vertex of the region x_i is (the reverse term of
+    :func:`nicp`, which keeps a pointed tip reached), and B the bi-Laplacian (the square of the
+    mean-value Laplacian) of the positions. The bi-Laplacian of a smooth surface is small, and
+    that of a crumple, a fold or a spike large, while the closest points let the vertices slide
+    within the reference: the folds of the reference stay, those of the fit go, and the
+    vertices spread evenly. Each round finds the closest points again. ``pool`` (a mask that
+    holds the region; the region by default) gives the vertices among which the reverse term
+    finds the nearest of each reference vertex, so that a small region takes only the
+    reference vertices nearest to it.
+    """
+    import scipy.sparse
+    import scipy.sparse.linalg
+
+    target = reference if isinstance(reference, Target) else Target(reference)
+    X = np.asarray(vertices, dtype=np.float64).copy()
+    region = np.asarray(region, bool)
+    rows = np.nonzero(region)[0]
+    if len(rows) == 0 or iterations <= 0:
+        return X
+    others = np.nonzero(~region)[0]
+    pool_rows = rows if pool is None else np.nonzero(np.asarray(pool, bool))[0]
+    T = np.asarray(triangles)
+    L = _mean_laplacian(len(X), T)
+    B = (L @ L).tocsr()
+    Q = (B.T @ B).tocsr()
+    Qrr = Q[rows][:, rows]
+    Qro = Q[rows][:, others]
+    for _ in range(iterations):
+        C, N, d = target.closest(X[rows], rows)
+        normals = vertex_normals(X, T)
+        ok = (d < max_distance) & ((normals[rows] * N).sum(1) > normal_threshold)
+        w = ok.astype(np.float64)
+        r, P = _reverse_pairs(
+            X, normals, pool_rows, target, max_distance, reverse_normal_threshold
+        )
+        r = (np.broadcast_to(reverse_weight, (len(X),)) * r)[rows]
+        A = (scipy.sparse.diags(w + r + 1e-6) + fairness * Qrr).tocsc()
+        rhs = (
+            w[:, None] * C
+            + r[:, None] * P[rows]
+            + 1e-6 * X[rows]
+            - fairness * (Qro @ X[others])
+        )
+        solve = scipy.sparse.linalg.factorized(A)
+        X[rows] = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
+    return X
+
+
+def fold_defects(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    region: np.ndarray,
+    fold_margin: float = 45.0,
+    max_distance: float = 0.02,
+) -> np.ndarray:
+    """
+    Mask (V,) of the vertices of ``region`` where the fit folds and the reference does not:
+    those at an edge folded by more than 60 degrees and by ``fold_margin`` more than the
+    reference folds within 3 mm of their closest point (``metrics.fold_near``: the reference's
+    own creases, such as the rim of an ear, stay), and those whose normal turns away from the
+    reference's at their closest point (by more than 90 degrees: a flipped sheet, the inside
+    of a crumple, a spike) where the reference does not fold either.
+    """
+    from opensculptboy.fit.metrics import fold_angles, fold_near
+
+    target = reference if isinstance(reference, Target) else Target(reference)
+    X = np.asarray(vertices, dtype=np.float64)
+    rows = np.nonzero(np.asarray(region, bool))[0]
+    out = np.zeros(len(X), bool)
+    if len(rows) == 0:
+        return out
+    C, N, d = target.closest(X[rows], rows)
+    ref = target.reference
+    F = fold_near(ref.vertices, ref.folds, C, tree=ref.tree)
+    normals = vertex_normals(X, triangles)[rows]
+    fold = fold_angles(X, triangles)[rows]
+    flipped = ((normals * N).sum(1) < 0.0) & (F < 60.0)
+    creased = (fold > 60.0) & (fold > F + fold_margin)
+    out[rows] = (flipped | creased) & (d < max_distance)
+    return out
+
+
+def repair_folds(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    region: np.ndarray,
+    rounds: int = 3,
+    rings: int = 2,
+    fairness: float = 10.0,
+    max_distance: float = 0.02,
+    pool: np.ndarray | None = None,
+) -> tuple[np.ndarray, int]:
+    """
+    Repair the folds and spikes of :func:`fold_defects` within ``region``, locally: the
+    defects and ``rings`` rings of their neighbours are faired again (:func:`fair_region`, with
+    ``fairness`` and the reverse term among the vertices of the whole region, so that a pointed
+    tip, which a coarse mesh draws as a sharp point, stays where the reference has it) while
+    the rest is held; up to ``rounds`` times while defects remain. ``pool`` is the reverse
+    term's pool (:func:`fair_region`; the region by default). Returns the vertices and the
+    number of defects found first.
+    """
+    X = np.asarray(vertices, dtype=np.float64).copy()
+    T = np.asarray(triangles)
+    region = np.asarray(region, bool)
+    target = reference if isinstance(reference, Target) else Target(reference)
+    A = _adjacency(len(X), T)
+    first = None
+    for _ in range(rounds):
+        bad = fold_defects(X, T, target, region, max_distance=max_distance)
+        if first is None:
+            first = int(bad.sum())
+        if not bad.any():
+            break
+        for _ in range(rings):
+            bad = bad | (A @ bad.astype(np.float64) > 0)
+        X = fair_region(
+            X,
+            T,
+            target,
+            bad & region,
+            iterations=2,
+            fairness=fairness,
+            max_distance=max_distance,
+            pool=region if pool is None else pool,
+        )
+    return X, first or 0
+
+
+def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
+    """For each vertex of ``X``: 1 when it is the nearest vertex (of ``kept``) of reference
+    vertices within ``max_distance`` with agreeing normals, else 0, and their mean. A split
+    :class:`Target` pairs the reference's ears with anny's ears alone and the rest with the
+    rest, so that the head behind a standing ear never pulls the back of anny's ear, nor the
+    ear the head."""
+    from scipy.spatial import cKDTree
+
+    if isinstance(reference, Target) and reference.is_split:
+        ear = reference.anny_ear
+        hit = np.zeros(len(X))
+        mean = np.zeros_like(X)
+        for part, rows in (
+            (reference.split.ear, kept[ear[kept]]),
+            (reference.split.head, kept[~ear[kept]]),
+        ):
+            h, m = _reverse_pairs(
+                X, normals, rows, part, max_distance, normal_threshold
+            )
+            hit += h
+            mean += h[:, None] * m
+        return hit, mean
     hit = np.zeros(len(X))
     mean = np.zeros_like(X)
     if len(kept) == 0:
@@ -852,6 +1263,19 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
     )
     sample_points = torch.as_tensor(reference.vertices[sample])
     sample_normals = torch.as_tensor(reference.normals[sample])
+    # a reference with ears: anny's outer ears match its ears alone, as in fit_levels
+    split_target = None
+    if options.ear_split and np.asarray(reference.regions.get("ear", [])).any():
+        with torch.no_grad():
+            rest = model(phenotype_kwargs=params.phenotype)["rest_vertices"][0]
+        anny_ear = pinna(model, rest.numpy(), None, options.pinna_height)
+        split_target = Target(
+            reference,
+            split=EarSplit(reference, options.ear_attachment_reach),
+            anny_ear=anny_ear,
+        )
+        sample_ear = np.asarray(reference.regions["ear"], bool)[sample]
+        fit_ear = anny_ear[fit_rows]
 
     # landmark targets and anny's side of each
     labels = list(model.bone_labels)
@@ -929,13 +1353,27 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
         with torch.no_grad():
             out, placed, R, t = forward()
         X = placed.numpy()
-        C, N, d, _, _ = reference.closest(X[fit_rows])
+        if split_target is None:
+            C, N, d, _, _ = reference.closest(X[fit_rows])
+        else:
+            C, N, d = split_target.closest(X[fit_rows], fit_rows)
         normals = vertex_normals(X, triangles)[fit_rows]
         ok = (d < limit) & ((normals * N).sum(1) > options.normal_threshold)
         fwd_rows = fit_rows_t[torch.as_tensor(ok)]
         fwd_points = torch.as_tensor(C[ok])
         fwd_normals = torch.as_tensor(N[ok])
-        nearest_d, nearest = cKDTree(X[fit_rows]).query(reference.vertices[sample])
+        if split_target is None:
+            nearest_d, nearest = cKDTree(X[fit_rows]).query(reference.vertices[sample])
+        else:
+            nearest_d = np.full(len(sample), np.inf)
+            nearest = np.zeros(len(sample), np.int64)
+            for on_ref, on_anny in ((sample_ear, fit_ear), (~sample_ear, ~fit_ear)):
+                local = np.nonzero(on_anny)[0]
+                if len(local) and on_ref.any():
+                    dd, nn = cKDTree(X[fit_rows][local]).query(
+                        reference.vertices[sample][on_ref]
+                    )
+                    nearest_d[on_ref], nearest[on_ref] = dd, local[nn]
         rev_ok = nearest_d < limit
         rev_rows = fit_rows_t[torch.as_tensor(nearest[rev_ok])]
         rev_points = sample_points[torch.as_tensor(rev_ok)]
@@ -1080,6 +1518,10 @@ def fit_levels(
     previous = np.zeros_like(rest0)
     previous_level = 0
     ears = ear_weights(model)
+    split = None
+    if options.ear_split and np.asarray(reference.regions.get("ear", [])).any():
+        split = EarSplit(reference, options.ear_attachment_reach)
+        outer0 = pinna(model, rest0, ears, options.pinna_height).astype(np.float64)
     margin = lip_margin(model, excluded, options.lip_margin_rings).astype(np.float64)
     measures, meshes = {}, {}
     regions0 = reference_region = None
@@ -1113,20 +1555,31 @@ def fit_levels(
                 measures["parametric"] = metrics.measure(
                     posed, topology.triangles, regions, reference, reference_region
                 ).summary()
+        anny_ear = None
+        stiff = level_ears
+        if split is not None:
+            level_pinna = np.clip(np.asarray(topology.apply(outer0)), 0.0, 1.0)
+            anny_ear = level_pinna > 0.5
+            stiff = level_pinna
         scale = None
-        if options.ear_stiffness != 1.0:
-            scale = 1.0 + (options.ear_stiffness - 1.0) * level_ears
+        ear_stiffness = (
+            options.ear_stiffness if split is None else options.ear_split_stiffness
+        )
+        if ear_stiffness != 1.0:
+            scale = 1.0 + (ear_stiffness - 1.0) * stiff
         data = mask.astype(np.float64)
         if options.lip_margin_weight != 1.0:
             data *= 1.0 - (1.0 - options.lip_margin_weight) * np.clip(
                 np.asarray(topology.apply(margin)), 0.0, 1.0
             )
         threshold = np.where(
-            level_ears > 0.5,
+            stiff > 0.5,
             max(options.ear_normal_threshold, options.normal_threshold),
             options.normal_threshold,
         )
-        target = Target(reference, options.target_smooth, options.target_shading)
+        target = Target(
+            reference, options.target_smooth, options.target_shading, split, anny_ear
+        )
         fitted = nicp(
             posed,
             topology.triangles,
@@ -1138,8 +1591,35 @@ def fit_levels(
             threshold,
             stiffness_scale=scale,
             reverse=options.reverse,
+            attachment_weight=options.ear_attachment_weight if split else 0.0,
         )
-        if options.ear_relax_iterations > 0:
+        if split is not None:
+            region = anny_ear.copy()
+            adjacency = _adjacency(len(fitted), topology.triangles)
+            for _ in range(options.ear_fair_rings * 2**subdiv):
+                region |= adjacency @ region.astype(np.float64) > 0
+            region &= data > 0
+            fitted = fair_region(
+                fitted,
+                topology.triangles,
+                target,
+                region,
+                options.ear_fair_iterations,
+                options.ear_fairness,
+                options.nicp_max_distance,
+                pool=data > 0,
+            )
+            fitted, defects = repair_folds(
+                fitted,
+                topology.triangles,
+                target,
+                region,
+                options.ear_repair_rounds,
+                max_distance=options.nicp_max_distance,
+                pool=data > 0,
+            )
+            _log(options, f"level {subdiv}: {defects} ear fold defects repaired")
+        elif options.ear_relax_iterations > 0:
             fitted = relax_along(
                 fitted,
                 topology.triangles,
@@ -1156,12 +1636,14 @@ def fit_levels(
                 before, topology.triangles, regions, reference, reference_region
             ).summary()
         if options.project_distance > 0:
-            # not the outer ears, whose folds anny's ear does not share
+            # not the outer ears, whose folds anny's ear does not share; with a split
+            # reference, the skin around them onto the head alone
+            keep = (data > 0) & (level_ears < 0.1 if split is None else ~anny_ear)
             fitted = project_onto(
                 fitted,
                 topology.triangles,
                 target,
-                (data > 0) & (level_ears < 0.1),
+                keep,
                 options.project_distance,
                 options.project_normal_threshold,
             )
