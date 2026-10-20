@@ -64,6 +64,10 @@ class BakedTextures:
     curvature_per_m: float = 100.0
     # the head tile (opensculptboy.texture.tiles) by slot: base_color, normal, roughness
     head: dict = dataclasses.field(default_factory=dict)
+    # the ear tile (opensculptboy.texture.ears) by slot: base_color, normal, roughness,
+    # thickness, curvature; and its UVs
+    ears: dict = dataclasses.field(default_factory=dict)
+    ear_uvs: object = None  # opensculptboy.texture.ears.EarUVs
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
@@ -77,12 +81,14 @@ class BakedTextures:
                 files[slot] = png_bytes(image)
         for slot, image in self.head.items():
             files[f"head_{slot}"] = png_bytes(image)
+        for slot, image in self.ears.items():
+            files[f"ears_{slot}"] = png_bytes(image)
         return files
 
     def material(self, names: dict[str, str]) -> dict:
         """The ``material`` section of a card for the files ``names`` (slot -> path, as
-        :meth:`png_files` names the slots), without the eye texture, which the detail layer
-        names."""
+        :meth:`png_files` names the slots, and ``"ear_uvs"`` the ear tile's UV file), without
+        the eye texture, which the detail layer names."""
         material = {}
         for slot in ("base_color", "normal", "roughness", "thickness", "curvature"):
             if slot in names:
@@ -98,20 +104,30 @@ class BakedTextures:
         }
         if head:
             material["head"] = head
+        ears = {
+            slot: names[f"ears_{slot}"]
+            for slot in ("base_color", "normal", "roughness", "thickness", "curvature")
+            if f"ears_{slot}" in names
+        }
+        if ears and "ear_uvs" in names:
+            material["ears"] = {"uvs": names["ear_uvs"], **ears}
         return material
 
 
-def rasterise(uv_triangles: np.ndarray, uvs: np.ndarray, size, chunk=200000):
+def rasterise(
+    uv_triangles: np.ndarray, uvs: np.ndarray, size, chunk=200000, shift=(0.0, 0.0)
+):
     """
     The texels covered by UV triangles (OBJ convention, v = 0 at the bottom) on an atlas of
     ``size`` texels (one number for a square, or (width, height)): (rows, cols, triangle,
     barycentric coordinates (n, 3)); row 0 is the top of the image. A texel covered by two
-    triangles keeps the first.
+    triangles keeps the first. ``shift`` moves the sample point of every texel from its
+    centre by a share of a texel (x right, y down), for supersampling.
     """
     width, height = (size, size) if np.ndim(size) == 0 else size
     uv = np.asarray(uvs, dtype=np.float64)[np.asarray(uv_triangles)]  # (T, 3, 2)
-    x = uv[..., 0] * width - 0.5  # texel centres at integers
-    y = (1.0 - uv[..., 1]) * height - 0.5
+    x = uv[..., 0] * width - 0.5 - shift[0]  # sample points at integers
+    y = (1.0 - uv[..., 1]) * height - 0.5 - shift[1]
     x0 = np.clip(np.floor(x.min(1)).astype(np.int64), 0, width - 1)
     x1 = np.clip(np.ceil(x.max(1)).astype(np.int64), 0, width - 1)
     y0 = np.clip(np.floor(y.min(1)).astype(np.int64), 0, height - 1)
@@ -397,64 +413,103 @@ class _Surface:
         return points, n, t, b
 
 
+def _accumulate(image, count, rows, cols, values) -> None:
+    """Add values (n,) or (n, C) at texels into an image (H, W) or (H, W, C) and count them."""
+    h, w = count.shape
+    flat = rows * w + cols
+    count += np.bincount(flat, minlength=h * w).reshape(h, w)
+    if image.ndim == 2:
+        image += np.bincount(flat, values, h * w).reshape(h, w)
+    else:
+        for k in range(image.shape[2]):
+            image[..., k] += np.bincount(flat, values[:, k], h * w).reshape(h, w)
+
+
 def _bake_maps(
-    surface, uv_triangles, uvs, size, groups, max_distance, pick=None, chunk=1 << 20
+    surface,
+    uv_triangles,
+    uvs,
+    size,
+    groups,
+    max_distance,
+    pick=None,
+    chunk=1 << 20,
+    supersample: int = 1,
 ):
     """
     Base colour, normal and roughness images of a texture of ``size`` (one number, or
     (width, height)) over the UV triangles ``pick`` (all by default). ``groups`` lists
     (target, triangle mask): each texel takes the target whose mask holds its triangle.
-    Returns the images (H, W, 3) floats, (H, W) floats, and their known masks, and the
-    count of texels inside a triangle and reached.
+    ``supersample`` casts ``supersample`` by ``supersample`` rays per texel, spread over the
+    texel, and averages what they hit, so that edges of colour and of the islands do not
+    stair-step. Returns the images (H, W, 3) floats, (H, W) floats, and their known masks,
+    the count of texels inside a triangle, and the texels of the central samples.
     """
     width, height = (size, size) if np.ndim(size) == 0 else size
     index = np.arange(len(uv_triangles)) if pick is None else np.nonzero(pick)[0]
-    rows, cols, tri, bary = rasterise(uv_triangles[index], uvs, (width, height))
-    tri = index[tri]
     colour = np.zeros((height, width, 3))
-    colour_known = np.zeros((height, width), bool)
+    colour_count = np.zeros((height, width))
     normal = np.zeros((height, width, 3))
-    normal[..., 2] = 1.0
-    reached = np.zeros((height, width), bool)
+    normal_count = np.zeros((height, width))
     rough = np.zeros((height, width))
-    rough_known = np.zeros((height, width), bool)
-    for target, mask in groups:
-        if target is None:
-            continue
-        texels = np.nonzero(mask[tri])[0] if mask is not None else np.arange(len(tri))
-        rays = _intersector(target.vertices, target.triangles)
-        for start in range(0, len(texels), chunk):
-            sel = texels[start : start + chunk]
-            points, n, t, b = surface.at(tri[sel], bary[sel])
-            ids, hit_tri, hit_bary = _hits(points, n, target, max_distance, rays)
-            r, c = rows[sel[ids]], cols[sel[ids]]
-            shade = _shading_normals(target, hit_tri, hit_bary)
-            local = np.stack(
-                [
-                    (shade * t[ids]).sum(1),
-                    (shade * b[ids]).sum(1),
-                    (shade * n[ids]).sum(1),
-                ],
-                1,
+    rough_count = np.zeros((height, width))
+    inside = np.zeros((height, width), bool)
+    k = max(int(supersample), 1)
+    offsets = [
+        ((i + 0.5) / k - 0.5, (j + 0.5) / k - 0.5) for j in range(k) for i in range(k)
+    ]
+    centre = None
+    rays = {}
+    for shift in offsets:
+        rows, cols, tri, bary = rasterise(
+            uv_triangles[index], uvs, (width, height), shift=shift
+        )
+        tri = index[tri]
+        inside[rows, cols] = True
+        if centre is None or shift == (0.0, 0.0):
+            centre = (rows, cols, tri, bary)
+        for g, (target, mask) in enumerate(groups):
+            if target is None:
+                continue
+            if g not in rays:
+                rays[g] = _intersector(target.vertices, target.triangles)
+            texels = (
+                np.nonzero(mask[tri])[0] if mask is not None else np.arange(len(tri))
             )
-            local[:, 2] = np.maximum(local[:, 2], 0.0)
-            normal[r, c] = _unit(local)
-            reached[r, c] = True
-            values, known = _colours(target, hit_tri, hit_bary)
-            colour[r[known], c[known]] = values[known]
-            colour_known[r[known], c[known]] = True
-            values, known = _roughness(target, hit_tri, hit_bary)
-            rough[r[known], c[known]] = values[known]
-            rough_known[r[known], c[known]] = True
+            for start in range(0, len(texels), chunk):
+                sel = texels[start : start + chunk]
+                points, n, t, b = surface.at(tri[sel], bary[sel])
+                ids, hit_tri, hit_bary = _hits(points, n, target, max_distance, rays[g])
+                r, c = rows[sel[ids]], cols[sel[ids]]
+                shade = _shading_normals(target, hit_tri, hit_bary)
+                local = np.stack(
+                    [
+                        (shade * t[ids]).sum(1),
+                        (shade * b[ids]).sum(1),
+                        (shade * n[ids]).sum(1),
+                    ],
+                    1,
+                )
+                local[:, 2] = np.maximum(local[:, 2], 0.0)
+                _accumulate(normal, normal_count, r, c, _unit(local))
+                values, known = _colours(target, hit_tri, hit_bary)
+                _accumulate(colour, colour_count, r[known], c[known], values[known])
+                values, known = _roughness(target, hit_tri, hit_bary)
+                _accumulate(rough, rough_count, r[known], c[known], values[known])
+    reached = normal_count > 0
+    normal[~reached] = (0.0, 0.0, 1.0)
+    normal = _unit(normal)
+    colour /= np.maximum(colour_count, 1.0)[..., None]
+    rough /= np.maximum(rough_count, 1.0)
     return dict(
         colour=colour,
-        colour_known=colour_known,
+        colour_known=colour_count > 0,
         normal=normal,
         reached=reached,
         roughness=rough,
-        roughness_known=rough_known,
-        inside=len(rows),
-        texels=(rows, cols, tri, bary),
+        roughness_known=rough_count > 0,
+        inside=int(inside.sum()),
+        texels=centre,
     )
 
 
@@ -571,6 +626,8 @@ def bake(
     skin_maps: bool = False,
     thickness_mm: float = 30.0,
     curvature_per_m: float = 100.0,
+    ear_mesh=None,
+    supersample: int = 2,
 ) -> BakedTextures:
     """
     Bake the reference onto anny's atlas.
@@ -598,6 +655,12 @@ def bake(
             (0: no head tile); its width follows the box's aspect.
         skin_maps: also bake the thickness and curvature maps of the fitted mesh, with the
             scales ``thickness_mm`` and ``curvature_per_m``.
+        ear_mesh: (UV triangles, UVs, triangle mask) of the mesh with its outer ears on the
+            ear tile (:func:`opensculptboy.texture.ears.with_ear_uvs`); with it, the ears are
+            baked onto the ear tile (:data:`~opensculptboy.texture.ears.EAR_TILE_SIZE`) in the
+            tangent frames of those UVs.
+        supersample: rays per texel along each side on the head tile (the ear tile takes one
+            more); the atlas takes one.
     """
     V = np.asarray(vertices, dtype=np.float64)
     T = np.asarray(triangles, dtype=np.int64)
@@ -627,9 +690,9 @@ def bake(
             thick * 1000.0 / thickness_mm, rows, cols, tri, bary, T, size
         )
         thickness = np.clip(np.round(image * 255), 0, 255).astype(np.uint8)
-        k = vertex_curvature(V, T)
+        curv = vertex_curvature(V, T)
         image = _vertex_map(
-            0.5 + 0.5 * np.clip(k / curvature_per_m, -1, 1),
+            0.5 + 0.5 * np.clip(curv / curvature_per_m, -1, 1),
             rows,
             cols,
             tri,
@@ -653,6 +716,7 @@ def bake(
             [(reference, None)],
             max_distance,
             pick=np.asarray(head_triangles, bool) & ~on_eye,
+            supersample=supersample,
         )
         colour, normal, rough = _to_png(tile, has_colour)
         head = {"normal": normal}
@@ -660,6 +724,42 @@ def bake(
             head["base_color"] = colour
         if rough is not None:
             head["roughness"] = rough
+
+    ears = {}
+    if ear_mesh is not None and ear_mesh[2] is not None and np.any(ear_mesh[2]):
+        from opensculptboy.texture.ears import EAR_TILE_SIZE
+
+        ear_ut, ear_uv, ear_mask = (np.asarray(a) for a in ear_mesh)
+        ear_surface = _Surface.of(V, T, ear_ut.astype(np.int64), ear_uv)
+        tile = _bake_maps(
+            ear_surface,
+            ear_ut.astype(np.int64),
+            ear_uv,
+            EAR_TILE_SIZE,
+            [(reference, None)],
+            max_distance,
+            pick=ear_mask.astype(bool),
+            supersample=supersample + 1,
+        )
+        colour, normal, rough = _to_png(tile, has_colour)
+        ears = {"normal": normal}
+        if colour is not None:
+            ears["base_color"] = colour
+        if rough is not None:
+            ears["roughness"] = rough
+        if skin_maps:
+            r, c, t_, b_ = tile["texels"]
+            w, h = EAR_TILE_SIZE
+            for slot, values in (
+                ("thickness", thick * 1000.0 / thickness_mm),
+                ("curvature", 0.5 + 0.5 * np.clip(curv / curvature_per_m, -1, 1)),
+            ):
+                image = np.zeros((h, w))
+                known = np.zeros((h, w), bool)
+                image[r, c] = np.einsum("nk, nk -> n", b_, values[T[t_]])
+                known[r, c] = True
+                image = _fill(image, known)
+                ears[slot] = np.clip(np.round(image * 255), 0, 255).astype(np.uint8)
 
     eyes = None
     if (
@@ -691,6 +791,7 @@ def bake(
         thickness_mm=float(thickness_mm),
         curvature_per_m=float(curvature_per_m),
         head=head,
+        ears=ears,
     )
 
 
@@ -720,7 +821,10 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
     """
     Bake the reference of a :class:`~opensculptboy.fit.register.FitResult` onto the mesh of a
     level of its detail layer (its finest by default), posed and placed as the fit left it.
-    ``head_size`` (in ``kwargs``) also bakes the head tile at that height.
+    ``head_size`` (in ``kwargs``) also bakes the head tile at that height, and
+    ``ear_tile=True`` unwraps the outer ears of a level from 1 up onto the ear tile
+    (:mod:`opensculptboy.texture.ears`) and bakes it; ``BakedTextures.ear_uvs`` then holds
+    its UVs.
     """
     import torch
 
@@ -738,12 +842,24 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         )
     vertices = out["vertices"][0].numpy() @ result.rotation.T + result.translation
     topology = detailed.topology
+    ear_uvs = None
     if "eye_triangles" not in kwargs:
         kwargs["eye_triangles"] = eyeball_triangles(model, topology)
     if "eye_box" not in kwargs:
         from opensculptboy.texture.eyes import eye_uv_box
 
         kwargs["eye_box"] = eye_uv_box(model)
+    if kwargs.pop("ear_tile", False) and "ear_mesh" not in kwargs and subdiv > 0:
+        from opensculptboy.texture.ears import ear_triangles, ear_uv_table, with_ear_uvs
+
+        rest = out["rest_vertices"][0].numpy()
+        table = ear_uv_table(
+            rest, topology, ear_triangles(model, topology), np.sign(rest[:, 0])
+        )
+        mesh, mask = with_ear_uvs(topology, table)
+        if mask is not None:
+            kwargs["ear_mesh"] = (mesh.uv_triangles, mesh.uvs, mask)
+            ear_uvs = table
     if kwargs.get("head_size") and "head_box" not in kwargs:
         from opensculptboy.texture.tiles import head_uv_box, on_head_tile
 
@@ -751,7 +867,7 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         kwargs["head_triangles"] = on_head_tile(
             model, topology.uvs, topology.uv_triangles, character.topology
         )
-    return bake(
+    baked = bake(
         vertices,
         topology.triangles,
         topology.uv_triangles,
@@ -760,6 +876,9 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         size,
         **kwargs,
     )
+    if baked.ears:
+        baked.ear_uvs = ear_uvs
+    return baked
 
 
 def eyeball_triangles(model, topology) -> np.ndarray | None:

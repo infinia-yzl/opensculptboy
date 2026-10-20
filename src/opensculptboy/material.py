@@ -39,6 +39,14 @@ Every key is optional::
             "base_color": "card.head_base_color.png", #   UV island alone, at a finer texel
             "normal": "card.head_normal.png",         #   (opensculptboy.texture.tiles)
             "roughness": "card.head_roughness.png"
+        },
+        "ears": {                                     # the ear tile: the outer ears unwrapped
+            "uvs": "card.ear_uvs.safetensors",        #   again on levels 1 and 2, with maps of
+            "base_color": "card.ears_base_color.png", #   their own (opensculptboy.texture.ears)
+            "normal": "card.ears_normal.png",
+            "roughness": "card.ears_roughness.png",
+            "thickness": "card.ears_thickness.png",
+            "curvature": "card.ears_curvature.png"
         }
     }
 
@@ -58,6 +66,7 @@ from typing import Any
 SUBSURFACE_METHODS = ("random_walk_skin", "random_walk", "burley")
 TEXTURE_KEYS = ("base_color", "normal", "roughness", "thickness", "curvature")
 HEAD_TEXTURE_KEYS = ("base_color", "normal", "roughness")
+EAR_TEXTURE_KEYS = ("base_color", "normal", "roughness", "thickness", "curvature")
 DEFAULTS = {
     "base_color_factor": [1.0, 1.0, 1.0, 1.0],
     "normal_scale": 1.0,
@@ -76,7 +85,7 @@ SUBSURFACE_DEFAULTS = {
     "anisotropy": 0.0,
     "method": "random_walk_skin",
 }
-_KEYS = set(TEXTURE_KEYS) | set(DEFAULTS) | {"subsurface", "head"}
+_KEYS = set(TEXTURE_KEYS) | set(DEFAULTS) | {"subsurface", "head", "ears"}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -117,9 +126,9 @@ class SkinMaterial:
     thickness_mm: float = 30.0
     curvature: str | None = None
     curvature_per_m: float = 100.0
-    head: dict = dataclasses.field(
-        default_factory=dict
-    )  # slot -> path of the head tile
+    # the head tile: slot -> path; the ear tile: "uvs" and slot -> path
+    head: dict = dataclasses.field(default_factory=dict)
+    ears: dict = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "SkinMaterial":
@@ -132,7 +141,8 @@ class SkinMaterial:
 
     def textures(self) -> dict[str, str]:
         """The texture paths by slot (``base_color``, ``normal``, ``roughness``, ...; the head
-        tile's as ``head_base_color``, ``head_normal`` and ``head_roughness``)."""
+        tile's as ``head_base_color``, ``head_normal`` and ``head_roughness``, the ear tile's
+        as ``ears_base_color`` and so on)."""
         out = {}
         for key in TEXTURE_KEYS:
             value = getattr(self, key)
@@ -140,6 +150,9 @@ class SkinMaterial:
                 out[key] = value
         for key, value in self.head.items():
             out[f"head_{key}"] = value
+        for key, value in self.ears.items():
+            if key != "uvs":
+                out[f"ears_{key}"] = value
         return out
 
     @property
@@ -199,6 +212,15 @@ def check_material(data: dict) -> dict:
         )
     if not all(isinstance(v, str) for v in head.values()):
         raise ValueError("material head textures must be paths.")
+    ears = data.get("ears", {})
+    if not isinstance(ears, dict) or set(ears) - set(EAR_TEXTURE_KEYS) - {"uvs"}:
+        raise ValueError(
+            f"material ears must map 'uvs' and some of {list(EAR_TEXTURE_KEYS)} to paths."
+        )
+    if not all(isinstance(v, str) for v in ears.values()):
+        raise ValueError("material ears must hold paths.")
+    if ears and "uvs" not in ears:
+        raise ValueError("material ears needs its 'uvs' file.")
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
         raise ValueError("material subsurface must be a JSON object.")
