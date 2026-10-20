@@ -68,6 +68,7 @@ from opensculptboy.export.body import (
     top_skin_weights,
     triangulated_faces,
 )
+from opensculptboy.export.detail import mime_type, resolve_within_budget, texture_images
 from opensculptboy.export.document import (
     ELEMENT_ARRAY_BUFFER,
     MORPH_EPSILON,
@@ -424,6 +425,9 @@ class VrmSpec:
     skin_weights: np.ndarray
     skin_indices: np.ndarray
     parents: list[int]
+    # Skin textures (slot, PNG or JPEG bytes), written first so that their texture indices
+    # are their positions in this list.
+    images: list[tuple[str, bytes]] = dataclasses.field(default_factory=list)
 
 
 def vrm_version(version: str) -> str:
@@ -498,9 +502,15 @@ def vrm_spec(
     keep_leg_spread: bool = False,
     keep_anny_vertex: bool = False,
     refine_weights: bool = True,
+    detail_level: int = 0,
+    detail_dir: str | pathlib.Path | None = None,
+    budget: str = "warn",
+    textures=None,
 ) -> VrmSpec:
     """
     The content of a VRM file of a character (see :func:`export_vrm` for the arguments).
+    ``budget`` chooses the detail mesh within the budget of the version (see
+    :func:`opensculptboy.export.detail.resolve_within_budget`).
     """
     # Every check runs before the model is built.
     version = vrm_version(version)
@@ -585,14 +595,67 @@ def vrm_spec(
         keep_leg_spread=keep_leg_spread,
     )
     eyes = vrm_tables.eyeball_vertices(model)
-    targets = [
-        vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
-        for a, t in zip(actions, rb.targets)
-    ]
-    # The normals of the rebind: for the inverse bind, Anny's rest normals mapped as the targets.
-    body = build_body(
-        model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
+    detail = resolve_within_budget(
+        model,
+        character,
+        detail_level,
+        "vrm1" if version == "1.0" else "vrm0",
+        budget,
+        detail_dir,
     )
+    if detail is None:
+        targets = [
+            vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
+            for a, t in zip(actions, rb.targets)
+        ]
+        # The normals of the rebind: for the inverse bind, Anny's rest normals mapped as the
+        # targets.
+        body = build_body(
+            model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
+        )
+    else:
+        # The detail mesh: Anny's rest mesh subdivided with the card's offsets, rebound into
+        # the T-pose with the subdivided file weights. The lid-only targets zero the eyeballs
+        # before the subdivision, which keeps them zero (the eyeballs are closed meshes).
+        rest_targets = np.stack(
+            [
+                vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
+                for a, t in zip(actions, offsets)
+            ]
+        ).reshape(len(actions), *base.shape)
+        weights, indices = detail.skin_weights(weights, indices)
+        w4, i4, _ = top_skin_weights(weights, indices, 4)
+        w4 = w4.astype(np.float64)
+        w4 /= w4.sum(axis=1, keepdims=True)
+        full_w, full_i = detail.skin_weights(
+            model.vertex_bone_weights.detach().cpu().double().numpy(),
+            model.vertex_bone_indices.cpu().numpy(),
+        )
+        rb = tpose.rebind(
+            model,
+            detail.vertices(base),
+            detail.targets(rest_targets),
+            B,
+            w4,
+            i4,
+            method=bind,
+            keep_leg_spread=keep_leg_spread,
+            triangles=detail.topology.triangles,
+            vertex_bone_weights=full_w,
+            vertex_bone_indices=full_i,
+        )
+        keep_anny_vertex = keep_anny_vertex and detail.subdiv == 0
+        body = build_body(
+            model,
+            rb.vertices,
+            rb.targets,
+            G,
+            4,
+            weights,
+            indices,
+            normals=rb.normals,
+            mesh=detail.topology,
+        )
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
@@ -621,7 +684,10 @@ def vrm_spec(
     inverse_bind = np.tile(np.eye(4), (len(labels), 1, 1))
     inverse_bind[:, :3, 3] = -joints
     skins = [SpecSkin(character.rig, list(range(len(labels))), inverse_bind, root)]
+    images = texture_images(character, textures, detail_dir)
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
+    if images:
+        materials = [_textured_toon_material(images)]
     meshes = [
         SpecMesh(
             name="body",
@@ -678,6 +744,10 @@ def vrm_spec(
         "frame": "metres, Y up, the figure faces "
         + ("+Z" if version == "1.0" else "-Z"),
     }
+    if detail is not None:
+        extras["detail"] = detail.extras()
+    if images:
+        extras["textures"] = sorted(images)
     return VrmSpec(
         version=version,
         frame=G.copy(),
@@ -702,7 +772,27 @@ def vrm_spec(
         skin_weights=w4,
         skin_indices=i4,
         parents=parents,
+        images=[
+            (slot, images[slot]) for slot in ("base_color", "normal") if slot in images
+        ],
     )
+
+
+def _textured_toon_material(images: dict) -> mtoon.ToonMaterial:
+    """
+    The skin's MToon material with the baked textures: the base colour texture is the lit and
+    the shade texture (the shade colour darkens it), and the normal texture is the normal map.
+    The texture indices follow the order of ``VrmSpec.images``, which come first in the file.
+    """
+    material = mtoon.soft_material("skin", (1.0, 1.0, 1.0, 1.0))
+    material.shade_color = (0.78, 0.62, 0.60)
+    index = 0
+    if "base_color" in images:
+        material.base_texture = material.shade_texture = index
+        index += 1
+    if "normal" in images:
+        material.normal_texture = index
+    return material
 
 
 def _rest_output(model, character: Character, actions, face_labels) -> dict:
@@ -894,6 +984,8 @@ def portrait_png(
 def vrm_document(spec: VrmSpec) -> GltfDocument:
     """The glTF document of a spec, with the ``VRMC_vrm`` (1.0) or ``VRM`` (0.x) extension."""
     doc = GltfDocument(f"OpenSculptBoy VRM exporter (anny {_anny_version()})")
+    for slot, data in spec.images:
+        doc.add_texture(doc.add_image(data, mime_type(data), slot))
     properties = []
     for material in spec.materials:
         if spec.version == "1.0":
@@ -1257,6 +1349,9 @@ def export_vrm(
     budget: str = "warn",
     keep_anny_vertex: bool = False,
     refine_weights: bool = True,
+    detail_level: int = 0,
+    detail_dir: str | pathlib.Path | None = None,
+    textures=None,
 ) -> dict:
     """
     Write a character as a VRM file.
@@ -1297,6 +1392,16 @@ def export_vrm(
             :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights`. When the data file
             ``data/vrm/skin_weights.safetensors`` is missing or was made for another model,
             the export warns and keeps those weights. The forward bind never refines.
+        detail_level: the finest level of the character's detail layer to write (see
+            :func:`opensculptboy.export.gltf.export_glb`). Unless ``budget`` is ``"off"``,
+            the file keeps within the triangle budget of its version: a full level over it
+            gives the level on the head and the neck alone, and a level still over it steps
+            down, with a :class:`~opensculptboy.export.budget.BudgetWarning`. The scene
+            extras record the level in use.
+        detail_dir: the folder that the paths of the detail layer are relative to.
+        textures: None for the skin textures of the card's detail layer, False for none, or
+            a mapping of ``"base_color"`` and ``"normal"`` to PNG or JPEG files; they fill
+            the base, shade and normal slots of the skin's MToon material.
 
     Returns:
         A summary: counts, the file size, the version and the budget messages.
@@ -1325,6 +1430,10 @@ def export_vrm(
         keep_leg_spread=keep_leg_spread,
         keep_anny_vertex=keep_anny_vertex,
         refine_weights=refine_weights,
+        detail_level=detail_level,
+        detail_dir=detail_dir,
+        budget=budget,
+        textures=textures,
     )
     return write_vrm(spec, path, budget=budget)
 

@@ -39,6 +39,8 @@ from opensculptboy.export.body import (
     morph_target_rows,
     rest_rows,
 )
+from opensculptboy.export.detail import mime_type, texture_images
+from opensculptboy.export.detail import resolve as resolve_detail
 from opensculptboy.export.document import GltfDocument, pbr_material, read_gltf_json
 
 __all__ = ["C3", "C4", "export_glb", "read_character", "read_gltf_json"]
@@ -89,6 +91,10 @@ def export_glb(
     max_influences: int = 4,
     ground: bool = True,
     base_color: Sequence[float] = (0.80, 0.62, 0.52, 1.0),
+    detail_level: int = 0,
+    detail_region: str = "full",
+    detail_dir: str | pathlib.Path | None = None,
+    textures=None,
 ) -> dict:
     """
     Write a character as a binary glTF 2.0 file.
@@ -113,6 +119,18 @@ def export_glb(
         ground: stand the rest pose on the floor (y = 0). The poses and clips of
             ``anny.poses`` stand on the floor in any case.
         base_color: the linear RGBA base colour of the material.
+        detail_level: the level of the character's detail layer (``character.detail``, see
+            :mod:`opensculptboy.detail`): 0 is anny's own mesh, 1 and 2 its Catmull-Clark
+            subdivisions, with the card's offsets of that level added to the rest mesh and the
+            skin weights, UVs and morph targets carried to the finer mesh. Level 0 of a card
+            without detail writes the file as it was before the detail layer existed.
+        detail_region: ``"full"`` (the whole body at ``detail_level``) or ``"head"`` (the head
+            and the neck at ``detail_level``, the rest one level coarser).
+        detail_dir: the folder that the paths of the detail layer are relative to (the card's
+            folder); the current folder when None.
+        textures: None for the skin textures that the card's detail layer names (none for most
+            cards), False for none, or a mapping of ``"base_color"`` and ``"normal"`` to PNG or
+            JPEG files (paths or bytes) laid out on anny's UVs.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -149,13 +167,40 @@ def export_glb(
     base = rest_vertices[0]
 
     # Mesh: split the vertices at UV seams; normals come from the welded mesh.
-    body = build_body(
-        model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
-    )
+    detail = resolve_detail(model, character, detail_level, detail_dir, detail_region)
+    if detail is None:
+        body = build_body(
+            model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
+        )
+    else:
+        weights, indices = detail.skin_weights(
+            model.vertex_bone_weights.detach().cpu().double().numpy(),
+            model.vertex_bone_indices.cpu().numpy(),
+        )
+        body = build_body(
+            model,
+            detail.vertices(base),
+            detail.targets(rest_vertices[1:] - base),
+            ANNY_TO_GLTF,
+            max_influences,
+            weights,
+            indices,
+            mesh=detail.topology,
+        )
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
-    material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
+    images = texture_images(character, textures, detail_dir)
+    if images:
+        material = doc.add_material(_textured_material(doc, images))
+    else:
+        material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
     joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
-    primitive = body_primitive(doc, body, material, joint_type=joint_type)
+    primitive = body_primitive(
+        doc,
+        body,
+        material,
+        joint_type=joint_type,
+        anny_vertex=detail is None or detail.subdiv == 0,
+    )
     mesh = {"name": character.name, "primitives": [primitive]}
     if targets:
         mesh["weights"] = [t.weight for t in targets]
@@ -215,8 +260,12 @@ def export_glb(
             "frame": "metres, Y up, the figure faces +Z",
         }
     }
+    if detail is not None:
+        doc.scene_extras["opensculptboy"]["detail"] = detail.extras()
+    if images:
+        doc.scene_extras["opensculptboy"]["textures"] = sorted(images)
     size = doc.write(path)
-    return dict(
+    summary = dict(
         path=str(path),
         bytes=size,
         vertices=int(len(body.source)),
@@ -227,6 +276,23 @@ def export_glb(
         max_influences=max_influences,
         largest_dropped_weight=body.dropped_weight,
     )
+    if detail is not None:
+        summary["detail"] = detail.extras()
+    return summary
+
+
+def _textured_material(doc: GltfDocument, images: dict) -> dict:
+    """The skin material with the baked base colour and normal textures of ``images``."""
+    texture = None
+    if "base_color" in images:
+        data = images["base_color"]
+        texture = doc.add_texture(doc.add_image(data, mime_type(data), "base_color"))
+    material = pbr_material("skin", (1.0, 1.0, 1.0, 1.0), 0.0, 0.6, texture=texture)
+    if "normal" in images:
+        data = images["normal"]
+        normal = doc.add_texture(doc.add_image(data, mime_type(data), "normal"))
+        material["normalTexture"] = {"index": normal}
+    return material
 
 
 def _animation(

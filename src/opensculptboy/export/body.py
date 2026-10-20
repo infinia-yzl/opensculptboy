@@ -219,6 +219,7 @@ def build_body(
     vertex_bone_weights: np.ndarray | None = None,
     vertex_bone_indices: np.ndarray | None = None,
     normals: np.ndarray | None = None,
+    mesh=None,
 ) -> BodyMesh:
     """
     glTF vertex data of a body mesh.
@@ -234,13 +235,24 @@ def build_body(
             model's own (for example the VRM weights with the eyelids moved to the head).
         normals: (V, 3) welded unit normals in Anny's frame, in place of the normals of
             ``vertices`` (for example toon face normals).
+        mesh: a :class:`~opensculptboy.detail.subdivision.DetailTopology` (a level of the
+            detail layer) whose triangles and UVs replace the model's; ``vertices`` and the
+            skin weights then hold one row per vertex of that mesh, and ``source`` maps each
+            glTF vertex to its vertex of the mesh.
 
     Returns:
         A :class:`BodyMesh`; normals come from the welded ``vertices`` unless given.
     """
     vertices = np.asarray(vertices, dtype=np.float64)
     frame = np.asarray(frame, dtype=np.float64)
-    triangles, uv_triangles = triangulated_faces(model)
+    if mesh is None:
+        triangles, uv_triangles = triangulated_faces(model)
+        texture_coordinates = model.texture_coordinates
+        if texture_coordinates is not None:
+            texture_coordinates = texture_coordinates.detach().cpu().double().numpy()
+    else:
+        triangles, uv_triangles = mesh.triangles, mesh.uv_triangles
+        texture_coordinates = mesh.uvs
     if normals is None:
         normals = vertex_normals(vertices, triangles)
     else:
@@ -250,12 +262,12 @@ def build_body(
                 f"normals of shape {normals.shape} for vertices of shape {vertices.shape}."
             )
     triangle_faces = np.arange(len(triangles))
-    if uv_triangles is not None and model.texture_coordinates is not None:
+    if uv_triangles is not None and texture_coordinates is not None:
         pairs = np.stack([triangles.reshape(-1), uv_triangles.reshape(-1)], axis=1)
         unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
         source, uv_source = unique[:, 0], unique[:, 1]
         split = inverse.reshape(-1, 3)
-        uvs = model.texture_coordinates.detach().cpu().double().numpy()[uv_source]
+        uvs = np.asarray(texture_coordinates, dtype=np.float64)[uv_source]
         uvs = np.stack(
             [uvs[:, 0], 1.0 - uvs[:, 1]], axis=1
         )  # glTF puts v = 0 at the top
