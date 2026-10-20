@@ -145,9 +145,26 @@ def resolve_within_budget(
     return None
 
 
-# the skin's base colour and normal map on anny's atlas, and the eyeballs' base colour on the
-# eye texture (opensculptboy.texture.eyes)
-TEXTURE_SLOTS = ("base_color", "normal", "eyes")
+# the skin's maps on anny's atlas, the eyeballs' base colour on the eye texture
+# (opensculptboy.texture.eyes), the head tile's maps (opensculptboy.texture.tiles) and the ear
+# tile's (opensculptboy.texture.ears)
+TEXTURE_SLOTS = (
+    "base_color",
+    "normal",
+    "eyes",
+    "roughness",
+    "thickness",
+    "curvature",
+    "head_base_color",
+    "head_normal",
+    "head_roughness",
+    "ears_base_color",
+    "ears_normal",
+    "ears_roughness",
+    "ears_thickness",
+    "ears_curvature",
+    "eye_base_color",
+)
 
 
 def texture_images(
@@ -158,9 +175,10 @@ def texture_images(
     ``"normal"`` on anny's atlas, ``"eyes"`` on the eye texture of
     :mod:`opensculptboy.texture.eyes`).
 
-    ``textures`` is None (the textures that the card's detail layer names, under
-    ``detail.textures``; none for a card without them), False (no texture), or a mapping of
-    slots to file paths or bytes. Relative paths of the card resolve against ``detail_dir``.
+    ``textures`` is None (the textures that the card names: its detail layer's, under
+    ``detail.textures``, and its skin material's, which take precedence; none for a card
+    without them), False (no texture), or a mapping of slots to file paths or bytes. Relative
+    paths of the card resolve against ``detail_dir``.
     """
     if textures is False:
         return {}
@@ -170,6 +188,12 @@ def texture_images(
             for k, v in character.detail.get("textures", {}).items()
             if k in TEXTURE_SLOTS
         }
+        skin = character.skin_material()
+        if skin is not None:
+            textures.update(skin.textures())
+        eye = character.eye_material()
+        if eye is not None and eye.base_color is not None:
+            textures["eye_base_color"] = eye.base_color  # opensculptboy.eyes.texture
         base = None if detail_dir is None else pathlib.Path(detail_dir)
     else:
         base = None
@@ -189,6 +213,21 @@ def texture_images(
             raise ValueError(f"The {slot} texture is neither a PNG nor a JPEG file.")
         images[slot] = data
     return images
+
+
+def ear_mesh(character, skin, images: dict, detail, detail_dir):
+    """The mesh of a detail level with the outer ears on the ear tile's UVs
+    (:mod:`opensculptboy.texture.ears`) and the mask of their triangles, or (the level's own
+    mesh, None) for level 0, a card without the ear tile or an export without its textures."""
+    mesh = None if detail is None else detail.topology
+    if mesh is None or skin is None or not skin.ears:
+        return mesh, None
+    if not any(slot.startswith("ears_") for slot in images):
+        return mesh, None
+    from opensculptboy.texture.ears import card_ear_uvs, with_ear_uvs
+
+    table = card_ear_uvs(character, detail_dir)
+    return with_ear_uvs(mesh, table)
 
 
 def mime_type(data: bytes) -> str:

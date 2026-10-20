@@ -39,7 +39,7 @@ from opensculptboy.export.body import (
     morph_target_rows,
     rest_rows,
 )
-from opensculptboy.export.detail import mime_type, texture_images
+from opensculptboy.export.detail import ear_mesh, mime_type, texture_images
 from opensculptboy.export.detail import resolve as resolve_detail
 from opensculptboy.export.document import GltfDocument, pbr_material, read_gltf_json
 
@@ -128,9 +128,13 @@ def export_glb(
             and the neck at ``detail_level``, the rest one level coarser).
         detail_dir: the folder that the paths of the detail layer are relative to (the card's
             folder); the current folder when None.
-        textures: None for the skin textures that the card's detail layer names (none for most
-            cards), False for none, or a mapping of ``"base_color"`` and ``"normal"`` to PNG or
-            JPEG files (paths or bytes) laid out on anny's UVs.
+        textures: None for the skin textures that the card names (its detail layer's and its
+            skin material's; none for most cards), False for none, or a mapping of texture
+            slots (:data:`opensculptboy.export.detail.TEXTURE_SLOTS`) to PNG or JPEG files
+            (paths or bytes) laid out on anny's UVs. A card with a ``material`` section gets
+            the skin material of :func:`_skin_material`, with the head tile's textures on a
+            primitive of their own; a file with a normal texture carries MikkTSpace
+            ``TANGENT`` attributes.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -168,44 +172,114 @@ def export_glb(
 
     # Mesh: split the vertices at UV seams; normals come from the welded mesh.
     detail = resolve_detail(model, character, detail_level, detail_dir, detail_region)
-    if detail is None:
+    images = texture_images(character, textures, detail_dir)
+    skin = character.skin_material()
+    eye = character.eye_material()
+    mesh, ears = ear_mesh(character, skin, images, detail, detail_dir)
+    eyed = None
+    if detail is None and eye is None:
         body = build_body(
             model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
         )
     else:
-        weights, indices = detail.skin_weights(
-            model.vertex_bone_weights.detach().cpu().double().numpy(),
-            model.vertex_bone_indices.cpu().numpy(),
-        )
+        weights = model.vertex_bone_weights.detach().cpu().double().numpy()
+        indices = model.vertex_bone_indices.cpu().numpy()
+        vertices, offsets = base, rest_vertices[1:] - base
+        if detail is not None:
+            weights, indices = detail.skin_weights(weights, indices)
+            vertices, offsets = detail.vertices(base), detail.targets(offsets)
+        normals = None
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import eyed_mesh
+
+            eyed = eyed_mesh(model, mesh, vertices, eye, "gltf")
+            normals = eyed.normals(vertices)
+            weights, indices = eyed.skin_weights(weights, indices)
+            vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
+            ears = eyed.extend_mask(ears)
+            mesh = eyed
         body = build_body(
             model,
-            detail.vertices(base),
-            detail.targets(rest_vertices[1:] - base),
+            vertices,
+            offsets,
             ANNY_TO_GLTF,
             max_influences,
             weights,
             indices,
-            mesh=detail.topology,
+            normals=normals,
+            mesh=mesh,
         )
+        if eyed is not None:
+            body.anny_source = eyed.anny_vertex()[body.source]
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
-    images = texture_images(character, textures, detail_dir)
-    if images:
+    head_material, head, ear_material = None, None, None
+    if skin is not None:
+        written: dict = {}  # slot -> texture index, so that each image is written once
+        material = doc.add_material(_skin_material(doc, skin, images, written))
+        head_material, head = _head_material(
+            doc, model, body, skin, images, written, character.topology
+        )
+        if ears is not None:
+            ear_material = doc.add_material(
+                _skin_material(doc, skin, images, written, "ears", "ears_")
+            )
+    elif set(images) - EYE_SLOTS:
         material = doc.add_material(_textured_material(doc, images))
     else:
         material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
+    if "normal" in images or "head_normal" in images:
+        body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
     joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
-    eye_material, eyes = _eye_material(
-        doc, model, body, images, None if detail is None else detail.topology
-    )
+    eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
+    if eyed is not None:
+        eye_material, eyes = None, None
+        eye_parts = _eye_part_materials(doc, model, body, eyed, eye, images)
+    else:
+        eye_material, eyes = _eye_material(
+            doc, model, body, images, None if detail is None else detail.topology
+        )
+    rest = np.ones(len(body.triangles), bool)
+    if eye_material is not None:
+        rest &= ~eyes
+    for _, part in eye_parts:
+        rest &= ~part
+    if ear_material is not None:
+        ears &= rest
+        rest &= ~ears
+    if head_material is not None:
+        head &= rest
+        rest &= ~head
     primitive = body_primitive(
         doc,
         body,
         material,
-        triangles=None if eye_material is None else body.triangles[~eyes],
+        triangles=None if rest.all() else body.triangles[rest],
         joint_type=joint_type,
         anny_vertex=detail is None or detail.subdiv == 0,
     )
     primitives = [primitive]
+    if ear_material is not None:  # the ear tile: the outer ears on UVs of their own
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                ear_material,
+                triangles=body.triangles[ears],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    if head_material is not None:  # the head tile: the same vertices, its own textures
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                head_material,
+                triangles=body.triangles[head],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
     if eye_material is not None:  # the eyeballs: the same vertices, their own texture
         primitives.append(
             body_primitive(
@@ -213,6 +287,17 @@ def export_glb(
                 body,
                 eye_material,
                 triangles=body.triangles[eyes],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    for part_material, part in eye_parts:  # the eyes: eyeballs, corneas, the socket
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                part_material,
+                triangles=body.triangles[part],
                 attributes=primitive["attributes"],
                 targets=primitive.get("targets"),
             )
@@ -280,6 +365,12 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["detail"] = detail.extras()
     if images:
         doc.scene_extras["opensculptboy"]["textures"] = sorted(images)
+    if head_material is not None:
+        doc.scene_extras["opensculptboy"]["head_tile"] = True
+    if ear_material is not None:
+        doc.scene_extras["opensculptboy"]["ear_tile"] = True
+    if eyed is not None:
+        doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -319,6 +410,208 @@ def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
         "KHR_texture_transform": transform
     }
     return doc.add_material(material), eyes
+
+
+# the texture slots of the eyes alone, which leave the skin's material as it is
+EYE_SLOTS = {"eyes", "eye_base_color"}
+# the key of the eye materials' settings in their extras
+EYE_EXTRAS = "opensculptboy_eye"
+EYE_EXTRAS_FORMAT = "opensculptboy/eye@1"
+
+
+def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict):
+    """
+    The materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (an
+    :class:`~opensculptboy.eyes.mesh.EyedMesh` behind ``body``):
+
+    - ``eyes``: the eye texture (:func:`opensculptboy.eyes.mesh.eye_texture`) on the eyeballs;
+      under a cornea a moist, fairly rough surface, and without one (``eye.cornea`` false) a
+      clear coat (``KHR_materials_clearcoat``) at the cornea's IOR for the wet highlight;
+    - ``cornea``: a clear, refracting shell (``KHR_materials_transmission``,
+      ``KHR_materials_volume`` with the depth of the anterior chamber as its thickness,
+      ``KHR_materials_ior``). As the transmission extension asks, it is OPAQUE: readers
+      without the extension draw it white, so ``eye.cornea`` false suits them better;
+    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat).
+
+    The extras of each hold :data:`EYE_EXTRAS` (``opensculptboy/eye@1``) with its ``role``
+    and the eye's settings, which :mod:`opensculptboy.export.blender_skin` reads.
+    """
+    from opensculptboy.eyes.geometry import CHAMBER_DEPTH_MM
+    from opensculptboy.eyes.mesh import eye_texture
+
+    settings = dict(eye.extras(), bulge={k: float(v) for k, v in eyed.bulge.items()})
+
+    def extras(role):
+        return {EYE_EXTRAS: {"format": EYE_EXTRAS_FORMAT, "role": role, **settings}}
+
+    if "eye_base_color" in images:
+        data = images["eye_base_color"]
+        source = {"source": "texture"}
+    else:
+        pixels, source = eye_texture(eye, eyed, model, images.get("eyes"))
+        from opensculptboy.export.document import png_bytes
+
+        data = png_bytes(pixels)
+    eyed.extras = {
+        "radius_mm": [float(f.radius * 1000) for f in eyed.frames.values()],
+        "bulge": settings["bulge"],
+        "cornea": bool(eye.cornea),
+        "caruncle": bool(eye.caruncle),
+        **source,
+    }
+    texture = doc.add_texture(doc.add_image(data, mime_type(data), "eye_base_color"))
+    out = []
+    eyeball = pbr_material(
+        "eyes", (1.0, 1.0, 1.0, 1.0), 0.0, eye.sclera_roughness, texture=texture
+    )
+    if not eye.cornea:
+        eyeball["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 1.0,
+                "clearcoatRoughnessFactor": float(eye.cornea_roughness),
+            },
+            "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
+        }
+    eyeball["extras"] = extras("eyeball")
+    out.append((doc.add_material(eyeball), eyed.part_mask("eyeball")))
+    if eye.cornea:
+        cornea = pbr_material("cornea", (1.0, 1.0, 1.0, 1.0), 0.0, eye.cornea_roughness)
+        cornea["extensions"] = {
+            "KHR_materials_transmission": {"transmissionFactor": 1.0},
+            "KHR_materials_volume": {"thicknessFactor": CHAMBER_DEPTH_MM / 1000.0},
+            "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
+        }
+        cornea["extras"] = extras("cornea")
+        out.append((doc.add_material(cornea), eyed.part_mask("cornea")))
+    if eye.caruncle:
+        pink = pbr_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,), 0.0, 0.5)
+        pink["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 0.8,
+                "clearcoatRoughnessFactor": 0.08,
+            }
+        }
+        pink["extras"] = extras("conjunctiva")
+        out.append((doc.add_material(pink), eyed.part_mask("caruncle", "socket")))
+    return out
+
+
+# the key of the skin's subsurface settings and real-time skin maps in a material's extras
+SKIN_EXTRAS = "opensculptboy_skin"
+SKIN_EXTRAS_FORMAT = "opensculptboy/skin@1"
+
+
+def _texture(doc: GltfDocument, images: dict, slot: str, cache: dict) -> int | None:
+    """The texture of an image slot, written once per document."""
+    if slot not in images:
+        return None
+    if slot not in cache:
+        data = images[slot]
+        cache[slot] = doc.add_texture(doc.add_image(data, mime_type(data), slot))
+    return cache[slot]
+
+
+def _skin_material(
+    doc: GltfDocument,
+    skin,
+    images: dict,
+    cache: dict,
+    name: str = "skin",
+    prefix: str = "",
+    transform: dict | None = None,
+) -> dict:
+    """
+    The glTF material of a card's skin (:class:`~opensculptboy.material.SkinMaterial`): the
+    base colour, roughness and normal textures of ``images`` (slots ``prefix + "base_color"``
+    and so on) behind ``transform`` (a ``KHR_texture_transform``) when given, the specular
+    reflection (``KHR_materials_specular``, ``KHR_materials_ior``), and the subsurface
+    settings with the thickness and curvature maps in the extras under :data:`SKIN_EXTRAS`
+    (glTF has no ratified subsurface extension). ``cache`` maps the slots already written
+    to their textures.
+    """
+
+    def info(slot):
+        index = _texture(doc, images, slot, cache)
+        if index is None:
+            return None
+        entry = {"index": index}
+        if transform is not None:
+            entry["extensions"] = {"KHR_texture_transform": dict(transform)}
+        return entry
+
+    pbr = {"baseColorFactor": [float(c) for c in skin.base_color_factor]}
+    base = info(prefix + "base_color")
+    if base is not None:
+        pbr["baseColorTexture"] = base
+    pbr["metallicFactor"] = 0.0
+    rough = info(prefix + "roughness")
+    # a roughness texture is multiplied by the factor; without one, the number is the value
+    pbr["roughnessFactor"] = float(
+        skin.roughness_factor if rough is not None else skin.roughness_value
+    )
+    if rough is not None:
+        pbr["metallicRoughnessTexture"] = rough
+    material = {"name": name, "pbrMetallicRoughness": pbr}
+    normal = info(prefix + "normal")
+    if normal is not None:
+        normal["scale"] = float(skin.normal_scale)
+        material["normalTexture"] = normal
+    material["extensions"] = {
+        "KHR_materials_specular": {
+            "specularFactor": float(skin.specular),
+            "specularColorFactor": [float(c) for c in skin.specular_color],
+        },
+        "KHR_materials_ior": {"ior": float(skin.ior)},
+    }
+    extras = {"format": SKIN_EXTRAS_FORMAT, "subsurface": skin.subsurface_extras()}
+    for slot, scale_key, scale in (
+        ("thickness", "max_mm", skin.thickness_mm),
+        ("curvature", "max_per_m", skin.curvature_per_m),
+    ):
+        # the head tile keeps anny's UVs and reads the atlas's maps; the ear tile has its own
+        source = slot
+        if prefix + slot in images or prefix == "ears_":
+            source = prefix + slot
+        index = _texture(doc, images, source, cache)
+        if index is not None:
+            extras[slot] = {"index": index, "texCoord": 0, scale_key: float(scale)}
+    material["extras"] = {SKIN_EXTRAS: extras}
+    return material
+
+
+def _head_material(
+    doc: GltfDocument, model, body, skin, images: dict, cache: dict, topology: str
+):
+    """
+    The material of the head tile (:mod:`opensculptboy.texture.tiles`): the skin's settings
+    with the head tile's textures behind the tile's ``KHR_texture_transform``, and the mask
+    of the head tile's triangles; (None, None) when the card has no head tile textures.
+    """
+    from opensculptboy.export.body import head_tile_triangles
+    from opensculptboy.texture.tiles import head_texture_transform
+
+    if not any(slot.startswith("head_") for slot in images):
+        return None, None
+    transform = head_texture_transform(model, topology)
+    mask = head_tile_triangles(model, body, topology)
+    if transform is None or mask is None or not mask.any():
+        return None, None
+    material = _skin_material(doc, skin, images, cache, "head", "head_", transform)
+    # the slots that the head tile lacks fall back to the atlas, without the transform
+    for slot, key in (
+        ("base_color", "baseColorTexture"),
+        ("roughness", "metallicRoughnessTexture"),
+    ):
+        if "head_" + slot not in images and slot in images:
+            material["pbrMetallicRoughness"][key] = {
+                "index": _texture(doc, images, slot, cache)
+            }
+    if "head_normal" not in images and "normal" in images:
+        material["normalTexture"] = {
+            "index": _texture(doc, images, "normal", cache),
+            "scale": float(skin.normal_scale),
+        }
+    return doc.add_material(material), mask
 
 
 def _textured_material(doc: GltfDocument, images: dict) -> dict:

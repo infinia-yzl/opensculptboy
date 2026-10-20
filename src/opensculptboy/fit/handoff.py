@@ -71,9 +71,16 @@ class HandoffPart:
     base_color: np.ndarray | None = None  # (H, W, 3 or 4) uint8, glTF row order
     normal_map: np.ndarray | None = None  # (H, W, 3) uint8, tangent space
     material: str | None = None  # the glTF material's name
-    # the file's own vertex normals (unit, Anny's frame): the shading of the replica, which
-    # can differ from the normals of its geometry by tens of degrees
-    normals: np.ndarray | None = None
+    # the file's vertex normals (NORMAL) in Anny's frame, unit length, or None
+    normals: np.ndarray | None = None  # (V, 3)
+    # the roughness: the G channel of the metallic-roughness texture times the material's
+    # roughness factor, (H, W) float in 0..1, or the factor alone (a number), or None
+    roughness: np.ndarray | float | None = None
+    normal_scale: float = (
+        1.0  # the scale of the normal texture (glTF normalTexture.scale)
+    )
+    # the vertices of the outer ear by side ("l", "r"), from appearance.json's masks.ear
+    ear_vertices: dict | None = None
 
     @property
     def is_skin(self) -> bool:
@@ -224,20 +231,46 @@ def _texture_array(image) -> np.ndarray | None:
 
 
 def _visual(geometry):
-    """UVs (glTF convention), base colour and normal textures of a trimesh geometry."""
+    """UVs (glTF convention), base colour, normal texture and roughness (see
+    :class:`HandoffPart`) of a trimesh geometry."""
     visual = getattr(geometry, "visual", None)
     uv = getattr(visual, "uv", None)
     material = getattr(visual, "material", None)
-    base = normal = None
+    base = normal = roughness = None
     if material is not None:
         base = _texture_array(getattr(material, "baseColorTexture", None))
         if base is None:
             base = _texture_array(getattr(material, "image", None))
         normal = _texture_array(getattr(material, "normalTexture", None))
+        factor = getattr(material, "roughnessFactor", None)
+        factor = 1.0 if factor is None else float(factor)
+        texture = _texture_array(getattr(material, "metallicRoughnessTexture", None))
+        if texture is not None and texture.ndim == 3:
+            roughness = texture[..., 1].astype(np.float32) / 255.0 * factor
+        elif getattr(material, "roughnessFactor", None) is not None:
+            roughness = factor
     if uv is not None:
         uv = np.asarray(uv, dtype=np.float64).copy()
         uv[:, 1] = 1.0 - uv[:, 1]  # trimesh flips v to the OBJ convention on load
-    return uv, base, normal
+    return uv, base, normal, roughness
+
+
+def _file_normals(geometry, rotation) -> np.ndarray | None:
+    """The NORMAL attribute of a trimesh geometry loaded from glTF, rotated, or None."""
+    cache = getattr(geometry, "_cache", None)
+    normals = None
+    try:
+        normals = cache["vertex_normals"] if cache is not None else None
+    except (KeyError, TypeError):
+        normals = None
+    if normals is None:
+        return None
+    normals = np.asarray(normals, dtype=np.float64)
+    if normals.shape != np.shape(geometry.vertices):
+        return None
+    normals = normals @ np.asarray(rotation).T
+    length = np.linalg.norm(normals, axis=1, keepdims=True)
+    return normals / np.where(length > 0, length, 1.0)
 
 
 def load_glb_parts(
@@ -266,12 +299,7 @@ def load_glb_parts(
         name = node if node in entries else geometry_name
         material = getattr(getattr(geometry, "visual", None), "material", None)
         material = getattr(material, "name", None)
-        uv, base, normal = _visual(geometry)
-        # the file's NORMAL attribute when it has one (trimesh computes them otherwise)
-        shading = np.asarray(geometry.vertex_normals, dtype=np.float64)
-        shading = shading @ np.linalg.inv(transform[:3, :3])  # the inverse transpose
-        shading = shading @ GLTF_TO_ANNY.T
-        shading /= np.maximum(np.linalg.norm(shading, axis=1, keepdims=True), 1e-12)
+        uv, base, normal, roughness = _visual(geometry)
         parts.append(
             HandoffPart(
                 name=name,
@@ -282,7 +310,8 @@ def load_glb_parts(
                 base_color=base,
                 normal_map=normal,
                 material=material,
-                normals=shading,
+                normals=_file_normals(geometry, GLTF_TO_ANNY @ transform[:3, :3]),
+                roughness=roughness,
             )
         )
     return parts
@@ -315,7 +344,46 @@ def load_handoff(folder: str | pathlib.Path) -> Handoff:
         if point.shape != (3,) or not np.isfinite(point).all():
             raise ValueError(f"Landmark {name!r} must be [x, y, z]; got {value!r}.")
         landmarks[name] = GLTF_TO_ANNY @ point
+    _attach_ear_masks(parts, (appearance.get("masks") or {}).get("ear"))
     return Handoff(folder, parts, landmarks, appearance)
+
+
+def _attach_ear_masks(parts: list[HandoffPart], entries) -> None:
+    """
+    Attach the optional ``masks.ear`` entries of appearance.json to their parts: each entry
+    names the part's mesh or node (``"mesh"``, ``"node"``; ``"primitive"`` picks a primitive
+    of a mesh, ``"material"`` the primitive of that material), its ``"side"`` (``"l"`` or
+    ``"r"``) and the indices of the outer ear's ``"vertices"`` in that primitive. Entries that
+    name no loaded part, or indices out of range, are ignored.
+    """
+    if isinstance(entries, dict):
+        entries = [dict(v, side=v.get("side", k)) for k, v in entries.items()]
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        side = str(entry.get("side", "")).lower()[:1]
+        vertices = entry.get("vertices")
+        if side not in ("l", "r") or not isinstance(vertices, list):
+            continue
+        names = [
+            entry.get(k) for k in ("mesh", "node") if isinstance(entry.get(k), str)
+        ]
+        primitive = entry.get("primitive")
+        candidates = [p for p in parts if p.name in names]
+        if isinstance(entry.get("material"), str):
+            by_material = [p for p in candidates if p.material == entry["material"]]
+            candidates = by_material or candidates
+        elif isinstance(primitive, int) and 0 <= primitive < len(candidates):
+            candidates = [candidates[primitive]]
+        if not candidates:
+            continue
+        part = candidates[0]
+        index = np.asarray([v for v in vertices if isinstance(v, int)], dtype=np.int64)
+        index = index[(index >= 0) & (index < len(part.vertices))]
+        if len(index):
+            part.ear_vertices = dict(part.ear_vertices or {}, **{side: index})
 
 
 def write_handoff(

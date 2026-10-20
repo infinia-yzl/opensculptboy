@@ -68,11 +68,17 @@ from opensculptboy.export.body import (
     top_skin_weights,
     triangulated_faces,
 )
-from opensculptboy.export.detail import mime_type, resolve_within_budget, texture_images
+from opensculptboy.export.detail import (
+    ear_mesh,
+    mime_type,
+    resolve_within_budget,
+    texture_images,
+)
 from opensculptboy.export.document import (
     ELEMENT_ARRAY_BUFFER,
     MORPH_EPSILON,
     GltfDocument,
+    png_bytes,
 )
 from opensculptboy.export.gltf import _check_names
 
@@ -603,6 +609,11 @@ def vrm_spec(
         budget,
         detail_dir,
     )
+    images = texture_images(character, textures, detail_dir)
+    skin = character.skin_material()
+    eye = character.eye_material()
+    ear_topology, ears = ear_mesh(character, skin, images, detail, detail_dir)
+    eyed = None
     if detail is None:
         targets = [
             vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
@@ -610,9 +621,31 @@ def vrm_spec(
         ]
         # The normals of the rebind: for the inverse bind, Anny's rest normals mapped as the
         # targets.
-        body = build_body(
-            model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
-        )
+        vertices, normals = rb.vertices, rb.normals
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import eyed_mesh
+
+            eyed = eyed_mesh(model, None, base, eye, "vrm")
+            normals = eyed.normals(vertices, normals)
+            weights, indices = eyed.skin_weights(weights, indices)
+            targets = eyed.targets(np.stack(targets)) if len(targets) else targets
+            vertices = eyed.vertices(vertices)
+            body = build_body(
+                model,
+                vertices,
+                targets,
+                G,
+                4,
+                weights,
+                indices,
+                normals=normals,
+                mesh=eyed,
+            )
+            body.anny_source = eyed.anny_vertex()[body.source]
+        else:
+            body = build_body(
+                model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
+            )
     else:
         # The detail mesh: Anny's rest mesh subdivided with the card's offsets, rebound into
         # the T-pose with the subdivided file weights. The lid-only targets zero the eyeballs
@@ -645,17 +678,34 @@ def vrm_spec(
             vertex_bone_indices=full_i,
         )
         keep_anny_vertex = keep_anny_vertex and detail.subdiv == 0
-        body = build_body(
-            model,
+        vertices, targets, normals, mesh = (
             rb.vertices,
             rb.targets,
+            rb.normals,
+            ear_topology,
+        )
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import eyed_mesh
+
+            eyed = eyed_mesh(model, mesh, detail.vertices(base), eye, "vrm")
+            normals = eyed.normals(vertices, normals)
+            weights, indices = eyed.skin_weights(weights, indices)
+            targets, vertices = eyed.targets(targets), eyed.vertices(vertices)
+            ears = eyed.extend_mask(ears)
+            mesh = eyed
+        body = build_body(
+            model,
+            vertices,
+            targets,
             G,
             4,
             weights,
             indices,
-            normals=rb.normals,
-            mesh=detail.topology,
+            normals=normals,
+            mesh=mesh,
         )
+        if eyed is not None:
+            body.anny_source = eyed.anny_vertex()[body.source]
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
@@ -684,28 +734,70 @@ def vrm_spec(
     inverse_bind = np.tile(np.eye(4), (len(labels), 1, 1))
     inverse_bind[:, :3, 3] = -joints
     skins = [SpecSkin(character.rig, list(range(len(labels))), inverse_bind, root)]
-    images = texture_images(character, textures, detail_dir)
+    # VRM files hold the base colour, the normal map, the eyes and the head tile's two maps
+    for slot in [k for k in images if k not in VRM_TEXTURE_SLOTS]:
+        images.pop(slot)
+    # the eyes of opensculptboy.eyes draw a baked eye texture into their own
+    baked_eyes = images.pop("eyes", None) if eyed is not None else None
+    if skin is None:
+        images.pop("head_base_color", None)
+        images.pop("head_normal", None)
+    ear_material = None
+    if ears is not None:
+        ear_material = _tile_toon_material("ears", images, skin, "ears_")
+    if ear_material is None:
+        images.pop("ears_base_color", None)
+        images.pop("ears_normal", None)
+    head_material = _head_toon_material(images, model, skin, character.topology)
+    if head_material is None:
+        images.pop("head_base_color", None)
+        images.pop("head_normal", None)
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
-    if images:
-        materials = [_textured_toon_material(images)]
+    if set(images) - {"eyes", "eye_base_color"}:
+        materials = [_textured_toon_material(images, skin)]
+    if "normal" in images or "head_normal" in images:
+        body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
     primitives = [SpecPrimitive(material=0)]
-    eye_material = _eye_toon_material(images, model)
+    eye_material = None if eyed is not None else _eye_toon_material(images, model)
     eye_triangles = None
+    if eyed is not None:  # the eyes of opensculptboy.eyes: their texture and the matcap
+        eye_parts = _eye_part_toon_materials(images, eyed, eye, model, baked_eyes)
     if eye_material is not None:
         from opensculptboy.export.body import eyeball_triangles
 
         eye_triangles = eyeball_triangles(
             model, body, None if detail is None else detail.topology
         )
+    rest = np.ones(len(body.triangles), bool)
+    extra = []
     if eye_triangles is not None and eye_triangles.any():
         # the eyeballs: the same vertices and targets, their own texture
         materials.append(eye_material)
-        primitives = [
-            SpecPrimitive(material=0, triangles=body.triangles[~eye_triangles]),
-            SpecPrimitive(material=1, triangles=body.triangles[eye_triangles]),
-        ]
+        extra.append(SpecPrimitive(len(materials) - 1, body.triangles[eye_triangles]))
+        rest &= ~eye_triangles
     else:
         images.pop("eyes", None)
+    if eyed is not None:
+        for part_material, part in eye_parts:
+            materials.append(part_material)
+            extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
+            rest &= ~part
+    if ear_material is not None and (ears & rest).any():
+        ears = ears & rest
+        materials.append(ear_material)
+        extra.insert(0, SpecPrimitive(len(materials) - 1, body.triangles[ears]))
+        rest &= ~ears
+    if head_material is not None:
+        from opensculptboy.export.body import head_tile_triangles
+
+        head = head_tile_triangles(model, body, character.topology)
+        if head is not None and (head & rest).any():
+            head &= rest
+            materials.append(head_material)
+            extra.insert(0, SpecPrimitive(len(materials) - 1, body.triangles[head]))
+            rest &= ~head
+    if extra:
+        primitives = [SpecPrimitive(material=0, triangles=body.triangles[rest])] + extra
     meshes = [
         SpecMesh(
             name="body",
@@ -764,6 +856,8 @@ def vrm_spec(
     }
     if detail is not None:
         extras["detail"] = detail.extras()
+    if eyed is not None:
+        extras["eyes"] = eyed.extras
     if images:
         extras["textures"] = sorted(images)
     return VrmSpec(
@@ -790,29 +884,98 @@ def vrm_spec(
         skin_weights=w4,
         skin_indices=i4,
         parents=parents,
-        images=[
-            (slot, images[slot])
-            for slot in ("base_color", "normal", "eyes")
-            if slot in images
-        ],
+        images=[(slot, images[slot]) for slot in VRM_TEXTURE_SLOTS if slot in images],
     )
 
 
-def _textured_toon_material(images: dict) -> mtoon.ToonMaterial:
+# the textures of a VRM file, in the order of VrmSpec.images (their texture indices)
+VRM_TEXTURE_SLOTS = (
+    "base_color",
+    "normal",
+    "eyes",
+    "head_base_color",
+    "head_normal",
+    "ears_base_color",
+    "ears_normal",
+    "eye_base_color",
+    "eye_matcap",
+)
+
+
+def _texture_index(images: dict, slot: str) -> int | None:
+    present = [k for k in VRM_TEXTURE_SLOTS if k in images]
+    return present.index(slot) if slot in present else None
+
+
+def _skin_ramp(material: mtoon.ToonMaterial, skin) -> None:
+    """Set the MToon ramp of a card's skin material: the shade colour and the shading shift
+    and toony factors of :func:`opensculptboy.export.skin_ramp.skin_toon_ramp`, which
+    imitate the warmth of its subsurface scattering."""
+    from opensculptboy.export.skin_ramp import skin_toon_ramp
+
+    ramp = skin_toon_ramp(skin)
+    factor = skin.base_color_factor
+    material.base_color = tuple(float(c) for c in factor)
+    material.shade_color = tuple(r * float(c) for r, c in zip(ramp.shade_ratio, factor))
+    material.shading_shift = ramp.shading_shift
+    material.shading_toony = ramp.shading_toony
+    material.normal_scale = float(skin.normal_scale)
+
+
+def _textured_toon_material(images: dict, skin=None) -> mtoon.ToonMaterial:
     """
     The skin's MToon material with the baked textures: the base colour texture is the lit and
     the shade texture (the shade colour darkens it), and the normal texture is the normal map.
     The texture indices follow the order of ``VrmSpec.images``, which come first in the file.
+    A card's skin material (``skin``) sets the ramp (:func:`_skin_ramp`).
     """
     material = mtoon.soft_material("skin", (1.0, 1.0, 1.0, 1.0))
     material.shade_color = (0.78, 0.62, 0.60)
-    index = 0
     if "base_color" in images:
-        material.base_texture = material.shade_texture = index
-        index += 1
+        material.base_texture = material.shade_texture = _texture_index(
+            images, "base_color"
+        )
     if "normal" in images:
-        material.normal_texture = index
+        material.normal_texture = _texture_index(images, "normal")
+    if skin is not None:
+        _skin_ramp(material, skin)
     return material
+
+
+def _tile_toon_material(name: str, images: dict, skin, prefix: str, transform=None):
+    """The MToon material of a tile of the skin (its base colour and normal map, slots
+    ``prefix + "base_color"`` and ``prefix + "normal"``) with the skin's ramp, or None when
+    the card has no skin material or the tile lacks either map (MToon 0.x applies one
+    transform to every texture of a material)."""
+    if (
+        skin is None
+        or prefix + "base_color" not in images
+        or prefix + "normal" not in images
+    ):
+        return None
+    material = mtoon.soft_material(name, (1.0, 1.0, 1.0, 1.0))
+    material.base_texture = material.shade_texture = _texture_index(
+        images, prefix + "base_color"
+    )
+    material.normal_texture = _texture_index(images, prefix + "normal")
+    material.texture_transform = transform
+    _skin_ramp(material, skin)
+    return material
+
+
+def _head_toon_material(images: dict, model, skin, topology: str):
+    """
+    The head tile's MToon material (:mod:`opensculptboy.texture.tiles`): the skin's ramp
+    with the head tile's base colour and normal map behind its texture transform, or None
+    when the card has no skin material or the tile lacks either map (MToon 0.x applies one
+    transform to every texture of a material).
+    """
+    from opensculptboy.texture.tiles import head_texture_transform
+
+    transform = head_texture_transform(model, topology)
+    if transform is None:
+        return None
+    return _tile_toon_material("head", images, skin, "head_", transform)
 
 
 def _eye_toon_material(images: dict, model) -> mtoon.ToonMaterial | None:
@@ -830,11 +993,59 @@ def _eye_toon_material(images: dict, model) -> mtoon.ToonMaterial | None:
         return None
     material = mtoon.soft_material("eyes", (1.0, 1.0, 1.0, 1.0))
     material.shade_color = (0.85, 0.85, 0.85)
-    material.base_texture = material.shade_texture = sum(
-        slot in images for slot in ("base_color", "normal")
-    )
+    material.base_texture = material.shade_texture = _texture_index(images, "eyes")
     material.texture_transform = transform
     return material
+
+
+def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None):
+    """
+    The MToon materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (the
+    single-surface eyeball, the caruncle and the skin of the socket), with their textures put
+    into ``images`` (slots ``eye_base_color`` and ``eye_matcap``): the eye texture is the lit
+    and the shade texture, with a soft ramp, and the matcap of
+    :func:`opensculptboy.eyes.texture.matcap_pixels` (scaled by ``eye.highlight``) gives the
+    wet highlight, which stays toward the light of the view as the eye turns. MToon 0.x does
+    not mask the matcap, and neither does this material in 1.0. ``baked`` is the baked eye
+    texture on anny's atlas, if any.
+    """
+    from opensculptboy.eyes.mesh import eye_texture
+    from opensculptboy.eyes.texture import matcap_pixels
+
+    if "eye_base_color" in images:
+        source = {"source": "texture"}
+    else:
+        pixels, source = eye_texture(eye, eyed, model, baked)
+        images["eye_base_color"] = png_bytes(pixels)
+    images["eye_matcap"] = png_bytes(matcap_pixels())
+    eyed.extras = {
+        "radius_mm": [float(f.radius * 1000) for f in eyed.frames.values()],
+        "bulge": {k: float(v) for k, v in eyed.bulge.items()},
+        "cornea": False,
+        "caruncle": bool(eye.caruncle),
+        **source,
+    }
+    out = []
+    eyeball = mtoon.ToonMaterial(
+        name="eyes",
+        shade_color=(0.82, 0.80, 0.80),
+        shading_shift=-0.2,
+        shading_toony=0.4,
+        gi_equalization=0.6,
+    )
+    eyeball.base_texture = eyeball.shade_texture = _texture_index(
+        images, "eye_base_color"
+    )
+    eyeball.matcap_texture = _texture_index(images, "eye_matcap")
+    k = float(eye.highlight)
+    eyeball.matcap_factor = (k, k, k)
+    out.append((eyeball, eyed.part_mask("eyeball")))
+    if eye.caruncle:
+        pink = mtoon.soft_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,))
+        pink.matcap_texture = eyeball.matcap_texture
+        pink.matcap_factor = (0.5 * k, 0.5 * k, 0.5 * k)
+        out.append((pink, eyed.part_mask("caruncle", "socket")))
+    return out
 
 
 def _rest_output(model, character: Character, actions, face_labels) -> dict:

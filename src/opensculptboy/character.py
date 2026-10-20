@@ -9,10 +9,11 @@ from typing import Any
 
 import torch
 
-# Schema 2 adds the optional ``detail`` field. A card without detail is still written as
-# schema 1, so that it stays byte for byte what earlier versions wrote and read.
-SCHEMA_VERSION = 2
-SCHEMA_VERSIONS = (1, 2)
+# Schema 2 adds the optional ``detail`` field and schema 3 the optional ``material`` field. A
+# card is written with the lowest schema that holds its fields, so that a card without them
+# stays byte for byte what earlier versions wrote and read.
+SCHEMA_VERSION = 3
+SCHEMA_VERSIONS = (1, 2, 3)
 
 
 @dataclasses.dataclass
@@ -39,6 +40,11 @@ class Character:
     ``.safetensors`` sidecar file relative to the card (see :mod:`opensculptboy.detail`). Other
     keys (``"textures"``, ``"fit"``) describe baked textures and the fit that made the layer.
     An empty ``detail`` is no detail layer.
+
+    ``material`` holds an optional skin material (schema 3): textures on anny's atlas, the
+    roughness, the specular reflection and the subsurface scattering, and the thickness and
+    curvature maps of real-time skin shading (see :mod:`opensculptboy.material`). An empty
+    ``material`` keeps the exporters' own skin.
     """
 
     name: str = "character"
@@ -51,6 +57,25 @@ class Character:
     facial_actions: dict[str, float] = dataclasses.field(default_factory=dict)
     pose: dict[str, Any] = dataclasses.field(default_factory=dict)
     detail: dict[str, Any] = dataclasses.field(default_factory=dict)
+    material: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+    def skin_material(self):
+        """The :class:`~opensculptboy.material.SkinMaterial` of ``material``, or None (also
+        for a section that holds the eyes alone, which keeps the exporters' own skin)."""
+        if not self.material or set(self.material) == {"eyes"}:
+            return None
+        from opensculptboy.material import SkinMaterial
+
+        return SkinMaterial.from_dict(self.material)
+
+    def eye_material(self):
+        """The :class:`~opensculptboy.material.EyeMaterial` of ``material.eyes``, or None for
+        anny's own eyeballs."""
+        if "eyes" not in self.material:
+            return None
+        from opensculptboy.material import EyeMaterial
+
+        return EyeMaterial.from_dict(self.material["eyes"])
 
     def detail_levels(self) -> list[int]:
         """The subdivision levels of the detail layer, in increasing order."""
@@ -128,12 +153,19 @@ class Character:
         }
 
     def to_dict(self) -> dict[str, Any]:
-        """The card as a JSON object; a card without detail keeps schema 1 and no ``detail``"""
+        """The card as a JSON object in the lowest schema that holds it: a card without
+        detail and material keeps schema 1, and one without material schema 2"""
         data = dataclasses.asdict(self)
-        if not self.detail:
+        schema = 1
+        if self.detail:
+            schema = 2
+        else:
             del data["detail"]
-            return {"schema": 1, **data}
-        return {"schema": SCHEMA_VERSION, **data}
+        if self.material:
+            schema = 3
+        else:
+            del data["material"]
+        return {"schema": schema, **data}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Character":
@@ -149,6 +181,8 @@ class Character:
             )
         if schema == 1 and "detail" in data:
             raise ValueError("The detail field needs character schema 2.")
+        if schema in (1, 2) and "material" in data:
+            raise ValueError("The material field needs character schema 3.")
         fields = {f.name for f in dataclasses.fields(cls)}
         unknown = sorted(set(data) - fields - {"schema"})
         if unknown:
@@ -157,6 +191,10 @@ class Character:
             )
         character = cls(**{k: v for k, v in data.items() if k in fields})
         character.check_detail()
+        if character.material:
+            from opensculptboy.material import check_material
+
+            check_material(character.material)
         return character
 
     def check_detail(self) -> None:

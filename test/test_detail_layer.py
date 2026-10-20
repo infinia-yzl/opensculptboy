@@ -101,7 +101,7 @@ class TestCharacterDetail(unittest.TestCase):
         }
         card = Character(name="a", detail=detail)
         data = json.loads(json.dumps(card.to_dict()))
-        self.assertEqual(data["schema"], SCHEMA_VERSION)
+        self.assertEqual(data["schema"], 2)
         self.assertEqual(Character.from_dict(data), card)
         self.assertEqual(card.detail_levels(), [0, 1])
 
@@ -117,7 +117,7 @@ class TestCharacterDetail(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema 2"):
             Character.from_dict({"schema": 1, "detail": {"levels": []}})
         with self.assertRaisesRegex(ValueError, "schema"):
-            Character.from_dict({"schema": 3})
+            Character.from_dict({"schema": SCHEMA_VERSION + 1})
 
 
 class TestSubdivision(unittest.TestCase):

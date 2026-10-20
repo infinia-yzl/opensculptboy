@@ -71,6 +71,26 @@ def _detail_dir(path: str | None) -> pathlib.Path | None:
     return None if path is None else pathlib.Path(path).resolve().parent
 
 
+def _with_eyes(character, value, parser):
+    """The character with the eyes of ``--eyes``: None keeps the card as it is; "" turns on
+    the eyes of opensculptboy.eyes (the card's, else the defaults); a file's values are laid
+    over the card's eyes."""
+    if value is None:
+        return character
+    import dataclasses
+
+    from opensculptboy.material import check_eyes
+
+    eyes = dict(character.material.get("eyes", {}))
+    if value:
+        try:
+            eyes.update(json.loads(pathlib.Path(value).read_text()))
+            check_eyes(eyes)
+        except (OSError, ValueError, TypeError) as error:
+            parser.error(f"--eyes {value}: {_one_line(error)}")
+    return dataclasses.replace(character, material={**character.material, "eyes": eyes})
+
+
 def _export(args, parser) -> int:
     is_vrm = pathlib.Path(args.output).suffix.lower() == ".vrm"
     wrong = _GLB_ONLY if is_vrm else _VRM_ONLY
@@ -85,7 +105,7 @@ def _export(args, parser) -> int:
         return _export_vrm(args, parser)
     from opensculptboy.export.gltf import export_glb
 
-    character = _load_character(args.character, parser)
+    character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     model, morph_targets = None, None  # export_glb builds the model it needs
     if args.morph_targets == "none":
         morph_targets = []
@@ -129,7 +149,7 @@ def _export_vrm(args, parser) -> int:
             "a VRM file needs an author: pass --author NAME, or --meta FILE with "
             '"authors": ["NAME"].'
         )
-    character = _load_character(args.character, parser)
+    character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     # A file over a strict budget fails (exit 1); a character, an option or a thumbnail
     # that a VRM file cannot carry is a usage error (exit 2). Each prints one line, after
     # the warnings of the export.
@@ -256,13 +276,15 @@ def _fit(args, parser) -> int:
     if args.textures:
         from opensculptboy.texture.bake import bake_fit
 
-        stem = out.name[: -len(out.suffix)] if out.suffix else out.name
-        baked = bake_fit(result, size=args.texture_size)
-        textures = {"subdiv": int(max(result.offsets))}
-        for slot, data in baked.png_files().items():
-            path = out.parent / f"{stem}.{slot}.png"
-            path.write_bytes(data)
-            textures[slot] = path.name
+        baked = bake_fit(
+            result,
+            size=args.texture_size,
+            head_size=args.head_size,
+            skin_maps=True,
+            ear_tile=args.head_size > 0,
+        )
+        textures, material = _write_textures(baked, out, int(max(result.offsets)))
+        result.character.material = _merge_material(material, args.material, parser)
     result.write(out, textures=textures)
     summary = {
         "card": str(out),
@@ -276,6 +298,88 @@ def _fit(args, parser) -> int:
     if textures:
         summary["textures"] = textures
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _write_textures(baked, card: pathlib.Path, subdiv: int):
+    """Write the baked textures next to a card as ``<card>.<slot>.png``: the detail layer's
+    ``textures`` (the eye texture) and the skin's ``material`` section."""
+    stem = card.name[: -len(card.suffix)] if card.suffix else card.name
+    names = {}
+    for slot, data in baked.png_files().items():
+        path = card.parent / f"{stem}.{slot}.png"
+        path.write_bytes(data)
+        names[slot] = path.name
+    if baked.ear_uvs is not None:
+        path = card.parent / f"{stem}.ear_uvs.safetensors"
+        baked.ear_uvs.save(path)
+        names["ear_uvs"] = path.name
+    textures = {"subdiv": subdiv}
+    if "eyes" in names:
+        textures["eyes"] = names["eyes"]
+    return textures, baked.material(names)
+
+
+def _merge_material(material: dict, path: str | None, parser) -> dict:
+    """The baked ``material`` section with the values of a JSON file (subsurface, specular,
+    roughness factor...) laid over it."""
+    from opensculptboy.material import check_material
+
+    if path:
+        try:
+            extra = json.loads(pathlib.Path(path).read_text())
+        except (OSError, ValueError) as error:
+            parser.error(f"{path}: {_one_line(error)}")
+        if not isinstance(extra, dict):
+            parser.error(f"{path} must hold a JSON object.")
+        material = {**material, **extra}
+    try:
+        check_material(material)
+    except ValueError as error:
+        parser.error(_one_line(error))
+    return material
+
+
+def _bake(args, parser) -> int:
+    from opensculptboy.texture.bake import bake_card
+
+    card = pathlib.Path(args.card)
+    out = pathlib.Path(args.out) if args.out else card
+    try:
+        character = _load_character(str(card), parser)
+        baked = bake_card(
+            card,
+            args.handoff,
+            args.level,
+            args.texture_size,
+            head_size=args.head_size,
+            skin_maps=True,
+            ear_tile=not args.no_ear_tile,
+        )
+    except (OSError, ValueError) as error:
+        parser.error(_one_line(error))
+    out.parent.mkdir(parents=True, exist_ok=True)
+    level = args.level if args.level is not None else max(character.detail_levels())
+    textures, material = _write_textures(baked, out, int(level))
+    character.material = _merge_material(material, args.material, parser)
+    detail = dict(character.detail)
+    detail["textures"] = textures
+    if out.parent.resolve() != card.parent.resolve():
+        # the offsets stay where they are: point at them from the new card's folder
+        import os
+
+        detail["levels"] = [
+            dict(e, offsets=os.path.relpath(card.parent / e["offsets"], out.parent))
+            for e in detail.get("levels", [])
+        ]
+    character.detail = detail
+    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    print(
+        json.dumps(
+            {"card": str(out), "covered": round(baked.covered_share, 4), **textures},
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -331,6 +435,15 @@ def main(argv=None) -> int:
         choices=(0, 1, 2),
         help="the level of the card's detail layer (default 0: anny's own mesh with the "
         "card's level-0 offsets, if any); a VRM file keeps within its triangle budget",
+    )
+    e.add_argument(
+        "--eyes",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        help="smooth eyes with an iris, a cornea and a caruncle in place of anny's eyeballs "
+        "(the card's material.eyes, else the defaults); FILE, a JSON object of eye values "
+        "(docs/eyes.md), is laid over them",
     )
     g = e.add_argument_group("glTF (.glb) options")
     g.add_argument(
@@ -483,7 +596,8 @@ def main(argv=None) -> int:
     f.add_argument(
         "--textures",
         action="store_true",
-        help="bake the reference's base colour and normals onto anny's UVs (needs embreex)",
+        help="bake the reference's skin (base colour, normals, roughness, thickness, "
+        "curvature) onto anny's UVs and write the card's skin material (needs embreex)",
     )
     f.add_argument(
         "--texture-size",
@@ -491,7 +605,52 @@ def main(argv=None) -> int:
         default=1024,
         help="the side of the baked textures in pixels (default 1024)",
     )
+    f.add_argument(
+        "--head-size",
+        type=int,
+        default=0,
+        help="also bake the head tile, this many pixels high, and the ear tile (0: neither; "
+        "4096 for the finest)",
+    )
+    f.add_argument(
+        "--material",
+        help="a JSON file of skin material values (subsurface, specular...) for the card",
+    )
     f.add_argument("--quiet", action="store_true", help="no progress lines")
+
+    b = sub.add_parser(
+        "bake",
+        help="bake a handoff's skin onto a fitted card again, without fitting",
+        description="Bake the reference of an appearance handoff folder onto a card that "
+        "opensculptboy fit wrote (its offsets and placement), and write the textures and the "
+        "card's skin material. Needs SciPy and embreex (the viewer extra).",
+    )
+    b.add_argument("handoff", help="the handoff folder")
+    b.add_argument("--card", required=True, help="the fitted character card (JSON)")
+    b.add_argument("--out", help="the card to write (default: the card itself)")
+    b.add_argument(
+        "--level",
+        type=int,
+        choices=(0, 1, 2),
+        help="the level to bake on (default: finest)",
+    )
+    b.add_argument(
+        "--texture-size", type=int, default=4096, help="atlas side (default 4096)"
+    )
+    b.add_argument(
+        "--head-size",
+        type=int,
+        default=4096,
+        help="head tile height (default 4096; 0: none)",
+    )
+    b.add_argument(
+        "--material", help="a JSON file of skin material values for the card"
+    )
+    b.add_argument(
+        "--no-ear-tile",
+        action="store_true",
+        help="keep the ears on the atlas's UVs (no ear tile for levels 1 and 2)",
+    )
 
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
@@ -522,6 +681,8 @@ def main(argv=None) -> int:
         return _pose(args)
     if args.command == "fit":
         return _fit(args, f)
+    if args.command == "bake":
+        return _bake(args, b)
     if args.command == "viewer":
         from anny.viewer.__main__ import main as viewer_main
 
