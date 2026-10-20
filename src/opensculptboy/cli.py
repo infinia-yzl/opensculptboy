@@ -10,6 +10,8 @@ The ``opensculptboy`` command.
     opensculptboy export me0.vrm --author "Me" --vrm-version 0 --thumbnail auto   # VRM 0.x
     opensculptboy names poses                        # the poses and clips of the library
     opensculptboy pose photo.jpg --card pose.json --glb pose.glb --svg pose.svg --png pose.png
+    opensculptboy fit handoff/ --out me.json --detail 1    # fit anny to a reference mesh
+    opensculptboy export me.glb --character me.json --detail 1   # with the detail layer
     opensculptboy viewer build                       # the web viewer (python -m anny.viewer build)
 """
 
@@ -64,6 +66,11 @@ def _one_line(error: BaseException) -> str:
     return " ".join(str(error).split()) or type(error).__name__
 
 
+def _detail_dir(path: str | None) -> pathlib.Path | None:
+    """The folder of a card, which its detail files are relative to."""
+    return None if path is None else pathlib.Path(path).resolve().parent
+
+
 def _export(args, parser) -> int:
     is_vrm = pathlib.Path(args.output).suffix.lower() == ".vrm"
     wrong = _GLB_ONLY if is_vrm else _VRM_ONLY
@@ -87,6 +94,11 @@ def _export(args, parser) -> int:
         morph_targets = list(model.facial_action_labels) + list(model.face_shape_labels)
     elif args.morph_targets not in (None, "facial"):
         morph_targets = [n.strip() for n in args.morph_targets.split(",") if n.strip()]
+    if args.detail and args.detail not in character.detail_levels():
+        parser.error(
+            f"--detail {args.detail}: the character has no detail level {args.detail} "
+            f"(its levels: {character.detail_levels() or 'none'})."
+        )
     summary = export_glb(
         args.output,
         character,
@@ -95,6 +107,8 @@ def _export(args, parser) -> int:
         morph_targets=morph_targets,
         max_influences=args.influences or 4,
         ground=not args.no_ground,
+        detail_level=args.detail or 0,
+        detail_dir=_detail_dir(args.character),
     )
     print(json.dumps(summary, indent=2))
     return 0
@@ -138,6 +152,8 @@ def _export_vrm(args, parser) -> int:
                 budget=args.budget or "warn",
                 keep_anny_vertex=args.anny_vertex,
                 refine_weights=args.refine_weights is not False,
+                detail_level=args.detail or 0,
+                detail_dir=_detail_dir(args.character),
             )
         except BudgetError as error:
             failure = (1, _one_line(error))
@@ -207,6 +223,62 @@ def _pose(args) -> int:
     return 0
 
 
+def _fit(args, parser) -> int:
+    from opensculptboy.fit.handoff import load_handoff
+    from opensculptboy.fit.reference import Reference
+    from opensculptboy.fit.register import FitOptions, fit_reference
+
+    try:
+        handoff = load_handoff(args.handoff)
+    except (OSError, ValueError) as error:
+        parser.error(f"{args.handoff}: {_one_line(error)}")
+    reference = Reference.from_handoff(handoff)
+    out = pathlib.Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    name = args.name or pathlib.Path(handoff.path).resolve().name
+    print(
+        f"fitting {name}: {len(reference.vertices)} vertices in "
+        f"{len(handoff.skin_parts())} skin parts, "
+        + (
+            "landmarks from the bounding geometry"
+            if reference.auto
+            else f"{len(reference.landmarks)} landmarks"
+        ),
+        file=sys.stderr,
+    )
+    result = fit_reference(
+        reference,
+        detail=args.detail,
+        name=name,
+        options=FitOptions(verbose=not args.quiet),
+    )
+    textures = None
+    if args.textures:
+        from opensculptboy.texture.bake import bake_fit
+
+        stem = out.name[: -len(out.suffix)] if out.suffix else out.name
+        baked = bake_fit(result, size=args.texture_size)
+        textures = {"subdiv": int(max(result.offsets))}
+        for slot, data in baked.png_files().items():
+            path = out.parent / f"{stem}.{slot}.png"
+            path.write_bytes(data)
+            textures[slot] = path.name
+    result.write(out, textures=textures)
+    summary = {
+        "card": str(out),
+        "levels": sorted(int(k) for k in result.offsets),
+        "error_mm": {
+            str(k): {d: round(v[d]["mean"], 4) for d in ("forward", "reverse")}
+            for k, v in result.errors.items()
+        },
+        "seconds": {k: round(v, 1) for k, v in result.seconds.items()},
+    }
+    if textures:
+        summary["textures"] = textures
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
 def _names(args) -> int:
     import anny
 
@@ -252,6 +324,13 @@ def main(argv=None) -> int:
         "--bare",
         action="store_true",
         help="the body alone: no outfit, hair cards, teeth or lashes",
+    )
+    e.add_argument(
+        "--detail",
+        type=int,
+        choices=(0, 1, 2),
+        help="the level of the card's detail layer (default 0: anny's own mesh with the "
+        "card's level-0 offsets, if any); a VRM file keeps within its triangle budget",
     )
     g = e.add_argument_group("glTF (.glb) options")
     g.add_argument(
@@ -383,6 +462,37 @@ def main(argv=None) -> int:
             help=f"turn the head further {what}, when the picture leaves it unclear",
         )
 
+    f = sub.add_parser(
+        "fit",
+        help="fit a character to a reference mesh (an appearance handoff folder)",
+        description="Fit anny to the skin of an appearance handoff folder (replica.glb, "
+        "appearance.json with optional landmarks): the card takes the parameters and the "
+        "pose, and the detail layer keeps the residuals in <card>.detail<N>.safetensors "
+        "next to it. Needs SciPy (the viewer extra); see docs/reference-fit.md.",
+    )
+    f.add_argument("handoff", help="the handoff folder")
+    f.add_argument("--out", required=True, help="the character card (JSON) to write")
+    f.add_argument(
+        "--detail",
+        type=int,
+        choices=(0, 1, 2),
+        default=1,
+        help="the finest level of the detail layer (default 1)",
+    )
+    f.add_argument("--name", help="the character's name (default: the folder's name)")
+    f.add_argument(
+        "--textures",
+        action="store_true",
+        help="bake the reference's base colour and normals onto anny's UVs (needs embreex)",
+    )
+    f.add_argument(
+        "--texture-size",
+        type=int,
+        default=1024,
+        help="the side of the baked textures in pixels (default 1024)",
+    )
+    f.add_argument("--quiet", action="store_true", help="no progress lines")
+
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
         "kind",
@@ -410,6 +520,8 @@ def main(argv=None) -> int:
         return _names(args)
     if args.command == "pose":
         return _pose(args)
+    if args.command == "fit":
+        return _fit(args, f)
     if args.command == "viewer":
         from anny.viewer.__main__ import main as viewer_main
 
