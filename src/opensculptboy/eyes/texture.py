@@ -406,7 +406,8 @@ def fit_baked_iris(
     centred on the gaze and stretched radially to the sizes of ``eye`` (an
     :class:`~opensculptboy.material.EyeMaterial`), its iris tinted toward ``eye.iris_color``
     by ``eye.iris_tint``, and the pupil drawn dark. Returns the image and, per side, what was
-    found (:func:`find_iris`, or None, when the procedural eye replaces that side).
+    found (:func:`find_iris`; ``"mirrored"`` when that side takes the other eye's mirror
+    image; None when neither eye shows an iris, and the procedural eye replaces both).
     """
     s, phi, left = texel_polar(size)
     w, h = size
@@ -454,6 +455,14 @@ def fit_baked_iris(
         pupil = _smooth(target_p + 0.004, target_p - 0.004, r)
         sample = sample * (1 - pupil[:, None]) + 0.004 * pupil[:, None]
         out[half] = sample
+    # one eye found, the other not: the other takes its mirror image
+    half_width = w // 2
+    if found["L"] is not None and found["R"] is None:
+        out[:, half_width:] = out[:, :half_width][:, ::-1]
+        found["R"] = "mirrored"
+    elif found["R"] is not None and found["L"] is None:
+        out[:, :half_width] = out[:, half_width:][:, ::-1]
+        found["L"] = "mirrored"
     return out, found
 
 

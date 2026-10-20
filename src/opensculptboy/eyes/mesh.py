@@ -403,7 +403,11 @@ def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
     carried = tex.carry_baked(image, box, eyed.eyeballs)
     fitted, found = tex.fit_baked_iris(carried, eye, radii)
     sides = {
-        side: ("baked" if hit is not None else "procedural")
+        side: "procedural"
+        if hit is None
+        else "mirrored"
+        if isinstance(hit, str)
+        else "baked"
         for side, hit in found.items()
     }
     return tex.srgb(fitted), {"source": "baked", "sides": sides}
