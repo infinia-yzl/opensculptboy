@@ -477,6 +477,8 @@ def caruncle(
     )
     if pocket.sum() < 6:
         return None
+    # the pocket and the eyeball's sclera beside it: where the mound may stand
+    inner = ndimage.binary_dilation(pocket, iterations=2) | ~skin_first
     pts = np.stack([gx[pocket], gy[pocket]], 1)
     mean = pts.mean(0)
     values, vectors = np.linalg.eigh(np.cov(pts.T))
@@ -502,8 +504,13 @@ def caruncle(
         xy = mean[None] + (u * circle) @ axes.T if u > 0 else mean[None]
         flat = np.c_[xy, np.ones(len(xy))] @ plane
         z = flat + CARUNCLE_HEIGHT * (1.0 - u**2) ** 0.7
-        # under the level of the lids, over the pocket; the rim sinks under what lies there
+        # under the level of the lids, and well under the skin outside the pocket (the
+        # lids, which an oblique view sees past their edges); the rim sinks under what lies
+        # there
         z = np.minimum(z, sample(lids, xy[:, 0], xy[:, 1]) - CARUNCLE_SINK)
+        outside = ~sample(inner, xy[:, 0], xy[:, 1])
+        tucked = below(xy[:, 0], xy[:, 1]) - 2.0 * CARUNCLE_SINK
+        z = np.where(outside, np.minimum(z, tucked), z)
         z = np.where(u >= 1.0, below(xy[:, 0], xy[:, 1]) - CARUNCLE_SINK, z)
         points.append(np.c_[xy, z])
     index = [np.array([0])]
