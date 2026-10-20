@@ -60,12 +60,22 @@ class Character:
     material: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def skin_material(self):
-        """The :class:`~opensculptboy.material.SkinMaterial` of ``material``, or None."""
-        if not self.material:
+        """The :class:`~opensculptboy.material.SkinMaterial` of ``material``, or None (also
+        for a section that holds the eyes alone, which keeps the exporters' own skin)."""
+        if not self.material or set(self.material) == {"eyes"}:
             return None
         from opensculptboy.material import SkinMaterial
 
         return SkinMaterial.from_dict(self.material)
+
+    def eye_material(self):
+        """The :class:`~opensculptboy.material.EyeMaterial` of ``material.eyes``, or None for
+        anny's own eyeballs."""
+        if "eyes" not in self.material:
+            return None
+        from opensculptboy.material import EyeMaterial
+
+        return EyeMaterial.from_dict(self.material["eyes"])
 
     def detail_levels(self) -> list[int]:
         """The subdivision levels of the detail layer, in increasing order."""

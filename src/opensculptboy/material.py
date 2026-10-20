@@ -47,6 +47,10 @@ Every key is optional::
             "roughness": "card.ears_roughness.png",
             "thickness": "card.ears_thickness.png",
             "curvature": "card.ears_curvature.png"
+        },
+        "eyes": {                                     # the eyes of opensculptboy.eyes (see
+            "iris_color": [0.2, 0.1, 0.04],           #   EyeMaterial): the eyeball, the cornea,
+            "pupil_mm": 3.5                           #   the caruncle and their materials
         }
     }
 
@@ -55,7 +59,8 @@ and curvature maps are baked from the fitted mesh (:mod:`opensculptboy.texture.b
 real-time subsurface scattering: the thickness drives translucency through thin parts such as
 the ears, and the curvature picks the row of a pre-integrated skin lookup (Penner 2011). A card
 without the section keeps the material it had before (the detail layer's textures, else a
-plain skin colour).
+plain skin colour). A section that holds nothing but ``eyes`` keeps the exporters' own skin
+as well, and changes the eyes alone.
 """
 
 from __future__ import annotations
@@ -85,7 +90,7 @@ SUBSURFACE_DEFAULTS = {
     "anisotropy": 0.0,
     "method": "random_walk_skin",
 }
-_KEYS = set(TEXTURE_KEYS) | set(DEFAULTS) | {"subsurface", "head", "ears"}
+_KEYS = set(TEXTURE_KEYS) | set(DEFAULTS) | {"subsurface", "head", "ears", "eyes"}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -129,15 +134,18 @@ class SkinMaterial:
     # the head tile: slot -> path; the ear tile: "uvs" and slot -> path
     head: dict = dataclasses.field(default_factory=dict)
     ears: dict = dataclasses.field(default_factory=dict)
+    # the eyes (EyeMaterial), or None for anny's own eyeballs
+    eyes: "EyeMaterial | None" = None
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "SkinMaterial":
         """The material of a card's ``material`` section; ValueError for an invalid one."""
         data = check_material(data or {})
-        values = {k: v for k, v in data.items() if k != "subsurface"}
+        values = {k: v for k, v in data.items() if k not in ("subsurface", "eyes")}
         subsurface = dict(SUBSURFACE_DEFAULTS)
         subsurface.update(data.get("subsurface", {}))
-        return cls(subsurface=subsurface, **values)
+        eyes = EyeMaterial.from_dict(data["eyes"]) if "eyes" in data else None
+        return cls(subsurface=subsurface, eyes=eyes, **values)
 
     def textures(self) -> dict[str, str]:
         """The texture paths by slot (``base_color``, ``normal``, ``roughness``, ...; the head
@@ -221,6 +229,8 @@ def check_material(data: dict) -> dict:
         raise ValueError("material ears must hold paths.")
     if ears and "uvs" not in ears:
         raise ValueError("material ears needs its 'uvs' file.")
+    if "eyes" in data:
+        check_eyes(data["eyes"])
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
         raise ValueError("material subsurface must be a JSON object.")
@@ -244,4 +254,139 @@ def check_material(data: dict) -> dict:
             f"subsurface method must be one of {list(SUBSURFACE_METHODS)} "
             f"(got {subsurface['method']!r})."
         )
+    return data
+
+
+# The eyes (``material.eyes``, :mod:`opensculptboy.eyes`): every key is optional. Colours are
+# linear RGB, sizes millimetres (anny's eyeball is 29.9 mm across, a human's about 24 mm).
+EYE_DEFAULTS = {
+    "source": "auto",  # "auto" (the baked eye texture when the file has one), "procedural",
+    #                    "baked"
+    "base_color": None,  # an eye texture of its own, in the layout of opensculptboy.eyes.texture
+    "iris_color": [0.20, 0.10, 0.04],  # the outer iris: a medium brown
+    "iris_color_inner": None,  # the zone inside the collarette; None: a lighter amber of it
+    "iris_tint": 0.0,  # 0 to 1: how far a baked iris turns to iris_color (keeping its pattern)
+    "iris_mm": 11.7,  # the iris (limbus) diameter
+    "pupil_mm": 3.5,  # the pupil diameter, in neutral light 3 to 4 mm
+    "limbal_ring": 0.6,  # 0 to 1: the darkening of the ring around the iris
+    "limbal_ring_mm": 0.6,  # its width
+    "sclera_color": [0.80, 0.74, 0.68],  # a slightly warm white
+    "veins": 0.15,  # 0 to 1: faint red veins at the periphery of the sclera
+    "seed": 0,  # of the procedural pattern
+    "sclera_roughness": 0.45,  # the eyeball under the cornea
+    "cornea": True,  # glTF: a refracting cornea shell over a recessed iris; False: one
+    #                  glossy surface with the iris on its bulge (as the VRM files have)
+    "cornea_ior": 1.376,
+    "cornea_roughness": 0.02,
+    "bulge": 1.0,  # the corneal bulge, a share of its anatomical height (lowered to clear
+    #                the lids)
+    "caruncle": True,  # the mound in the inner corner and the pink, wet skin of the socket
+    "caruncle_color": [0.42, 0.15, 0.13],  # both of them (the conjunctiva)
+    "highlight": 1.0,  # VRM: the strength of the matcap highlight
+}
+EYE_SOURCES = ("auto", "procedural", "baked")
+
+
+@dataclasses.dataclass
+class EyeMaterial:
+    """The resolved eyes of a card: every value of :data:`EYE_DEFAULTS` present."""
+
+    source: str = "auto"
+    base_color: str | None = None
+    iris_color: list = dataclasses.field(
+        default_factory=lambda: list(EYE_DEFAULTS["iris_color"])
+    )
+    iris_color_inner: list | None = None
+    iris_tint: float = 0.0
+    iris_mm: float = 11.7
+    pupil_mm: float = 3.5
+    limbal_ring: float = 0.6
+    limbal_ring_mm: float = 0.6
+    sclera_color: list = dataclasses.field(
+        default_factory=lambda: list(EYE_DEFAULTS["sclera_color"])
+    )
+    veins: float = 0.15
+    seed: int = 0
+    sclera_roughness: float = 0.45
+    cornea: bool = True
+    cornea_ior: float = 1.376
+    cornea_roughness: float = 0.02
+    bulge: float = 1.0
+    caruncle: bool = True
+    caruncle_color: list = dataclasses.field(
+        default_factory=lambda: list(EYE_DEFAULTS["caruncle_color"])
+    )
+    highlight: float = 1.0
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "EyeMaterial":
+        """The eyes of a card's ``material.eyes`` section; ValueError for an invalid one."""
+        data = check_eyes(data or {})
+        return cls(
+            **{k: (list(v) if isinstance(v, list) else v) for k, v in data.items()}
+        )
+
+    def inner_color(self) -> list:
+        """The colour inside the collarette: ``iris_color_inner``, or a lighter amber of the
+        iris colour."""
+        if self.iris_color_inner is not None:
+            return list(self.iris_color_inner)
+        r, g, b = self.iris_color
+        return [min(1.0, 1.5 * r + 0.015), min(1.0, 1.45 * g + 0.01), min(1.0, 1.1 * b)]
+
+    def extras(self) -> dict[str, Any]:
+        """The settings that the glTF export keeps in the eye materials' extras."""
+        return {
+            "iris_mm": float(self.iris_mm),
+            "pupil_mm": float(self.pupil_mm),
+            "cornea_ior": float(self.cornea_ior),
+            "cornea_roughness": float(self.cornea_roughness),
+            "sclera_roughness": float(self.sclera_roughness),
+        }
+
+
+def check_eyes(data: dict) -> dict:
+    """Raise ValueError for a ``material.eyes`` section that is not valid; returns it."""
+    if not isinstance(data, dict):
+        raise ValueError("material eyes must be a JSON object.")
+    unknown = sorted(set(data) - set(EYE_DEFAULTS))
+    if unknown:
+        raise ValueError(
+            f"Unknown eye keys {unknown}; the keys are {sorted(EYE_DEFAULTS)}."
+        )
+    if data.get("source", "auto") not in EYE_SOURCES:
+        raise ValueError(
+            f"eyes source must be one of {list(EYE_SOURCES)} (got {data['source']!r})."
+        )
+    if data.get("base_color") is not None and not isinstance(data["base_color"], str):
+        raise ValueError("eyes base_color must be the path of a texture.")
+    for key in ("iris_color", "sclera_color", "caruncle_color"):
+        if key in data:
+            _colour(data[key], f"eyes {key}", 3)
+    if data.get("iris_color_inner") is not None:
+        _colour(data["iris_color_inner"], "eyes iris_color_inner", 3)
+    for key, low, high in (
+        ("iris_tint", 0.0, 1.0),
+        ("iris_mm", 6.0, 16.0),
+        ("pupil_mm", 1.0, 9.0),
+        ("limbal_ring", 0.0, 1.0),
+        ("limbal_ring_mm", 0.0, 3.0),
+        ("veins", 0.0, 1.0),
+        ("sclera_roughness", 0.0, 1.0),
+        ("cornea_ior", 1.0, 2.0),
+        ("cornea_roughness", 0.0, 1.0),
+        ("bulge", 0.0, 1.0),
+        ("highlight", 0.0, 4.0),
+    ):
+        if key in data:
+            _number(data[key], f"eyes {key}", low, high)
+    if data.get("pupil_mm", 3.5) >= data.get("iris_mm", 11.7) - 1.0:
+        raise ValueError("eyes pupil_mm must be at least 1 mm below iris_mm.")
+    for key in ("cornea", "caruncle"):
+        if key in data and not isinstance(data[key], bool):
+            raise ValueError(f"eyes {key} must be true or false.")
+    if "seed" in data and (
+        isinstance(data["seed"], bool) or not isinstance(data["seed"], int)
+    ):
+        raise ValueError("eyes seed must be an integer.")
     return data
