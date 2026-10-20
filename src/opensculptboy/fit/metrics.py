@@ -16,7 +16,10 @@ given, over the whole skin, with no mask, no visibility test and no distance cut
 - ``normal_angle``: the angle in degrees between each fitted vertex normal and the
   reference's interpolated normal at its closest point, both against the reference's
   geometric normals (``geometric``) and against the normals its file shades with (``file``,
-  the same when the source has none);
+  the same when the source has none), with ``facing_away`` the share of fitted vertices
+  whose normal turns from the reference's by more than 90 degrees (a flipped sheet, the inside
+  of a crumple, a spike; or a vertex on the rim of a thin part whose closest point lies on the
+  other side);
 - ``face``: the centroid of each fitted triangle to the reference surface, unsigned, with the
   share of triangles over 1 mm: a triangle that bridges a gap of the reference (the skin
   stretched from the back of an ear to the head) has its corners on the reference and its
@@ -260,6 +263,10 @@ class Measures:
                 "angle_geometric_deg": stats(self.angle_geometric[fwd], 1.0),
                 "angle_file_deg": stats(self.angle_file[fwd], 1.0),
             }
+            angles = self.angle_geometric[fwd]
+            angles = angles[np.isfinite(angles)]
+            if len(angles):
+                entry["facing_away"] = round(float((angles > 90).mean()), 4)
             if self.fold is not None:
                 folds = self.fold[fwd]
                 folds = folds[np.isfinite(folds)]
