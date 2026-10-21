@@ -163,7 +163,10 @@ class EyedMesh:
                 (np.repeat(np.arange(len(p.anchors)), k), indices[p.anchors].ravel()),
                 weights[p.anchors].ravel(),
             )
-            mixed = p.blend @ dense
+            # each distinct row of the blend is mixed once, so that identical rows (the
+            # eyeball's and the cornea's) give bit-identical weights on every BLAS
+            rows, inverse = np.unique(p.blend, axis=0, return_inverse=True)
+            mixed = (rows @ dense)[np.asarray(inverse).reshape(-1)]
             order = np.argsort(-mixed, axis=1, kind="stable")[:, :k]
             w = np.take_along_axis(mixed, order, axis=1)
             w /= np.maximum(w.sum(1, keepdims=True), 1e-12)
