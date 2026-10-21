@@ -76,12 +76,22 @@ MAJOR_BONES = (
 FINGER_BONES = ("finger", "metacarpal", "thumb")
 # Base-mesh face labels that the registration leaves out (with the eyeballs).
 EXCLUDED_LABELS = ("eye_cavity.L", "eye_cavity.R", "mouth_cavity")
+# The roles of the new vertices of the sculpt patches in the registration, by patch label (a
+# label or the prefix of finer labels, see opensculptboy.topology.lookup.labelled): "fit"
+# (fitted as skin) or "exclude" (left out and moved by follow_skin, as the eye sockets). A new
+# vertex without an entry takes the base-mesh label of its strongest anchor.
+PATCH_ROLES: dict[str, str] = {}
+# The topologies that the fit takes (FitOptions.topology).
+FIT_TOPOLOGIES = ("anny", "sculpt")
 
 
 @dataclasses.dataclass
 class FitOptions:
     """Settings of :func:`fit_reference`; the defaults suit a full figure in metres."""
 
+    # the mesh of the card: "anny", or "sculpt" (anny's mesh with the patches of
+    # opensculptboy.topology); the card and its offsets take it
+    topology: str = "anny"
     rounds: int = 10
     steps: int = 30
     major_rounds: int = (
@@ -230,11 +240,17 @@ def _log(options: FitOptions, message: str) -> None:
         print(message, flush=True)
 
 
-def fit_model():
-    """The Anny model of the fit (float64, every local change and face shape, LBS)."""
-    import anny
+def fit_model(topology: str = "anny"):
+    """The Anny model of the fit (float64, every local change and face shape, LBS) on
+    ``topology``: ``"anny"`` or ``"sculpt"`` (:data:`FIT_TOPOLOGIES`)."""
+    from opensculptboy.topology.sculpt import build_model
 
-    return anny.Anny(
+    if topology not in FIT_TOPOLOGIES:
+        raise ValueError(
+            f"The fit takes the topologies {', '.join(FIT_TOPOLOGIES)}; got {topology!r}."
+        )
+    return build_model(
+        topology,
         local_changes="all",
         face_shapes="all",
         facial_actions="none",
@@ -242,21 +258,36 @@ def fit_model():
     ).to(dtype=torch.float64)
 
 
+def _fit_topology(model) -> str:
+    from opensculptboy.topology.lookup import model_topology
+
+    return model_topology(model)
+
+
 def excluded_vertices(model) -> np.ndarray:
     """Mask (V,) of the vertices that the registration leaves out: the eye sockets, the inside
-    of the mouth, and every closed part apart from the body (the eyeballs and the tongue)."""
+    of the mouth, and every closed part apart from the body (the eyeballs and the tongue).
+
+    On ``sculpt``, a new vertex takes the base-mesh label of its strongest anchor, unless its
+    patch label has a role in :data:`PATCH_ROLES`, and anny's vertices that no face uses any
+    more (inside the removed faces) are left out as closed parts of their own."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
     from anny.faces.authoring.base_mesh import base_mesh
     from opensculptboy.export.vrm_tables import eyeball_vertices
+    from opensculptboy.topology.lookup import base_mesh_rows, labelled
 
     mesh = base_mesh()
-    base = model.base_mesh_vertex_indices.cpu().numpy()
+    base = base_mesh_rows(model)
     out_base = np.zeros(len(mesh.V), bool)
     for label in EXCLUDED_LABELS:
         out_base[np.unique(mesh.quads[mesh.face_labels == label])] = True
     excluded = out_base[base]
+    for label, role in PATCH_ROLES.items():
+        if role not in ("fit", "exclude"):
+            raise ValueError(f"Unknown patch role {role!r} of {label!r}.")
+        excluded[labelled(model, label)] = role == "exclude"
     try:
         for rows in eyeball_vertices(model).values():
             excluded[rows] = True
@@ -318,9 +349,10 @@ def lip_margin(model, excluded: np.ndarray | None = None, rings: int = 1) -> np.
     """Mask (V,) of the lips' inner margin: the fitted vertices within ``rings`` faces of the
     inside of the mouth (the base-mesh label ``mouth_cavity``)."""
     from anny.faces.authoring.base_mesh import base_mesh
+    from opensculptboy.topology.lookup import base_mesh_rows
 
     mesh = base_mesh()
-    base = model.base_mesh_vertex_indices.cpu().numpy()
+    base = base_mesh_rows(model)
     cavity = np.zeros(len(mesh.V), bool)
     cavity[np.unique(mesh.quads[mesh.face_labels == "mouth_cavity"])] = True
     cavity = cavity[base]
@@ -364,7 +396,11 @@ def _adjacency(n: int, triangles: np.ndarray):
 
 
 def pinna(
-    model, rest_vertices: np.ndarray, ears: np.ndarray | None = None, height=0.002
+    model,
+    rest_vertices: np.ndarray,
+    ears: np.ndarray | None = None,
+    height=0.002,
+    root: np.ndarray | None | bool = True,
 ):
     """
     Mask (V,) of the outer ears proper on anny's level-0 rest mesh: of the vertices that the
@@ -373,16 +409,31 @@ def pinna(
     more than ``height`` off the head, with the holes that they enclose (the concha). The
     head's surface around each ear is a quadratic fitted to the skin around it (weights
     between 0.2 and 0.95), in the frame of its mean normal.
+
+    With a root line (``root``: a vertex mask, or True for the line that the ear-root patch of
+    the ``sculpt`` topology marks, :func:`opensculptboy.topology.lookup.ear_root_line`), the
+    outer ear is instead the part that the line cuts off the head, the line included, so that
+    the border of the mask (where the ear split attaches the ear) runs along the line. The
+    vertices that no face uses never belong to it.
     """
     from scipy.sparse.csgraph import connected_components
+
+    from opensculptboy.topology.lookup import ear_root_line, referenced_vertices
 
     V = np.asarray(rest_vertices, dtype=np.float64)
     T = model.faces.cpu().numpy()
     w = ear_weights(model) if ears is None else np.asarray(ears)
-    core = w > 0.99
+    used = referenced_vertices(model)
+    core = (w > 0.99) & used
     out = np.zeros(len(V), bool)
     if not core.any():
         return out
+    if root is True:
+        root = ear_root_line(model)
+    elif root is False:
+        root = None
+    if root is not None:
+        return _cut_off_ears(V, T, np.asarray(root, bool) & used, core, used)
     N = vertex_normals(V, T)
     high = np.zeros(len(V), bool)
     for s in (1.0, -1.0):
@@ -414,6 +465,25 @@ def pinna(
     open_[labels[~core[low]]] = True
     out = high.copy()
     out[low[~open_[labels]]] = True
+    return out & used
+
+
+def _cut_off_ears(V, T, root, core, used) -> np.ndarray:
+    """The outer ears that a root line cuts off the head: the parts of the mesh without the
+    line that hold vertices of the ears' core and none of the head's far skin (the part
+    connected to the most vertices is the head and the body), with the line."""
+    from scipy.sparse.csgraph import connected_components
+
+    A = _adjacency(len(V), T)
+    rest = np.nonzero(used & ~root)[0]
+    _, labels = connected_components(A[rest][:, rest], directed=False)
+    sizes = np.bincount(labels)
+    head = np.argmax(sizes)
+    has_core = np.zeros(len(sizes), bool)
+    has_core[labels[core[rest]]] = True
+    ear = has_core & (np.arange(len(sizes)) != head)
+    out = root.copy()
+    out[rest[ear[labels]]] = True
     return out
 
 
@@ -1480,7 +1550,11 @@ def _character_from(model, params, name: str) -> Character:
         if abs(v) > 1e-6
     }
     character = Character(
-        name=name, phenotype=phenotype, local_changes=local, face_shapes=face
+        name=name,
+        topology=_fit_topology(model),
+        phenotype=phenotype,
+        local_changes=local,
+        face_shapes=face,
     )
     pose = Character.pose_from_parameters(model, params.pose().detach())
     if pose["bones"]:
@@ -1527,7 +1601,12 @@ def fit_reference(
     if detail not in (0, 1, 2):
         raise ValueError(f"detail must be 0, 1 or 2; got {detail!r}.")
     options = options or FitOptions()
-    model = model or fit_model()
+    model = model or fit_model(options.topology)
+    if _fit_topology(model) != options.topology:
+        raise ValueError(
+            f"The fit model has the topology {_fit_topology(model)!r} and the options "
+            f"{options.topology!r}."
+        )
     clock = time.perf_counter()
     params, _, rotation, translation = fit_parameters(model, reference, options)
     character = _character_from(model, params, name)
@@ -1555,7 +1634,12 @@ def fit_levels(
     from opensculptboy.detail import detail_topology
 
     options = options or FitOptions()
-    model = model or fit_model()
+    model = model or fit_model(character.topology)
+    if _fit_topology(model) != character.topology:
+        raise ValueError(
+            f"The fit model has the topology {_fit_topology(model)!r} and the card "
+            f"{character.topology!r}."
+        )
     seconds = dict(seconds or {})
     rest0, transforms = _card_rest(model, character)
     excluded = excluded_vertices(model)
