@@ -622,6 +622,12 @@ def vrm_spec(
     skin = character.skin_material()
     eye = character.eye_material()
     ear_topology, ears = ear_mesh(character, skin, images, detail, detail_dir)
+    if textures is None:  # the card's maps, baked on its finest level
+        from opensculptboy.texture.levels import level_normals
+
+        images = level_normals(
+            model, character, images, detail, ear_topology, ears, base, detail_dir
+        )
     eyed = None
     if detail is None:
         targets = [

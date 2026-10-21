@@ -176,6 +176,12 @@ def export_glb(
     skin = character.skin_material()
     eye = character.eye_material()
     mesh, ears = ear_mesh(character, skin, images, detail, detail_dir)
+    if textures is None:  # the card's maps, baked on its finest level
+        from opensculptboy.texture.levels import level_normals
+
+        images = level_normals(
+            model, character, images, detail, mesh, ears, base, detail_dir
+        )
     eyed = None
     if detail is None and eye is None:
         body = build_body(
