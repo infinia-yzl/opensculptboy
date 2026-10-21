@@ -34,6 +34,9 @@ import numpy as np
 EAR_TILE_SIZE = (2048, 1024)
 EAR_PADDING = 0.03  # of each half, on every side
 EAR_WEIGHT = 0.5  # the outer ear: ear weight above this
+# a flip-free unwrap keeps each triangle's area in the map above this share of its area on
+# the surface (texels at least 0.22 times as dense as the mean)
+MIN_AREA = 0.05
 FORMAT = "opensculptboy/ear-uvs@1"
 
 
@@ -85,8 +88,11 @@ def _lscm(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     return np.stack([uv.real, uv.imag], 1)
 
 
-def _arap(vertices, triangles, uv, iterations: int = 20) -> np.ndarray:
-    """As-rigid-as-possible refinement (local rotations, global cotangent solve) of a map."""
+def _arap(
+    vertices, triangles, uv, iterations: int = 20, flip_free: bool = False
+) -> np.ndarray:
+    """As-rigid-as-possible refinement (local rotations, global cotangent solve) of a map;
+    with ``flip_free``, of a map without flipped triangles that keeps it so."""
     import scipy.sparse
     import scipy.sparse.linalg
 
@@ -130,6 +136,9 @@ def _arap(vertices, triangles, uv, iterations: int = 20) -> np.ndarray:
     keep = np.setdiff1d(np.arange(n), [anchor])
     solve = scipy.sparse.linalg.factorized(L[keep][:, keep].tocsc())
     uv = np.asarray(uv, np.float64).copy()
+    area3d = 0.5 * np.linalg.norm(normal, axis=1)
+    if flip_free and (_signed_areas(uv, triangles) <= 0).any():
+        raise ValueError("A flip-free ARAP needs a map without flipped triangles.")
     for _ in range(iterations):
         q = uv[triangles]
         # local step: the rotation that best maps each flat triangle onto its UV triangle
@@ -151,8 +160,174 @@ def _arap(vertices, triangles, uv, iterations: int = 20) -> np.ndarray:
             np.add.at(b, i, cot[:, k, None] * d)
             np.add.at(b, j, -cot[:, k, None] * d)
         rhs = b[keep] - L[keep][:, [anchor]] @ uv[[anchor]]
-        uv[keep] = np.stack([solve(rhs[:, 0]), solve(rhs[:, 1])], 1)
+        solved = uv.copy()
+        solved[keep] = np.stack([solve(rhs[:, 0]), solve(rhs[:, 1])], 1)
+        if not flip_free:
+            uv = solved
+            continue
+        # a flip-free map stays flip-free: the step toward the solution stops short of the
+        # first triangle that would turn over (Smith and Schaefer 2015)
+        direction = solved - uv
+        current = _signed_areas(uv, triangles)
+        # no triangle shrinks below a share of its own area on the surface (or by more than
+        # 5 % a step when it is smaller already): a step that stops short of the flip alone
+        # lets a triangle close in on zero over the iterations
+        floor = np.minimum(MIN_AREA * area3d, 0.95 * current)
+        step = min(1.0, 0.8 * _flip_step(uv, direction, triangles, floor))
+        for _ in range(30):  # rounding: halve the step until no triangle turns over
+            moved = uv + step * direction
+            if (_signed_areas(moved, triangles) > 0.5 * floor).all():
+                uv = moved
+                break
+            step *= 0.5
     return uv
+
+
+def _signed_areas(uv: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    q = uv[triangles]
+    return 0.5 * (
+        (q[:, 1, 0] - q[:, 0, 0]) * (q[:, 2, 1] - q[:, 0, 1])
+        - (q[:, 1, 1] - q[:, 0, 1]) * (q[:, 2, 0] - q[:, 0, 0])
+    )
+
+
+def _flip_step(
+    uv: np.ndarray,
+    direction: np.ndarray,
+    triangles: np.ndarray,
+    floor: np.ndarray | float = 0.0,
+) -> float:
+    """The largest t for which no triangle's signed area along ``uv + t direction`` falls to
+    ``floor`` (the smallest positive root of the quadratic areas; inf if none)."""
+    q, d = uv[triangles], direction[triangles]
+    e1, e2 = q[:, 1] - q[:, 0], q[:, 2] - q[:, 0]
+    f1, f2 = d[:, 1] - d[:, 0], d[:, 2] - d[:, 0]
+
+    def cross(a, b):
+        return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
+
+    a, b = cross(f1, f2), cross(e1, f2) + cross(f1, e2)
+    c = cross(e1, e2) - 2.0 * np.asarray(floor)
+    roots = np.full(len(q), np.inf)
+    linear = np.abs(a) < 1e-30
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = -c / b
+        roots[linear] = np.where(t[linear] > 0, t[linear], np.inf)
+        disc = b * b - 4 * a * c
+        # the stable form of the roots: q / a and c / q
+        q = -0.5 * (b + np.where(b >= 0, 1.0, -1.0) * np.sqrt(np.maximum(disc, 0.0)))
+        for r in (q / a, c / q):
+            ok = ~linear & (disc >= 0) & (r > 0)
+            roots[ok] = np.minimum(roots[ok], r[ok])
+    return float(roots.min(initial=np.inf))
+
+
+def _neighbours(triangles: np.ndarray, n: int):
+    import scipy.sparse
+
+    t = np.asarray(triangles)
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    A = scipy.sparse.coo_matrix(
+        (np.ones(2 * len(e)), (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])),
+        shape=(n, n),
+    ).tocsr()
+    A.data[:] = 1.0
+    return A
+
+
+def _boundary(triangles: np.ndarray) -> np.ndarray:
+    """The vertices of a disk's longest boundary loop, in order."""
+    t = np.asarray(triangles)
+    e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+    key = np.sort(e, 1)
+    _, inverse, count = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    border = e[count[inverse.ravel()] == 1]  # oriented half-edges of the border
+    after = dict(zip(border[:, 0].tolist(), border[:, 1].tolist()))
+    loops, seen = [], set()
+    for start in after:
+        if start in seen:
+            continue
+        loop, v = [], start
+        while v not in seen and v in after:
+            seen.add(v)
+            loop.append(v)
+            v = after[v]
+        loops.append(loop)
+    return np.asarray(max(loops, key=len)) if loops else np.zeros(0, np.int64)
+
+
+def _tutte(uv, triangles, free: np.ndarray, A) -> np.ndarray:
+    """``uv`` with the vertices of ``free`` at the mean of their neighbours (a Tutte
+    embedding of them, the others held)."""
+    import scipy.sparse
+    import scipy.sparse.linalg
+
+    rows = np.flatnonzero(free)
+    held = np.flatnonzero(~free)
+    degree = np.asarray(A.sum(1)).ravel()
+    L = (scipy.sparse.diags(degree) - A).tocsr()
+    rhs = -(L[rows][:, held] @ uv[held])
+    solve = scipy.sparse.linalg.factorized(L[rows][:, rows].tocsc())
+    out = uv.copy()
+    out[rows] = np.stack([solve(rhs[:, 0]), solve(rhs[:, 1])], 1)
+    return out
+
+
+def untangle(vertices: np.ndarray, triangles: np.ndarray, uv: np.ndarray) -> np.ndarray:
+    """
+    A map of a disk-like mesh without flipped triangles, from one that has some (``uv``; the
+    orientation of most of its area counts as the right one): the flipped triangles and a few
+    rings around them are laid out again as a Tutte embedding within the rest, with more
+    rings until no triangle flips, or the whole disk with its border on a circle (a Tutte
+    embedding of a disk with a convex border has no flips); then as-rigid-as-possible steps
+    that keep every triangle the right way round spread the distortion again.
+
+    LSCM and ARAP fold a few triangles where the surface is far from developable: the tip of a
+    pointed ear is a cone, and the flipped triangles there overlapped other texels and turned
+    the tangent frames over, so that the bake's colour and normal map showed crumpled patches.
+    """
+    T = np.asarray(triangles)
+    uv = np.asarray(uv, np.float64)
+    n = len(uv)
+    sign = 1.0 if _signed_areas(uv, T).sum() >= 0 else -1.0
+    flipped = sign * _signed_areas(uv, T) <= 0
+    if not flipped.any():
+        return uv
+    A = _neighbours(T, n)
+    border = np.zeros(n, bool)
+    border[_boundary(T)] = True
+    start = None
+    region = np.zeros(n, bool)
+    region[T[flipped].ravel()] = True
+    for k in range(6):  # 2, 4, ..., 64 rings
+        grown = region.copy()
+        for _ in range(2 ** (k + 1)):
+            grown |= A @ grown.astype(np.float64) > 0
+        free = grown & ~border
+        if free.any():
+            candidate = _tutte(uv, T, free, A)
+            if (sign * _signed_areas(candidate, T) > 0).all():
+                start = candidate
+                break
+    if start is None:
+        # the whole disk, its border on a circle by arc length
+        loop = _boundary(T)
+        p = vertices[loop]
+        step = np.linalg.norm(np.roll(p, -1, 0) - p, axis=1)
+        angle = 2 * np.pi * np.r_[0.0, np.cumsum(step)[:-1]] / max(step.sum(), 1e-20)
+        scale = step.sum() / (2 * np.pi)
+        circle = uv.copy()
+        circle[loop] = scale * np.stack([np.cos(angle), np.sin(angle)], 1)
+        free = np.ones(n, bool)
+        free[loop] = False
+        start = _tutte(circle, T, free, A)
+        if _signed_areas(start, T).sum() * sign < 0:
+            start[:, 0] = -start[:, 0]
+    if sign < 0:
+        # ARAP keeps the orientation of the flat triangles: work in that orientation
+        start = start * np.array([-1.0, 1.0])
+    out = _arap(vertices, T, start, iterations=40, flip_free=True)
+    return out * np.array([-1.0, 1.0]) if sign < 0 else out
 
 
 def unwrap(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
@@ -172,7 +347,7 @@ def unwrap(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
         * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1).sum()
     )
     uv *= np.sqrt(surface / max(area(uv), 1e-30))
-    uv = _arap(vertices, triangles, uv)
+    uv = untangle(vertices, triangles, _arap(vertices, triangles, uv))
     # orientation: counter-clockwise like the mesh seen from outside
     q = uv[triangles]
     signed = (q[:, 1, 0] - q[:, 0, 0]) * (q[:, 2, 1] - q[:, 0, 1]) - (
