@@ -479,6 +479,10 @@ def fit_baked_iris(
     found = {}
     radii = _radii(radii)
     procedural = None
+    if normals is not None:
+        fixed = _about_gaze(normals.reshape(-1, 3), phi.reshape(-1)).reshape(
+            normals.shape
+        )
     for side, half in (("L", left), ("R", ~left)):
         target_p = eye.pupil_mm / 2.0 / radii[side]
         target_l = eye.iris_mm / 2.0 / radii[side]
@@ -512,10 +516,11 @@ def fit_baked_iris(
         px, py = uv[:, 0] * w - 0.5, (1.0 - uv[:, 1]) * h - 0.5
         sample = _bilinear(image, px, py)
         if bent is not None:
-            moved = _bilinear(normals, px, py)
-            bent[half] = moved / np.maximum(
-                np.linalg.norm(moved, axis=1, keepdims=True), 1e-9
-            )
+            # the normals move as directions: their components about the gaze turn from
+            # the source texel's angle to the target's (near the pupil's centre a shift of
+            # the iris turns them a lot), through a frame fixed in the eye
+            moved = _bilinear(fixed, px, py)
+            bent[half] = _unit(_about_gaze(moved, phi[half], inverse=True))
         if eye.iris_tint > 0:
             iris_zone = _smooth(target_p, target_p + 0.01, r) * _smooth(
                 target_l + 0.01, target_l - 0.01, r
@@ -540,6 +545,23 @@ def fit_baked_iris(
     if normals is None:
         return out, found
     return out, found, bent
+
+
+def _unit(v: np.ndarray) -> np.ndarray:
+    return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-9)
+
+
+def _about_gaze(d: np.ndarray, phi: np.ndarray, inverse: bool = False) -> np.ndarray:
+    """Normals (M, 3) in the frame (E1, E2, N) of texels at angle ``phi`` (M,) with their
+    components about the gaze in a frame fixed in the eye (x, y), or back (``inverse``),
+    taking E1 = (-sin phi, cos phi) and E2 = (-cos phi, -sin phi), as on the front."""
+    cos, sin = np.cos(phi), np.sin(phi)
+    a, b = d[:, 0], d[:, 1]
+    if not inverse:
+        x, y = -a * sin - b * cos, a * cos - b * sin
+    else:
+        x, y = -a * sin + b * cos, -a * cos - b * sin
+    return np.stack([x, y, d[:, 2]], 1)
 
 
 # the normal of the eye's own surface in the frame of :func:`carry_baked_normals`
