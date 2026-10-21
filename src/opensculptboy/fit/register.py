@@ -196,8 +196,9 @@ class FitOptions:
     lid_front: float = 100.0
     lid_sphere: float = 0.99
     lid_margin: float = 0.02
-    lid_iterations: int = 5
+    lid_iterations: int = 10
     lid_fairness: float = 1.0
+    lid_weight: float = 10.0
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -1580,8 +1581,9 @@ def seat_lids(
     seat: LidSeat,
     sphere: float = 0.99,
     margin: float = 0.02,
-    iterations: int = 5,
+    iterations: int = 10,
     fairness: float = 1.0,
+    weight: float = 10.0,
     reach: float = 0.35,
     sphere_reach: float = 0.25,
     normal_threshold: float = 0.2,
@@ -1596,11 +1598,15 @@ def seat_lids(
 
         min sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + fairness |B X|^2
 
-    as :func:`fair_region` does: c_i is the nearer of the closest point of the reference's
-    skin (within ``reach`` eyeball radii, its normal agreeing with the vertex's to
-    ``normal_threshold``, and more than ``margin`` radii outside the sphere) and of the point
-    of the sphere, shrunk to ``sphere`` of its radius so that it lies under the exported
-    eyeball, along the ray from its centre (within ``sphere_reach`` radii); p_i is the mean
+    as :func:`fair_region` does, with data weights ``weight``: c_i is, for a vertex outside
+    the sphere (by ``margin`` radii), the closest point of the reference's skin when that
+    lies within ``reach`` eyeball radii, more than ``margin`` radii outside the sphere, with
+    its normal agreeing with the vertex's to ``normal_threshold``; else (and for a vertex
+    inside the sphere) the point of the sphere, shrunk to ``sphere`` of its radius so that
+    it lies under the exported eyeball, along the ray from its centre (within
+    ``sphere_reach`` radii). So the skin comes first: a lid that reaches past the
+    reference's margin slides back onto the margin, and what lies under the reference's
+    tissue tucks under the eyeball. p_i is the mean
     of the reference's skin vertices outside the sphere (by ``margin``, within ``front``
     degrees of the gaze) whose nearest vertex of ``seat.pool`` x_i is (the reverse term, with
     normals agreeing to ``reverse_normal_threshold``), which pulls the surface over the
@@ -1644,16 +1650,17 @@ def seat_lids(
         normals = vertex_normals(X, T)
         x = X[rows]
         c, nrm, d = target.closest(x, rows)
+        ray = x - ce
+        dx = np.linalg.norm(ray, axis=1)
+        ray /= np.maximum(dx, 1e-12)[:, None]
         skin_ok = (d < reach * re) & ((normals[rows] * nrm).sum(1) > normal_threshold)
         skin_ok &= np.linalg.norm(c - ce, axis=1) > re * (1.0 + margin)
-        ray = x - ce
-        ray /= np.maximum(np.linalg.norm(ray, axis=1, keepdims=True), 1e-12)
+        skin_ok &= dx > re * (1.0 + margin)
         on_sphere = ce + (sphere * re)[:, None] * ray
         de = np.linalg.norm(x - on_sphere, axis=1)
         sphere_ok = de < sphere_reach * re
-        use_skin = skin_ok & (~sphere_ok | (d <= de))
-        C = np.where(use_skin[:, None], c, on_sphere)
-        w = (use_skin | sphere_ok).astype(np.float64)
+        C = np.where(skin_ok[:, None], c, on_sphere)
+        w = weight * (skin_ok | sphere_ok)
         # the reverse term: the reference's tissue pulls its nearest vertex of the pool
         r = np.zeros(len(X))
         mean = np.zeros_like(X)
@@ -1668,7 +1675,7 @@ def seat_lids(
             count = np.bincount(near, minlength=len(X)).astype(np.float64)
             for k in range(3):
                 mean[:, k] = np.bincount(near, points[:, k], minlength=len(X))
-            r = (count > 0).astype(np.float64)
+            r = weight * (count > 0)
             mean /= np.maximum(count, 1.0)[:, None]
         rr = r[rows]
         A = (factor + scipy.sparse.diags(w + rr)).tocsc()
@@ -2387,6 +2394,7 @@ def fit_levels(
                 margin=options.lid_margin,
                 iterations=options.lid_iterations,
                 fairness=options.lid_fairness,
+                weight=options.lid_weight,
                 front=options.lid_front,
             )
             rows = level_seat.region
