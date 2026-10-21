@@ -619,8 +619,11 @@ SMOOTH_LIMIT = {1: 60.0, 2: 35.0}
 
 # the lids' edge seen from the front and 15 degrees off it: the largest median, over sectors
 # of LID_SECTOR degrees about the gaze, of the distance from the eyeball's edge to the skin
-# (eyeball radii), and the sectors of the inner corner (about 180 degrees, toward the nose)
-LID_GAP_LIMIT = 0.03
+# (eyeball radii) on each level (level 0's lid margin has vertices about 0.1 radii apart,
+# and the synthetic target's eyes squint), and the sectors of the inner corner (about 180
+# degrees, toward the nose). Without the seating the corner of the real character stood
+# 0.12 radii off, and the synthetic target's lids up to 0.07 on level 1
+LID_GAP_LIMIT = {0: 0.08, 1: 0.03}
 LID_SECTOR = 15
 LID_VIEWS = ((0, 0), (15, 0), (-15, 0), (0, 15), (0, -15))
 CORNER_SECTORS = (150, 165, 180, 195)
@@ -811,7 +814,7 @@ class TestCornerFit(unittest.TestCase):
                             f"corner {corner:.3f}, sectors {len(gaps)}"
                         )
                         self.assertGreaterEqual(len(gaps), 20)
-                        self.assertLess(gaps[worst], LID_GAP_LIMIT)
+                        self.assertLess(gaps[worst], LID_GAP_LIMIT[subdiv])
 
     def corner_flips(self, topology, subdiv):
         """Faces of the eye corner (the patch's faces on sculpt, the pocket's on anny) on
