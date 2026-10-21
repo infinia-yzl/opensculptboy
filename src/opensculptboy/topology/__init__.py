@@ -19,6 +19,7 @@ from opensculptboy.topology.patch import (
     check_symmetry,
     validate_patch,
 )
+from opensculptboy.topology.convert import convert_offsets, to_anny, to_sculpt
 from opensculptboy.topology.sculpt import (
     TOPOLOGIES,
     SculptData,
@@ -50,5 +51,8 @@ __all__ = [
     "base_quad_mesh",
     "blend_rows",
     "check_symmetry",
+    "convert_offsets",
+    "to_anny",
+    "to_sculpt",
     "validate_patch",
 ]
