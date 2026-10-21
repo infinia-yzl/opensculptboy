@@ -829,6 +829,10 @@ def body_skin_weights(
             }
             body = sw.Body("export", phenotype, rest, B, T.double().cpu().numpy())
             (weights, indices), choice = refiner.safe_weights(body, settings)
+            # the new vertices of a sculpt model follow their refined anchors
+            weights, indices = vrm_tables.blend_new_rows(
+                model, weights, indices, refiner.today
+            )
         finally:
             torch.set_num_threads(threads)
         if len(_WEIGHTS) >= 16:

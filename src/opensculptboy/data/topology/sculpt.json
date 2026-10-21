@@ -1,0 +1,73 @@
+{
+  "format": "opensculptboy/sculpt-topology@1",
+  "base": "anny-quads",
+  "base_digest": "0484f2c8679d0aaec99710ea241aafd7e18f405263f09723039b9fc727ae5584",
+  "counts": {
+    "base_vertices": 13718,
+    "base_uvs": 21334,
+    "base_quads": 13710,
+    "removed_faces": 98,
+    "new_vertices": 66,
+    "new_faces": 98,
+    "new_uvs": 0
+  },
+  "labels": [
+    "eye_corner",
+    "eye_corner/caruncle",
+    "eye_corner/conjunctiva"
+  ],
+  "patches": [
+    {
+      "name": "eye_corner",
+      "module": "opensculptboy.topology.patches.eye_corner",
+      "options": {
+        "max_anchors": 8,
+        "anchor_rings": 3,
+        "ring_reach": 1.8,
+        "ring_start": -0.3,
+        "inner_ring": 7,
+        "outer_ring": 11,
+        "outer_ring_canthus": 12,
+        "sector": [
+          135.0,
+          232.0
+        ],
+        "canthus": [
+          172.0,
+          212.0
+        ],
+        "crest": 0.4,
+        "plica_gap": 0.1,
+        "plica_shift": 0.08,
+        "shift_span": [
+          0.25,
+          0.95
+        ],
+        "fold_gap": 0.03,
+        "fold_power": 0.5,
+        "caruncle_sink": 0.0,
+        "lid_window": 0.25,
+        "lid_step": 0.01,
+        "blend": 0.25,
+        "caruncle_s": 0.45,
+        "skin_s": 0.8,
+        "skin_blend": 0.25
+      },
+      "removed_faces": 98,
+      "vertices": [
+        13718,
+        13784
+      ],
+      "faces": [
+        0,
+        98
+      ],
+      "uvs": [
+        21334,
+        21334
+      ],
+      "symmetric": true
+    }
+  ],
+  "sha256": "9f3f576cbdff3083e2ea73a847e497c4c24903d61fe5b0d2862f3bd8024af5d6"
+}

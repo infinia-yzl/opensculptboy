@@ -100,8 +100,10 @@ def anny_regions(model, rest_vertices: np.ndarray | None = None) -> np.ndarray:
     if rest_vertices is None:
         rest_vertices = model.template_vertices.detach().double().cpu().numpy()
     V = np.asarray(rest_vertices, dtype=np.float64)
+    from opensculptboy.topology.lookup import base_mesh_rows
+
     mesh = base_mesh()
-    base = model.base_mesh_vertex_indices.cpu().numpy()
+    base = base_mesh_rows(model)  # a new sculpt vertex: its strongest anchor's label
     labels = np.full(len(mesh.V), "", dtype=object)
     for name in np.unique(mesh.face_labels):
         labels[np.unique(mesh.quads[mesh.face_labels == name])] = name

@@ -20,10 +20,15 @@ def _load_keypoint_data(
     V = len(model.template_vertices)
 
     regression_weights = torch.zeros((K, V), dtype=dtype, device=device)
+    base = model.base_mesh_vertex_indices
     for k, label in enumerate(labels):
-        weights = keypoints_data[label][model.base_mesh_vertex_indices].to(
-            dtype=dtype, device=device
-        )
+        table = keypoints_data[label]
+        # vertices past the base mesh (added by a topology that keeps the base-mesh vertices)
+        # take no weight
+        inside = base < len(table)
+        weights = torch.zeros(V, dtype=table.dtype, device=table.device)
+        weights[inside] = table[base[inside]]
+        weights = weights.to(dtype=dtype, device=device)
         assert torch.abs(weights.sum() - 1) < 1e-3
         regression_weights[k] = weights
     return regression_weights, labels

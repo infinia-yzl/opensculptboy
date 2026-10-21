@@ -167,7 +167,10 @@ class EyedMesh:
                 (np.repeat(np.arange(len(p.anchors)), k), indices[p.anchors].ravel()),
                 weights[p.anchors].ravel(),
             )
-            mixed = p.blend @ dense
+            # each distinct row of the blend is mixed once, so that identical rows (the
+            # eyeball's and the cornea's) give bit-identical weights on every BLAS
+            rows, inverse = np.unique(p.blend, axis=0, return_inverse=True)
+            mixed = (rows @ dense)[np.asarray(inverse).reshape(-1)]
             order = np.argsort(-mixed, axis=1, kind="stable")[:, :k]
             w = np.take_along_axis(mixed, order, axis=1)
             w /= np.maximum(w.sum(1, keepdims=True), 1e-12)
@@ -265,6 +268,66 @@ def _mean_sizes(measured: dict) -> dict | None:
     }
 
 
+# the labels of the faces of the sculpt topology's eye-corner patch that take the conjunctiva's
+# pink, wet material (opensculptboy.topology.patches.eye_corner)
+CORNER_LABELS = ("eye_corner/caruncle", "eye_corner/conjunctiva")
+
+
+def _sculpt_data(model):
+    """The composed patches of a model on the ``sculpt`` topology, or None."""
+    data = getattr(model, "sculpt_data", None)
+    if data is not None:
+        return data
+    config = getattr(model, "config", None)
+    topology = getattr(config, "topology", None)
+    if not isinstance(topology, str) or not topology.startswith("sculpt"):
+        return None
+    from opensculptboy.topology import sculpt_data
+
+    return sculpt_data()
+
+
+def corner_triangles(
+    model, rest, triangles, uv_triangles, uvs, frames
+) -> np.ndarray | None:
+    """
+    The mask of the triangles of a mesh of the ``sculpt`` topology (level 0 or a detail level)
+    that belong to the caruncle and the conjunctiva of the eye-corner patch, or None for a
+    model without them. A triangle belongs to them when its UV centroid lies in the UV quad of
+    one of those faces (the patch's faces keep their own region of the atlas, and the detail
+    levels subdivide the UVs inside each face) and it lies near an eye.
+    """
+    data = _sculpt_data(model)
+    if data is None:
+        return None
+    pink = [i for i, label in enumerate(data.labels) if label in CORNER_LABELS]
+    chosen = np.isin(data.face_labels, pink)
+    if not chosen.any():
+        return None
+    atlas = model.texture_coordinates.detach().cpu().double().numpy()
+    quads = atlas[data.uv_faces[chosen]]  # (P, 4, 2)
+    centre = uvs[uv_triangles].mean(1)  # (T, 2)
+    inside = np.zeros(len(triangles), bool)
+    for corners in ([0, 1, 2], [0, 2, 3]):
+        a, b, c = (quads[:, k] for k in corners)
+        det = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (
+            b[:, 1] - a[:, 1]
+        )
+        ok = np.abs(det) > 1e-14
+        for p, (a0, b0, c0, d0) in enumerate(zip(a, b, c, det)):
+            if not ok[p]:
+                continue
+            q = centre - a0
+            u = ((c0[1] - a0[1]) * q[:, 0] - (c0[0] - a0[0]) * q[:, 1]) / d0
+            v = (-(b0[1] - a0[1]) * q[:, 0] + (b0[0] - a0[0]) * q[:, 1]) / d0
+            inside |= (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9)
+    points = rest[triangles].mean(1)
+    near = np.zeros(len(triangles), bool)
+    for frame in frames.values():
+        near |= np.linalg.norm(points - frame.centre, axis=1) < 1.6 * frame.radius
+    return inside & near
+
+
 def eyed_mesh(
     model, mesh, rest: np.ndarray, eye, kind: str = "gltf", baked: bytes | None = None
 ) -> EyedMesh:
@@ -323,6 +386,9 @@ def eyed_mesh(
     clear = clearance(nominal.iris_mm)
     bulge = min(b for b, _ in clear.values()) * eye.bulge
     scale = min(c for _, c in clear.values())
+    # on the sculpt topology the mesh has its own caruncle and conjunctival fold (the
+    # eye-corner patch): no caruncle part, and the patch's faces take the pink material
+    corner = corner_triangles(model, rest, triangles, uv_triangles, uvs, frames)
     for side in ("L", "R"):
         frame = frames[side]
         frame.radius *= scale
@@ -369,6 +435,8 @@ def eyed_mesh(
             parts.append(_part(name, side, frame, surface, rest, anchors, blend=blend))
         if eye.caruncle:
             socket_vertices |= geometry.socket(frame, rest, normals, skin)
+            if corner is not None:
+                continue
             surface = geometry.caruncle(frame, rest, skin_tris, shape)
             if surface is None:
                 continue
@@ -392,6 +460,8 @@ def eyed_mesh(
         if eye.caruncle
         else np.zeros(len(triangles), bool)
     )
+    if corner is not None and eye.caruncle:
+        socket |= corner & kept
     # the combined mesh: the base triangles that remain, then the parts'
     count, uv_count = len(rest), len(uvs)
     all_tris, all_uv_tris, all_uvs = [triangles[kept]], [uv_triangles[kept]], [uvs]
