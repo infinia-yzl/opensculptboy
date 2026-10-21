@@ -261,3 +261,115 @@ def convert_offsets(
         }
         extra["converted_from"] = source_topology
         return save_offsets(target, converted, subdiv, topology, extra)
+
+
+CARD_TOPOLOGIES = ("anny", "sculpt")
+
+
+def _card_rest(character) -> np.ndarray:
+    """Anny's rest vertices (N, 3) of a card's parameters, float64."""
+    import dataclasses
+
+    import torch
+
+    anny_card = dataclasses.replace(character, topology="anny", pose={})
+    model = anny_card.build_model(dtype=torch.float64)
+    kwargs = anny_card.model_kwargs()
+    kwargs.pop("facial_actions", None)
+    with torch.no_grad():
+        return model(**kwargs)["rest_vertices"][0].numpy()
+
+
+def _relocated(value, source_dir: pathlib.Path, target_dir: pathlib.Path):
+    """A card's relative file path (or a nested section of them) seen from another folder."""
+    import os
+
+    if isinstance(value, dict):
+        return {k: _relocated(v, source_dir, target_dir) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_relocated(v, source_dir, target_dir) for v in value]
+    if isinstance(value, str) and not pathlib.Path(value).is_absolute():
+        if (source_dir / value).is_file():
+            return pathlib.Path(
+                os.path.relpath(source_dir / value, target_dir)
+            ).as_posix()
+    return value
+
+
+def convert_card(
+    source: str | pathlib.Path,
+    target: str | pathlib.Path,
+    topology: str,
+    data=None,
+    body: bool = True,
+) -> dict:
+    """
+    Write the character card ``source`` (of ``anny`` or ``sculpt``) as a card of ``topology``
+    at ``target``: the same parameters, its detail offsets converted level by level
+    (:func:`convert_offsets`, written next to the new card as ``<card>.detail<N>.safetensors``)
+    and the ear tile's UVs of its skin material converted as a field of their level (UVs whose
+    transfer touches a vertex off the ears are left off them). The textures stay on anny's atlas,
+    which ``sculpt`` keeps, and the other files of the card are named from the new card's
+    folder. With ``body`` (the default), the closest points of the transfer are taken on the
+    card's own rest body, else on anny's default body. Returns a summary.
+    """
+    import json
+
+    from opensculptboy.character import Character
+    from opensculptboy.topology.sculpt import is_sculpt, sculpt_data, use_sculpt_data
+
+    if topology not in CARD_TOPOLOGIES:
+        raise ValueError(
+            f"Cards convert between {' and '.join(CARD_TOPOLOGIES)}; got {topology!r}."
+        )
+    source, target = pathlib.Path(source), pathlib.Path(target)
+    character = Character.from_dict(json.loads(source.read_text()))
+    if character.topology not in CARD_TOPOLOGIES:
+        raise ValueError(
+            f"{source} has the topology {character.topology!r}; cards convert between "
+            f"{' and '.join(CARD_TOPOLOGIES)}."
+        )
+    data = sculpt_data() if data is None else data
+    source_dir, target_dir = source.resolve().parent, target.resolve().parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stem = target.name[: -len(target.suffix)] if target.suffix else target.name
+    vertices = _card_rest(character) if body and character.detail else None
+    same = is_sculpt(character.topology) == is_sculpt(topology)
+    summary = {"card": str(target), "from": character.topology, "to": topology}
+    detail = dict(character.detail)
+    if detail:
+        levels = []
+        for entry in detail.get("levels", []):
+            subdiv = int(entry["subdiv"])
+            path = pathlib.Path(entry["offsets"])
+            path = path if path.is_absolute() else source_dir / path
+            name = f"{stem}.detail{subdiv}.safetensors"
+            convert_offsets(path, target_dir / name, topology, vertices, data)
+            levels.append(dict(entry, offsets=name))
+        rest = {k: v for k, v in detail.items() if k != "levels"}
+        detail = {**_relocated(rest, source_dir, target_dir), "levels": levels}
+        summary["levels"] = [e["subdiv"] for e in levels]
+    material = _relocated(dict(character.material), source_dir, target_dir)
+    ears = (character.material or {}).get("ears") or {}
+    if ears.get("uvs"):
+        from opensculptboy.texture.ears import EarUVs
+
+        path = pathlib.Path(ears["uvs"])
+        path = path if path.is_absolute() else source_dir / path
+        with use_sculpt_data(data):
+            table = EarUVs.load(path, character.topology)
+            uv = table.uv
+            if not same:
+                c = LevelCorrespondence(table.subdiv, vertices, data)
+                uv = c.to_sculpt(uv) if is_sculpt(topology) else c.to_anny(uv)
+            name = f"{stem}.ear_uvs.safetensors"
+            EarUVs(uv, table.subdiv).save(target_dir / name, topology)
+        material["ears"] = dict(material["ears"], uvs=name)
+        summary["ear_uvs"] = name
+    import dataclasses
+
+    converted = dataclasses.replace(
+        character, topology=topology, detail=detail, material=material
+    )
+    target.write_text(json.dumps(converted.to_dict(), indent=2) + "\n")
+    return summary
