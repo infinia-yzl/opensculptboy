@@ -186,6 +186,11 @@ def triangulated_faces(model) -> tuple[np.ndarray, np.ndarray | None]:
     def split(f):
         return np.concatenate([f[:, [0, 1, 2]], f[:, [0, 2, 3]]])
 
+    # the sculpt-quads topology writes a triangle as [a, b, c, c]: drop its empty half
+    tri = faces[:, 2] == faces[:, 3]
+    if tri.any():
+        keep = np.concatenate([np.ones(len(faces), bool), ~tri])
+        return split(faces)[keep], None if uv_faces is None else split(uv_faces)[keep]
     return split(faces), None if uv_faces is None else split(uv_faces)
 
 

@@ -84,13 +84,15 @@ class Character:
     def build_model(self, face_shapes: bool | None = None, dtype=torch.float32):
         """
         The Anny model for this character. ``face_shapes`` loads the face-shape parameters;
-        by default they load when the character sets any of them.
+        by default they load when the character sets any of them. The ``sculpt`` and
+        ``sculpt-quads`` topologies build on anny's mesh with the patches of
+        :mod:`opensculptboy.topology`.
         """
         import anny
 
         if face_shapes is None:
             face_shapes = bool(self.face_shapes)
-        model = anny.Anny(
+        kwargs = dict(
             rig=self.rig,
             topology=self.topology,
             phenotypes=self.phenotypes,
@@ -98,6 +100,12 @@ class Character:
             facial_actions="all",
             face_shapes="all" if face_shapes else "none",
         )
+        if self.topology.split("-")[0] == "sculpt":
+            from opensculptboy.topology import sculpt_model
+
+            model = sculpt_model(**kwargs)
+        else:
+            model = anny.Anny(**kwargs)
         return model.to(dtype=dtype)
 
     def model_kwargs(self) -> dict[str, Any]:
