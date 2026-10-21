@@ -38,13 +38,19 @@ def _kabsch_residual(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def synthetic_baked_eyes(
-    model, eyed, centre=(0.03, -0.02), pupil_mm=2.8, iris_mm=11.2, pale_ring=False
+    model,
+    eyed,
+    centre=(0.03, -0.02),
+    pupil_mm=2.8,
+    iris_mm=11.2,
+    pale_ring=False,
+    pupil=0.01,
 ):
     """A baked eye texture on anny's atlas (the box of opensculptboy.texture.eyes): a grey
     iris with a wide pupil, off the gaze by ``centre`` (eyeball radii), as a game's eye
     texture might come, with ``pale_ring`` a pale outer band of the iris (1.2 mm) and a
-    darker limbal ring outside it (0.5 mm); returns the PNG bytes and the eyeball radius used
-    (mm)."""
+    darker limbal ring outside it (0.5 mm), and a pupil of linear grey ``pupil``; returns the
+    PNG bytes and the eyeball radius used (mm)."""
     from opensculptboy.export.document import png_bytes
     from opensculptboy.texture.eyes import eye_uv_box, to_eye_uvs
 
@@ -69,10 +75,52 @@ def synthetic_baked_eyes(
             iris = np.where((r < iris_mm / 2 - 1.2)[..., None], 0.12, outer)
         else:
             iris = np.where((r < iris_mm / 2)[..., None], 0.12, sclera)
-        colour = np.where((r < pupil_mm / 2)[..., None], 0.01, iris)
+        colour = np.where((r < pupil_mm / 2)[..., None], pupil, iris)
         colour = np.where((values[..., 2] > 0)[..., None], colour, [0.7, 0.68, 0.66])
         image[covered] = colour[covered]
     return png_bytes(tex.srgb(image)), radius
+
+
+def bowl_normal_atlas(model, eyed, size=2048, tilt_deg=20.0, reach=0.35):
+    """A tangent-space normal map (size, size, 3, in [0, 1]) of anny's atlas, flat but on the
+    eyeballs, where it holds a concave iris as a bake writes it (in the MikkTSpace frames of
+    the eyeballs): within ``reach`` eyeball radii of the gaze axis the normal tilts by
+    ``tilt_deg`` toward the axis."""
+    from opensculptboy.texture.eyes import eye_uv_box
+    from opensculptboy.texture.tangents import mikktspace
+
+    lo, hi = eye_uv_box(model)
+    atlas = np.full((size, size, 3), 0.5, np.float32)
+    atlas[..., 2] = 1.0
+    x0, y0 = int(lo[0] * size) - 2, int((1 - hi[1]) * size) - 2
+    x1, y1 = int(hi[0] * size) + 3, int((1 - lo[1]) * size) + 3
+    for points, triangles, uvs in eyed.eyeballs.values():
+        corners = triangles.reshape(-1)
+        p = points[corners]
+        n = p / np.linalg.norm(p, axis=1, keepdims=True)
+        uv = uvs.reshape(-1, 2)
+        fine = np.arange(len(corners)).reshape(-1, 3)
+        tangents = mikktspace(p, n, uv, fine)
+        b = tangents[:, 3:] * np.cross(n, tangents[:, :3])
+        px = np.stack([uv[:, 0] * size - 0.5 - x0, (1 - uv[:, 1]) * size - 0.5 - y0], 1)
+        values = np.concatenate([n, tangents[:, :3], b], 1)
+        grid, mask = tex.raster(px, fine, values, (x1 - x0, y1 - y0))
+        nn, tt, bb = grid[..., 0:3], grid[..., 3:6], grid[..., 6:9]
+        nn = nn / np.maximum(np.linalg.norm(nn, axis=-1, keepdims=True), 1e-12)
+        radial = np.concatenate([nn[..., :2], np.zeros(nn.shape[:2] + (1,))], -1)
+        inward = -radial / np.maximum(
+            np.linalg.norm(radial, axis=-1, keepdims=True), 1e-12
+        )
+        inward -= (inward * nn).sum(-1, keepdims=True) * nn
+        inside = (np.hypot(nn[..., 0], nn[..., 1]) < reach) & (nn[..., 2] > 0)
+        angle = np.radians(tilt_deg) * inside[..., None]
+        bent = np.cos(angle) * nn + np.sin(angle) * inward
+        code = np.stack(
+            [(bent * tt).sum(-1), (bent * bb).sum(-1), (bent * nn).sum(-1)], -1
+        )
+        box = atlas[y0:y1, x0:x1]
+        box[mask] = 0.5 * code[mask] + 0.5
+    return atlas
 
 
 class TestEyeCard(unittest.TestCase):
@@ -93,6 +141,11 @@ class TestEyeCard(unittest.TestCase):
         )
         self.assertTrue(eye.cornea and eye.caruncle)
         self.assertAlmostEqual(eye.cornea_ior, 1.376)
+        # cornea "auto": one coated surface for baked eyes, as the reference draws them
+        self.assertEqual(eye.cornea, "auto")
+        self.assertIs(eye.resolved(baked=True).cornea, False)
+        self.assertIs(eye.resolved(baked=False).cornea, True)
+        self.assertIs(EyeMaterial(cornea=True).resolved(baked=True).cornea, True)
         # the eyes alone keep the exporters' own skin; with skin values, both
         self.assertIsNone(card.skin_material())
         both = Character(material={"ior": 1.4, "eyes": {}})
@@ -108,6 +161,8 @@ class TestEyeCard(unittest.TestCase):
             {"iris_color": [1, 2]},
             {"source": "photo"},
             {"cornea": 1},
+            {"cornea": "yes"},
+            {"cornea_radius_mm": 30.0},
             {"seed": 1.5},
             {"glow": 1},
             [],
@@ -371,6 +426,54 @@ class TestEyedMesh(unittest.TestCase):
             eye_texture(eye, self.eyed, self.model)[1]["source"], "procedural"
         )
 
+    def test_baked_eyes_keep_their_pupil(self):
+        # the pupil keeps the bake's own texels (a game's pupil is often shaded grey), and
+        # baked eyes take one coated surface unless the card asks for a cornea
+        baked, _ = synthetic_baked_eyes(self.model, self.eyed, pupil=0.05)
+        eyed = eyed_mesh(self.model, None, self.rest, EyeMaterial(), "gltf", baked)
+        self.assertEqual(sorted({p.name for p in eyed.parts}), ["caruncle", "eyeball"])
+        self.assertIs(eyed.eye.cornea, False)
+        with_cornea = eyed_mesh(
+            self.model, None, self.rest, EyeMaterial(cornea=True), "gltf", baked
+        )
+        self.assertIn("cornea", {p.name for p in with_cornea.parts})
+        pixels, _ = eye_texture(EyeMaterial(), eyed, self.model, baked)
+        s, phi, left = tex.texel_polar()
+        centre = tex.linear(pixels)[left & (s < 0.05)]
+        np.testing.assert_allclose(centre, 0.05, atol=0.01)
+
+    def test_baked_normals_carry_over(self):
+        # the reference's eye normals, baked onto the eyeballs of the atlas normal map in
+        # their MikkTSpace frames, reach the eye texture's layout: flat stays flat, and a
+        # concave iris (its normals tilted toward the gaze axis) stays concave on both sides
+        size = 2048
+        flat = np.full((size, size, 3), 0.5, np.float32)
+        flat[..., 2] = 1.0
+        carried = tex.carry_baked_normals(flat, self.eyed.eyeballs)
+        s, phi, left = tex.texel_polar()
+        front = s < 0.9
+        np.testing.assert_allclose(carried[front], [0.0, 0.0, 1.0], atol=1e-6)
+        # a bowl: inside 0.35 eyeball radii the normal tilts 20 degrees toward the axis
+        bowl = bowl_normal_atlas(self.model, self.eyed, size)
+        carried = tex.carry_baked_normals(bowl, self.eyed.eyeballs)
+        ring = (s > 0.12) & (s < 0.3)
+        for side, half in (("L", left), ("R", ~left)):
+            with self.subTest(side=side):
+                d = carried[ring & half]
+                # E2 = N x E1 points toward the gaze axis: the bowl tilts along it
+                self.assertGreater(np.median(d[:, 1]), np.sin(np.radians(15.0)))
+                self.assertLess(np.abs(np.median(d[:, 0])), 0.05)
+        outside = (s > 0.5) & (s < 0.9)
+        self.assertLess(np.median(np.abs(carried[outside][:, 1])), 0.02)
+        # where the procedural eye stands in (no iris found), the normals are flat
+        _, found, moved = tex.fit_baked_iris(
+            np.full(carried.shape, 0.5),
+            EyeMaterial(iris_mm=11.7, pupil_mm=3.5),
+            normals=carried,
+        )
+        self.assertEqual(found, {"L": None, "R": None})
+        np.testing.assert_allclose(moved[front], [[0.0, 0.0, 1.0]] * int(front.sum()))
+
 
 def _pocket(points, triangles, frame, cover=None) -> int:
     """The pixels of the front view's pocket in the inner corner (as geometry.caruncle
@@ -495,6 +598,74 @@ class TestExports(unittest.TestCase):
         self.assertEqual(
             eyes["extensions"]["KHR_materials_clearcoat"]["clearcoatFactor"], 1.0
         )
+
+    def test_baked_eye_normals(self):
+        # a file whose eyes and normal map come from a bake: one coated surface, and the
+        # eye's normal texture holds the reference's concave iris in the file's own
+        # MikkTSpace frames (decoded on the file's vertices, the normals tilt toward the
+        # gaze axis)
+        from PIL import Image
+
+        from opensculptboy.export.document import png_bytes
+
+        rest = self.model.template_vertices.double().numpy()
+        eyed = eyed_mesh(self.model, None, rest, EyeMaterial())
+        baked, _ = synthetic_baked_eyes(self.model, eyed)
+        atlas = bowl_normal_atlas(self.model, eyed)
+        normal = png_bytes(np.round(atlas * 255).astype(np.uint8))
+        path = self.folder / "baked_normals.glb"
+        card = Character(material={"eyes": {}})
+        export_glb(path, card, self.model, textures={"eyes": baked, "normal": normal})
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        prims = self._materials(glb)
+        self.assertNotIn("cornea", prims)
+        eyes = next(m for m in glb.json["materials"] if m["name"] == "eyes")
+        self.assertIn("KHR_materials_clearcoat", eyes["extensions"])
+        self.assertFalse(eyes["extras"]["opensculptboy_eye"]["cornea"])
+        texture = glb.json["textures"][eyes["normalTexture"]["index"]]
+        image = glb.json["images"][texture["source"]]
+        self.assertEqual(image["name"], "eye_normal")
+        view = glb.json["bufferViews"][image["bufferView"]]
+        data = glb.bin[
+            view.get("byteOffset", 0) : view.get("byteOffset", 0) + view["byteLength"]
+        ]
+        import io
+
+        pixels = np.asarray(Image.open(io.BytesIO(bytes(data))).convert("RGB")) / 255.0
+        attributes = prims["eyes"]["attributes"]
+        rows = np.unique(glb.accessor(prims["eyes"]["indices"]))
+        position = glb.accessor(attributes["POSITION"])[rows]
+        normals = glb.accessor(attributes["NORMAL"])[rows]
+        tangents = glb.accessor(attributes["TANGENT"])[rows]
+        uv = glb.accessor(attributes["TEXCOORD_0"])[rows]
+        h, w = pixels.shape[:2]
+        code = (
+            2.0
+            * pixels[
+                np.clip((uv[:, 1] * h).astype(int), 0, h - 1),
+                np.clip((uv[:, 0] * w).astype(int), 0, w - 1),
+            ]
+            - 1.0
+        )
+        bitangent = tangents[:, 3:] * np.cross(normals, tangents[:, :3])
+        bent = (
+            code[:, :1] * tangents[:, :3]
+            + code[:, 1:2] * bitangent
+            + code[:, 2:] * normals
+        )
+        for side, mine in (("L", position[:, 0] > 0), ("R", position[:, 0] < 0)):
+            with self.subTest(side=side):
+                p, n, b = position[mine], normals[mine], bent[mine]
+                # the gaze runs along +Z of the file through the eye's centre
+                centre = p.mean(0)
+                radial = p[:, :2] - centre[:2]
+                rho = np.linalg.norm(radial, axis=1)
+                ring = (rho > 0.15 * rho.max()) & (rho < 0.28 * rho.max())
+                ring &= n[:, 2] > 0.8
+                inward = -radial[ring] / rho[ring, None]
+                tilt = (b[ring, :2] * inward).sum(1) - (n[ring, :2] * inward).sum(1)
+                self.assertGreater(np.median(tilt), 0.2)
 
     def test_vrm(self):
         from opensculptboy.export.budget import BUDGETS
