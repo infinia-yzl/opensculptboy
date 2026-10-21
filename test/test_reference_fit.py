@@ -57,12 +57,17 @@ from opensculptboy.fit.register import (
     lip_margin,
     pinna,
     project_onto,
+    relabel_ears,
     relax_along,
     repair_folds,
     shared_target_controls,
 )
 from opensculptboy.fit.residual import surface_error
-from test.fit_fixtures import pointed_ear_target, synthetic_target
+from test.fit_fixtures import (
+    pointed_ear_target,
+    stitched_ear_target,
+    synthetic_target,
+)
 
 # the bound of the mean surface error of level 1, both ways (mm)
 LEVEL1_BOUND_MM = 0.5
@@ -352,6 +357,53 @@ class TestEarParts(unittest.TestCase):
         self.assertLess(mean[0, 2], 0.001)  # the head's, the start of the turn with it
         self.assertGreater(mean[1, 2], 0.0025)  # the flap's
 
+    def test_stitched_ear_keeps_its_cut(self):
+        # a game writes its ear as a piece of its own, stitched to the head by coincident
+        # vertices: the cut, and the folds across it, are those of the welded surface
+        V, T, flap = _hairpin()
+        joined = EarSplit(Reference(V, T, regions={"ear": flap}))
+        on_flap = flap[T].all(1)
+        seam = np.unique(T[on_flap])
+        seam = seam[np.isin(seam, T[~on_flap])]
+        copy = np.arange(len(V), len(V) + len(seam))
+        Vs = np.concatenate([V, V[seam]])
+        Ts = T.copy()
+        remap = np.arange(len(V))
+        remap[seam] = copy
+        Ts[on_flap] = remap[T[on_flap]]
+        flap_s = np.concatenate([flap, np.ones(len(seam), bool)])
+        flap_s[seam] = False
+        stitched = Reference(Vs, Ts, regions={"ear": flap_s})
+        split = EarSplit(stitched)
+        for a, b in ((joined.ear, split.ear), (joined.head, split.head)):
+            self.assertGreater(b.cut.sum(), 0)
+            np.testing.assert_allclose(
+                np.sort(a.vertices[a.cut], 0), np.sort(b.vertices[b.cut], 0)
+            )
+        np.testing.assert_allclose(stitched.folds[: len(V)], Reference(V, T).folds)
+
+    def test_relabel_ears_follows_the_attachment(self):
+        # a flat sheet whose ear part (x > 0.01) holds more than the fitted mesh's ear mask
+        # (x > 0.014): the mask moves out to the line, within its band
+        n = 41
+        u = np.linspace(0.0, 0.02, n)
+        xx, yy = np.meshgrid(u, u, indexing="ij")
+        V = np.stack([xx, yy, np.zeros_like(xx)], -1).reshape(-1, 3)
+        k = np.arange(n * n).reshape(n, n)
+        a, b, c, d = k[:-1, :-1], k[1:, :-1], k[1:, 1:], k[:-1, 1:]
+        T = np.concatenate([np.stack([a, b, c], -1), np.stack([a, c, d], -1)])
+        T = T.reshape(-1, 3)
+        split = EarSplit(Reference(V, T, regions={"ear": V[:, 0] > 0.01 - 1e-9}))
+        mask = V[:, 0] > 0.014 - 1e-9
+        moved = relabel_ears(V, T, mask, split, rings=10)
+        inside = V[:, 0] > 0.0102
+        outside = V[:, 0] < 0.0098
+        self.assertTrue(moved[inside].all())
+        self.assertFalse(moved[outside].any())
+        # outside its band the mask stays as it was
+        kept = relabel_ears(V, T, mask, split, 0)
+        self.assertFalse(kept[V[:, 0] < 0.012].any())
+
     def test_fair_and_repair_keep_a_crease(self):
         # a tent (a crease of 90 degrees) is the reference's own fold: no defect; a crumple of
         # the fit on it is one, and the repair takes it out and lays the sheet on the reference
@@ -626,7 +678,29 @@ class TestPointedEars(unittest.TestCase):
         cls.after = fit_levels(cls.reference, card, R, t, 1, options, model)
         before = FitOptions(ear_split=False)
         cls.before = fit_levels(cls.reference, card, R, t, 1, before, model)
+        # the same target written as a game writes its head: a wider ear mask, cut out as a
+        # piece of its own and stitched to the head by coincident vertices
+        stitched = stitched_ear_target(target)
+        folder = pathlib.Path(cls.tmp.name) / "stitched"
+        write_handoff(
+            folder,
+            stitched["vertices"],
+            stitched["triangles"],
+            target["landmarks"],
+            masks={
+                "ear": {
+                    "vertices": stitched["ear"],
+                    "attachment": stitched["attachment"],
+                }
+            },
+        )
+        cls.stitched_reference = Reference.from_handoff(load_handoff(folder))
+        cls.stitched = fit_levels(cls.stitched_reference, card, R, t, 1, options, model)
         lines = ["pointed ears (ears of the mask; before -> after, mm and degrees):"]
+
+        def root(result, subdiv):
+            return result.measures[subdiv]["final"]["ears_root"]
+
         for subdiv in (0, 1):
             b, a = (
                 r.measures[subdiv]["final"]["ears"] for r in (cls.before, cls.after)
@@ -650,7 +724,18 @@ class TestPointedEars(unittest.TestCase):
                 f"{b['facing_away']:.4f} -> {a['facing_away']:.4f}; around the ears "
                 "reverse mean "
                 f"{sb['mean']:.3f} -> {sa['mean']:.3f}, p95 {sb['p95']:.3f} -> "
-                f"{sa['p95']:.3f}"
+                f"{sa['p95']:.3f}; root defects "
+                f"{root(cls.before, subdiv)['defects']:.4f} -> "
+                f"{root(cls.after, subdiv)['defects']:.4f}"
+            )
+        for subdiv in (0, 1):
+            m = cls.stitched.measures[subdiv]["final"]
+            lines.append(
+                f"  stitched, level {subdiv}: ears reverse mean "
+                f"{m['ears']['reverse_mm']['mean']:.3f}, folds not in the reference "
+                f"{m['ears']['folds_not_in_reference']:.4f}, over 90 degrees "
+                f"{m['ears']['facing_away']:.4f}; root defects "
+                f"{m['ears_root']['defects']:.4f} of {m['ears_root']['n']}"
             )
         print("\n" + "\n".join(lines), file=sys.stderr)
 
@@ -707,6 +792,27 @@ class TestPointedEars(unittest.TestCase):
                 )
                 self.assertLess(after["facing_away"], 0.005)
         self.assertLess(self.ears(self.after, 1)["angle_geometric_deg"]["p95"], 15.0)
+
+    def test_root_blends_into_the_head(self):
+        # the strip within 3 mm of the attachment line, where the ear meets the head: a crack
+        # along the root shows there as folded and flipped slivers (on level 1, 1.1 % of its
+        # vertices, 3.3 % before relabel_ears and the reverse term's cut). A game's ear,
+        # stitched to the head by coincident vertices and holding the flat skin in front of the
+        # root, fits as cleanly: none (1.4 % when the stitched cut was empty)
+        root = self.after.measures[1]["final"]["ears_root"]
+        self.assertGreater(root["n"], 100)
+        self.assertLess(root["defects"], 0.02)
+        root = self.stitched.measures[1]["final"]["ears_root"]
+        self.assertGreater(root["n"], 100)
+        self.assertLess(root["defects"], 0.007)
+        stitched = self.stitched.measures[1]["final"]["ears"]
+        self.assertLess(stitched["reverse_mm"]["p95"], 0.6)
+        self.assertLess(stitched["facing_away"], 0.005)
+
+    def test_stitched_ear_has_its_cut(self):
+        split = EarSplit(self.stitched_reference)
+        self.assertGreater(split.ear.cut.sum(), 0)
+        self.assertGreater(split.head.cut.sum(), 0)
 
     def test_rest_of_the_figure(self):
         # the ear split leaves the rest of the fit as it was
