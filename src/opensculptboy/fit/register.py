@@ -48,6 +48,7 @@ import torch
 
 from opensculptboy.character import Character
 from opensculptboy.fit import residual as R_
+from opensculptboy.eyes.geometry import CORNEA_GAP_MM, LID_CLEARANCE_MM
 from opensculptboy.fit.reference import (
     LANDMARKS,
     Reference,
@@ -1611,7 +1612,10 @@ def seat_lids(
     degrees of the gaze) whose nearest vertex of ``seat.pool`` x_i is (the reverse term, with
     normals agreeing to ``reverse_normal_threshold``), which pulls the surface over the
     eyeball as far as the reference's tissue reaches; and B is the bi-Laplacian, which keeps
-    the surface fair. A vertex with neither target follows the fairing alone.
+    the surface fair. A vertex with neither target follows the fairing alone. The margin is
+    at least the band over the sphere in which the exported eyes find outward-facing skin too
+    close (the cornea's shell and the lids' clearance, :mod:`opensculptboy.eyes.geometry`),
+    and such skin moves out of the band at the end, so that the eyeball keeps its size.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -1631,7 +1635,11 @@ def seat_lids(
     Qro = Q[rows][:, others]
     centres = np.array([np.asarray(c, dtype=np.float64) for c, _ in seat.eyes])
     radii = np.array([float(r) for _, r in seat.eyes])
+    # the band over the sphere where the exported eyes count outward-facing skin as too
+    # close (the cornea's shell and the lids' clearance, eyes.geometry.bulge_clearance)
+    margins = np.maximum(margin, (CORNEA_GAP_MM + LID_CLEARANCE_MM) / (radii * 1000.0))
     ce, re = centres[seat.eye[rows]], radii[seat.eye[rows]]
+    me = margins[seat.eye[rows]]
     # the reference's skin vertices in front of each eyeball, outside its sphere
     P = np.asarray(target.vertices, dtype=np.float64)
     shown, shown_eye = [], []
@@ -1639,7 +1647,7 @@ def seat_lids(
         local = (P - centre) / radius
         d = np.linalg.norm(local, axis=1)
         cos = (local @ seat.gazes[k]) / np.maximum(d, 1e-12)
-        keep = (d > 1.0 + margin) & (d < 1.6) & (cos > np.cos(np.radians(front)))
+        keep = (d > 1.0 + margins[k]) & (d < 1.6) & (cos > np.cos(np.radians(front)))
         shown.append(np.flatnonzero(keep))
         shown_eye.append(np.full(int(keep.sum()), k))
     shown = np.concatenate(shown)
@@ -1654,8 +1662,8 @@ def seat_lids(
         dx = np.linalg.norm(ray, axis=1)
         ray /= np.maximum(dx, 1e-12)[:, None]
         skin_ok = (d < reach * re) & ((normals[rows] * nrm).sum(1) > normal_threshold)
-        skin_ok &= np.linalg.norm(c - ce, axis=1) > re * (1.0 + margin)
-        skin_ok &= dx > re * (1.0 + margin)
+        skin_ok &= np.linalg.norm(c - ce, axis=1) > re * (1.0 + me)
+        skin_ok &= dx > re * (1.0 + me)
         on_sphere = ce + (sphere * re)[:, None] * ray
         de = np.linalg.norm(x - on_sphere, axis=1)
         sphere_ok = de < sphere_reach * re
@@ -1687,6 +1695,16 @@ def seat_lids(
         )
         solve = scipy.sparse.linalg.factorized(A)
         X[rows] = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
+    # the skin that faces out from the eyeball within the band over its sphere moves out to
+    # the band's top, so that the exported eyeball keeps its size (eyes.geometry
+    # .bulge_clearance shrinks it for such skin) and meets the lids flush
+    x = X[rows]
+    ray = x - ce
+    dx = np.linalg.norm(ray, axis=1)
+    ray /= np.maximum(dx, 1e-12)[:, None]
+    facing = (vertex_normals(X, T)[rows] * ray).sum(1)
+    band = (dx >= re) & (dx < re * (1.0 + me)) & (facing > 0.0)
+    X[rows[band]] = ce[band] + (re * (1.0 + me))[band, None] * ray[band]
     return X
 
 
