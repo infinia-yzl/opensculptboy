@@ -19,8 +19,30 @@ from opensculptboy.topology.patch import (
     check_symmetry,
     validate_patch,
 )
+from opensculptboy.topology.sculpt import (
+    TOPOLOGIES,
+    SculptData,
+    build_model,
+    compose,
+    is_sculpt,
+    read_sculpt_data,
+    sculpt_data,
+    sculpt_model,
+    sculpt_model_data,
+    use_sculpt_data,
+)
 
 __all__ = [
+    "TOPOLOGIES",
+    "SculptData",
+    "build_model",
+    "compose",
+    "is_sculpt",
+    "read_sculpt_data",
+    "sculpt_data",
+    "sculpt_model",
+    "sculpt_model_data",
+    "use_sculpt_data",
     "MAX_ANCHORS",
     "BaseQuadMesh",
     "Patch",
