@@ -211,6 +211,15 @@ class FitOptions:
     # edge stepped across it; on the coarser levels the step does not show, and on the
     # synthetic target the faired version turned more of the corner's faces over on level 1
     lid_clearance_rounds: tuple = (0, 0, 4)
+    # per level: whether seat_lids follows the reference's skin where it goes under its
+    # eyeball's sphere (lid_follow_inside), and whether the clearance band also moves the
+    # skin that faces the eyeball (lid_clearance_inward). On level 2, skin facing the
+    # eyeball that the band moved under it stood a ring away from the lid at 1.02 to 1.05
+    # radii, a crease along the lower lid at the inner corner; the reference's own skin faces
+    # the eyeball there and goes under it. On level 1 following it raised the corner's
+    # reverse error (p95), and the band's move shows no crease
+    lid_follow_inside: tuple = (False, False, True)
+    lid_clearance_inward: tuple = (True, True, False)
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -1586,6 +1595,11 @@ def lid_region(
     return LidSeat(region, which, pool, list(eyes), [np.asarray(g) for g in gazes])
 
 
+def _per_level(values: tuple, subdiv: int):
+    """The value of a per-level option for level ``subdiv`` (the last one for finer levels)."""
+    return values[min(subdiv, len(values) - 1)]
+
+
 def seat_lids(
     vertices: np.ndarray,
     triangles: np.ndarray,
@@ -1604,6 +1618,8 @@ def seat_lids(
     clearance: bool = True,
     clearance_rounds: int = 4,
     clearance_weight: float = 10.0,
+    clearance_inward: bool = True,
+    follow_inside: bool = False,
 ) -> np.ndarray:
     """
     Place the lids and the corner of each eye (``seat.region``) on what the reference shows
@@ -1613,20 +1629,23 @@ def seat_lids(
 
         min sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + fairness |B X|^2
 
-    as :func:`fair_region` does, with data weights ``weight``. The target c_i of a vertex more
-    than ``margin`` radii outside the sphere is the closest point of the reference's skin
-    when that lies within ``reach`` eyeball radii, more than ``margin`` radii outside the
-    sphere, with its normal agreeing with the vertex's to ``normal_threshold``. Otherwise it
-    is the point of the sphere, shrunk to ``sphere`` of its radius so that it lies under the
-    exported eyeball, along the ray from its centre (within ``sphere_reach`` radii), and a
-    vertex that lies under the shrunk sphere keeps its place; a vertex that once takes the
-    sphere keeps it (under the eyeball its normal may agree with the skin's again, and it
-    would swing back out). So the skin comes first: a lid that reaches past the reference's
-    margin slides back onto it, and what lies under the reference's tissue tucks under the
-    eyeball. p_i is the mean of the reference's skin vertices outside the sphere (by
-    ``margin``, within ``front`` degrees of the gaze) whose nearest vertex of ``seat.pool``
-    x_i is (the reverse term, with normals agreeing to ``reverse_normal_threshold``), which
-    pulls the surface over the eyeball as far as the reference's tissue reaches; B is the
+    as :func:`fair_region` does, with data weights ``weight``. The target c_i of a vertex
+    more than ``margin`` radii outside the sphere is the closest point of the reference's
+    skin when that lies within ``reach`` eyeball radii, more than ``margin`` radii outside
+    the sphere, with its normal agreeing with the vertex's to ``normal_threshold``.
+    Otherwise it is the point of the sphere, shrunk to ``sphere`` of its radius so that it
+    lies under the exported eyeball, along the ray from its centre (within ``sphere_reach``
+    radii), and a vertex that lies under the shrunk sphere keeps its place; a vertex that
+    once takes the sphere keeps it (under the eyeball its normal may agree with the skin's
+    again, and it would swing back out). So the skin comes first: a lid that reaches past
+    the reference's margin slides back onto it, and what lies under the reference's tissue
+    tucks under the eyeball. With ``follow_inside``, a vertex whose closest point of the
+    reference's skin lies inside the sphere (within ``reach``, with its normal agreeing)
+    takes that point, so that the lids go under the eyeball as the reference's do.
+    p_i is the mean of the reference's skin vertices outside the sphere (by ``margin``,
+    within ``front`` degrees of the gaze) whose nearest vertex of ``seat.pool`` x_i is (the
+    reverse term, with normals agreeing to ``reverse_normal_threshold``), which pulls the
+    surface over the eyeball as far as the reference's tissue reaches; B is the
     bi-Laplacian, which keeps the surface fair (a strong ``fairness`` keeps the line where
     the skin meets the sphere from stepping from vertex to vertex, which folds the corner).
     A vertex with no target follows the fairing.
@@ -1635,13 +1654,16 @@ def seat_lids(
     exported eyes find outward-facing skin too close (the cornea's shell and the lids'
     clearance, :mod:`opensculptboy.eyes.geometry`) leave it at the end: the reference's skin
     that faces out to the nearer end, the rest under the eyeball, so that the exported
-    eyeball keeps its size and nothing lies between it and its cornea. Each vertex takes its
-    side once, as it enters the band, and the same faired solve draws it there (with
-    ``clearance_weight`` times the data weight, for up to ``clearance_rounds`` rounds), so
-    that its neighbours follow; what still lies in the band then moves to the end of its
-    side (all of the band without rounds). Moved there alone on a fine level, neighbours
-    along the lid's edge that fell on either side of the band's middle stepped by its width,
-    a jagged edge at the inner corner.
+    eyeball keeps its size and nothing lies between it and its cornea; without
+    ``clearance_inward`` only the skin that faces out from the eyeball leaves the band (the
+    exported eyes count only that skin, and a lid that goes under the eyeball crosses the
+    band facing it, as the reference's does). Each vertex takes its side once, as it enters
+    the band, and the same faired solve draws it there (with ``clearance_weight`` times the
+    data weight, for up to ``clearance_rounds`` rounds), so that its neighbours follow; what
+    still lies in the band then moves to the end of its side (all of the band without
+    rounds). Moved there alone on a fine level, neighbours along the lid's edge that fell on
+    either side of the band's middle stepped by its width, a jagged edge at the inner
+    corner.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -1701,6 +1723,13 @@ def seat_lids(
         # what lies under the eyeball stays where it is
         under = ~skin_ok & (dx <= sphere * re)
         C = np.where(skin_ok[:, None], c, np.where(under[:, None], x, on_sphere))
+        if follow_inside:
+            # the reference's own skin under its eyeball: the lids follow it there
+            inside = ~skin_ok & (d < reach * re)
+            inside &= (normals[rows] * nrm).sum(1) > normal_threshold
+            inside &= np.linalg.norm(c - ce, axis=1) < re
+            C[inside] = c[inside]
+            under |= inside
         w = weight * (skin_ok | sphere_ok | under)
         # the reverse term: the reference's tissue pulls its nearest vertex of the pool
         r = np.zeros(len(X))
@@ -1757,6 +1786,8 @@ def seat_lids(
         ray, dx, facing = radial()
         band = (dx >= low) & (dx < top)
         new = band & (side == 0)
+        if not clearance_inward:
+            new &= facing > 0.0
         if not new.any() and not (band & (side != 0)).any():
             break
         side[new] = np.where(((facing > 0.0) & (dx >= mid) & skin_ok)[new], 1, -1)
@@ -1777,6 +1808,8 @@ def seat_lids(
     # of the band, by the side the rule gives it)
     ray, dx, facing = radial()
     band = (dx >= low) & (dx < top)
+    if not clearance_inward:
+        band &= facing > 0.0
     out = np.where(side != 0, side > 0, (facing > 0.0) & (dx >= mid) & skin_ok)
     to = np.where(out, top, under)
     X[rows[band]] = ce[band] + (re * to)[band, None] * ray[band]
@@ -2489,9 +2522,9 @@ def fit_levels(
                 fairness=options.lid_fairness * 16.0**subdiv,
                 weight=options.lid_weight,
                 front=options.lid_front,
-                clearance_rounds=options.lid_clearance_rounds[
-                    min(subdiv, len(options.lid_clearance_rounds) - 1)
-                ],
+                clearance_rounds=_per_level(options.lid_clearance_rounds, subdiv),
+                clearance_inward=_per_level(options.lid_clearance_inward, subdiv),
+                follow_inside=_per_level(options.lid_follow_inside, subdiv),
             )
             rows = level_seat.region
             offsets[subdiv] = offsets[subdiv].copy()
