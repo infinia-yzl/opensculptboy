@@ -632,10 +632,12 @@ def vrm_spec(
         # targets.
         vertices, normals = rb.vertices, rb.normals
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
-            from opensculptboy.eyes.mesh import eyed_mesh
+            from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
-            eyed = eyed_mesh(model, None, base, eye, "vrm", baked)
+            eyed = eyed_mesh(
+                model, None, base, eye, "vrm", baked, skin_baked=baked_skin(images)
+            )
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
             targets = eyed.targets(np.stack(targets)) if len(targets) else targets
@@ -695,10 +697,18 @@ def vrm_spec(
             ear_topology,
         )
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
-            from opensculptboy.eyes.mesh import eyed_mesh
+            from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
-            eyed = eyed_mesh(model, mesh, detail.vertices(base), eye, "vrm", baked)
+            eyed = eyed_mesh(
+                model,
+                mesh,
+                detail.vertices(base),
+                eye,
+                "vrm",
+                baked,
+                skin_baked=baked_skin(images),
+            )
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
             targets, vertices = eyed.targets(targets), eyed.vertices(vertices)
@@ -1051,11 +1061,13 @@ def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None
     k = float(eye.highlight)
     eyeball.matcap_factor = (k, k, k)
     out.append((eyeball, eyed.part_mask("eyeball")))
-    if eye.caruncle:
+    pink_mask = eyed.part_mask("caruncle", "socket")
+    # a fitted character on sculpt keeps its corner in the skin's material (eyed_mesh)
+    if eye.caruncle and pink_mask.any():
         pink = mtoon.soft_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,))
         pink.matcap_texture = eyeball.matcap_texture
         pink.matcap_factor = (0.5 * k, 0.5 * k, 0.5 * k)
-        out.append((pink, eyed.part_mask("caruncle", "socket")))
+        out.append((pink, pink_mask))
     return out
 
 

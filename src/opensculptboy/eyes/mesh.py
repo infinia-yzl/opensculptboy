@@ -271,6 +271,19 @@ def _mean_sizes(measured: dict) -> dict | None:
 # the labels of the faces of the sculpt topology's eye-corner patch that take the conjunctiva's
 # pink, wet material (opensculptboy.topology.patches.eye_corner)
 CORNER_LABELS = ("eye_corner/caruncle", "eye_corner/conjunctiva")
+# of those faces, only the triangles whose corners all lie within this many eyeball radii of
+# the eye's centre take it: the tissue inside the lid opening lies on the eyeball or just over
+# it, while the lids' outer skin and the face around the corner lie further out (the opening of
+# geometry.caruncle uses the same reach)
+CORNER_REACH = geometry.CARUNCLE_NEAR
+# the texture slots of a baked skin: a file with one of them takes the corner's appearance from
+# the bake (the reference's own caruncle and lids), not from the conjunctiva's material
+BAKED_SKIN_SLOTS = ("base_color", "head_base_color")
+
+
+def baked_skin(images) -> bool:
+    """Whether the textures of a file (slot -> image) hold a baked skin."""
+    return any(slot in images for slot in BAKED_SKIN_SLOTS)
 
 
 def _sculpt_data(model):
@@ -292,10 +305,13 @@ def corner_triangles(
 ) -> np.ndarray | None:
     """
     The mask of the triangles of a mesh of the ``sculpt`` topology (level 0 or a detail level)
-    that belong to the caruncle and the conjunctiva of the eye-corner patch, or None for a
-    model without them. A triangle belongs to them when its UV centroid lies in the UV quad of
-    one of those faces (the patch's faces keep their own region of the atlas, and the detail
-    levels subdivide the UVs inside each face) and it lies near an eye.
+    that belong to the caruncle and the conjunctiva of the eye-corner patch inside the lid
+    opening, or None for a model without them. A triangle belongs to them when its UV centroid
+    lies in the UV quad of one of those faces (the patch's faces keep their own region of the
+    atlas, and the detail levels subdivide the UVs inside each face) and its corners lie within
+    :data:`CORNER_REACH` eyeball radii of an eye's centre: where the lids of a character meet
+    further in than the default character's, the patch's faces outside the opening lie on the
+    skin of the lids and the face, and keep the skin's material.
     """
     data = _sculpt_data(model)
     if data is None:
@@ -321,15 +337,22 @@ def corner_triangles(
             u = ((c0[1] - a0[1]) * q[:, 0] - (c0[0] - a0[0]) * q[:, 1]) / d0
             v = (-(b0[1] - a0[1]) * q[:, 0] + (b0[0] - a0[0]) * q[:, 1]) / d0
             inside |= (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9)
-    points = rest[triangles].mean(1)
+    corners = rest[triangles]  # (T, 3, 3)
     near = np.zeros(len(triangles), bool)
     for frame in frames.values():
-        near |= np.linalg.norm(points - frame.centre, axis=1) < 1.6 * frame.radius
+        reach = np.linalg.norm(corners - frame.centre, axis=2).max(1)
+        near |= reach < CORNER_REACH * frame.radius
     return inside & near
 
 
 def eyed_mesh(
-    model, mesh, rest: np.ndarray, eye, kind: str = "gltf", baked: bytes | None = None
+    model,
+    mesh,
+    rest: np.ndarray,
+    eye,
+    kind: str = "gltf",
+    baked: bytes | None = None,
+    skin_baked: bool = False,
 ) -> EyedMesh:
     """
     The mesh of a file with the eyes of ``eye`` (an :class:`~opensculptboy.material.
@@ -339,8 +362,12 @@ def eyed_mesh(
     ``eye.cornea``) or ``"vrm"`` (the single-surface eyeball, at fewer segments). ``baked``
     is the file's baked eye texture (on anny's atlas), if any: an ``iris_mm`` or ``pupil_mm``
     of ``"auto"`` or ``"baked"`` takes the size found in it (:func:`measure_baked`, the mean
-    of both eyes), and ``"auto"`` the default without it. Raises ValueError for a mesh
-    without anny's eyeballs, and for ``"baked"`` sizes that no baked iris gives.
+    of both eyes), and ``"auto"`` the default without it. ``skin_baked`` says that the file's
+    skin carries a baked texture (:func:`baked_skin`): on the ``sculpt`` topology the eye
+    corner and the skin of the socket then keep the skin's material, so that they show the
+    reference's own appearance from the bake, and the conjunctiva's material is left to
+    characters without one. Raises ValueError for a mesh without anny's eyeballs, and for
+    ``"baked"`` sizes that no baked iris gives.
     """
     from opensculptboy.export.body import vertex_normals
 
@@ -389,6 +416,8 @@ def eyed_mesh(
     # on the sculpt topology the mesh has its own caruncle and conjunctival fold (the
     # eye-corner patch): no caruncle part, and the patch's faces take the pink material
     corner = corner_triangles(model, rest, triangles, uv_triangles, uvs, frames)
+    # a fitted character's corner takes the reference's appearance from the bake
+    follow_bake = skin_baked and _sculpt_data(model) is not None
     for side in ("L", "R"):
         frame = frames[side]
         frame.radius *= scale
@@ -457,10 +486,10 @@ def eyed_mesh(
             )
     socket = (
         socket_vertices[triangles].all(1) & kept
-        if eye.caruncle
+        if eye.caruncle and not follow_bake
         else np.zeros(len(triangles), bool)
     )
-    if corner is not None and eye.caruncle:
+    if corner is not None and eye.caruncle and not follow_bake:
         socket |= corner & kept
     # the combined mesh: the base triangles that remain, then the parts'
     count, uv_count = len(rest), len(uvs)

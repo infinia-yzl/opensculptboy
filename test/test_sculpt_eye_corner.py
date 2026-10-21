@@ -435,8 +435,9 @@ class TestEyeCorner(unittest.TestCase):
 
 class TestSculptEyes(unittest.TestCase):
     """The eyes of :mod:`opensculptboy.eyes` on the ``sculpt`` topology: no caruncle part of
-    their own, and the patch's caruncle and conjunctiva drawn with the conjunctiva's pink, wet
-    material, in the GLB and the VRM files."""
+    their own, the patch's caruncle and conjunctiva inside the lid opening drawn with the
+    conjunctiva's pink, wet material, in the GLB and the VRM files, and none of it on a file
+    whose skin is baked."""
 
     @classmethod
     def setUpClass(cls):
@@ -457,12 +458,14 @@ class TestSculptEyes(unittest.TestCase):
         cls.scope.__exit__(None, None, None)
         cls.tmp.cleanup()
 
-    def eyed(self, kind="gltf"):
+    def eyed(self, kind="gltf", skin_baked=False):
         from opensculptboy.eyes.mesh import eyed_mesh
 
         with torch.no_grad():
             rest = self.model()["rest_vertices"][0].numpy()
-        return eyed_mesh(self.model, None, rest, self.card.eye_material(), kind), rest
+        eye = self.card.eye_material()
+        eyed = eyed_mesh(self.model, None, rest, eye, kind, skin_baked=skin_baked)
+        return eyed, rest
 
     def test_the_patch_is_the_caruncle(self):
         from opensculptboy.export.body import triangulated_faces
@@ -483,13 +486,86 @@ class TestSculptEyes(unittest.TestCase):
             [any(set(t.tolist()) <= c for c in corners) for t in triangles]
         )
         self.assertGreater(is_pink.sum(), 40)
-        socket = eyed.part_mask("socket")[: len(triangles)]
-        kept = eyed.triangles[: len(triangles)]
+        start = int(eyed.kept.sum())
+        socket = eyed.part_mask("socket")[:start]
+        kept = eyed.triangles[:start]
         # every pink triangle of the patch takes the conjunctiva (the eyeball's triangles are
         # gone from the kept list, so compare by vertices)
         kept_pink = np.array([any(set(t.tolist()) <= c for c in corners) for t in kept])
-        self.assertTrue(socket[kept_pink].all())
+        # every pink triangle of the patch inside the lid opening takes the conjunctiva, and
+        # those whose corners reach out onto the lids keep the skin's material
+        from opensculptboy.eyes.mesh import CORNER_REACH
+
+        reach = np.full(len(kept), np.inf)
+        for frame in eyed.frames.values():
+            d = np.linalg.norm(rest[kept] - frame.centre, axis=2).max(1) / frame.radius
+            reach = np.minimum(reach, d)
+        inside = kept_pink & (reach < CORNER_REACH)
+        self.assertGreater(inside.sum(), 40)
+        self.assertTrue(socket[inside].all())
+        self.assertFalse(socket[kept_pink & ~inside].any())
         self.assertGreater(int((triangles >= n).any(1).sum()), 0)
+
+    def test_pink_only_inside_the_opening(self):
+        """Seen from the front of each eye, the conjunctiva's material lies inside the lid
+        opening: where the view sees the eyeball, or skin within NEAR eyeball radii of the
+        eye's centre (the tissue between the lids, behind their margins), connected to the
+        gaze axis. Before the reach of the pink triangles, the patch's caruncle reached out
+        over the lower lid's margin on the default character."""
+        from scipy import ndimage
+
+        eyed, rest = self.eyed()
+        start = int(eyed.kept.sum())
+        skin = eyed.triangles[:start]
+        pink = eyed.part_mask("socket")[:start]
+        self.assertTrue(pink.any())
+        xs = np.arange(-1.6, 1.4 + STEP / 2, STEP)
+        ys = np.arange(-0.9, 0.9 + STEP / 2, STEP)
+        gx, gy = np.meshgrid(xs, ys)
+        rr = gx**2 + gy**2
+        for side, frame in eyed.frames.items():
+            local = frame.to_local(rest)
+            near = (np.linalg.norm(local[skin], axis=2) < 2.4).all(1)
+            tris = skin[near]
+            depth, ident = raster(local, tris, xs, ys)
+            sphere = np.where(rr < 1.0, np.sqrt(np.maximum(1.0 - rr, 0.0)), -np.inf)
+            on_skin = depth > sphere
+            radius = np.sqrt(rr + np.where(np.isfinite(depth), depth, 0.0) ** 2)
+            opening = (~on_skin & np.isfinite(sphere)) | (on_skin & (radius < NEAR))
+            labels, _ = ndimage.label(opening)
+            opening = labels == labels[np.argmin(np.abs(ys)), np.argmin(np.abs(xs))]
+            seen = on_skin & (ident >= 0) & pink[near][np.maximum(ident, 0)]
+            with self.subTest(side=side):
+                self.assertGreater(int(seen.sum()), 100)
+                self.assertEqual(int((seen & ~opening).sum()), 0)
+
+    def test_a_baked_skin_keeps_the_corner(self):
+        """A file whose skin is baked shows the reference's own corner: no triangle of the
+        mesh takes the conjunctiva's material, and the GLB file has none."""
+        import io
+        import pathlib
+
+        from PIL import Image
+
+        from opensculptboy import export_glb
+        from test.gltf_reader import GLB, structure_errors
+
+        eyed, _ = self.eyed(skin_baked=True)
+        self.assertFalse(eyed.part_mask("caruncle", "socket").any())
+        buffer = io.BytesIO()
+        Image.new("RGB", (64, 64), (200, 150, 130)).save(buffer, "PNG")
+        path = pathlib.Path(self.tmp.name) / "sculpt_eyes_baked.glb"
+        export_glb(
+            path, self.card, self.model, textures={"base_color": buffer.getvalue()}
+        )
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        names = {
+            glb.json["materials"][p["material"]]["name"]
+            for p in glb.json["meshes"][0]["primitives"]
+        }
+        self.assertNotIn("conjunctiva", names)
+        self.assertIn("eyes", names)
 
     def test_fit_leaves_the_corner_out(self):
         from opensculptboy.fit import register

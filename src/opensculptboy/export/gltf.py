@@ -190,10 +190,12 @@ def export_glb(
             vertices, offsets = detail.vertices(base), detail.targets(offsets)
         normals = None
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
-            from opensculptboy.eyes.mesh import eyed_mesh
+            from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
-            eyed = eyed_mesh(model, mesh, vertices, eye, "gltf", baked)
+            eyed = eyed_mesh(
+                model, mesh, vertices, eye, "gltf", baked, skin_baked=baked_skin(images)
+            )
             normals = eyed.normals(vertices)
             weights, indices = eyed.skin_weights(weights, indices)
             vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
@@ -493,7 +495,9 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
         }
         cornea["extras"] = extras("cornea")
         out.append((doc.add_material(cornea), eyed.part_mask("cornea")))
-    if eye.caruncle:
+    pink_mask = eyed.part_mask("caruncle", "socket")
+    # a fitted character on sculpt keeps its corner in the skin's material (eyed_mesh)
+    if eye.caruncle and pink_mask.any():
         pink = pbr_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,), 0.0, 0.5)
         pink["extensions"] = {
             "KHR_materials_clearcoat": {
@@ -502,7 +506,7 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
             }
         }
         pink["extras"] = extras("conjunctiva")
-        out.append((doc.add_material(pink), eyed.part_mask("caruncle", "socket")))
+        out.append((doc.add_material(pink), pink_mask))
     return out
 
 
