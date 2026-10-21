@@ -452,7 +452,8 @@ class TestEyedMesh(unittest.TestCase):
         carried = tex.carry_baked_normals(flat, self.eyed.eyeballs)
         s, phi, left = tex.texel_polar()
         front = s < 0.9
-        np.testing.assert_allclose(carried[front], [0.0, 0.0, 1.0], atol=1e-6)
+        flat_front = np.broadcast_to([0.0, 0.0, 1.0], carried[front].shape)
+        np.testing.assert_allclose(carried[front], flat_front, atol=1e-6)
         # a bowl: inside 0.35 eyeball radii the normal tilts 20 degrees toward the axis
         bowl = bowl_normal_atlas(self.model, self.eyed, size)
         carried = tex.carry_baked_normals(bowl, self.eyed.eyeballs)

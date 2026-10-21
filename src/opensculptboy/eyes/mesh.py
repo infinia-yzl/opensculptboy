@@ -549,15 +549,16 @@ def eye_texture(
     model,
     baked: bytes | None = None,
     normal_map: bytes | None = None,
+    want_normals: bool = False,
 ):
     """
     The eye texture (H, W, 3, 8-bit sRGB) of a file and what it was drawn from:
     ``"texture"`` (the card's own ``eye.base_color``, read by the caller), ``"baked"`` (the
     baked eye texture ``baked`` on anny's atlas, carried over and fitted, per side) or
-    ``"procedural"``. With ``normal_map`` (the card's normal map on anny's atlas, which the
-    bake fills on the eyeballs with the reference's eyes) a third value: the baked eyes'
-    normals in the layout (:func:`opensculptboy.eyes.texture.carry_baked_normals`, moved
-    with the iris), or None when the eyes are not baked.
+    ``"procedural"``. With ``want_normals`` a third value: the baked eyes' normals in the
+    layout (:func:`opensculptboy.eyes.texture.carry_baked_normals`, moved with the iris) from
+    ``normal_map`` (the card's normal map on anny's atlas, which the bake fills on the
+    eyeballs with the reference's eyes), or None without it or when the eyes are not baked.
     """
     from opensculptboy.eyes import texture as tex
 
@@ -574,7 +575,7 @@ def eye_texture(
             "The eyes' source is 'baked', but the file has no eye texture."
         )
     radii = eyed.radii_mm()
-    with_normals = normal_map is not None
+    with_normals = want_normals
     if not use_baked:
         pixels, info = tex.procedural_eye_pixels(eye, radii), {"source": "procedural"}
         return (pixels, info, None) if with_normals else (pixels, info)
@@ -588,7 +589,7 @@ def eye_texture(
     box = eye_uv_box(model)
     carried = tex.carry_baked(image, box, eyed.eyeballs)
     bent = None
-    if with_normals:
+    if with_normals and normal_map is not None:
         atlas = np.asarray(Image.open(io.BytesIO(normal_map)).convert("RGB"))
         bent = tex.carry_baked_normals(atlas / 255.0, eyed.eyeballs)
         fitted, found, bent = tex.fit_baked_iris(carried, eye, radii, normals=bent)
@@ -612,7 +613,7 @@ def eye_texture(
     }
     info = {"source": "baked", "sides": sides, "measured": measured}
     if with_normals:
-        if all(v == "procedural" for v in sides.values()):
+        if bent is not None and all(v == "procedural" for v in sides.values()):
             bent = None
         return tex.srgb(fitted), info, bent
     return tex.srgb(fitted), info

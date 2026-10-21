@@ -459,7 +459,12 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
         source = {"source": "texture"}
     else:
         pixels, source, bent = eye_texture(
-            eye, eyed, model, images.get("eyes"), images.get("normal")
+            eye,
+            eyed,
+            model,
+            images.get("eyes"),
+            images.get("normal"),
+            want_normals=True,
         )
         data = png_bytes(pixels)
     normal_texture = None

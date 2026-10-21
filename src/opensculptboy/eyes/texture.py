@@ -641,12 +641,19 @@ def encode_normals(
     ``bent`` (:func:`carry_baked_normals`) on the surfaces of a file: each a tuple of UVs
     (M, 2, OBJ convention), triangles (T, 3), unit normals (M, 3) and MikkTSpace tangents
     (M, 4, the bitangent's sign in w) in the eye's frame (gaze +Z). Texels that no surface
-    covers are flat.
+    covers are flat. Triangles that reach far behind the eye (to its back pole, where the
+    layout folds and a fan of triangles spans the whole square) are left out, as in
+    :func:`rasterise_uvs`.
     """
     w, h = size
     out = np.zeros((h, w, 3))
     out[...] = [0.5, 0.5, 1.0]
+    # the layout's distance from each square's centre at s = 1.6
+    reach = 0.5 * FRONT_SHARE + 0.5 * (1 - FRONT_SHARE) * 0.6
     for uvs, triangles, normals, tangents in surfaces:
+        cu = np.where(uvs[:, 0] < 0.5, 0.25, 0.75)
+        t = np.hypot((uvs[:, 0] - cu) * 2.0, uvs[:, 1] - 0.5)
+        triangles = triangles[(t[triangles] < reach).all(1)]
         px = np.stack([uvs[:, 0] * w - 0.5, (1.0 - uvs[:, 1]) * h - 0.5], 1)
         values = np.concatenate([normals, tangents], axis=1)
         grid, mask = raster(px, triangles, values, size)
