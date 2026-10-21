@@ -186,6 +186,21 @@ class TestGeometry(unittest.TestCase):
             self.assertTrue(((face * surface.normals[t].sum(1)).sum(1) > 0).all())
             np.testing.assert_allclose(np.linalg.norm(surface.normals, axis=1), 1.0)
 
+    def test_front_curvature(self):
+        # the radius of curvature of a reference eye's front: a sphere of 12 mm with a cap of
+        # 9.3 mm radius over its front 5 mm
+        rng = np.random.default_rng(0)
+        d = rng.normal(size=(4000, 3))
+        d /= np.linalg.norm(d, axis=1, keepdims=True)
+        points = 0.012 * d
+        rho = np.hypot(points[:, 0], points[:, 2])
+        cap = (points[:, 1] < 0) & (rho < 0.005)
+        z0 = -np.sqrt(0.012**2 - 0.005**2) + np.sqrt(0.0093**2 - 0.005**2)
+        points[cap, 1] = z0 - np.sqrt(0.0093**2 - rho[cap] ** 2)
+        radius = geometry.front_curvature_mm(points, np.zeros(3))
+        self.assertAlmostEqual(radius, 9.3, delta=0.05)
+        self.assertIsNone(geometry.front_curvature_mm(points[:5], np.zeros(3)))
+
     def test_iris_recess_cornea_and_bulge(self):
         rho_l, z_l = geometry.limbus(self.shape.iris)
         eyeball = geometry.revolve(geometry.eyeball_profile(self.shape), 24)

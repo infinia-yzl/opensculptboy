@@ -127,6 +127,31 @@ def fit_sphere(points: np.ndarray) -> tuple[np.ndarray, float]:
     return centre, float(np.sqrt(x[3] + centre @ centre))
 
 
+def front_curvature_mm(
+    points: np.ndarray,
+    centre: np.ndarray,
+    gaze: np.ndarray = GAZE,
+    reach_mm: float = 4.0,
+) -> float | None:
+    """
+    The radius of curvature (mm) of the front of a reference's eye: the least-squares sphere
+    through its points (N, 3, metres) within ``reach_mm`` of the gaze axis through
+    ``centre``, in front of the centre; None with fewer than 8 such points. A fitted
+    character's eyes can take it as ``cornea_radius_mm``, so that the bulge and the size of
+    the highlights follow the reference's eye (a game's eye is often flatter in front than a
+    human cornea's 7.8 mm).
+    """
+    points = np.asarray(points, dtype=np.float64)
+    gaze = np.asarray(gaze, dtype=np.float64) / np.linalg.norm(gaze)
+    local = points - np.asarray(centre, dtype=np.float64)
+    along = local @ gaze
+    rho = np.linalg.norm(local - along[:, None] * gaze, axis=1)
+    front = (along > 0) & (rho < reach_mm / 1000.0)
+    if front.sum() < 8:
+        return None
+    return fit_sphere(points[front])[1] * 1000.0
+
+
 def eye_frame(side: str, points: np.ndarray) -> EyeFrame:
     """The frame of an eye whose eyeball has the vertices ``points`` (N, 3)."""
     centre, radius = fit_sphere(points)
