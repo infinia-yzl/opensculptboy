@@ -451,14 +451,27 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
     def extras(role):
         return {EYE_EXTRAS: {"format": EYE_EXTRAS_FORMAT, "role": role, **settings}}
 
+    from opensculptboy.export.document import png_bytes
+
+    bent = None
     if "eye_base_color" in images:
         data = images["eye_base_color"]
         source = {"source": "texture"}
     else:
-        pixels, source = eye_texture(eye, eyed, model, images.get("eyes"))
-        from opensculptboy.export.document import png_bytes
-
+        pixels, source, bent = eye_texture(
+            eye, eyed, model, images.get("eyes"), images.get("normal")
+        )
         data = png_bytes(pixels)
+    normal_texture = None
+    if bent is not None and body.tangents is not None:
+        # the reference's eye normals (a concave iris, a soft limbus) in the file's frames
+        normal_texture = doc.add_texture(
+            doc.add_image(
+                png_bytes(_eye_normal_pixels(body, eyed, bent)),
+                "image/png",
+                "eye_normal",
+            )
+        )
     eyed.extras = {
         "radius_mm": [float(f.radius * 1000) for f in eyed.frames.values()],
         "bulge": settings["bulge"],
@@ -484,6 +497,8 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
             },
             "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
         }
+    if normal_texture is not None:
+        eyeball["normalTexture"] = {"index": normal_texture}
     eyeball["extras"] = extras("eyeball")
     out.append((doc.add_material(eyeball), eyed.part_mask("eyeball")))
     if eye.cornea:
@@ -508,6 +523,29 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
         pink["extras"] = extras("conjunctiva")
         out.append((doc.add_material(pink), pink_mask))
     return out
+
+
+def _eye_normal_pixels(body, eyed, bent) -> np.ndarray:
+    """The tangent-space normal map of the eye texture's layout that lays ``bent`` (the baked
+    eyes' normals, :func:`opensculptboy.eyes.texture.carry_baked_normals`) on the file's
+    eyeballs, in their MikkTSpace frames (``body.tangents``)."""
+    from opensculptboy.eyes.texture import encode_normals
+
+    triangles = body.triangles[eyed.part_mask("eyeball")]
+    uvs = np.stack([body.uvs[:, 0], 1.0 - body.uvs[:, 1]], 1)  # OBJ convention
+    # glTF frame -> Anny's (rows: v_anny = v_gltf @ C) -> each eye's frame
+    surfaces = []
+    for side, frame in eyed.frames.items():
+        mine = (uvs[triangles, 0] < 0.5).all(1) == (side == "L")
+        tris = triangles[mine]
+        used = np.unique(tris)
+        local = np.full(len(body.uvs), -1)
+        local[used] = np.arange(len(used))
+        to_eye = ANNY_TO_GLTF @ frame.axes
+        normals = body.normals[used] @ to_eye
+        tangents = np.c_[body.tangents[used, :3] @ to_eye, body.tangents[used, 3]]
+        surfaces.append((uvs[used], local[tris], normals, tangents))
+    return encode_normals(bent, surfaces)
 
 
 # the key of the skin's subsurface settings and real-time skin maps in a material's extras

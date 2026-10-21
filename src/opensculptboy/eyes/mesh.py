@@ -359,7 +359,8 @@ def eyed_mesh(
     EyeMaterial`): ``mesh`` is the base mesh (a :class:`~opensculptboy.detail.subdivision.
     DetailTopology`, or None for anny's own mesh) and ``rest`` (N, 3) its rest vertices in
     Anny's frame. ``kind`` is ``"gltf"`` (a cornea shell over a recessed iris when
-    ``eye.cornea``) or ``"vrm"`` (the single-surface eyeball, at fewer segments). ``baked``
+    ``eye.cornea``, which ``"auto"`` turns off for baked eyes) or ``"vrm"`` (the
+    single-surface eyeball, at fewer segments). ``baked``
     is the file's baked eye texture (on anny's atlas), if any: an ``iris_mm`` or ``pupil_mm``
     of ``"auto"`` or ``"baked"`` takes the size found in it (:func:`measure_baked`, the mean
     of both eyes), and ``"auto"`` the default without it. ``skin_baked`` says that the file's
@@ -387,6 +388,8 @@ def eyed_mesh(
     used[skin_tris] = True
     skin = used & ~on_eye
 
+    # a cornea of "auto": one surface for the eyes of a bake, as the reference draws them
+    eye = eye.resolved(baked is not None and eye.source in ("auto", "baked"))
     two_surface = kind == "gltf" and eye.cornea
     segments = geometry.SEGMENTS[kind]
     parts: list[EyePart] = []
@@ -401,7 +404,7 @@ def eyed_mesh(
         clear = {}
         for side in ("L", "R"):
             frame = geometry.eye_frame(side, rest[rows[side]])
-            shape = geometry.EyeShape.of(iris_mm, frame.radius)
+            shape = geometry.EyeShape.of(iris_mm, frame.radius, eye.cornea_radius_mm)
             shell = 1.0 + shape.gap if two_surface else 1.0
             frames[side] = frame
             clear[side] = geometry.bulge_clearance(
@@ -444,7 +447,7 @@ def eyed_mesh(
     for side in ("L", "R"):
         anchors = rows[side]
         frame = frames[side]
-        shape = geometry.EyeShape.of(eye.iris_mm, frame.radius)
+        shape = geometry.EyeShape.of(eye.iris_mm, frame.radius, eye.cornea_radius_mm)
         bulges[side], shapes[side] = bulge, shape
         if two_surface:
             surfaces = {
@@ -540,12 +543,21 @@ def _part(name, side, frame, surface, rest, anchors, blend) -> EyePart:
     )
 
 
-def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
+def eye_texture(
+    eye,
+    eyed: EyedMesh,
+    model,
+    baked: bytes | None = None,
+    normal_map: bytes | None = None,
+):
     """
     The eye texture (H, W, 3, 8-bit sRGB) of a file and what it was drawn from:
     ``"texture"`` (the card's own ``eye.base_color``, read by the caller), ``"baked"`` (the
     baked eye texture ``baked`` on anny's atlas, carried over and fitted, per side) or
-    ``"procedural"``.
+    ``"procedural"``. With ``normal_map`` (the card's normal map on anny's atlas, which the
+    bake fills on the eyeballs with the reference's eyes) a third value: the baked eyes'
+    normals in the layout (:func:`opensculptboy.eyes.texture.carry_baked_normals`, moved
+    with the iris), or None when the eyes are not baked.
     """
     from opensculptboy.eyes import texture as tex
 
@@ -562,8 +574,10 @@ def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
             "The eyes' source is 'baked', but the file has no eye texture."
         )
     radii = eyed.radii_mm()
+    with_normals = normal_map is not None
     if not use_baked:
-        return tex.procedural_eye_pixels(eye, radii), {"source": "procedural"}
+        pixels, info = tex.procedural_eye_pixels(eye, radii), {"source": "procedural"}
+        return (pixels, info, None) if with_normals else (pixels, info)
     import io
 
     from PIL import Image
@@ -573,7 +587,13 @@ def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
     image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
     box = eye_uv_box(model)
     carried = tex.carry_baked(image, box, eyed.eyeballs)
-    fitted, found = tex.fit_baked_iris(carried, eye, radii)
+    bent = None
+    if with_normals:
+        atlas = np.asarray(Image.open(io.BytesIO(normal_map)).convert("RGB"))
+        bent = tex.carry_baked_normals(atlas / 255.0, box, eyed.eyeballs)
+        fitted, found, bent = tex.fit_baked_iris(carried, eye, radii, normals=bent)
+    else:
+        fitted, found = tex.fit_baked_iris(carried, eye, radii)
     sides = {
         side: "procedural"
         if hit is None
@@ -590,4 +610,9 @@ def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
         for side, hit in found.items()
         if hit is not None and not isinstance(hit, str)
     }
-    return tex.srgb(fitted), {"source": "baked", "sides": sides, "measured": measured}
+    info = {"source": "baked", "sides": sides, "measured": measured}
+    if with_normals:
+        if all(v == "procedural" for v in sides.values()):
+            bent = None
+        return tex.srgb(fitted), info, bent
+    return tex.srgb(fitted), info

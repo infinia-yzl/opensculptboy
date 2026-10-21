@@ -73,13 +73,16 @@ class EyeShape:
     clearance: float
 
     @classmethod
-    def of(cls, iris_mm: float, radius_m: float) -> "EyeShape":
-        """The shape of an eye with an iris of ``iris_mm`` on an eyeball of ``radius_m``."""
+    def of(
+        cls, iris_mm: float, radius_m: float, cornea_mm: float = CORNEA_RADIUS_MM
+    ) -> "EyeShape":
+        """The shape of an eye with an iris of ``iris_mm`` on an eyeball of ``radius_m``,
+        under a cornea whose front has a radius of curvature of ``cornea_mm``."""
         r = radius_m * 1000.0
         iris = min(iris_mm / 2.0 / r, MAX_IRIS)
         return cls(
             iris=iris,
-            cornea=max(CORNEA_RADIUS_MM / r, iris * 1.05),
+            cornea=max(cornea_mm / r, iris * 1.05),
             gap=CORNEA_GAP_MM / r,
             recess=IRIS_RECESS_MM / r,
             dome=IRIS_DOME_MM / r,

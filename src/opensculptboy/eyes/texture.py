@@ -453,20 +453,29 @@ def find_iris(colours: np.ndarray, s: np.ndarray, phi: np.ndarray):
 
 
 def fit_baked_iris(
-    image: np.ndarray, eye, radii=None, size: tuple[int, int] = EYE_TEXTURE_SIZE
+    image: np.ndarray,
+    eye,
+    radii=None,
+    size: tuple[int, int] = EYE_TEXTURE_SIZE,
+    normals: np.ndarray | None = None,
 ):
     """
     A baked eye in the eye texture's layout (H, W, 3, linear) with each eye's pupil and iris
     centred on the gaze and stretched radially to the sizes of ``eye`` (an
-    :class:`~opensculptboy.material.EyeMaterial`), its iris tinted toward ``eye.iris_color``
-    by ``eye.iris_tint``, and the pupil drawn dark. Returns the image and, per side, what was
-    found (:func:`find_iris`; ``"mirrored"`` when that side takes the other eye's mirror
-    image; None when neither eye shows an iris, and the procedural eye replaces both).
+    :class:`~opensculptboy.material.EyeMaterial`), and its iris tinted toward
+    ``eye.iris_color`` by ``eye.iris_tint``. The pupil keeps the bake's own texels, stretched
+    with the iris: a reference's pupil is often not black (a game's eye shader shades it), and
+    its look is the reference's. Returns the image and, per side, what was found
+    (:func:`find_iris`; ``"mirrored"`` when that side takes the other eye's mirror image; None
+    when neither eye shows an iris, and the procedural eye replaces both). With ``normals``
+    (H, W, 3, the baked eye's normals in the layout, :func:`carry_baked_normals`), they move
+    with the texels and come back as a third value (flat where the procedural eye stands in).
     """
     s, phi, left = texel_polar(size)
     w, h = size
     eye = _sized(eye)
     out = image.copy()
+    bent = None if normals is None else normals.copy()
     found = {}
     radii = _radii(radii)
     procedural = None
@@ -479,6 +488,8 @@ def fit_baked_iris(
             if procedural is None:
                 procedural = procedural_eye_linear(eye, radii, size)
             out[half] = procedural[half]
+            if bent is not None:
+                bent[half] = FLAT_NORMAL
             continue
         centre, rho_p, rho_l, colour = hit
         # the source radius of each target radius, piecewise linear, then back to identity
@@ -498,7 +509,13 @@ def fit_baked_iris(
         rs = np.hypot(x, y)
         ps = np.arctan2(y, x)
         uv = polar_to_uv(np.stack([np.minimum(rs, 1.95), ps], 1), side)
-        sample = _bilinear(image, uv[:, 0] * w - 0.5, (1.0 - uv[:, 1]) * h - 0.5)
+        px, py = uv[:, 0] * w - 0.5, (1.0 - uv[:, 1]) * h - 0.5
+        sample = _bilinear(image, px, py)
+        if bent is not None:
+            moved = _bilinear(normals, px, py)
+            bent[half] = moved / np.maximum(
+                np.linalg.norm(moved, axis=1, keepdims=True), 1e-9
+            )
         if eye.iris_tint > 0:
             iris_zone = _smooth(target_p, target_p + 0.01, r) * _smooth(
                 target_l + 0.01, target_l - 0.01, r
@@ -507,18 +524,149 @@ def fit_baked_iris(
             tinted = np.array(eye.iris_color)[None] * lum[:, None]
             k = (eye.iris_tint * iris_zone)[:, None]
             sample = sample * (1 - k) + tinted * k
-        pupil = _smooth(target_p + 0.004, target_p - 0.004, r)
-        sample = sample * (1 - pupil[:, None]) + 0.004 * pupil[:, None]
         out[half] = sample
     # one eye found, the other not: the other takes its mirror image
     half_width = w // 2
-    if found["L"] is not None and found["R"] is None:
-        out[:, half_width:] = out[:, :half_width][:, ::-1]
-        found["R"] = "mirrored"
-    elif found["R"] is not None and found["L"] is None:
-        out[:, :half_width] = out[:, half_width:][:, ::-1]
-        found["L"] = "mirrored"
-    return out, found
+    for have, miss in (("L", "R"), ("R", "L")):
+        if found[have] is not None and found[miss] is None:
+            src_cols = slice(0, half_width) if have == "L" else slice(half_width, w)
+            dst_cols = slice(half_width, w) if have == "L" else slice(0, half_width)
+            out[:, dst_cols] = out[:, src_cols][:, ::-1]
+            if bent is not None:
+                # a mirror image turns the eye about the gaze the other way round
+                bent[:, dst_cols] = bent[:, src_cols][:, ::-1] * np.array([-1.0, 1, 1])
+            found[miss] = "mirrored"
+            break
+    if normals is None:
+        return out, found
+    return out, found, bent
+
+
+# the normal of the eye's own surface in the frame of :func:`carry_baked_normals`
+FLAT_NORMAL = np.array([0.0, 0.0, 1.0])
+
+
+def _surface_frame(normals: np.ndarray):
+    """The frame (E1, E2, N) of unit normals (M, 3) in an eye's frame: E1 runs about the gaze
+    (+Z) in the sense of the layout's angle, E2 = N x E1; E1 is +Y where N lies on the
+    axis."""
+    e1 = np.stack([-normals[:, 1], normals[:, 0], np.zeros(len(normals))], 1)
+    length = np.linalg.norm(e1, axis=1, keepdims=True)
+    e1 = np.where(length > 1e-6, e1 / np.maximum(length, 1e-12), [0.0, 1.0, 0.0])
+    e1 = e1 - (e1 * normals).sum(1, keepdims=True) * normals
+    e1 /= np.maximum(np.linalg.norm(e1, axis=1, keepdims=True), 1e-12)
+    return e1, np.cross(normals, e1), normals
+
+
+def _uv_frames(points, triangles, uvs):
+    """Per corner (T * 3) the unit normal (the direction from the eye's centre), the tangent
+    along u and the sign of the bitangent along v (OBJ) of triangles (T, 3) of ``points``
+    with per-corner UVs (T * 3, 2), as MikkTSpace gives them on a smooth sphere."""
+    p = points[triangles]  # (T, 3, 3)
+    uv = uvs.reshape(-1, 3, 2)
+    e1, e2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    d1, d2 = uv[:, 1] - uv[:, 0], uv[:, 2] - uv[:, 0]
+    det = d1[:, 0] * d2[:, 1] - d2[:, 0] * d1[:, 1]
+    det = np.where(np.abs(det) < 1e-18, 1e-18, det)
+    t = (e1 * d2[:, 1:2] - e2 * d1[:, 1:2]) / det[:, None]
+    b = (e2 * d1[:, 0:1] - e1 * d2[:, 0:1]) / det[:, None]
+    n = p.reshape(-1, 3)
+    n = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+    t = np.repeat(t, 3, axis=0)
+    b = np.repeat(b, 3, axis=0)
+    t = t - (t * n).sum(1, keepdims=True) * n
+    t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+    sign = np.where((np.cross(n, t) * b).sum(1) < 0, -1.0, 1.0)
+    return n, t, sign
+
+
+def carry_baked_normals(
+    normal_map: np.ndarray,
+    box,
+    eyeballs: dict,
+    size: tuple[int, int] = EYE_TEXTURE_SIZE,
+) -> np.ndarray:
+    """
+    The baked normals of the eyeballs (``normal_map``: the card's tangent-space normal map on
+    anny's atlas, (H, W, 3) in [0, 1], encoded in the MikkTSpace frames of the eyeballs it was
+    baked on) carried over to the eye texture's layout, as :func:`carry_baked` carries the
+    colours: (H, W, 3) per texel, the normal in the frame (E1, E2, N) of the eye's own surface
+    there (:func:`_surface_frame`), so that :func:`encode_normals` lays it on any eye surface;
+    :data:`FLAT_NORMAL` is the surface's own normal. A reference's eye shader often bends its
+    normals (a concave iris, a soft limbus), and its highlights and shading follow them.
+    """
+    from opensculptboy.eyes.geometry import _polar
+    from opensculptboy.texture.eyes import to_eye_uvs
+
+    w, h = size
+    out = np.zeros((h, w, 3))
+    covered = np.zeros((h, w), bool)
+    bh, bw = normal_map.shape[:2]
+    for side, (points, triangles, uvs) in eyeballs.items():
+        corners = triangles.reshape(-1)
+        uv = np.asarray(uvs, dtype=np.float64)
+        uv = uv.reshape(-1, 2) if uv.ndim == 3 else uv[corners]
+        n, t, sign = _uv_frames(points, triangles, uv)
+        b = sign[:, None] * np.cross(n, t)
+        polar = _polar(n)
+        fine = np.arange(len(corners)).reshape(-1, 3)
+        values = np.concatenate([to_eye_uvs(uv, box), t, b, n], axis=1)
+        grid, mask = rasterise_uvs(polar, fine, values, side, size)
+        x = grid[..., 0] * bw - 0.5
+        y = (1.0 - grid[..., 1]) * bh - 0.5
+        code = 2.0 * _bilinear(normal_map, x, y) - 1.0
+        frame_t, frame_b, frame_n = grid[..., 2:5], grid[..., 5:8], grid[..., 8:11]
+        bent = (
+            code[..., 0:1] * frame_t
+            + code[..., 1:2] * frame_b
+            + code[..., 2:3] * frame_n
+        )[mask]
+        frame_n = frame_n[mask]
+        frame_n /= np.maximum(np.linalg.norm(frame_n, axis=1, keepdims=True), 1e-12)
+        e1, e2, nn = _surface_frame(frame_n)
+        local = np.stack(
+            [(bent * e1).sum(1), (bent * e2).sum(1), (bent * nn).sum(1)], 1
+        )
+        local /= np.maximum(np.linalg.norm(local, axis=1, keepdims=True), 1e-12)
+        out[mask] = local
+        covered |= mask
+    out = _fill(out, covered)
+    out[~covered & (np.linalg.norm(out, axis=-1) < 0.5)] = FLAT_NORMAL
+    return out
+
+
+def encode_normals(
+    bent: np.ndarray, surfaces: list, size: tuple[int, int] = EYE_TEXTURE_SIZE
+) -> np.ndarray:
+    """
+    A tangent-space normal map (H, W, 3, 8-bit) of the eye texture's layout for the normals
+    ``bent`` (:func:`carry_baked_normals`) on the surfaces of a file: each a tuple of UVs
+    (M, 2, OBJ convention), triangles (T, 3), unit normals (M, 3) and MikkTSpace tangents
+    (M, 4, the bitangent's sign in w) in the eye's frame (gaze +Z). Texels that no surface
+    covers are flat.
+    """
+    w, h = size
+    out = np.zeros((h, w, 3))
+    out[...] = [0.5, 0.5, 1.0]
+    for uvs, triangles, normals, tangents in surfaces:
+        px = np.stack([uvs[:, 0] * w - 0.5, (1.0 - uvs[:, 1]) * h - 0.5], 1)
+        values = np.concatenate([normals, tangents], axis=1)
+        grid, mask = raster(px, triangles, values, size)
+        n = grid[mask][:, 0:3]
+        n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+        t = grid[mask][:, 3:6]
+        t = t - (t * n).sum(1, keepdims=True) * n
+        t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+        b = np.where(grid[mask][:, 6:7] < 0, -1.0, 1.0) * np.cross(n, t)
+        e1, e2, _ = _surface_frame(n)
+        d = bent[mask]
+        target = d[:, 0:1] * e1 + d[:, 1:2] * e2 + d[:, 2:3] * n
+        code = np.stack(
+            [(target * t).sum(1), (target * b).sum(1), (target * n).sum(1)], 1
+        )
+        code /= np.maximum(np.linalg.norm(code, axis=1, keepdims=True), 1e-12)
+        out[mask] = 0.5 * code + 0.5
+    return np.round(np.clip(out, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
 def matcap_pixels(size: int = MATCAP_SIZE) -> np.ndarray:

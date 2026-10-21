@@ -275,11 +275,14 @@ EYE_DEFAULTS = {
     "sclera_color": [0.80, 0.74, 0.68],  # a slightly warm white
     "veins": 0.15,  # 0 to 1: faint red veins at the periphery of the sclera
     "seed": 0,  # of the procedural pattern
-    "sclera_roughness": 0.45,  # the eyeball under the cornea
-    "cornea": True,  # glTF: a refracting cornea shell over a recessed iris; False: one
-    #                  glossy surface with the iris on its bulge (as the VRM files have)
+    "sclera_roughness": 0.45,  # the eyeball's own surface
+    "cornea": "auto",  # glTF: True, a refracting cornea shell over a recessed iris; False,
+    #                    one surface with a clear coat and the iris on its bulge (as the VRM
+    #                    files have, and as a game's eyes are drawn); "auto": False when the
+    #                    eye texture comes from a bake (the reference's eyes), else True
     "cornea_ior": 1.376,
     "cornea_roughness": 0.02,
+    "cornea_radius_mm": 7.8,  # the radius of curvature of the cornea's front
     "bulge": 1.0,  # the corneal bulge, a share of its anatomical height (lowered to clear
     #                the lids)
     "caruncle": True,  # the mound in the inner corner and the pink, wet skin of the socket
@@ -313,9 +316,10 @@ class EyeMaterial:
     veins: float = 0.15
     seed: int = 0
     sclera_roughness: float = 0.45
-    cornea: bool = True
+    cornea: bool | str = "auto"
     cornea_ior: float = 1.376
     cornea_roughness: float = 0.02
+    cornea_radius_mm: float = 7.8
     bulge: float = 1.0
     caruncle: bool = True
     caruncle_color: list = dataclasses.field(
@@ -363,6 +367,14 @@ class EyeMaterial:
                     values[key] = EYE_SIZES[key]
         return dataclasses.replace(self, **values)
 
+    def resolved(self, baked: bool) -> "EyeMaterial":
+        """These eyes with a boolean ``cornea``: ``"auto"`` is a refracting cornea unless the
+        eye texture comes from a bake (``baked``), whose reference draws its iris on one
+        surface under a clear coat."""
+        if isinstance(self.cornea, bool):
+            return self
+        return dataclasses.replace(self, cornea=not baked)
+
     def wants_measure(self) -> bool:
         """Whether a size comes from the baked eye texture when there is one."""
         return self.iris_mm in EYE_SIZE_WORDS or self.pupil_mm in EYE_SIZE_WORDS
@@ -374,8 +386,9 @@ class EyeMaterial:
             "pupil_mm": float(self.pupil_mm),
             "cornea_ior": float(self.cornea_ior),
             "cornea_roughness": float(self.cornea_roughness),
+            "cornea_radius_mm": float(self.cornea_radius_mm),
             "sclera_roughness": float(self.sclera_roughness),
-            "cornea": bool(self.cornea),
+            "cornea": self.cornea is not False,
         }
 
 
@@ -407,6 +420,7 @@ def check_eyes(data: dict) -> dict:
         ("sclera_roughness", 0.0, 1.0),
         ("cornea_ior", 1.0, 2.0),
         ("cornea_roughness", 0.0, 1.0),
+        ("cornea_radius_mm", 5.0, 20.0),
         ("bulge", 0.0, 1.0),
         ("highlight", 0.0, 4.0),
     ):
@@ -427,9 +441,12 @@ def check_eyes(data: dict) -> dict:
         and pupil >= iris - 1.0
     ):
         raise ValueError("eyes pupil_mm must be at least 1 mm below iris_mm.")
-    for key in ("cornea", "caruncle"):
-        if key in data and not isinstance(data[key], bool):
-            raise ValueError(f"eyes {key} must be true or false.")
+    if "cornea" in data and not (
+        isinstance(data["cornea"], bool) or data["cornea"] == "auto"
+    ):
+        raise ValueError("eyes cornea must be true, false or 'auto'.")
+    if "caruncle" in data and not isinstance(data["caruncle"], bool):
+        raise ValueError("eyes caruncle must be true or false.")
     if "seed" in data and (
         isinstance(data["seed"], bool) or not isinstance(data["seed"], int)
     ):
