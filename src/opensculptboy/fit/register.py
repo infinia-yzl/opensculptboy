@@ -93,6 +93,9 @@ PATCH_ROLES: dict[str, str] = {
     "eye_corner": "anchors",
 }
 PATCH_ROLE_NAMES = ("fit", "exclude", "anchors")
+# the vertices of an "anchors" patch's region that lie this far from an eyeball's centre at
+# rest (in eyeball radii) or nearer move with the eyeball (PatchAnchors)
+ATTACH_RADIUS = 0.99
 # The topologies that the fit takes (FitOptions.topology).
 FIT_TOPOLOGIES = ("anny", "sculpt")
 
@@ -340,43 +343,58 @@ class PatchAnchors:
     in the rest frame of the card: its detail offset is the same blend of its anchors' offsets,
     so that its rest position is the blend of their rest positions, as the model defines it.
 
-    Most anchors of the eye-corner patch are vertices that the fit leaves out: anny's pocket,
-    which no face uses on ``sculpt``, and the lining of the socket. Their offsets come from a
-    harmonic extension of the fitted skin's offsets over anny's quad mesh (``free``: the
-    left-out anny vertices joined to the anchors through left-out vertices, with the fitted
-    vertices around them as the boundary), so that the socket and the patch move as the lids
-    around them do; those vertices take these offsets too, so that the patch and its anchors
+    Most anchors of the eye-corner patch are vertices that the fit leaves out (anny's pocket,
+    which no face uses on ``sculpt``, and the lining of the socket), and the patch spans from
+    the lid margins to the eyeball. Their offsets come from the two things the patch lies
+    between:
+
+    - the vertices that lie inside the eyeball's sphere at rest (:data:`ATTACH_RADIUS`) among
+      the left-out vertices joined to the anchors (``free``) and anny's vertices of the patch's
+      faces (``attached``) move with the eyeball: the similarity (a scale about its centre and
+      a translation) that takes its fitted sphere at rest from before to after the fit, so
+      that the fold of the patch stays tucked under an eyeball that the fit moves or scales;
+    - the other free vertices take a harmonic extension over anny's quad mesh of the offsets
+      around them (the fitted skin of the lids and the attached vertices).
+
+    The free and attached vertices take these offsets too, so that the patch and its anchors
     agree in the written offsets.
 
     On a detail level the corner starts as the subdivision of the level below (the offsets
     of that level carried up, ``lifted``), and the rule applies to what the level's
     refinement adds to them: on the level's vertex points of anny's vertices (the first rows
     of every level), whose result the subdivision carries to the level's vertices that come
-    from the patch and the free vertices (``share`` over 0), in full to those the
-    refinement leaves out and in proportion to their share to those it fits (``fitted``).
-    So the patch of a level is the subdivision of the patched quads of the level below,
-    moved as the skin around it moved on this level, and it joins the fitted skin without
-    a step. :func:`fit_levels` fits none of the vertices that the rule touches on a detail
-    level (the skin along the patch's border included), so the rule places them all.
+    from the patch, the free and the attached vertices (``share`` over 0), in full to those
+    the refinement leaves out and in proportion to their share to those it fits
+    (``fitted``). So the patch of a level is the subdivision of the patched quads of the
+    level below, moved as the skin and the eyeball around it moved on this level.
+    :func:`fit_levels` fits none of the vertices that the rule touches on a detail level
+    (the skin along the patch's border included), so the rule places them all.
     """
 
-    def __init__(self, model, excluded: np.ndarray):
+    def __init__(self, model, excluded: np.ndarray, rest: np.ndarray | None = None):
         from scipy.sparse import coo_matrix, csc_matrix, diags
         from scipy.sparse.csgraph import connected_components
         from scipy.sparse.linalg import splu
 
+        from opensculptboy.export.vrm_tables import eyeball_vertices
         from opensculptboy.topology.lookup import model_sculpt_data, vertex_anchors
         from opensculptboy.topology.patch import base_quad_mesh
 
         self.count = len(model.template_vertices)
         self.rows = np.flatnonzero(patch_roles(model) == "anchors")
         self.free = np.zeros(0, np.int64)
+        self.unknown = np.zeros(0, np.int64)
+        self.attached = np.zeros(0, np.int64)
         self.written = np.zeros(self.count, bool)
         if len(self.rows) == 0:
             return
         anchors, weights = vertex_anchors(model)
         self.anchors, self.weights = anchors[self.rows], weights[self.rows]
-        n = model_sculpt_data(model).vertex_count
+        data = model_sculpt_data(model)
+        n = data.vertex_count
+        if rest is None:
+            rest = model.template_vertices.detach().cpu().double().numpy()
+        rest = np.asarray(rest, dtype=np.float64)
         quads = base_quad_mesh().quads
         edges = np.concatenate([quads[:, [k, (k + 1) % 4]] for k in range(4)])
         edges = np.unique(np.sort(edges[edges[:, 0] != edges[:, 1]], 1), axis=0)
@@ -388,40 +406,77 @@ class PatchAnchors:
         _, component = connected_components(graph, directed=False)
         used = self.anchors[self.weights > 0]
         free = left_out & np.isin(component, component[used[left_out[used]]])
+        # anny's vertices of the patch's faces
+        faces = np.asarray(data.faces)
+        border = np.zeros(n, bool)
+        mine = np.isin(faces, self.rows).any(1)
+        corners = np.unique(faces[mine])
+        border[corners[corners < n]] = True
+        # the vertices inside an eyeball's sphere move with it
+        self.eyes = []
+        try:
+            eyes = list(eyeball_vertices(model).values())
+        except ValueError:
+            eyes = []
+        attach = np.zeros(n, bool)
+        which = np.full(n, -1)
+        best = np.full(n, np.inf)
+        for k, rows in enumerate(eyes):
+            rows = np.asarray(rows)
+            centre, radius, _ = fit_sphere(rest[rows])
+            d = np.linalg.norm(rest[:n] - centre, axis=1) / radius
+            closer = (free | border) & (d < ATTACH_RADIUS) & (d < best)
+            which[closer], best[closer] = k, d[closer]
+            attach |= closer
+            self.eyes.append(rows)
+        self.attached = np.flatnonzero(attach)
+        self.attached_eye = which[self.attached]
+        unknown = free & ~attach
         adjacency = coo_matrix(
             (np.ones(2 * len(edges)), (edges.ravel(), edges[:, ::-1].ravel())),
             shape=(n, n),
         ).tocsr()
-        index = np.flatnonzero(free)
-        boundary = adjacency[index][:, ~free]
-        # a component of free vertices without a fitted neighbour keeps its offsets
+        index = np.flatnonzero(unknown)
+        # a component of unknown vertices without a known neighbour keeps its offsets
         reached = np.zeros(n, bool)
-        reached[index] = np.asarray(boundary.sum(1)).ravel() > 0
+        reached[index] = np.asarray(adjacency[index][:, ~unknown].sum(1)).ravel() > 0
         _, own = connected_components(adjacency[index][:, index], directed=False)
-        good = np.isin(own, own[reached[index]])
-        index = index[good]
+        index = index[np.isin(own, own[reached[index]])]
         if len(index):
+            known = np.ones(n, bool)
+            known[index] = False
             inside = adjacency[index][:, index]
             degree = np.asarray(adjacency[index].sum(1)).ravel()
             self._solve = splu(csc_matrix(diags(degree) - inside))
-            self._boundary = adjacency[index][:, np.flatnonzero(~free)]
-            self._fixed = np.flatnonzero(~free)
-        self.free = index
+            self._fixed = np.flatnonzero(known)
+            self._boundary = adjacency[index][:, self._fixed]
+        self.unknown = index
+        self.free = np.flatnonzero(free)
         self.written[self.rows] = True
-        self.written[self.free] = True
+        self.written[self.unknown] = True
+        self.written[self.attached] = True
 
     @property
     def active(self) -> bool:
         return len(self.rows) > 0
 
-    def level_zero(self, field: np.ndarray) -> np.ndarray:
-        """The rule on a level-0 field (V0, D) of offsets: the free vertices harmonic, the
-        patch's vertices the blend of their anchors."""
+    def level_zero(self, field: np.ndarray, rest: np.ndarray) -> np.ndarray:
+        """The rule on a field (V0, D) of offsets of anny's vertices and the patch's, added to
+        the positions ``rest`` (V0, 3): the attached vertices with their eyeball, the other
+        free vertices harmonic, the patch's vertices the blend of their anchors."""
         out = np.array(field, dtype=np.float64, copy=True)
         if not self.active:
             return out
-        if len(self.free):
-            out[self.free] = self._solve.solve(self._boundary @ out[self._fixed])
+        rest = np.asarray(rest, dtype=np.float64)
+        for k, rows in enumerate(self.eyes):
+            sel = self.attached[self.attached_eye == k]
+            if len(sel) == 0:
+                continue
+            c0, r0, _ = fit_sphere(rest[rows])
+            c1, r1, _ = fit_sphere(rest[rows] + out[rows])
+            out[sel] = c1 + (rest[sel] - c0) * (r1 / r0) - rest[sel]
+        if len(self.unknown):
+            out[self.unknown] = self._solve.solve(self._boundary @ out[self._fixed])
         out[self.rows] = np.einsum("nk, nkd -> nd", self.weights, out[self.anchors])
         return out
 
@@ -429,18 +484,20 @@ class PatchAnchors:
         """(N,) the share of each vertex of a level in the vertices the rule writes."""
         return np.asarray(topology.apply(self.written.astype(np.float64)))
 
-    def apply(self, offsets: np.ndarray, topology, fitted=None, lifted=None):
+    def apply(self, offsets, topology, parametric, fitted=None, lifted=None):
         """The offsets (N, 3) of a level (:class:`~opensculptboy.detail.DetailTopology`) with
-        the rule applied; ``fitted`` (N,) marks the vertices that the level's refinement
-        fits (default: none), and ``lifted`` (N, 3) holds the offsets of the level below
-        carried to this level (default: zero)."""
+        the rule applied: ``parametric`` (N, 3) is the level's parametric rest mesh,
+        ``fitted`` (N,) marks the vertices that the level's refinement fits (default: none),
+        and ``lifted`` (N, 3) holds the offsets of the level below carried to this level
+        (default: zero)."""
         offsets = np.asarray(offsets, dtype=np.float64)
         if not self.active:
             return offsets
         if topology.subdiv == 0 or lifted is None:
             lifted = np.zeros_like(offsets)
         added = offsets - lifted
-        field = self.level_zero(added[: self.count])
+        base = (np.asarray(parametric) + lifted)[: self.count]
+        field = self.level_zero(added[: self.count], base)
         if topology.subdiv == 0:
             out = offsets.copy()
             out[self.written] = field[self.written]
@@ -1874,7 +1931,7 @@ def fit_levels(
     seconds = dict(seconds or {})
     rest0, transforms = _card_rest(model, character)
     excluded = excluded_vertices(model)
-    anchored = PatchAnchors(model, excluded)
+    anchored = PatchAnchors(model, excluded, rest0)
     errors, offsets = {}, {}
     weights0 = model.vertex_bone_weights.detach().double().numpy()
     indices0 = model.vertex_bone_indices.cpu().numpy()
@@ -2022,7 +2079,9 @@ def fit_levels(
                 return points
             rest = R_.unpose(points, w, i, transforms, rotation, translation)
             moved = (
-                anchored.apply(rest - parametric, topology, fit_mask, lifted)
+                anchored.apply(
+                    rest - parametric, topology, parametric, fit_mask, lifted
+                )
                 + parametric
             )
             rows = anchored.share(topology) > 0
@@ -2058,7 +2117,11 @@ def fit_levels(
         )
         registered = R_.unpose(fitted, w, i, transforms, rotation, translation)
         offsets[subdiv] = anchored.apply(
-            R_.rest_offsets(registered, parametric), topology, fit_mask, lifted
+            R_.rest_offsets(registered, parametric),
+            topology,
+            parametric,
+            fit_mask,
+            lifted,
         )
         if anchored.active:
             rows = anchored.share(topology) > 0
