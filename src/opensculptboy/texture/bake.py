@@ -34,8 +34,8 @@ head tile (:mod:`opensculptboy.texture.tiles`, base colour, normal and roughness
 texels are finer than the atlas's. Texels that no ray reaches take the value of the nearest
 texel that one did, so that the seams of the atlas do not show. The rays use Embree through
 trimesh (``embreex``, the ``viewer`` extra), as :mod:`anny.viewer.bake` does. The vertex
-colours of the reference are never read: the DD2DA tools keep the game's masks in them
-(``_COLOR_0_GAME``), and the ``COLOR_0`` of a hair part holds the hair's albedo.
+colours of the reference are never read: a source may keep other data (masks) in them,
+and the ``COLOR_0`` of a hair part holds the hair's albedo.
 """
 
 from __future__ import annotations

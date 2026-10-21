@@ -20,7 +20,7 @@ The landmarks of the handoff contract and their counterparts on anny (:data:`LAN
 ``l`` and ``r`` are the figure's own left and right (+X and -X in both frames). Names are
 matched loosely (:func:`canonical_landmark`): ``LeftEyeOuter``, ``eye.outer.L`` and
 ``left_eye_outer`` all name ``eye_outer_l``. A ``skin`` or ``surface`` word marks a point
-snapped to the skin (``mouth_corner_l_skin``, as the DD2DA tools write next to the joint
+snapped to the skin (``mouth_corner_l_skin``, as a source may write next to the joint
 position ``mouth_corner_l``): when a source gives both, the surface point serves the face
 landmarks, which are skin points on anny, and the other serves the joint centres. Joint centres
 differ between rigs, so the fit weighs them less than the surface points of the face, and the

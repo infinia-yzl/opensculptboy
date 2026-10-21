@@ -4,9 +4,9 @@
 Checks of the reference fit (``opensculptboy.fit``) on a synthetic target of another topology
 (``test.fit_fixtures.synthetic_target``: random anny parameters, a small pose, smooth random
 offsets on levels 0 and 1, remeshed by sliding and vertex clustering), read through an
-appearance handoff folder as the Dragon's Dogma 2 tools write it.
+appearance handoff folder (``opensculptboy.fit.handoff``).
 
-``TestSyntheticFit`` fits once (about 70 s on two cores) and checks the mean surface error of
+``TestSyntheticFit`` fits once (about 70 s) and checks the mean surface error of
 the detail layer's level 1 against the target in both directions (under 0.5 mm), the card
 written with its offsets files, the reproduction of the fit from the card alone, and the
 exports of the fitted card. ``TestAutoLandmarks`` fits the same target without landmarks.
@@ -145,7 +145,7 @@ class TestLandmarkNames(unittest.TestCase):
         )
 
     def test_contract_parts(self):
-        # the contract keys parts by kind, and the tools name nodes <node_name>_group<N>_...
+        # the contract keys parts by kind, and a source may split a node into <node_name>_...
         entries = _part_entries(
             {"hair": {"node_name": "hair_a"}, "head": {"node_name": "head_b"}}
         )
@@ -459,7 +459,7 @@ class TestHandoff(unittest.TestCase):
         np.testing.assert_allclose(handoff.landmarks["nose_tip"], landmarks["nose_tip"])
 
     def test_vertex_colours_stay_out_of_the_skin_colour(self):
-        # the DD2DA tools keep the game's masks in vertex colours, and a hair part's COLOR_0
+        # a source may keep masks in its vertex colours, and a hair part's COLOR_0
         # holds its albedo: the base colour of a part is its texture alone
         import trimesh
         from PIL import Image

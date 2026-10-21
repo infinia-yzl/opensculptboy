@@ -1,9 +1,8 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-The appearance handoff: a folder that describes a reference character to fit, as the
-Dragon's Dogma 2 tools write it (draft contract ``docs/contracts/APPEARANCE-HANDOFF.md`` of
-DD2DA)::
+The appearance handoff: a folder that describes a reference character to fit (the format
+of docs/reference-fit.md)::
 
     <handoff>/
         replica.glb        skinned parts in their edited bind pose; metres, Y up, glTF axes
@@ -21,8 +20,8 @@ Each primitive of the GLB file is one part, named after its mesh (the node's nam
 ``parts`` names the node) and carrying its material's name. ``parts`` may be a list of objects
 or an object keyed by part name (the contract's ``{"body": {...}, "hair": {...}}``); each entry
 names a mesh or node of the GLB file (``"name"``, ``"mesh"``, ``"node"`` or ``"node_name"``,
-which also matches the nodes whose names start with it and an underscore, as the DD2DA tools
-split a part into ``<node_name>_group<N>_...`` nodes) and may give its ``"role"`` (or
+which also matches the nodes whose names start with it and an underscore, as some exporters
+split a part into ``<node_name>_<suffix>`` nodes) and may give its ``"role"`` (or
 ``"kind"``, ``"type"``, ``"category"``); without one, the key of an object names the role.
 ``materials`` entries (``{"name": ..., "role": ...}``) may give a role per material. The role of
 a primitive is, in this order: its material's declared role; the role that its material's name
