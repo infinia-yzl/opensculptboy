@@ -355,6 +355,7 @@ def _bake(args, parser) -> int:
             args.level,
             args.texture_size,
             head_size=args.head_size,
+            eye_size=args.eye_size,
             skin_maps=True,
             ear_tile=not args.no_ear_tile,
         )
@@ -665,6 +666,12 @@ def main(argv=None) -> int:
         type=int,
         default=4096,
         help="head tile height (default 4096; 0: none)",
+    )
+    b.add_argument(
+        "--eye-size",
+        type=int,
+        default=2048,
+        help="eye texture width (default 2048; its height is half; 0: none)",
     )
     b.add_argument(
         "--material", help="a JSON file of skin material values for the card"

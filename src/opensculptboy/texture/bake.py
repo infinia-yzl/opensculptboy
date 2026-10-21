@@ -619,7 +619,7 @@ def bake(
     max_distance: float = 0.01,
     eye_triangles: np.ndarray | None = None,
     eye_box=None,
-    eye_size: int = 1024,
+    eye_size: int = 2048,
     head_triangles: np.ndarray | None = None,
     head_box=None,
     head_size: int = 0,
@@ -648,7 +648,9 @@ def bake(
             either, every texel takes the skin.
         eye_box: the box of the atlas that the eye texture covers
             (:func:`opensculptboy.texture.eyes.eye_uv_box`); with it, the eyeballs are also
-            baked onto an eye texture of ``eye_size`` by ``eye_size / 2`` texels.
+            baked onto an eye texture of ``eye_size`` by ``eye_size / 2`` texels (2048 by
+            default: the iris covers a small part of the eyeball's UVs, about 180 texels
+            across at that size, and the exported eyes stretch it over 220 texels).
         head_triangles, head_box, head_size: the triangles of the head tile
             (:func:`opensculptboy.texture.tiles.on_head_tile`), its box of the atlas
             (:func:`~opensculptboy.texture.tiles.head_uv_box`) and its height in texels

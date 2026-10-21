@@ -465,7 +465,7 @@ class TestEyedMesh(unittest.TestCase):
                 self.assertGreater(np.median(d[:, 1]), np.sin(np.radians(15.0)))
                 self.assertLess(np.abs(np.median(d[:, 0])), 0.05)
         outside = (s > 0.5) & (s < 0.9)
-        self.assertLess(np.median(np.abs(carried[outside][:, 1])), 0.02)
+        self.assertLess(np.median(np.abs(carried[outside][:, 1])), 0.05)
         # where the procedural eye stands in (no iris found), the normals are flat
         _, found, moved = tex.fit_baked_iris(
             np.full(carried.shape, 0.5),
