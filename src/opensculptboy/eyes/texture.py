@@ -582,13 +582,12 @@ def _uv_frames(points, triangles, uvs):
 
 def carry_baked_normals(
     normal_map: np.ndarray,
-    box,
     eyeballs: dict,
     size: tuple[int, int] = EYE_TEXTURE_SIZE,
 ) -> np.ndarray:
     """
     The baked normals of the eyeballs (``normal_map``: the card's tangent-space normal map on
-    anny's atlas, (H, W, 3) in [0, 1], encoded in the MikkTSpace frames of the eyeballs it was
+    anny's whole atlas, (H, W, 3) in [0, 1], encoded in the MikkTSpace frames of the eyeballs it was
     baked on) carried over to the eye texture's layout, as :func:`carry_baked` carries the
     colours: (H, W, 3) per texel, the normal in the frame (E1, E2, N) of the eye's own surface
     there (:func:`_surface_frame`), so that :func:`encode_normals` lays it on any eye surface;
@@ -596,7 +595,6 @@ def carry_baked_normals(
     normals (a concave iris, a soft limbus), and its highlights and shading follow them.
     """
     from opensculptboy.eyes.geometry import _polar
-    from opensculptboy.texture.eyes import to_eye_uvs
 
     w, h = size
     out = np.zeros((h, w, 3))
@@ -610,7 +608,7 @@ def carry_baked_normals(
         b = sign[:, None] * np.cross(n, t)
         polar = _polar(n)
         fine = np.arange(len(corners)).reshape(-1, 3)
-        values = np.concatenate([to_eye_uvs(uv, box), t, b, n], axis=1)
+        values = np.concatenate([uv, t, b, n], axis=1)
         grid, mask = rasterise_uvs(polar, fine, values, side, size)
         x = grid[..., 0] * bw - 0.5
         y = (1.0 - grid[..., 1]) * bh - 0.5

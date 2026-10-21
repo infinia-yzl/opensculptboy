@@ -590,7 +590,7 @@ def eye_texture(
     bent = None
     if with_normals:
         atlas = np.asarray(Image.open(io.BytesIO(normal_map)).convert("RGB"))
-        bent = tex.carry_baked_normals(atlas / 255.0, box, eyed.eyeballs)
+        bent = tex.carry_baked_normals(atlas / 255.0, eyed.eyeballs)
         fitted, found, bent = tex.fit_baked_iris(carried, eye, radii, normals=bent)
     else:
         fitted, found = tex.fit_baked_iris(carried, eye, radii)
