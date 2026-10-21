@@ -100,6 +100,9 @@ ATTACH_RADIUS = 0.99
 # the rings of fitted skin around an "anchors" patch's faces and anchors that also take the
 # harmonic extension in place of their fitted offsets (PatchAnchors)
 SKIN_RINGS = 0
+# seat_lids: how far inside the reference's eyeball sphere (in its radii) the exported
+# eyeball's own sphere may lie; outward-facing skin within it counts as touching the eyeball
+SPHERE_TOLERANCE = 0.005
 # The topologies that the fit takes (FitOptions.topology).
 FIT_TOPOLOGIES = ("anny", "sculpt")
 
@@ -1695,16 +1698,20 @@ def seat_lids(
         )
         solve = scipy.sparse.linalg.factorized(A)
         X[rows] = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
-    # the skin that faces out from the eyeball within the band over its sphere moves out to
-    # the band's top, so that the exported eyeball keeps its size (eyes.geometry
-    # .bulge_clearance shrinks it for such skin) and meets the lids flush
+    # the skin that faces out from the eyeball within the band over its sphere (from just
+    # under it, as the exported eyeball's own fit may lie a little inside the reference's)
+    # moves to the nearer end of the band: out to its top, or under the eyeball, so that the
+    # exported eyeball keeps its size (eyes.geometry.bulge_clearance shrinks it for such
+    # skin) and meets the lids flush
     x = X[rows]
     ray = x - ce
-    dx = np.linalg.norm(ray, axis=1)
-    ray /= np.maximum(dx, 1e-12)[:, None]
+    dx = np.linalg.norm(ray, axis=1) / re
+    ray /= np.maximum(dx * re, 1e-12)[:, None]
     facing = (vertex_normals(X, T)[rows] * ray).sum(1)
-    band = (dx >= re) & (dx < re * (1.0 + me)) & (facing > 0.0)
-    X[rows[band]] = ce[band] + (re * (1.0 + me))[band, None] * ray[band]
+    low = 1.0 - SPHERE_TOLERANCE
+    band = (dx >= low) & (dx < 1.0 + me) & (facing > 0.0)
+    to = np.where(dx < 0.5 * (low + 1.0 + me), min(sphere, low), 1.0 + me)
+    X[rows[band]] = ce[band] + (re * to)[band, None] * ray[band]
     return X
 
 
