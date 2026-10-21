@@ -183,6 +183,21 @@ class FitOptions:
     # border (twice as many on each finer level) to where the mesh crosses the attachment
     # line (relabel_ears; 0: the pinna of level 0 throughout)
     ear_relabel_rings: int = 3
+    # after each level, the lids and the inner corner of each eye onto what the reference
+    # shows there: its skin outside its eyeball's sphere, then the sphere (seat_lids), so that
+    # they meet the eyeball flush. The region: the fitted skin within lid_reach eyeball radii
+    # of the centre and lid_front degrees of the gaze, and the left-out vertices (the socket's
+    # lining, the eye-corner patch) within lid_lining_reach; the sphere target lies at
+    # lid_sphere of the radius, and the reference's skin counts as outside the sphere beyond
+    # 1 + lid_margin radii. Needs the reference's eyeball spheres (Reference.eyes)
+    seat_lids: bool = True
+    lid_reach: float = 1.35
+    lid_lining_reach: float = 1.6
+    lid_front: float = 100.0
+    lid_sphere: float = 0.99
+    lid_margin: float = 0.02
+    lid_iterations: int = 5
+    lid_fairness: float = 1.0
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -1499,6 +1514,196 @@ def _behind_skin(vertices, triangles, excluded, rows, inside: float) -> np.ndarr
     return points
 
 
+@dataclasses.dataclass
+class LidSeat:
+    """
+    Which vertices of a level :func:`seat_lids` places, around which eyeball: ``region`` (N,)
+    the vertices it moves, ``eye`` (N,) the index of their eyeball in ``eyes`` (-1 for the
+    others), ``pool`` (N,) the vertices among which the reverse term finds the nearest of
+    each reference vertex, ``eyes`` the reference's eyeball spheres [(centre, radius)] and
+    ``gazes`` their gaze directions (unit vectors).
+    """
+
+    region: np.ndarray
+    eye: np.ndarray
+    pool: np.ndarray
+    eyes: list
+    gazes: list
+
+
+def lid_region(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    eyes: list,
+    gazes: list,
+    fitted: np.ndarray,
+    eyeball: np.ndarray,
+    reach: float = 1.35,
+    lining_reach: float = 1.6,
+    front: float = 100.0,
+) -> LidSeat:
+    """
+    The vertices around the opening of each eye that :func:`seat_lids` places: the skin that
+    the refinement fits (``fitted``) within ``reach`` eyeball radii of the reference's eyeball
+    centre and ``front`` degrees of its gaze (the lids out to the margin, and the skin of the
+    inner corner), and the vertices that it leaves out (the lining of the socket and, on
+    ``sculpt``, the eye-corner patch) within ``lining_reach``, but the eyeballs (``eyeball``).
+    """
+    X = np.asarray(vertices, dtype=np.float64)
+    n = len(X)
+    used = np.zeros(n, bool)
+    used[np.asarray(triangles).ravel()] = True
+    fitted = np.asarray(fitted, bool)
+    eyeball = np.asarray(eyeball, bool)
+    region = np.zeros(n, bool)
+    pool = np.zeros(n, bool)
+    which = np.full(n, -1)
+    best = np.full(n, np.inf)
+    for k, ((centre, radius), gaze) in enumerate(zip(eyes, gazes)):
+        local = (X - np.asarray(centre)) / radius
+        d = np.linalg.norm(local, axis=1)
+        cos = (local @ np.asarray(gaze)) / np.maximum(d, 1e-12)
+        skin = fitted & (d < reach) & (cos > np.cos(np.radians(front)))
+        lining = ~fitted & (d < lining_reach)
+        mine = used & ~eyeball & (skin | lining) & (d < best)
+        which[mine], best[mine] = k, d[mine]
+        region |= mine
+        pool |= used & ~eyeball & (d < lining_reach)
+    which[~region] = -1
+    return LidSeat(region, which, pool, list(eyes), [np.asarray(g) for g in gazes])
+
+
+def seat_lids(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    seat: LidSeat,
+    sphere: float = 0.99,
+    margin: float = 0.02,
+    iterations: int = 5,
+    fairness: float = 1.0,
+    reach: float = 0.35,
+    sphere_reach: float = 0.25,
+    normal_threshold: float = 0.2,
+    reverse_normal_threshold: float = 0.5,
+    front: float = 100.0,
+) -> np.ndarray:
+    """
+    Place the lids and the corner of each eye (``seat.region``) on what the reference shows
+    there: its skin where that lies outside its eyeball's sphere, and the sphere itself where
+    the skin goes under it, so that the lids and the corner meet the eyeball flush, as the
+    reference's do. Each round solves, over the region's vertices with the others held,
+
+        min sum_i w_i |x_i - c_i|^2 + r_i |x_i - p_i|^2 + fairness |B X|^2
+
+    as :func:`fair_region` does: c_i is the nearer of the closest point of the reference's
+    skin (within ``reach`` eyeball radii, its normal agreeing with the vertex's to
+    ``normal_threshold``, and more than ``margin`` radii outside the sphere) and of the point
+    of the sphere, shrunk to ``sphere`` of its radius so that it lies under the exported
+    eyeball, along the ray from its centre (within ``sphere_reach`` radii); p_i is the mean
+    of the reference's skin vertices outside the sphere (by ``margin``, within ``front``
+    degrees of the gaze) whose nearest vertex of ``seat.pool`` x_i is (the reverse term, with
+    normals agreeing to ``reverse_normal_threshold``), which pulls the surface over the
+    eyeball as far as the reference's tissue reaches; and B is the bi-Laplacian, which keeps
+    the surface fair. A vertex with neither target follows the fairing alone.
+    """
+    import scipy.sparse
+    import scipy.sparse.linalg
+    from scipy.spatial import cKDTree
+
+    target = reference if isinstance(reference, Target) else Target(reference)
+    X = np.asarray(vertices, dtype=np.float64).copy()
+    rows = np.flatnonzero(seat.region)
+    if len(rows) == 0 or iterations <= 0 or not seat.eyes:
+        return X
+    others = np.flatnonzero(~seat.region)
+    T = np.asarray(triangles)
+    L = _mean_laplacian(len(X), T)
+    B = (L @ L).tocsr()
+    Q = (B.T @ B).tocsr()
+    Qrr = Q[rows][:, rows]
+    Qro = Q[rows][:, others]
+    centres = np.array([np.asarray(c, dtype=np.float64) for c, _ in seat.eyes])
+    radii = np.array([float(r) for _, r in seat.eyes])
+    ce, re = centres[seat.eye[rows]], radii[seat.eye[rows]]
+    # the reference's skin vertices in front of each eyeball, outside its sphere
+    P = np.asarray(target.vertices, dtype=np.float64)
+    shown, shown_eye = [], []
+    for k, (centre, radius) in enumerate(seat.eyes):
+        local = (P - centre) / radius
+        d = np.linalg.norm(local, axis=1)
+        cos = (local @ seat.gazes[k]) / np.maximum(d, 1e-12)
+        keep = (d > 1.0 + margin) & (d < 1.6) & (cos > np.cos(np.radians(front)))
+        shown.append(np.flatnonzero(keep))
+        shown_eye.append(np.full(int(keep.sum()), k))
+    shown = np.concatenate(shown)
+    shown_eye = np.concatenate(shown_eye)
+    pool = np.flatnonzero(seat.pool)
+    factor = scipy.sparse.diags(np.full(len(rows), 1e-6)) + fairness * Qrr
+    for _ in range(iterations):
+        normals = vertex_normals(X, T)
+        x = X[rows]
+        c, nrm, d = target.closest(x, rows)
+        skin_ok = (d < reach * re) & ((normals[rows] * nrm).sum(1) > normal_threshold)
+        skin_ok &= np.linalg.norm(c - ce, axis=1) > re * (1.0 + margin)
+        ray = x - ce
+        ray /= np.maximum(np.linalg.norm(ray, axis=1, keepdims=True), 1e-12)
+        on_sphere = ce + (sphere * re)[:, None] * ray
+        de = np.linalg.norm(x - on_sphere, axis=1)
+        sphere_ok = de < sphere_reach * re
+        use_skin = skin_ok & (~sphere_ok | (d <= de))
+        C = np.where(use_skin[:, None], c, on_sphere)
+        w = (use_skin | sphere_ok).astype(np.float64)
+        # the reverse term: the reference's tissue pulls its nearest vertex of the pool
+        r = np.zeros(len(X))
+        mean = np.zeros_like(X)
+        if len(shown) and len(pool):
+            dist, nearest = cKDTree(X[pool]).query(P[shown])
+            near = pool[nearest]
+            ok = dist < reach * radii[shown_eye]
+            ok &= (normals[near] * target.normals[shown]).sum(
+                1
+            ) > reverse_normal_threshold
+            near, points = near[ok], P[shown][ok]
+            count = np.bincount(near, minlength=len(X)).astype(np.float64)
+            for k in range(3):
+                mean[:, k] = np.bincount(near, points[:, k], minlength=len(X))
+            r = (count > 0).astype(np.float64)
+            mean /= np.maximum(count, 1.0)[:, None]
+        rr = r[rows]
+        A = (factor + scipy.sparse.diags(w + rr)).tocsc()
+        rhs = (
+            w[:, None] * C
+            + rr[:, None] * mean[rows]
+            + 1e-6 * x
+            - fairness * (Qro @ X[others])
+        )
+        solve = scipy.sparse.linalg.factorized(A)
+        X[rows] = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
+    return X
+
+
+def eye_gazes(model, eyes: list, transforms, rotation, translation) -> list:
+    """The gaze of each of the reference's eyeballs (``eyes``, in the reference's frame): the
+    rest gaze (-Y) turned by its eye bone's skinning transform and the placement; the side
+    comes from the eyeball's centre in anny's frame (+X is the figure's left)."""
+    labels = list(model.bone_labels)
+    R = np.asarray(rotation, dtype=np.float64)
+    t = np.asarray(translation, dtype=np.float64)
+    out = []
+    for centre, _ in eyes:
+        side = "L" if (R.T @ (np.asarray(centre) - t))[0] > 0 else "R"
+        bone = f"eye.{side}"
+        turn = (
+            np.asarray(transforms)[labels.index(bone), :3, :3]
+            if bone in labels
+            else np.eye(3)
+        )
+        gaze = R @ turn @ np.array([0.0, -1.0, 0.0])
+        out.append(gaze / np.linalg.norm(gaze))
+    return out
+
+
 class _Parameters(torch.nn.Module):
     """The free parameters of the parameter stage."""
 
@@ -1947,6 +2152,18 @@ def fit_levels(
     rest0, transforms = _card_rest(model, character)
     excluded = excluded_vertices(model)
     anchored = PatchAnchors(model, excluded, rest0)
+    seat = gazes = eyeball0 = None
+    if options.seat_lids and reference.eyes:
+        from opensculptboy.export.vrm_tables import eyeball_vertices
+
+        try:
+            eyeball0 = np.zeros(len(rest0))
+            for rows in eyeball_vertices(model).values():
+                eyeball0[rows] = 1.0
+            gazes = eye_gazes(model, reference.eyes, transforms, rotation, translation)
+            seat = True
+        except ValueError:
+            seat = None
     errors, offsets = {}, {}
     weights0 = model.vertex_bone_weights.detach().double().numpy()
     indices0 = model.vertex_bone_indices.cpu().numpy()
@@ -2141,6 +2358,45 @@ def fit_levels(
         if anchored.active:
             rows = anchored.share(topology) > 0
             fitted = fitted.copy()
+            fitted[rows] = R_.pose_vertices(
+                (parametric + offsets[subdiv])[rows],
+                w[rows],
+                i[rows],
+                transforms,
+                rotation,
+                translation,
+            )
+        if seat is not None:
+            level_seat = lid_region(
+                fitted,
+                topology.triangles,
+                reference.eyes,
+                gazes,
+                mask,
+                np.asarray(topology.apply(eyeball0)) > 0.5,
+                options.lid_reach,
+                options.lid_lining_reach,
+                options.lid_front,
+            )
+            fitted = seat_lids(
+                fitted,
+                topology.triangles,
+                Target(reference, options.target_smooth, options.target_shading),
+                level_seat,
+                sphere=options.lid_sphere,
+                margin=options.lid_margin,
+                iterations=options.lid_iterations,
+                fairness=options.lid_fairness,
+                front=options.lid_front,
+            )
+            rows = level_seat.region
+            offsets[subdiv] = offsets[subdiv].copy()
+            offsets[subdiv][rows] = (
+                R_.unpose(
+                    fitted[rows], w[rows], i[rows], transforms, rotation, translation
+                )
+                - parametric[rows]
+            )
             fitted[rows] = R_.pose_vertices(
                 (parametric + offsets[subdiv])[rows],
                 w[rows],
