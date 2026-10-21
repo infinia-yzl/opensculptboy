@@ -25,19 +25,26 @@ from opensculptboy.topology.patches import placeholder
 from opensculptboy.topology.sculpt import MAKEHUMAN_VERTEX_COUNT, compose_patches
 from test.gltf_reader import GLB, structure_errors
 
-# The placeholder patch on the back of the head (scalp), inside the head region of the detail
-# layer, the head tile and the fitted skin.
-HEAD_TARGET = [0.03, 0.12, 1.62]
 LEVEL1_BOUND_MM = 0.5
+
+
+def head_target(base) -> list:
+    """A point of the back of the head (scalp), 8 cm under its top: the placeholder patch
+    there lies inside the head region of the detail layer, the head tile and the fitted
+    skin."""
+    v = base.vertices
+    top = v[:, 2].max()
+    head = v[v[:, 2] > top - 0.15]
+    return [0.03, float(head[:, 1].max()), float(top - 0.08)]
 
 
 def head_patch_data(labels=None):
     """The placeholder patch moved to the back of the head; ``labels`` sets the vertex labels
     of its new vertices."""
     base = base_quad_mesh()
-    patch = placeholder.build(base, target=HEAD_TARGET)
+    patch = placeholder.build(base, target=head_target(base))
     if labels is not None:
-        patch.vertex_labels = np.array([labels] * patch.vertex_count, dtype=object)
+        patch.vertex_labels = [labels] * patch.vertex_count
     return compose_patches([patch], base, [placeholder])
 
 
@@ -63,8 +70,9 @@ class TestLookups(unittest.TestCase):
         cls.stack.close()
 
     def test_patch_is_on_the_head(self):
-        centre = self.model.template_vertices[self.n :].double().mean(0).numpy()
-        self.assertGreater(centre[2], 1.4)
+        v = self.model.template_vertices.double().numpy()
+        centre = v[self.n :].mean(0)
+        self.assertGreater(centre[2], v[:, 2].max() - 0.15)
         self.assertGreater(centre[1], 0.0)
 
     def test_base_mesh_rows(self):
@@ -278,6 +286,7 @@ class TestSculptExports(unittest.TestCase):
         card = Character.from_dict(
             {
                 **self.character.to_dict(),
+                "schema": 3,
                 "material": {"eyes": {}},
                 "detail": {
                     "levels": [{"subdiv": 1, "offsets": "e.detail1.safetensors"}]
@@ -314,6 +323,7 @@ class TestSculptExports(unittest.TestCase):
         card = Character.from_dict(
             {
                 **self.character.to_dict(),
+                "schema": 3,
                 "detail": {
                     "levels": [{"subdiv": 1, "offsets": "c.detail1.safetensors"}]
                 },
@@ -507,7 +517,8 @@ class TestConvertCommand(unittest.TestCase):
             "convert", str(self.source), "--to", "sculpt", "--out", str(target)
         )
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(text)["levels"], [0, 1])
+        # warp may print its kernel loads first
+        self.assertEqual(json.loads(text[text.index("{") :])["levels"], [0, 1])
         card = Character.from_dict(json.loads(target.read_text()))
         self.assertEqual(card.topology, "sculpt")
         self.assertEqual(card.material["base_color"], "../src/card.base_color.png")
