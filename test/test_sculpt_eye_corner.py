@@ -491,6 +491,25 @@ class TestSculptEyes(unittest.TestCase):
         self.assertTrue(socket[kept_pink].all())
         self.assertGreater(int((triangles >= n).any(1).sum()), 0)
 
+    def test_fit_leaves_the_corner_out(self):
+        from opensculptboy.fit import register
+
+        for label in ("eye_corner/caruncle", "eye_corner/conjunctiva", "eye_corner"):
+            self.assertEqual(register.PATCH_ROLES.get(label), "exclude")
+        n = self.data.vertex_count
+        excluded = register.excluded_vertices(self.model)
+        # every new vertex of the patch follows the skin, as the sockets do
+        self.assertEqual(len(excluded), n + self.data.new_vertex_count)
+        self.assertTrue(excluded[n:].all())
+        # anny's own vertices keep their roles but those the patch leaves without a face
+        from opensculptboy import Character
+        from opensculptboy.topology.lookup import referenced_vertices
+
+        anny = register.excluded_vertices(Character().build_model(dtype=torch.float64))
+        used = referenced_vertices(self.model)[:n]
+        np.testing.assert_array_equal(excluded[:n][used], anny[used])
+        self.assertTrue(excluded[:n][~used].all())
+
     def test_glb_and_vrm(self):
         import pathlib
 

@@ -79,8 +79,15 @@ EXCLUDED_LABELS = ("eye_cavity.L", "eye_cavity.R", "mouth_cavity")
 # The roles of the new vertices of the sculpt patches in the registration, by patch label (a
 # label or the prefix of finer labels, see opensculptboy.topology.lookup.labelled): "fit"
 # (fitted as skin) or "exclude" (left out and moved by follow_skin, as the eye sockets). A new
-# vertex without an entry takes the base-mesh label of its strongest anchor.
-PATCH_ROLES: dict[str, str] = {}
+# vertex without an entry takes the base-mesh label of its strongest anchor. The eye-corner
+# patch's caruncle and fold of the conjunctiva lie inside the corner, where the reference
+# shows the socket's tissue or nothing: they follow the skin as anny's sockets do (its new
+# vertices all carry the label "eye_corner"; the finer labels name its faces).
+PATCH_ROLES: dict[str, str] = {
+    "eye_corner/caruncle": "exclude",
+    "eye_corner/conjunctiva": "exclude",
+    "eye_corner": "exclude",
+}
 # The topologies that the fit takes (FitOptions.topology).
 FIT_TOPOLOGIES = ("anny", "sculpt")
 
