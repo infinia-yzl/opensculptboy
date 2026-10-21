@@ -6,24 +6,27 @@ The ear-root patch: a denser, regular band of quads along the root of each outer
 Anny's outer ear meets the head across a single ring of coarse quads, which must bend from the
 cheek into the ear in one step. On a fitted character whose ear is a separate piece stitched to
 the head, the fit parts the ear from the head along that ring, and the coarse quads leave a
-crack along the front of the attachment line. This patch replaces the strip at the root with a
-band that can bend smoothly and gives the fit a clean line to part along.
+crack along the front of the attachment line. This patch replaces the root with a band that
+can bend smoothly and gives the fit a clean line to part along.
 
-**The removed faces.** Anny's outer ear proper is :func:`pinna_mask`, as
-:func:`opensculptboy.fit.register.pinna` defines it: of the vertices that the ear translation
-targets move in full, those more than 2 mm off a quadratic fitted to the head's skin around the
-ear, with the hole they enclose (the concha). The patch removes, on each side, the ring of
-quads that joins the pinna to the head (``ring1``: each has vertices on both) and the ring of
-the head's quads around it (``ring2``: those that share a vertex with the outer loop of
-``ring1``), all the way around the ear: the front of the helix root, the tragus, the lobe and
-the back. On anny the two rings are 32 quads each, between three loops of 32 vertices: the
-head's loop ``O2`` (outside), anny's root loop ``O`` (where the head's skin bends into the
-ear) and the pinna's border ``R`` (inside). Anny's vertices of ``O`` are left without faces.
+**The removed faces.** Anny's outer ear proper is :func:`pinna_mask`, by the rule of
+:func:`opensculptboy.fit.register.pinna` on the default body: of the vertices that the ear
+translation targets move in full, those more than 2 mm off a quadratic fitted to the head's
+skin around the ear, with the hole they enclose (the concha). The *strip* is the ring of quads
+that joins the pinna to the head (each has vertices on both), all the way around the ear: the
+front of the helix root, the tragus, the lobe and the back. The patch removes the strip, one
+ring of the head's quads around it (with the quads that fill the notches of that ring's outer
+border) and one ring of the pinna's quads inside it (:func:`root_band`): on anny, 32 + 38 +
+32 quads per ear, between the head's border loop (outside) and a loop of the pinna (inside).
+Anny's vertices inside the band are left without faces.
 
-**The band.** The band is all quads, in four rows: from each border loop of 32 vertices, a
-transition row of 48 vertices and then the root line of 64 vertices in the middle, which runs
-along anny's root loop ``O``. Each pair of border edges meets four edges of the root line
-through six quads (bottom ``A, B, C``, middle ``X, Y, Z``, top ``a`` to ``e``)::
+**The band.** The band is all quads. Its middle row is the *root line*: 64 vertices evenly
+spaced along the middle of the strip, smoothed over about two of anny's edges, where the
+head's skin turns into the ear. Two rows run on each side of it, at 0.3 and 0.6 of the way to
+the band's border in the same column, each of 64 vertices and joined by regular quads. Each
+border loop then joins its outer row through transition units, chosen by a dynamic programme
+so that the border vertices meet the row's columns: one border edge to one row edge (a quad),
+one to three (four quads, two new vertices), or two to four (six quads, three new vertices)::
 
     a---b---c---d---e      [A, B, Y, X]  [B, C, Z, Y]
     |   |   |   |   |      [A, X, b, a]  [X, Y, c, b]
@@ -31,19 +34,25 @@ through six quads (bottom ``A, B, C``, middle ``X, Y, Z``, top ``a`` to ``e``)::
     |  /    |    \\  |
     A-------B-------C
 
-so the root line is twice as dense as anny's loops, every vertex of the root line has four
-edges, and the band has no triangle. The vertices sit on anny's surface: the band is laid out
-in a parameter plane of the removed faces (``t`` = 0 on ``O2``, 0.5 on ``O``, 1 on ``R``; ``s``
-around the ear, periodic and harmonic), and each new vertex is the barycentric combination of
-the corners of the triangle of anny's triangulation (the shorter diagonal of each quad, as
-:func:`anny.utils.mesh_utils.triangulate_faces` splits it) that holds its parameters: at most
-three anchors, so every blend shape, local change, face shape and skin weight carries over.
-Its UV is the same combination of the corners' UVs: the removed faces lie in one UV chart, so
-the band covers their region of the atlas.
+Every vertex of the rows and the root line has four edges. The columns are the arc length
+along each loop, in phase with the angle about the ear.
 
-**The root line.** The vertices of the root line carry the label ``"ear_root/root"`` (the
-others ``"ear_root"``), stored in loop order, the left ear's first: :func:`root_lines` gives
-them as the vertex loop of each ear, anny's side of the attachment line of the reference fit.
+**On anny's surface.** Each new vertex is the closest point of anny's surface (the triangles
+of the removed faces, split along the shorter diagonal as
+:func:`anny.utils.mesh_utils.triangulate_faces` splits them) to its place in its column, then
+relaxed toward its neighbours and moved, where a corner angle of its faces is poor, by a search
+along the surface (:func:`_untangle`, in 3D and in the atlas). It is the barycentric
+combination of the corners of its triangle: at most three anchors, so every blend shape, local
+change, face shape and skin weight carries over. Its UV is the same combination of the
+corners' UVs: the removed faces lie in one UV chart, so the band covers their region of the
+atlas. The vertices lie on anny's surface; the band's faces are chords of it, which round
+anny's sharpest creases at the root (folds of up to 100 degrees between its coarse quads) by
+up to about 1.7 mm (0.24 mm at the 95th percentile on the default body).
+
+**The root line.** The vertices of the root line carry the label :data:`ROOT_LABEL`
+(``"ear_root/line"``, ``opensculptboy.topology.lookup.EAR_ROOT_LINE_LABEL``; the others
+``"ear_root"``), stored in loop order, the left ear's first: :func:`root_lines` gives them as
+the vertex loop of each ear, anny's side of the attachment line of the reference fit.
 
 The patch is authored on the left ear (x > 0) and mirrored.
 """
@@ -62,15 +71,20 @@ OPTIONS = {
     "core_weight": 0.99,
     "head_rings": 1,
     "pinna_rings": 1,
-    "rows": [0.3, 0.6],
+    "head_rows": [0.3, 0.6],
+    "pinna_rows": [0.3, 0.6],
     "relax": 20,
     "unit_penalty": 1.0,
     "root_smoothing": 2.0,
     "untangle": 10,
+    "root_across": 0.5,
 }
 
 # The label of the root-line vertices.
-ROOT_LABEL = "ear_root/root"
+ROOT_LABEL = "ear_root/line"
+# The sine of a corner angle above which the untangling leaves a vertex alone (about 37
+# degrees).
+GOOD_CORNER = 0.6
 # Barycentric weights below this vanish (a vertex on an edge of anny keeps two anchors).
 SNAP = 1e-9
 
@@ -405,90 +419,91 @@ def _on_surface(points, vertices, triangles):
     return np.einsum("nk,nkd->nd", bary, vertices[triangles[best]])
 
 
+def _corner_sines(q3, q2):
+    """
+    The sine of each corner angle of quads, (..., 4): in 3D about the normal of the quad (the
+    cross product of its diagonals), and in the atlas; ``q3`` (..., 4, 3), ``q2`` (..., 4, 2).
+    """
+    normal = np.cross(q3[..., 2, :] - q3[..., 0, :], q3[..., 3, :] - q3[..., 1, :])
+    normal /= np.maximum(np.linalg.norm(normal, axis=-1, keepdims=True), 1e-30)
+    a3 = np.roll(q3, 1, axis=-2) - q3
+    b3 = np.roll(q3, -1, axis=-2) - q3
+    s3 = (np.cross(b3, a3) * normal[..., None, :]).sum(-1) / np.maximum(
+        np.linalg.norm(a3, axis=-1) * np.linalg.norm(b3, axis=-1), 1e-30
+    )
+    a2 = np.roll(q2, 1, axis=-2) - q2
+    b2 = np.roll(q2, -1, axis=-2) - q2
+    s2 = (b2[..., 0] * a2[..., 1] - b2[..., 1] * a2[..., 0]) / np.maximum(
+        np.linalg.norm(a2, axis=-1) * np.linalg.norm(b2, axis=-1), 1e-30
+    )
+    # an edge much shorter than the quad's mean edge counts as a poor corner too
+    length = np.linalg.norm(b3, axis=-1)
+    short = 4.0 * length / np.maximum(length.mean(-1, keepdims=True), 1e-30) - 1.0
+    return np.minimum(np.minimum(s3, s2), short)
+
+
 def _untangle(
     targets, faces, n_vertices, moving, vertices, triangles, uv_of_vertex, uvs, rounds
 ):
     """
     Raise the worst corner of the faces around each moving vertex: a search over steps along
-    the surface (eight directions, shrinking) that keeps a step when it raises the smallest
-    sine of a corner angle of those faces, in 3D (about the face normal) and in the atlas.
+    anny's surface (eight directions, shrinking) that keeps a step when it raises the
+    smallest sine of a corner angle of those faces, in 3D and in the atlas.
     """
     p = np.array(targets)
     best, bary, _ = _closest_on_triangles(p, vertices, triangles)
-    uv_tri = uv_of_vertex[triangles]  # (T, 3) anny UV index of each corner
-
-    def uv_new(b, w):
-        return np.einsum("k,kd->d", w, uvs[uv_tri[b]])
-
-    puv = np.array([uv_new(b, w) for b, w in zip(best, bary)])
-    allv = lambda: np.vstack([vertices, p])  # noqa: E731
-    alluv = lambda: np.vstack([uvs[uv_of_vertex], puv])  # noqa: E731
+    uv_tri = uvs[uv_of_vertex[triangles]]  # (T, 3, 2)
+    puv = np.einsum("nk,nkd->nd", bary, uv_tri[best])
+    P3 = np.vstack([vertices, p])
+    P2 = np.vstack([uvs[uv_of_vertex], puv])
     incident = [[] for _ in range(len(p))]
     for f, face in enumerate(faces.tolist()):
         for x in face:
             if x >= n_vertices:
                 incident[x - n_vertices].append(f)
-
-    def worst(fs, P3, P2):
-        out = np.inf
-        for f in fs:
-            c = faces[f]
-            q3, q2 = P3[c], P2[c]
-            normal = np.cross(q3[2] - q3[0], q3[3] - q3[1])
-            normal /= max(np.linalg.norm(normal), 1e-30)
-            for k in range(4):
-                a3, b3 = q3[k - 1] - q3[k], q3[(k + 1) % 4] - q3[k]
-                s3 = (
-                    np.cross(b3, a3)
-                    @ normal
-                    / max(np.linalg.norm(a3) * np.linalg.norm(b3), 1e-30)
-                )
-                a2, b2 = q2[k - 1] - q2[k], q2[(k + 1) % 4] - q2[k]
-                s2 = (b2[0] * a2[1] - b2[1] * a2[0]) / max(
-                    np.linalg.norm(a2) * np.linalg.norm(b2), 1e-30
-                )
-                out = min(out, s3, s2)
-        return out
-
     angles = np.arange(8) * np.pi / 4
+    centroids = vertices[triangles].mean(1)
     for _ in range(rounds):
         changed = False
-        P3, P2 = allv(), alluv()
         for i in moving:
-            fs = incident[i]
-            here = worst(fs, P3, P2)
-            ring = np.unique(faces[fs])
-            ring = ring[ring != n_vertices + i]
-            h0 = 0.3 * np.mean(np.linalg.norm(P3[ring] - p[i], axis=1))
-            tri = triangles[best[i]]
-            normal = np.cross(
-                vertices[tri[1]] - vertices[tri[0]], vertices[tri[2]] - vertices[tri[0]]
-            )
+            row = n_vertices + i
+            fq = faces[incident[i]]  # (k, 4)
+            here = _corner_sines(P3[fq], P2[fq]).min()
+            if here > GOOD_CORNER:
+                continue
+            ring = np.setdiff1d(np.unique(fq), [row])
+            h0 = 0.3 * np.mean(np.linalg.norm(P3[ring] - P3[row], axis=1))
+            tri = vertices[triangles[best[i]]]
+            normal = np.cross(tri[1] - tri[0], tri[2] - tri[0])
             normal /= np.linalg.norm(normal)
             e1 = np.cross(
-                normal, [0.0, 0.0, 1.0] if abs(normal[2]) < 0.9 else [1.0, 0.0, 0.0]
+                normal, [0.0, 0.0, 1.0] if abs(normal[2]) < 0.9 else [1.0, 0, 0]
             )
             e1 /= np.linalg.norm(e1)
             e2 = np.cross(normal, e1)
-            for h in (h0, h0 / 3, h0 / 9):
-                cand = p[i] + h * (
+            for h in (3 * h0, h0, h0 / 3, h0 / 9, h0 / 27):
+                cand = P3[row] + h * (
                     np.cos(angles)[:, None] * e1 + np.sin(angles)[:, None] * e2
                 )
-                cb, cw, _ = _closest_on_triangles(cand, vertices, triangles)
-                for b, w in zip(cb, cw):
-                    old3, old2 = P3[n_vertices + i].copy(), P2[n_vertices + i].copy()
-                    P3[n_vertices + i] = w @ vertices[triangles[b]]
-                    P2[n_vertices + i] = uv_new(b, w)
-                    score = worst(fs, P3, P2)
-                    if score > here + 1e-9:
-                        here, best[i], bary[i] = score, b, w
-                        p[i], puv[i] = P3[n_vertices + i], P2[n_vertices + i]
-                        changed = True
-                    else:
-                        P3[n_vertices + i], P2[n_vertices + i] = old3, old2
+                near = np.argsort(np.linalg.norm(centroids - P3[row], axis=1))[:32]
+                cb, cw, _ = _closest_on_triangles(cand, vertices, triangles[near])
+                cb = near[cb]
+                c3 = np.einsum("ck,ckd->cd", cw, vertices[triangles[cb]])
+                c2 = np.einsum("ck,ckd->cd", cw, uv_tri[cb])
+                q3 = np.broadcast_to(P3[fq], (len(cand),) + fq.shape + (3,)).copy()
+                q2 = np.broadcast_to(P2[fq], (len(cand),) + fq.shape + (2,)).copy()
+                at = fq == row
+                q3[:, at] = c3[:, None]
+                q2[:, at] = c2[:, None]
+                score = _corner_sines(q3, q2).reshape(len(cand), -1).min(1)
+                k = int(np.argmax(score))
+                if score[k] > here + 1e-9:
+                    here, best[i], bary[i] = score[k], cb[k], cw[k]
+                    P3[row], P2[row] = c3[k], c2[k]
+                    changed = True
         if not changed:
             break
-    return p
+    return P3[n_vertices:]
 
 
 def _template(A, B, C, X, Y, Z, a, b, c, d, e):
@@ -564,10 +579,13 @@ def _side_patch(
     vertices: np.ndarray,
     head_rings: int = OPTIONS["head_rings"],
     pinna_rings: int = OPTIONS["pinna_rings"],
-    rows: tuple = OPTIONS["rows"],
+    head_rows=OPTIONS["head_rows"],
+    pinna_rows=OPTIONS["pinna_rows"],
     relax: int = OPTIONS["relax"],
     unit_penalty: float = OPTIONS["unit_penalty"],
     untangle: int = OPTIONS["untangle"],
+    root_across: float = OPTIONS["root_across"],
+    root_smoothing: float = OPTIONS["root_smoothing"],
 ) -> tuple[Patch, dict]:
     """The patch of the left ear and its layout on ``vertices``."""
     band = root_band(base, pinna, head_rings, pinna_rings)
@@ -599,7 +617,9 @@ def _side_patch(
     # the root curve: halfway across the strip in each column, on anny's surface, smoothed
     # over about one of anny's edges; the root line is nf vertices evenly spaced along it
     dense = np.arange(8 * n) / (8 * n)
-    middle = 0.5 * (_loop_at(v[so_lp], u_so, dense) + _loop_at(v[si_lp], u_si, dense))
+    middle = (1.0 - root_across) * _loop_at(
+        v[so_lp], u_so, dense
+    ) + root_across * _loop_at(v[si_lp], u_si, dense)
     curve, curve_u = _smooth_loop(
         _on_surface(middle, v, triangles), OPTIONS["root_smoothing"]
     )
@@ -620,23 +640,25 @@ def _side_patch(
 
     root = [add(u_root[j], 0, 0.0) for j in range(nf)]
     rows_of = {0: root}
+    rows_by_side = {1: tuple(head_rows), -1: tuple(pinna_rows)}
     for side in (1, -1):
-        for k, frac in enumerate(rows):
+        for k, frac in enumerate(rows_by_side[side]):
             rows_of[side * (k + 1)] = [add(u_root[j], side, frac) for j in range(nf)]
     new_faces = []
     # regular quads between consecutive rows: the outer side runs with increasing index,
     # the inner side with decreasing index
     for side in (1, -1):
+        rows = rows_by_side[side]
         chain = [rows_of[side * (k + 1)] for k in range(len(rows))][::-1] + [root]
         for lower, upper in zip(chain[:-1], chain[1:]):
             for j in range(nf):
                 j2 = (j + side) % nf
                 new_faces.append([lower[j], lower[j2], upper[j2], upper[j]])
-    # transitions from each border to its last row
-    t_frac = rows[-1]
-    mid = 0.5 * (t_frac + 1.0)
-    for side, loop, cols in ((1, outer, None), (-1, inner, None)):
-        fine = rows_of[side * len(rows)]
+    # transitions from each border to its last row (the root line without rows)
+    for side, loop in ((1, outer), (-1, inner)):
+        rows = rows_by_side[side]
+        mid = 0.5 * ((rows[-1] if len(rows) else 0.0) + 1.0)
+        fine = rows_of[side * len(rows)] if len(rows) else root
         if side == 1:
             lp, uc = loop, _unwrap(_arc_columns(v[loop], centre, axis))
             if _turn(v[loop], centre, axis) * _turn(v[outer], centre, axis) < 0:
@@ -705,7 +727,22 @@ def _side_patch(
     for _ in range(relax):
         allp = np.vstack([v, targets])
         mean = np.array([allp[neighbours[i]].mean(0) for i in moving])
-        targets[moving] = _on_surface(0.5 * (targets[moving] + mean), v, triangles)
+        moved = _on_surface(0.5 * (targets[moving] + mean), v, triangles)
+        # a move that brings a vertex onto a neighbour (the surface's closest point clamps
+        # at the band's corners) is refused
+        for k, i in enumerate(moving):
+            d = np.linalg.norm(allp[neighbours[i]] - moved[k], axis=1)
+            if d.min() > 0.25 * d.mean():
+                targets[i] = moved[k]
+    # a vertex that sits on a neighbour (its first position clamped onto a corner of the
+    # band) moves to the mean of its other neighbours
+    for _ in range(5):
+        allp = np.vstack([v, targets])
+        for i in range(len(targets)):
+            d = np.linalg.norm(allp[neighbours[i]] - targets[i], axis=1)
+            if d.min() < 0.2 * d.mean():
+                others = neighbours[i][d >= 0.2 * d.mean()]
+                targets[i] = _on_surface(allp[others].mean(0)[None], v, triangles)[0]
     uv_of = base.face_uvs(faces)
     uv_of_vertex = np.zeros(n_vertices, dtype=np.int64)
     for a_, u_ in uv_of.items():
@@ -714,7 +751,7 @@ def _side_patch(
         targets,
         new_faces,
         n_vertices,
-        moving,
+        np.arange(len(targets)),
         v,
         triangles,
         uv_of_vertex,
@@ -757,30 +794,22 @@ def _side_patch(
     return patch, layout
 
 
-def build(
-    base: BaseQuadMesh,
-    pinna_height: float = OPTIONS["pinna_height"],
-    core_weight: float = OPTIONS["core_weight"],
-    head_rings: int = OPTIONS["head_rings"],
-    pinna_rings: int = OPTIONS["pinna_rings"],
-    rows=OPTIONS["rows"],
-    relax: int = OPTIONS["relax"],
-    unit_penalty: float = OPTIONS["unit_penalty"],
-) -> Patch:
-    """The ear-root patch of both ears (the left authored, the right its mirror image)."""
+def build(base: BaseQuadMesh, **options) -> Patch:
+    """The ear-root patch of both ears (the left authored, the right its mirror image);
+    ``options`` override :data:`OPTIONS`."""
+    unknown = sorted(set(options) - set(OPTIONS))
+    if unknown:
+        raise PatchError(f"Unknown options of the ear-root patch: {unknown}.")
+    opts = {**OPTIONS, **options}
     rest = default_body(base)
-    pinna = pinna_mask(base, rest, pinna_height, core_weight)
-    left, _ = _side_patch(
-        base, pinna, rest, head_rings, pinna_rings, tuple(rows), relax, unit_penalty
-    )
+    pinna = pinna_mask(base, rest, opts["pinna_height"], opts["core_weight"])
+    side_opts = {
+        k: x for k, x in opts.items() if k not in ("pinna_height", "core_weight")
+    }
+    left, _ = _side_patch(base, pinna, rest, **side_opts)
     left.options = {
-        "pinna_height": float(pinna_height),
-        "core_weight": float(core_weight),
-        "head_rings": int(head_rings),
-        "pinna_rings": int(pinna_rings),
-        "rows": [float(x) for x in rows],
-        "relax": int(relax),
-        "unit_penalty": float(unit_penalty),
+        k: ([float(y) for y in x] if isinstance(x, (list, tuple)) else x)
+        for k, x in opts.items()
     }
     return left.with_mirror(base)
 
