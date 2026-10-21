@@ -374,8 +374,9 @@ class PatchAnchors:
     the refinement leaves out and in proportion to their share to those it fits
     (``fitted``). So the patch of a level is the subdivision of the patched quads of the
     level below, moved as the skin and the eyeball around it moved on this level.
-    :func:`fit_levels` fits none of the vertices that the rule touches on a detail level
-    (the skin along the patch's border included), so the rule places them all.
+    On a detail level the rule places every vertex that it touches (the skin along the
+    patch's border included) in full; :func:`fit_levels` still fits them first, so that the
+    reference's points over the corner find them and do not drag the skin around them in.
     """
 
     def __init__(self, model, excluded: np.ndarray, rest: np.ndarray | None = None):
@@ -2024,12 +2025,12 @@ def fit_levels(
                 np.asarray(topology.apply(margin)), 0.0, 1.0
             )
         # on a detail level, the vertices that come from a patch of the role "anchors" (in
-        # part, as the skin along its border) take the rule alone: fitted on their own, the
-        # skin along the border moves apart from the patch it carries
+        # part, as the skin along its border) take the rule alone: kept as fitted, the skin
+        # along the border moves apart from the patch it carries. The refinement still fits
+        # them, so that the reference's points there do not drag the skin around them in
         fit_mask = mask
         if anchored.active and subdiv > 0:
             fit_mask = mask & (anchored.share(topology) == 0)
-            data[~fit_mask] = 0.0
         threshold = np.where(
             stiff > 0.5,
             max(options.ear_normal_threshold, options.normal_threshold),
