@@ -1,6 +1,6 @@
 # The sculpt topology (plan)
 
-Status: plan, 2026-10-21. Branch `feat/sculpt-topology`.
+Status: workstream 1 (Core) landed on `sculpt/core`, 2026-10-21: the format, the loader, the ModelData transform, `Character` integration, the detail levels on mixed faces, the converter and the tests, with a test-only placeholder patch. The shipped file holds no patch yet, so `sculpt` equals `anny` until the eye-corner and ear-root patches land. Branch `feat/sculpt-topology`.
 
 ## Goal
 
@@ -45,6 +45,25 @@ Authoring scripts build the file deterministically and left-right symmetrically:
 - `opensculptboy.topology.sculpt`: loads the file, checks the digest, and turns anny's `ModelData` into the patched `ModelData` (removed faces, appended rows through `apply_retopology`, UVs); `sculpt_model(rig, phenotypes, ...)` gives an Anny model on the new mesh.
 - `Character.topology` accepts `"sculpt"` (and `"sculpt-quads"` for the detail layer), and `Character.build_model` builds it. A card on `anny` stays byte-identical to today's output.
 - `opensculptboy.topology.convert`: `to_anny` and `to_sculpt` for vertex fields of a level (detail offsets, per-vertex maps): identity on anny's own vertices, and on the patched regions a barycentric transfer from the closest points of the other mesh. The change of `src/anny` stays at zero if the integration can live in `opensculptboy`; a hook in `anny` is allowed only where the model itself must change, and kept small for upstream merges.
+
+## API (workstream 1)
+
+The contract of a patch module is in `src/opensculptboy/topology/README.md`: a module of `opensculptboy.topology.patches` with `NAME`, `ORDER` (eye_corner 100, ear_root 200, placeholder 900), `ENABLED`, `OPTIONS` and `build(base: BaseQuadMesh, **options) -> Patch`, authored against `opensculptboy.topology.base_quad_mesh()` (anny's quad mesh at the default body).
+
+- `opensculptboy.topology.patch`: `Patch(name, removed_faces, anchors, weights, faces, uv_faces, uv_anchors, uv_weights, vertex_labels=None, face_labels=None, symmetric=True, options={})` in its own numbering (`N + m` a new vertex, `U + j` a new UV), with `mirrored`, `union` and `with_mirror`; `blend_rows([{anchor: weight}])`; `validate_patch(patch, base)` and `check_symmetry`, raising `PatchError`. New UVs are convex rows over anny's UVs (`uv_anchors`, `uv_weights`), so that the mirror image of a patch carries its UVs over.
+- `opensculptboy.topology.sculpt`: `compose(names=None, include=(), exclude=(), base=None, options=None) -> SculptData`; `SculptData.write(path)` and `read_sculpt_data(path)` (checks the sidecar's SHA-256 and the digest of anny's quad mesh); `sculpt_data()` (the innermost `use_sculpt_data(data)` block, else `OPENSCULPTBOY_SCULPT_TOPOLOGY`, else the shipped file); `sculpt_model_data(base_data, data=None, triangulate=False)`; `sculpt_model(rig, topology="sculpt" | "sculpt-quads", local_changes, facial_actions, phenotypes, ..., data=None)`; `build_model(topology, **kwargs)` for any topology.
+- `python -m opensculptboy.topology.build [--with P] [--without P] [--only P] [--out FILE]` writes `src/opensculptboy/data/topology/sculpt.safetensors` and `sculpt.json`, deterministically.
+- `Character(topology="sculpt")` and `"sculpt-quads"` build through `sculpt_model`; `opensculptboy.detail.subdivision.level("sculpt", n)` subdivides `sculpt-quads`, with `catmull_clark_mixed` on level 0 when it holds triangles (the general rules; quad meshes keep anny's `catmull_clark`), and its cache follows the current sculpt data.
+- `opensculptboy.topology.convert`: `to_sculpt(field, subdiv=0, vertices=None, data=None)`, `to_anny(...)`, `LevelCorrespondence(subdiv)` and `convert_offsets(source, target, topology)`.
+
+Choices of the core:
+
+- `src/anny` is unchanged: `sculpt_model` builds anny's `anny-quads` ModelData (cached by anny), patches it and calls `Anny.from_model_data`. Every row goes through `apply_retopology(check_weights=True)` except the blend shapes, whose rows follow its formula outside it (identity rows copied bit for bit, new rows summed as it sums them), which saves several GB with every blend shape. Anny's rows keep their skin weights bit for bit (apply_retopology renormalises them).
+- Faces of `sculpt-quads`: anny's quads without the removed ones, in anny's order, then the new faces. `sculpt` triangulates the kept quads as anny does and keeps the triangles.
+- The new vertices take `base_mesh_vertex_indices` from 19158 (the vertex count of MakeHuman's `base.obj`) upward, so a lookup of a base-mesh table at a new vertex fails loudly instead of reading another vertex.
+- The bone data (heads, orientations, landmarks) does not depend on the vertices and is anny's own; procrustes buffers index anny's vertices, which keep their indices.
+
+Known places that assume anny's mesh, for workstream 4: `export.vrm.check_topology` and `vrm_tables.VRM_TOPOLOGIES` refuse `sculpt` (`TopologyConfig.from_string`); `vrm_tables.skin_weight_digest` changes with the new vertices, so `skin_weight_data` warns and the refinement edits need a sculpt entry; the tables indexed by base-mesh indices (`fit.register.excluded_vertices` and `ear_weights`, `fit.metrics` regions, `posing.head` MediaPipe lookup, `anny.keypoints.KeypointsRegressor`, `anny.viewer.landmarks`, `anny.poses.authoring.rig`) index past their arrays at the new vertices; `fit.register.fit_model` builds `anny.Anny()` and not the card's topology; `export.body.triangulated_faces` now drops the empty half of a `[a, b, c, c]` face, but other code that splits `(F, 4)` faces (`anny.utils.subdivision.quads_to_triangles`, `MixedSubdivision`) assumes quads; `texture.ears` and the ear UV files, `eyes.mesh.eyed_mesh` and its caruncle, the bake and the head and ear tiles take the topology name but were only checked on anny; the eyes' caruncle should drop on `sculpt` once the eye-corner patch lands; the budgets count anny's vertex numbers.
 
 ## Workstreams
 
