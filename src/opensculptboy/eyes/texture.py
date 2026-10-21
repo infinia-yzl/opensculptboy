@@ -546,13 +546,13 @@ def fit_baked_iris(
 FLAT_NORMAL = np.array([0.0, 0.0, 1.0])
 
 
-def _surface_frame(normals: np.ndarray):
-    """The frame (E1, E2, N) of unit normals (M, 3) in an eye's frame: E1 runs about the gaze
-    (+Z) in the sense of the layout's angle, E2 = N x E1; E1 is +Y where N lies on the
-    axis."""
-    e1 = np.stack([-normals[:, 1], normals[:, 0], np.zeros(len(normals))], 1)
-    length = np.linalg.norm(e1, axis=1, keepdims=True)
-    e1 = np.where(length > 1e-6, e1 / np.maximum(length, 1e-12), [0.0, 1.0, 0.0])
+def _surface_frame(normals: np.ndarray, phi: np.ndarray):
+    """The frame (E1, E2, N) of unit normals (M, 3) in an eye's frame at texels of the layout's
+    angle ``phi`` (M,): E1 runs about the gaze (+Z) in the sense of that angle, in the plane
+    of the normal, and E2 = N x E1. The angle comes from the texel, not from the normal, so
+    that the frame stays steady at the pupil's centre, where the normals of two surfaces
+    point along the gaze and their own azimuths turn quickly."""
+    e1 = np.stack([-np.sin(phi), np.cos(phi), np.zeros(len(normals))], 1)
     e1 = e1 - (e1 * normals).sum(1, keepdims=True) * normals
     e1 /= np.maximum(np.linalg.norm(e1, axis=1, keepdims=True), 1e-12)
     return e1, np.cross(normals, e1), normals
@@ -625,7 +625,7 @@ def carry_baked_normals(
         )[mask]
         frame_n = frame_n[mask]
         frame_n /= np.maximum(np.linalg.norm(frame_n, axis=1, keepdims=True), 1e-12)
-        e1, e2, nn = _surface_frame(frame_n)
+        e1, e2, nn = _surface_frame(frame_n, texel_polar(size)[1][mask])
         local = np.stack(
             [(bent * e1).sum(1), (bent * e2).sum(1), (bent * nn).sum(1)], 1
         )
@@ -654,6 +654,7 @@ def encode_normals(
     out[...] = [0.5, 0.5, 1.0]
     # the layout's distance from each square's centre at s = 1.6
     reach = 0.5 * FRONT_SHARE + 0.5 * (1 - FRONT_SHARE) * 0.6
+    angle = texel_polar(size)[1]
     for uvs, triangles, normals, tangents in surfaces:
         cu = np.where(uvs[:, 0] < 0.5, 0.25, 0.75)
         t = np.hypot((uvs[:, 0] - cu) * 2.0, uvs[:, 1] - 0.5)
@@ -667,7 +668,7 @@ def encode_normals(
         t = t - (t * n).sum(1, keepdims=True) * n
         t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
         b = np.where(grid[mask][:, 6:7] < 0, -1.0, 1.0) * np.cross(n, t)
-        e1, e2, _ = _surface_frame(n)
+        e1, e2, _ = _surface_frame(n, angle[mask])
         d = bent[mask]
         target = d[:, 0:1] * e1 + d[:, 1:2] * e2 + d[:, 2:3] * n
         code = np.stack(
