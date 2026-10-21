@@ -349,9 +349,10 @@ class PatchAnchors:
     agree in the written offsets.
 
     On a detail level the rule applies to the level's vertex points of anny's vertices (the
-    first rows of every level), and the level's vertices take the subdivision of the result
-    in proportion to their share in the patch and the free vertices (``share``), so that the
-    subdivision of the patched quads carries the patch.
+    first rows of every level), and the subdivision of the result carries it to the level's
+    vertices that come from the patch and the free vertices (``share`` over 0): in full to
+    those the level's refinement leaves out, and in proportion to their share to those it
+    fits (``fitted``), so that the patch joins the fitted skin without a step.
     """
 
     def __init__(self, model, excluded: np.ndarray):
@@ -423,9 +424,10 @@ class PatchAnchors:
         """(N,) the share of each vertex of a level in the vertices the rule writes."""
         return np.asarray(topology.apply(self.written.astype(np.float64)))
 
-    def apply(self, offsets: np.ndarray, topology) -> np.ndarray:
+    def apply(self, offsets: np.ndarray, topology, fitted=None) -> np.ndarray:
         """The offsets (N, 3) of a level (:class:`~opensculptboy.detail.DetailTopology`) with
-        the rule applied."""
+        the rule applied; ``fitted`` (N,) marks the vertices that the level's refinement
+        fits (default: none)."""
         offsets = np.asarray(offsets, dtype=np.float64)
         if not self.active:
             return offsets
@@ -434,7 +436,12 @@ class PatchAnchors:
             out = offsets.copy()
             out[self.written] = field[self.written]
             return out
-        share = self.share(topology)[:, None]
+        share = self.share(topology)
+        if fitted is not None:
+            share = np.where(np.asarray(fitted, bool), share, share > 0)
+        else:
+            share = (share > 0).astype(np.float64)
+        share = share[:, None]
         return offsets + share * (np.asarray(topology.apply(field)) - offsets)
 
 
@@ -1996,7 +2003,7 @@ def fit_levels(
             if not anchored.active:
                 return points
             rest = R_.unpose(points, w, i, transforms, rotation, translation)
-            moved = anchored.apply(rest - parametric, topology) + parametric
+            moved = anchored.apply(rest - parametric, topology, mask) + parametric
             rows = anchored.share(topology) > 0
             out = points.copy()
             out[rows] = R_.pose_vertices(
@@ -2030,7 +2037,7 @@ def fit_levels(
         )
         registered = R_.unpose(fitted, w, i, transforms, rotation, translation)
         offsets[subdiv] = anchored.apply(
-            R_.rest_offsets(registered, parametric), topology
+            R_.rest_offsets(registered, parametric), topology, mask
         )
         if anchored.active:
             rows = anchored.share(topology) > 0
