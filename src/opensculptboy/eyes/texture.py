@@ -105,6 +105,12 @@ def _fibres(phi: np.ndarray, q: np.ndarray, rng, count: int, low: int, high: int
     return out / max(1e-9, np.sqrt((1.0 / n).sum()))
 
 
+def _sized(eye):
+    """``eye`` with numbers for its iris and pupil sizes (the defaults for ``"auto"``)."""
+    sized = getattr(eye, "sized", None)
+    return sized() if sized is not None and eye.wants_measure() else eye
+
+
 def _radii(radii) -> dict[str, float]:
     if radii is None:
         return {"L": REFERENCE_EYEBALL_MM / 2.0, "R": REFERENCE_EYEBALL_MM / 2.0}
@@ -126,6 +132,7 @@ def procedural_eye_linear(
     """The eye texture (H, W, 3) in linear colours, as :func:`procedural_eye_pixels`."""
     s, phi, left = texel_polar(size)
     radii = _radii(radii)
+    eye = _sized(eye)
     rho_l, rho_p = eye.iris_mm / 2.0, eye.pupil_mm / 2.0
     out = np.empty(s.shape + (3,))
     for side, half, seed in (("L", left, eye.seed), ("R", ~left, eye.seed + 1)):
@@ -347,11 +354,58 @@ def _profile(lum, s, phi, centre, step=0.004, reach=0.8):
     return 0.5 * (edges[:-1] + edges[1:]), prof
 
 
+# a pale outer ring of the iris (as game textures often draw it) is at most this wide (eyeball
+# radii), and the dark limbal ring beyond it falls back by at least this share of the step from
+# the iris to the ring
+PALE_RING_WIDTH = 0.15
+PALE_RING_DROP = 0.3
+
+
+def _pale_ring(radii, prof, valid, first: int, iris: float) -> float:
+    """
+    The limbus beyond the first ring ``first`` that is lighter than the iris: when a pale ring
+    follows there and a darker limbal ring after it (the profile falls back by
+    :data:`PALE_RING_DROP` of its rise within :data:`PALE_RING_WIDTH`, then rises again to the
+    sclera), the pale ring is the iris's outer band and the limbus lies half way down that
+    fall; otherwise the first ring itself.
+    """
+    start = float(radii[first])
+    span = np.flatnonzero(valid & (radii >= start) & (radii <= start + PALE_RING_WIDTH))
+    if len(span) < 4:
+        return start
+    values = prof[span]
+    # the band's top: the last ring before the profile first falls back by a tenth of its
+    # rise; the dip: the lowest ring after it before the profile climbs over the band again
+    tops = np.maximum.accumulate(values)
+    falling = np.flatnonzero(values < tops - 0.1 * max(float(tops[-1]) - iris, 1e-9))
+    if len(falling) == 0:
+        return start
+    top = int(np.argmax(values[: falling[0]])) if falling[0] > 0 else 0
+    peak = float(values[top])
+    rise = peak - iris
+    over = np.flatnonzero(values[top + 1 :] > peak)
+    end = top + 1 + (int(over[0]) if len(over) else len(values) - top - 1)
+    low = top + int(np.argmin(values[top:end]))
+    dip = float(values[low])
+    if rise <= 0 or peak - dip < PALE_RING_DROP * rise or low == len(values) - 1:
+        return start
+    # the sclera beyond rises again above the dip
+    later = valid & (radii > radii[span[low]]) & (radii <= radii[span[low]] + 0.1)
+    if not later.any() or np.nanmax(prof[later]) < dip + 0.5 * (peak - dip):
+        return start
+    half = 0.5 * (peak + dip)
+    fall = np.flatnonzero(values[top : low + 1] < half)
+    return float(radii[span[top + fall[0]]]) if len(fall) else start
+
+
 def find_iris(colours: np.ndarray, s: np.ndarray, phi: np.ndarray):
     """
     The pupil and the iris of one eye of a texture in the eye texture's layout: the centre of
     the pupil (in units of ``s``), the pupil's radius, the limbus radius, and the median colour
     of the iris (linear), or None when the texture shows no dark pupil inside a darker iris.
+    The pupil's edge lies half way from the pupil to the iris, and the limbus half way from
+    the iris to the sclera, or, when a pale outer band of the iris and a darker limbal ring
+    follow there, half way down from that band to the ring (:func:`_pale_ring`).
     ``colours`` (N, 3) are the linear colours of the texels at polar coordinates ``s``, ``phi``
     (N,), the front of the eye.
     """
@@ -390,7 +444,7 @@ def find_iris(colours: np.ndarray, s: np.ndarray, phi: np.ndarray):
     )
     if len(beyond) == 0:
         return None
-    rho_l = float(radii[beyond[0]])
+    rho_l = _pale_ring(radii, prof, valid, beyond[0], iris)
     x, y = s * np.cos(phi) - centre[0], s * np.sin(phi) - centre[1]
     r = np.hypot(x, y)
     ring = (r > rho_p + 0.2 * (rho_l - rho_p)) & (r < rho_l - 0.1 * (rho_l - rho_p))
@@ -411,6 +465,7 @@ def fit_baked_iris(
     """
     s, phi, left = texel_polar(size)
     w, h = size
+    eye = _sized(eye)
     out = image.copy()
     found = {}
     radii = _radii(radii)

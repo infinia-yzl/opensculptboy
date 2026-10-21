@@ -266,8 +266,10 @@ EYE_DEFAULTS = {
     "iris_color": [0.20, 0.10, 0.04],  # the outer iris: a medium brown
     "iris_color_inner": None,  # the zone inside the collarette; None: a lighter amber of it
     "iris_tint": 0.0,  # 0 to 1: how far a baked iris turns to iris_color (keeping its pattern)
-    "iris_mm": 11.7,  # the iris (limbus) diameter
-    "pupil_mm": 3.5,  # the pupil diameter, in neutral light 3 to 4 mm
+    "iris_mm": "auto",  # the iris (limbus) diameter: mm, "baked" (the size found in the
+    #                     baked eye texture) or "auto" (that size for baked eyes, else 11.7)
+    "pupil_mm": "auto",  # the pupil diameter, likewise (3.5 when not baked: 3 to 4 mm in
+    #                      neutral light)
     "limbal_ring": 0.6,  # 0 to 1: the darkening of the ring around the iris
     "limbal_ring_mm": 0.6,  # its width
     "sclera_color": [0.80, 0.74, 0.68],  # a slightly warm white
@@ -285,6 +287,9 @@ EYE_DEFAULTS = {
     "highlight": 1.0,  # VRM: the strength of the matcap highlight
 }
 EYE_SOURCES = ("auto", "procedural", "baked")
+# the iris and pupil sizes of eyes that do not take them from a bake (mm)
+EYE_SIZES = {"iris_mm": 11.7, "pupil_mm": 3.5}
+EYE_SIZE_WORDS = ("auto", "baked")
 
 
 @dataclasses.dataclass
@@ -298,8 +303,8 @@ class EyeMaterial:
     )
     iris_color_inner: list | None = None
     iris_tint: float = 0.0
-    iris_mm: float = 11.7
-    pupil_mm: float = 3.5
+    iris_mm: float | str = "auto"
+    pupil_mm: float | str = "auto"
     limbal_ring: float = 0.6
     limbal_ring_mm: float = 0.6
     sclera_color: list = dataclasses.field(
@@ -333,6 +338,34 @@ class EyeMaterial:
             return list(self.iris_color_inner)
         r, g, b = self.iris_color
         return [min(1.0, 1.5 * r + 0.015), min(1.0, 1.45 * g + 0.01), min(1.0, 1.1 * b)]
+
+    def sized(self, measured: dict | None = None) -> "EyeMaterial":
+        """
+        These eyes with numbers for ``iris_mm`` and ``pupil_mm``: ``measured`` (the sizes
+        found in a baked eye texture, ``{"iris_mm", "pupil_mm"}``, or None) for ``"baked"``
+        and ``"auto"``, else :data:`EYE_SIZES` for ``"auto"``. ValueError for ``"baked"``
+        without measured sizes.
+        """
+        values = {}
+        for key in ("iris_mm", "pupil_mm"):
+            value = getattr(self, key)
+            if value == "baked" and not measured:
+                raise ValueError(
+                    f"eyes {key} is 'baked', but no iris was found in a baked eye texture."
+                )
+            if value in EYE_SIZE_WORDS:
+                value = measured[key] if measured else EYE_SIZES[key]
+            values[key] = float(value)
+        if values["pupil_mm"] >= values["iris_mm"] - 1.0:
+            # a measured size against a given one: the given one with the other default
+            for key in ("iris_mm", "pupil_mm"):
+                if getattr(self, key) in EYE_SIZE_WORDS:
+                    values[key] = EYE_SIZES[key]
+        return dataclasses.replace(self, **values)
+
+    def wants_measure(self) -> bool:
+        """Whether a size comes from the baked eye texture when there is one."""
+        return self.iris_mm in EYE_SIZE_WORDS or self.pupil_mm in EYE_SIZE_WORDS
 
     def extras(self) -> dict[str, Any]:
         """The settings that the glTF export keeps in the eye materials' extras."""
@@ -368,8 +401,6 @@ def check_eyes(data: dict) -> dict:
         _colour(data["iris_color_inner"], "eyes iris_color_inner", 3)
     for key, low, high in (
         ("iris_tint", 0.0, 1.0),
-        ("iris_mm", 6.0, 16.0),
-        ("pupil_mm", 1.0, 9.0),
         ("limbal_ring", 0.0, 1.0),
         ("limbal_ring_mm", 0.0, 3.0),
         ("veins", 0.0, 1.0),
@@ -381,7 +412,20 @@ def check_eyes(data: dict) -> dict:
     ):
         if key in data:
             _number(data[key], f"eyes {key}", low, high)
-    if data.get("pupil_mm", 3.5) >= data.get("iris_mm", 11.7) - 1.0:
+    for key, low, high in (("iris_mm", 6.0, 16.0), ("pupil_mm", 1.0, 9.0)):
+        if key in data and data[key] not in EYE_SIZE_WORDS:
+            if isinstance(data[key], str):
+                raise ValueError(
+                    f"eyes {key} must be a number of millimetres, 'auto' or 'baked' "
+                    f"(got {data[key]!r})."
+                )
+            _number(data[key], f"eyes {key}", low, high)
+    iris, pupil = data.get("iris_mm", "auto"), data.get("pupil_mm", "auto")
+    if (
+        iris not in EYE_SIZE_WORDS
+        and pupil not in EYE_SIZE_WORDS
+        and pupil >= iris - 1.0
+    ):
         raise ValueError("eyes pupil_mm must be at least 1 mm below iris_mm.")
     for key in ("cornea", "caruncle"):
         if key in data and not isinstance(data[key], bool):
