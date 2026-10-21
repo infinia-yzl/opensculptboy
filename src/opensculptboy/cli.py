@@ -270,7 +270,7 @@ def _fit(args, parser) -> int:
         reference,
         detail=args.detail,
         name=name,
-        options=FitOptions(verbose=not args.quiet),
+        options=FitOptions(verbose=not args.quiet, topology=args.topology),
     )
     textures = None
     if args.textures:
@@ -283,7 +283,9 @@ def _fit(args, parser) -> int:
             skin_maps=True,
             ear_tile=args.head_size > 0,
         )
-        textures, material = _write_textures(baked, out, int(max(result.offsets)))
+        textures, material = _write_textures(
+            baked, out, int(max(result.offsets)), result.character.topology
+        )
         result.character.material = _merge_material(material, args.material, parser)
     result.write(out, textures=textures)
     summary = {
@@ -301,7 +303,7 @@ def _fit(args, parser) -> int:
     return 0
 
 
-def _write_textures(baked, card: pathlib.Path, subdiv: int):
+def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "anny"):
     """Write the baked textures next to a card as ``<card>.<slot>.png``: the detail layer's
     ``textures`` (the eye texture) and the skin's ``material`` section."""
     stem = card.name[: -len(card.suffix)] if card.suffix else card.name
@@ -312,7 +314,7 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int):
         names[slot] = path.name
     if baked.ear_uvs is not None:
         path = card.parent / f"{stem}.ear_uvs.safetensors"
-        baked.ear_uvs.save(path)
+        baked.ear_uvs.save(path, topology)
         names["ear_uvs"] = path.name
     textures = {"subdiv": subdiv}
     if "eyes" in names:
@@ -360,7 +362,7 @@ def _bake(args, parser) -> int:
         parser.error(_one_line(error))
     out.parent.mkdir(parents=True, exist_ok=True)
     level = args.level if args.level is not None else max(character.detail_levels())
-    textures, material = _write_textures(baked, out, int(level))
+    textures, material = _write_textures(baked, out, int(level), character.topology)
     character.material = _merge_material(material, args.material, parser)
     detail = dict(character.detail)
     detail["textures"] = textures
@@ -380,6 +382,20 @@ def _bake(args, parser) -> int:
             indent=2,
         )
     )
+    return 0
+
+
+def _convert(args, parser) -> int:
+    from opensculptboy.topology.convert import convert_card
+
+    out = pathlib.Path(args.out)
+    if out.resolve() == pathlib.Path(args.card).resolve():
+        parser.error("--out must name another card than the one converted.")
+    try:
+        summary = convert_card(args.card, out, args.to, body=not args.default_body)
+    except (OSError, ValueError, KeyError) as error:
+        parser.error(f"{args.card}: {_one_line(error)}")
+    print(json.dumps(summary, indent=2))
     return 0
 
 
@@ -616,6 +632,13 @@ def main(argv=None) -> int:
         "--material",
         help="a JSON file of skin material values (subsurface, specular...) for the card",
     )
+    f.add_argument(
+        "--topology",
+        choices=("anny", "sculpt"),
+        default="anny",
+        help="the mesh of the card: anny's, or sculpt (anny's with the patches of "
+        "opensculptboy.topology; default anny)",
+    )
     f.add_argument("--quiet", action="store_true", help="no progress lines")
 
     b = sub.add_parser(
@@ -652,6 +675,25 @@ def main(argv=None) -> int:
         help="keep the ears on the atlas's UVs (no ear tile for levels 1 and 2)",
     )
 
+    c = sub.add_parser(
+        "convert",
+        help="convert a character card between the anny and sculpt meshes",
+        description="Write a character card on another mesh (anny or sculpt): the same "
+        "parameters, its detail offsets and ear tile UVs converted level by level and "
+        "written next to the new card; the textures stay on anny's atlas. See "
+        "docs/sculpt-topology.md.",
+    )
+    c.add_argument("card", help="the character card (JSON) to convert")
+    c.add_argument(
+        "--to", required=True, choices=("anny", "sculpt"), help="the target mesh"
+    )
+    c.add_argument("--out", required=True, help="the card (JSON) to write")
+    c.add_argument(
+        "--default-body",
+        action="store_true",
+        help="transfer the detail on anny's default body (default: the card's own body)",
+    )
+
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
         "kind",
@@ -683,6 +725,8 @@ def main(argv=None) -> int:
         return _fit(args, f)
     if args.command == "bake":
         return _bake(args, b)
+    if args.command == "convert":
+        return _convert(args, c)
     if args.command == "viewer":
         from anny.viewer.__main__ import main as viewer_main
 

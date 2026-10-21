@@ -50,11 +50,20 @@ def uv_islands(uv_faces: np.ndarray, uv_count: int) -> np.ndarray:
 _ISLANDS: dict = {}
 
 
+def _key(topology: str):
+    """The cache key of a topology: its name, and the digest of the current sculpt data for
+    the sculpt topologies (whose mesh follows opensculptboy.topology.use_sculpt_data)."""
+    from opensculptboy.detail.subdivision import _data_key
+
+    return topology, _data_key(topology)
+
+
 def _head_island(model, topology: str = "anny"):
     """(UV faces, UVs, the mask of the head island's faces) of a topology's quad mesh, or
     None; the head is the faces weighted to the head and the neck bones of ``model``."""
-    if topology in _ISLANDS:
-        return _ISLANDS[topology]
+    key = _key(topology)
+    if key in _ISLANDS:
+        return _ISLANDS[key]
     from anny.utils.subdivision import HEAD_REGION_BONES, faces_weighted_to_bones
     from opensculptboy.detail.subdivision import level
 
@@ -74,7 +83,7 @@ def _head_island(model, topology: str = "anny"):
         return None
     pick = whole[np.argmax(counts[whole])]
     found = base.uv_quads, np.asarray(base.uvs, np.float64), island == pick
-    _ISLANDS[topology] = found
+    _ISLANDS[key] = found
     return found
 
 
@@ -129,8 +138,9 @@ _LOOKUPS: dict = {}
 def _lookup(model, topology: str):
     """An image of the atlas: 1 on the head island, 0 on the other islands, and the empty
     texels the value of a neighbour within a few texels (-1 further away)."""
-    if topology in _LOOKUPS:
-        return _LOOKUPS[topology]
+    key = _key(topology)
+    if key in _LOOKUPS:
+        return _LOOKUPS[key]
     from opensculptboy.texture.bake import rasterise
 
     found = _head_island(model, topology)
@@ -154,7 +164,7 @@ def _lookup(model, topology: str):
             take = (grown < 0) & (shifted >= 0)
             grown[take] = shifted[take]
         image = grown
-    _LOOKUPS[topology] = image
+    _LOOKUPS[key] = image
     return image
 
 
