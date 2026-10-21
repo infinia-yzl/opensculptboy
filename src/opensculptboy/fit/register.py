@@ -77,17 +77,22 @@ FINGER_BONES = ("finger", "metacarpal", "thumb")
 # Base-mesh face labels that the registration leaves out (with the eyeballs).
 EXCLUDED_LABELS = ("eye_cavity.L", "eye_cavity.R", "mouth_cavity")
 # The roles of the new vertices of the sculpt patches in the registration, by patch label (a
-# label or the prefix of finer labels, see opensculptboy.topology.lookup.labelled): "fit"
-# (fitted as skin) or "exclude" (left out and moved by follow_skin, as the eye sockets). A new
-# vertex without an entry takes the base-mesh label of its strongest anchor. The eye-corner
-# patch's caruncle and fold of the conjunctiva lie inside the corner, where the reference
-# shows the socket's tissue or nothing: they follow the skin as anny's sockets do (its new
+# label or the prefix of finer labels, see opensculptboy.topology.lookup.labelled; the last
+# matching entry wins): "fit" (fitted as skin), "exclude" (left out and moved by follow_skin,
+# as the eye sockets) or "anchors" (left out, and placed after each level's refinement at the
+# blend of its anchors that defines it, see PatchAnchors). A new vertex without an entry
+# takes the base-mesh label of its strongest anchor. The eye-corner patch's caruncle and fold
+# of the conjunctiva lie inside the corner, where the reference shows the socket's tissue or
+# nothing: fitted as skin they crumple, and moved by follow_skin each vertex takes the
+# displacement of other skin and is pushed behind it, which tears the corner into flaps; at
+# the blend of their anchors they keep their designed shape between the fitted lids (its new
 # vertices all carry the label "eye_corner"; the finer labels name its faces).
 PATCH_ROLES: dict[str, str] = {
-    "eye_corner/caruncle": "exclude",
-    "eye_corner/conjunctiva": "exclude",
-    "eye_corner": "exclude",
+    "eye_corner/caruncle": "anchors",
+    "eye_corner/conjunctiva": "anchors",
+    "eye_corner": "anchors",
 }
+PATCH_ROLE_NAMES = ("fit", "exclude", "anchors")
 # The topologies that the fit takes (FitOptions.topology).
 FIT_TOPOLOGIES = ("anny", "sculpt")
 
@@ -280,14 +285,15 @@ def excluded_vertices(model) -> np.ndarray:
     of the mouth, and every closed part apart from the body (the eyeballs and the tongue).
 
     On ``sculpt``, a new vertex takes the base-mesh label of its strongest anchor, unless its
-    patch label has a role in :data:`PATCH_ROLES`, and anny's vertices that no face uses any
+    patch label has a role in :data:`PATCH_ROLES` (``"exclude"`` and ``"anchors"`` leave it
+    out), and anny's vertices that no face uses any
     more (inside the removed faces) are left out as closed parts of their own."""
     from scipy.sparse import coo_matrix
     from scipy.sparse.csgraph import connected_components
 
     from anny.faces.authoring.base_mesh import base_mesh
     from opensculptboy.export.vrm_tables import eyeball_vertices
-    from opensculptboy.topology.lookup import base_mesh_rows, labelled
+    from opensculptboy.topology.lookup import base_mesh_rows
 
     mesh = base_mesh()
     base = base_mesh_rows(model)
@@ -295,10 +301,8 @@ def excluded_vertices(model) -> np.ndarray:
     for label in EXCLUDED_LABELS:
         out_base[np.unique(mesh.quads[mesh.face_labels == label])] = True
     excluded = out_base[base]
-    for label, role in PATCH_ROLES.items():
-        if role not in ("fit", "exclude"):
-            raise ValueError(f"Unknown patch role {role!r} of {label!r}.")
-        excluded[labelled(model, label)] = role == "exclude"
+    roles = patch_roles(model)
+    excluded[roles != ""] = np.isin(roles[roles != ""], ("exclude", "anchors"))
     try:
         for rows in eyeball_vertices(model).values():
             excluded[rows] = True
@@ -314,6 +318,124 @@ def excluded_vertices(model) -> np.ndarray:
     counts = np.bincount(labels)
     excluded |= labels != np.argmax(counts)
     return excluded
+
+
+def patch_roles(model) -> np.ndarray:
+    """(V,) the role of each vertex in :data:`PATCH_ROLES` (``""`` for anny's vertices and
+    for new vertices without an entry); the last matching entry wins."""
+    from opensculptboy.topology.lookup import labelled
+
+    roles = np.full(len(model.template_vertices), "", dtype=object)
+    for label, role in PATCH_ROLES.items():
+        if role not in PATCH_ROLE_NAMES:
+            raise ValueError(f"Unknown patch role {role!r} of {label!r}.")
+        roles[labelled(model, label)] = role
+    return roles
+
+
+class PatchAnchors:
+    """
+    The rule of the patch role ``"anchors"``: each new vertex of such a patch is its fixed
+    convex blend of anny vertices (its anchors, :func:`opensculptboy.topology.lookup.vertex_anchors`),
+    in the rest frame of the card: its detail offset is the same blend of its anchors' offsets,
+    so that its rest position is the blend of their rest positions, as the model defines it.
+
+    Most anchors of the eye-corner patch are vertices that the fit leaves out: anny's pocket,
+    which no face uses on ``sculpt``, and the lining of the socket. Their offsets come from a
+    harmonic extension of the fitted skin's offsets over anny's quad mesh (``free``: the
+    left-out anny vertices joined to the anchors through left-out vertices, with the fitted
+    vertices around them as the boundary), so that the socket and the patch move as the lids
+    around them do; those vertices take these offsets too, so that the patch and its anchors
+    agree in the written offsets.
+
+    On a detail level the rule applies to the level's vertex points of anny's vertices (the
+    first rows of every level), and the level's vertices take the subdivision of the result
+    in proportion to their share in the patch and the free vertices (``share``), so that the
+    subdivision of the patched quads carries the patch.
+    """
+
+    def __init__(self, model, excluded: np.ndarray):
+        from scipy.sparse import coo_matrix, csc_matrix, diags
+        from scipy.sparse.csgraph import connected_components
+        from scipy.sparse.linalg import splu
+
+        from opensculptboy.topology.lookup import model_sculpt_data, vertex_anchors
+        from opensculptboy.topology.patch import base_quad_mesh
+
+        self.count = len(model.template_vertices)
+        self.rows = np.flatnonzero(patch_roles(model) == "anchors")
+        self.free = np.zeros(0, np.int64)
+        self.written = np.zeros(self.count, bool)
+        if len(self.rows) == 0:
+            return
+        anchors, weights = vertex_anchors(model)
+        self.anchors, self.weights = anchors[self.rows], weights[self.rows]
+        n = model_sculpt_data(model).vertex_count
+        quads = base_quad_mesh().quads
+        edges = np.concatenate([quads[:, [k, (k + 1) % 4]] for k in range(4)])
+        edges = np.unique(np.sort(edges[edges[:, 0] != edges[:, 1]], 1), axis=0)
+        left_out = np.asarray(excluded[:n], bool)
+        inner = edges[left_out[edges].all(1)]
+        graph = coo_matrix(
+            (np.ones(len(inner)), (inner[:, 0], inner[:, 1])), shape=(n, n)
+        )
+        _, component = connected_components(graph, directed=False)
+        used = self.anchors[self.weights > 0]
+        free = left_out & np.isin(component, component[used[left_out[used]]])
+        adjacency = coo_matrix(
+            (np.ones(2 * len(edges)), (edges.ravel(), edges[:, ::-1].ravel())),
+            shape=(n, n),
+        ).tocsr()
+        index = np.flatnonzero(free)
+        boundary = adjacency[index][:, ~free]
+        # a component of free vertices without a fitted neighbour keeps its offsets
+        reached = np.zeros(n, bool)
+        reached[index] = np.asarray(boundary.sum(1)).ravel() > 0
+        _, own = connected_components(adjacency[index][:, index], directed=False)
+        good = np.isin(own, own[reached[index]])
+        index = index[good]
+        if len(index):
+            inside = adjacency[index][:, index]
+            degree = np.asarray(adjacency[index].sum(1)).ravel()
+            self._solve = splu(csc_matrix(diags(degree) - inside))
+            self._boundary = adjacency[index][:, np.flatnonzero(~free)]
+            self._fixed = np.flatnonzero(~free)
+        self.free = index
+        self.written[self.rows] = True
+        self.written[self.free] = True
+
+    @property
+    def active(self) -> bool:
+        return len(self.rows) > 0
+
+    def level_zero(self, field: np.ndarray) -> np.ndarray:
+        """The rule on a level-0 field (V0, D) of offsets: the free vertices harmonic, the
+        patch's vertices the blend of their anchors."""
+        out = np.array(field, dtype=np.float64, copy=True)
+        if not self.active:
+            return out
+        if len(self.free):
+            out[self.free] = self._solve.solve(self._boundary @ out[self._fixed])
+        out[self.rows] = np.einsum("nk, nkd -> nd", self.weights, out[self.anchors])
+        return out
+
+    def share(self, topology) -> np.ndarray:
+        """(N,) the share of each vertex of a level in the vertices the rule writes."""
+        return np.asarray(topology.apply(self.written.astype(np.float64)))
+
+    def apply(self, offsets: np.ndarray, topology) -> np.ndarray:
+        """The offsets (N, 3) of a level (:class:`~opensculptboy.detail.DetailTopology`) with
+        the rule applied."""
+        offsets = np.asarray(offsets, dtype=np.float64)
+        if not self.active:
+            return offsets
+        field = self.level_zero(offsets[: self.count])
+        if topology.subdiv == 0:
+            out = offsets.copy()
+            out[self.written] = field[self.written]
+            return out
+        share = self.share(topology)[:, None]
+        return offsets + share * (np.asarray(topology.apply(field)) - offsets)
 
 
 SHARED_TARGETS = ("face_shapes", "local_changes", "both")
@@ -1736,6 +1858,7 @@ def fit_levels(
     seconds = dict(seconds or {})
     rest0, transforms = _card_rest(model, character)
     excluded = excluded_vertices(model)
+    anchored = PatchAnchors(model, excluded)
     errors, offsets = {}, {}
     weights0 = model.vertex_bone_weights.detach().double().numpy()
     indices0 = model.vertex_bone_indices.cpu().numpy()
@@ -1867,9 +1990,25 @@ def fit_levels(
                 options.ear_relax_iterations,
                 options.nicp_max_distance,
             )
+
+        def place(points):
+            # the vertices of the role "anchors" at the blends of their anchors
+            if not anchored.active:
+                return points
+            rest = R_.unpose(points, w, i, transforms, rotation, translation)
+            moved = anchored.apply(rest - parametric, topology) + parametric
+            rows = anchored.share(topology) > 0
+            out = points.copy()
+            out[rows] = R_.pose_vertices(
+                moved[rows], w[rows], i[rows], transforms, rotation, translation
+            )
+            return out
+
         if options.measure:
-            before = follow_skin(
-                posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
+            before = place(
+                follow_skin(
+                    posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
+                )
             )
             before = metrics.measure(
                 before, topology.triangles, regions, reference, reference_region
@@ -1890,7 +2029,20 @@ def fit_levels(
             posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
         )
         registered = R_.unpose(fitted, w, i, transforms, rotation, translation)
-        offsets[subdiv] = R_.rest_offsets(registered, parametric)
+        offsets[subdiv] = anchored.apply(
+            R_.rest_offsets(registered, parametric), topology
+        )
+        if anchored.active:
+            rows = anchored.share(topology) > 0
+            fitted = fitted.copy()
+            fitted[rows] = R_.pose_vertices(
+                (parametric + offsets[subdiv])[rows],
+                w[rows],
+                i[rows],
+                transforms,
+                rotation,
+                translation,
+            )
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )

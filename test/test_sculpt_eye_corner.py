@@ -495,10 +495,10 @@ class TestSculptEyes(unittest.TestCase):
         from opensculptboy.fit import register
 
         for label in ("eye_corner/caruncle", "eye_corner/conjunctiva", "eye_corner"):
-            self.assertEqual(register.PATCH_ROLES.get(label), "exclude")
+            self.assertEqual(register.PATCH_ROLES.get(label), "anchors")
         n = self.data.vertex_count
         excluded = register.excluded_vertices(self.model)
-        # every new vertex of the patch follows the skin, as the sockets do
+        # every new vertex of the patch is left out and placed at the blend of its anchors
         self.assertEqual(len(excluded), n + self.data.new_vertex_count)
         self.assertTrue(excluded[n:].all())
         # anny's own vertices keep their roles but those the patch leaves without a face
@@ -539,6 +539,129 @@ DEEP_LIMIT = 0.2
 HOLE_SHARE = 0.5
 FLIP_MARGIN = 0.1
 SMOOTH_LIMIT = {1: 60.0, 2: 35.0}
+
+
+class TestCornerFit(unittest.TestCase):
+    """The synthetic reference fit (test/fit_fixtures.py) on ``sculpt`` and on ``anny``,
+    levels 0 and 1: the vertices of the patch role ``"anchors"`` (the eye corner) lie at the
+    blends of their anchors in the written offsets, and the corner turns no more faces over
+    than anny's own corner does."""
+
+    @classmethod
+    def setUpClass(cls):
+        import pathlib
+        import tempfile
+
+        from opensculptboy.fit.handoff import load_handoff, write_handoff
+        from opensculptboy.fit.reference import Reference
+        from opensculptboy.fit.register import FitOptions, fit_model, fit_reference
+        from opensculptboy.topology import compose, use_sculpt_data
+        from test.fit_fixtures import synthetic_target
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+        target = synthetic_target(1)
+        write_handoff(
+            cls.folder / "handoff",
+            target["vertices"],
+            target["triangles"],
+            dict(target["landmarks"]),
+        )
+        reference = Reference.from_handoff(load_handoff(cls.folder / "handoff"))
+        cls.data = compose(["eye_corner"])
+        cls.scope = use_sculpt_data(cls.data)
+        cls.scope.__enter__()
+        cls.models, cls.results = {}, {}
+        for topology in ("anny", "sculpt"):
+            cls.models[topology] = fit_model(topology)
+            cls.results[topology] = fit_reference(
+                reference,
+                detail=1,
+                name=topology,
+                options=FitOptions(topology=topology, measure=False),
+                model=cls.models[topology],
+            )
+        cls.card_path = cls.results["sculpt"].write(cls.folder / "card.json")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.scope.__exit__(None, None, None)
+        cls.tmp.cleanup()
+
+    def test_patch_is_the_blend_of_its_anchors(self):
+        import json
+
+        from opensculptboy import Character
+        from opensculptboy.detail import character_offsets
+        from opensculptboy.fit import register
+        from opensculptboy.topology.lookup import labelled, vertex_anchors
+
+        model = self.models["sculpt"]
+        result = self.results["sculpt"]
+        rows = np.flatnonzero(labelled(model, "eye_corner"))
+        self.assertEqual(len(rows), self.data.new_vertex_count)
+        self.assertTrue((register.patch_roles(model)[rows] == "anchors").all())
+        anchors, weights = vertex_anchors(model)
+        card = Character.from_dict(json.loads(self.card_path.read_text()))
+        written = character_offsets(card, 0, self.folder)
+        np.testing.assert_allclose(written, result.offsets[0], atol=1e-6)
+        for offsets in (result.offsets[0], written):
+            rest = result.parametric_rest + offsets
+            blend = np.einsum("nk, nkd -> nd", weights[rows], rest[anchors[rows]])
+            np.testing.assert_allclose(rest[rows], blend, atol=1e-6)
+        # the posed level 0 too, within the difference of skinning a blend and blending
+        fitted, _ = result.meshes[0]
+        blend = np.einsum("nk, nkd -> nd", weights[rows], fitted[anchors[rows]])
+        self.assertLess(float(np.abs(fitted[rows] - blend).max()), 2e-4)
+
+    def corner_flips(self, topology, subdiv):
+        """Faces of the eye corner (the patch's faces on sculpt, the pocket's on anny) on
+        level ``subdiv`` whose fitted normal turns away from the parametric mesh's."""
+        from opensculptboy.detail import detail_topology
+        from opensculptboy.fit import register
+        from opensculptboy.fit import residual as R_
+
+        model = self.models[topology]
+        result = self.results[topology]
+        rest0, transforms = register._card_rest(model, result.character)
+        level = detail_topology(model, subdiv, "full", topology)
+        w, i = level.skin_weights(
+            model.vertex_bone_weights.detach().double().numpy(),
+            model.vertex_bone_indices.cpu().numpy(),
+        )
+        parametric = R_.pose_vertices(
+            np.asarray(level.apply(rest0)),
+            w,
+            i,
+            transforms,
+            result.rotation,
+            result.translation,
+        )
+        fitted, triangles = result.meshes[subdiv]
+        corner = np.zeros(len(rest0))
+        if topology == "sculpt":
+            corner[np.unique(self.data.faces)] = 1.0
+        else:
+            quads = base_quad_mesh().quads
+            corner[np.unique(quads[self.data.removed_faces])] = 1.0
+        inside = np.asarray(level.apply(corner))[triangles].min(1) > 0.5
+        a, b = (
+            normals(fitted, triangles[inside]),
+            normals(parametric, triangles[inside]),
+        )
+        return int(inside.sum()), int(((a * b).sum(1) < 0).sum())
+
+    def test_no_flipped_faces_beyond_annys(self):
+        for subdiv in (0, 1):
+            with self.subTest(subdiv=subdiv):
+                count, sculpt = self.corner_flips("sculpt", subdiv)
+                _, anny = self.corner_flips("anny", subdiv)
+                print(
+                    f"\nlevel {subdiv}: {sculpt} of {count} corner faces turned over "
+                    f"on sculpt, {anny} on anny"
+                )
+                self.assertGreater(count, 0)
+                self.assertLessEqual(sculpt, anny)
 
 
 if __name__ == "__main__":
