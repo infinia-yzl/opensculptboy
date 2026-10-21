@@ -41,7 +41,8 @@ from test.gltf_reader import GLB, evaluate, structure_errors
 
 
 def placeholder_data():
-    return compose(include=["placeholder"])
+    # the placeholder alone, whatever patches the shipped file holds
+    return compose(["placeholder"])
 
 
 def directed_edges(triangles) -> Counter:
