@@ -96,9 +96,9 @@ PATCH_ROLE_NAMES = ("fit", "exclude", "anchors")
 # the vertices of an "anchors" patch's region that lie this far from an eyeball's centre at
 # rest (in eyeball radii) or nearer move with the eyeball (PatchAnchors)
 ATTACH_RADIUS = 0.99
-# the rings of fitted skin around an "anchors" patch's faces and anchors that take the
+# the rings of fitted skin around an "anchors" patch's faces and anchors that also take the
 # harmonic extension in place of their fitted offsets (PatchAnchors)
-SKIN_RINGS = 2
+SKIN_RINGS = 0
 # The topologies that the fit takes (FitOptions.topology).
 FIT_TOPOLOGIES = ("anny", "sculpt")
 
