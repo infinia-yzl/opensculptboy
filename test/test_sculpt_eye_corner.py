@@ -618,10 +618,9 @@ SMOOTH_LIMIT = {1: 60.0, 2: 35.0}
 
 
 # the lids' edge seen from the front and 15 degrees off it: the largest median, over sectors
-# of LID_SECTOR degrees about the gaze, of how far the skin next to the eyeball stands in
-# front of it (eyeball radii), and the sectors of the inner corner (about 180 degrees, toward
-# the nose)
-LID_GAP_LIMIT = 0.04
+# of LID_SECTOR degrees about the gaze, of the distance from the eyeball's edge to the skin
+# (eyeball radii), and the sectors of the inner corner (about 180 degrees, toward the nose)
+LID_GAP_LIMIT = 0.03
 LID_SECTOR = 15
 LID_VIEWS = ((0, 0), (15, 0), (-15, 0), (0, 15), (0, -15))
 CORNER_SECTORS = (150, 165, 180, 195)
@@ -629,15 +628,19 @@ CORNER_SECTORS = (150, 165, 180, 195)
 
 def lid_gaps(points, triangles, centre, radius, axes, nasal, views=LID_VIEWS):
     """
-    How far the skin stands in front of an eyeball at the edge of the opening: the eyeball is
-    the sphere (``centre``, ``radius``; ``axes`` (3, 3) has the columns +X, up and the gaze)
-    and ``triangles`` the skin. For each view (degrees toward the temple and up), an
-    orthographic depth raster along it finds the skin's pixels next to the sphere's; their
-    depth over the sphere's along the view, in radii, is gathered by the angle about the gaze
-    of the point (0 toward the temple, 90 up, 180 toward the nose, ``nasal`` the sign of +X
-    toward the nose). Returns {sector start: median gap}, over all views.
+    How far the skin stays from an eyeball along the edge of the opening: the eyeball is the
+    sphere (``centre``, ``radius``; ``axes`` (3, 3) has the columns +X, up and the gaze) and
+    ``triangles`` the skin. For each view (degrees toward the temple and up), an
+    orthographic depth raster along it finds the eyeball's pixels next to the skin's (the
+    edge of the eyeball that the view sees), and each of their points on the sphere takes its
+    distance to the nearest skin, in radii: about 0 where the skin meets the eyeball, however
+    thick the lid, and the width of the gap where a trench or a lip stands off it. They are
+    gathered by the angle about the gaze (0 toward the temple, 90 up, 180 toward the nose,
+    ``nasal`` the sign of +X toward the nose). Returns {sector start: median}, over all views.
     """
     from scipy import ndimage
+
+    from anny.hair import closest_triangles
 
     local = ((np.asarray(points) - centre) @ axes) / radius
     near = np.linalg.norm(local[triangles].mean(1), axis=1) < 2.4
@@ -656,17 +659,19 @@ def lid_gaps(points, triangles, centre, radius, axes, nasal, views=LID_VIEWS):
         right /= np.linalg.norm(right)
         turn = np.stack([right, np.cross(view, right), view])
         depth, ident = raster(local @ turn.T, tris, xs, ys)
-        sphere = np.sqrt(np.maximum(1.0 - gx**2 - gy**2, 0.0))
-        sphere[gx**2 + gy**2 > 1.0] = -np.inf
+        inside = gx**2 + gy**2 <= 1.0
+        sphere = np.where(
+            inside, np.sqrt(np.maximum(1.0 - gx**2 - gy**2, 0.0)), -np.inf
+        )
         ball = sphere > depth
         skin = (ident >= 0) & ~ball
-        edge = skin & ndimage.binary_dilation(ball) & (gx**2 + gy**2 <= 1.0)
-        hit = np.stack([gx, gy, depth], -1) @ turn
-        angle = np.degrees(np.arctan2(hit[..., 1], -nasal * hit[..., 0])) % 360
-        gap = depth - sphere
+        edge = ball & ndimage.binary_dilation(skin) & (gx**2 + gy**2 < 0.98)
+        on = np.stack([gx[edge], gy[edge], sphere[edge]], -1) @ turn
+        _, _, distance = closest_triangles(on, local, tris)
+        angle = np.degrees(np.arctan2(on[:, 1], -nasal * on[:, 0])) % 360
         for start in gaps:
-            sel = edge & (angle >= start) & (angle < start + LID_SECTOR)
-            gaps[start].extend(gap[sel].tolist())
+            sel = (angle >= start) & (angle < start + LID_SECTOR)
+            gaps[start].extend(distance[sel].tolist())
     return {k: float(np.median(v)) for k, v in gaps.items() if len(v) >= 3}
 
 
@@ -810,7 +815,9 @@ class TestCornerFit(unittest.TestCase):
 
     def corner_flips(self, topology, subdiv):
         """Faces of the eye corner (the patch's faces on sculpt, the pocket's on anny) on
-        level ``subdiv`` whose fitted normal turns away from the parametric mesh's."""
+        level ``subdiv`` outside the eyeball whose fitted normal turns away from the
+        parametric mesh's (the seating tucks the corner's fold under the eyeball, where no
+        view reaches it)."""
         from opensculptboy.detail import detail_topology
 
         model = self.models[topology]
@@ -824,6 +831,10 @@ class TestCornerFit(unittest.TestCase):
             quads = base_quad_mesh().quads
             corner[np.unique(quads[self.data.removed_faces])] = 1.0
         inside = np.asarray(level.apply(corner))[triangles].min(1) > 0.5
+        under = np.zeros(len(fitted), bool)
+        for centre, radius in self.reference.eyes:
+            under |= np.linalg.norm(fitted - centre, axis=1) < radius
+        inside &= ~under[triangles].all(1)
         a, b = (
             normals(fitted, triangles[inside]),
             normals(parametric, triangles[inside]),
@@ -836,7 +847,8 @@ class TestCornerFit(unittest.TestCase):
                 count, sculpt = self.corner_flips("sculpt", subdiv)
                 _, anny = self.corner_flips("anny", subdiv)
                 print(
-                    f"\nlevel {subdiv}: {sculpt} of {count} corner faces turned over "
+                    f"\nlevel {subdiv}: {sculpt} of {count} corner faces outside the "
+                    "eyeball turned over "
                     f"on sculpt, {anny} on anny"
                 )
                 self.assertGreater(count, 0)
