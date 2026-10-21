@@ -346,7 +346,7 @@ class TestSculptExports(unittest.TestCase):
         self.assertLessEqual(summary["triangles"], BUDGETS["vrm1"]["triangles"])
         doc = read_gltf_json(path)
         self.assertEqual(check_vrm1(doc), [])
-        detail = doc["scenes"][0]["extras"]["detail"]
+        detail = doc["scenes"][0]["extras"]["opensculptboy"]["detail"]
         self.assertEqual((detail["subdiv"], detail["region"]), (1, "head"))
         glb = self.folder / "detail.glb"
         result = export_glb(
