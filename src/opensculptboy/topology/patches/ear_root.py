@@ -65,7 +65,9 @@ from opensculptboy.topology.patch import BaseQuadMesh, Patch, PatchError, blend_
 
 NAME = "ear_root"
 ORDER = 200
-ENABLED = True
+# Off in the shipped file until its detail levels are as smooth as anny's around the ear
+# (docs/sculpt-topology.md); compose it with ``compose(["ear_root"])``.
+ENABLED = False
 OPTIONS = {
     "pinna_height": 0.002,
     "core_weight": 0.99,
