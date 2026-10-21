@@ -535,6 +535,7 @@ def sculpt_model(
         facial_actions=facial_actions,
         face_shapes=face_shapes,
     )
+    data = sculpt_data() if data is None else data
     model_data = sculpt_model_data(base_data, data, triangulate=triangulate)
     model = anny.Anny.from_model_data(
         model_data,
@@ -558,6 +559,10 @@ def sculpt_model(
         face_shapes=face_shapes,
         scale_face_shapes=scale_face_shapes,
     )
+    # the lookups of opensculptboy.topology.lookup (anchors, labels) and the VRM skin-weight
+    # digest of anny's rows (vrm_tables.skin_weight_digest) read these
+    model.sculpt_data = data
+    model.sculpt_bone_slots = int(base_data.vertex_bone_weights.shape[1])
     return model
 
 
