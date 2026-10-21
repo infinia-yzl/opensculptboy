@@ -217,7 +217,14 @@ EYEBALL_VERTEX_COUNT = 72
 # bone in the template; the MakeHuman eyes lie within a few micrometres.
 EYEBALL_CENTRE_TOLERANCE = 0.02
 # The topologies whose vertices keep their MakeHuman base-mesh indices, with the eyes.
-VRM_TOPOLOGIES = ("anny", "anny-quads", "anny-full", "makehuman")
+VRM_TOPOLOGIES = (
+    "anny",
+    "anny-quads",
+    "anny-full",
+    "makehuman",
+    "sculpt",
+    "sculpt-quads",
+)
 
 # The facial actions of the look-at ranges: VRM look-at direction -> ARKit action prefix.
 LOOK_ACTIONS = {
@@ -345,21 +352,35 @@ def skin_weight_digest(model) -> str:
     stand in for on a model without them) and the model's skin weights (rounded to float32,
     so that models of either precision agree) and bone indices. The edits name vertices and
     bones, so a mesh with the same vertices and other faces (``anny-quads``) shares them.
+
+    On the ``sculpt`` topologies the digest covers anny's own vertices (their rows, which
+    ``sculpt`` keeps bit for bit, in anny's number of bone slots), so that the edits of anny
+    carry over: they name anny's vertices, which keep their indices, and the new vertices of
+    the patches take the blend of their anchors' rows (:func:`blend_new_rows`).
     """
     from opensculptboy.export.body import triangulated_faces
 
     base = getattr(model, "base_mesh_vertex_indices", None)
+    bone_indices = model.vertex_bone_indices.detach().cpu().numpy()
+    bone_weights = model.vertex_bone_weights.detach().cpu().numpy()
     if base is None:
         vertices = np.asarray(triangulated_faces(model)[0], dtype=np.int64)
     else:
         vertices = torch.as_tensor(base).detach().cpu().numpy().astype(np.int64)
+    sculpt = getattr(model, "sculpt_data", None)
+    if sculpt is not None:
+        n = sculpt.vertex_count
+        slots = getattr(model, "sculpt_bone_slots", bone_weights.shape[1])
+        vertices = vertices[:n]
+        bone_indices = bone_indices[:n, :slots]
+        bone_weights = bone_weights[:n, :slots]
     digest = hashlib.sha256()
     digest.update("\n".join(model.bone_labels).encode())
     for array in (
         np.asarray([int(p) for p in model.bone_parents], dtype=np.int64),
         vertices,
-        model.vertex_bone_indices.detach().cpu().numpy().astype(np.int64),
-        model.vertex_bone_weights.detach().cpu().numpy().astype(np.float32),
+        bone_indices.astype(np.int64),
+        bone_weights.astype(np.float32),
     ):
         digest.update(np.ascontiguousarray(array).tobytes())
     return digest.hexdigest()
@@ -482,6 +503,61 @@ def skin_weight_edits(
     )
 
 
+def blend_new_rows(model, weights, indices, before=None):
+    """
+    Skin weights (V, K) and bone indices of a ``sculpt`` model with the rows of its new
+    vertices blended again from their anchors' rows, as the model blends them: for every new
+    vertex with an anchor whose row differs from ``before`` (a pair of the rows before an
+    edit; all new vertices when None) and whose own row did not change. The rows keep K slots,
+    the strongest bones first, and sum to 1. Other models pass through.
+    """
+    from opensculptboy.topology.lookup import model_sculpt_data
+
+    data = model_sculpt_data(model)
+    if data is None or data.new_vertex_count == 0:
+        return weights, indices
+    weights = np.asarray(weights, dtype=np.float64)
+    indices = np.asarray(indices, dtype=np.int64)
+    n, J = data.vertex_count, len(model.bone_labels)
+    V, K = weights.shape
+
+    def dense(w, i, rows):
+        out = np.zeros((len(rows), J))
+        np.add.at(
+            out, (np.repeat(np.arange(len(rows)), K), i[rows].ravel()), w[rows].ravel()
+        )
+        return out
+
+    new = np.arange(n, V)
+    if before is None:
+        rows = new
+    else:
+        bw = np.asarray(before[0], dtype=np.float64)
+        bi = np.asarray(before[1], dtype=np.int64)
+        if bw.shape[1] != K:
+            return weights, indices
+        anchors = np.unique(data.anchors[data.weights > 0])
+        changed = np.zeros(V, bool)
+        a = dense(weights, indices, anchors) - dense(bw, bi, anchors)
+        changed[anchors] = np.abs(a).max(1) > 1e-12
+        own = np.abs(dense(weights, indices, new) - dense(bw, bi, new)).max(1) > 1e-12
+        hit = (changed[data.anchors] & (data.weights > 0)).any(1) & ~own
+        rows = new[hit]
+    if len(rows) == 0:
+        return weights, indices
+    anchor_dense = dense(weights, indices, np.arange(n))
+    blended = np.einsum(
+        "mk,mkj->mj", data.weights[rows - n], anchor_dense[data.anchors[rows - n]]
+    )
+    order = np.argsort(-blended, axis=1, kind="stable")[:, :K]
+    w = np.take_along_axis(blended, order, axis=1)
+    w /= w.sum(axis=1, keepdims=True)
+    weights, indices = weights.copy(), indices.copy()
+    weights[rows] = w
+    indices[rows] = np.where(w > 0, order, 0)
+    return weights, indices
+
+
 def vrm_skin_weights(
     model, twist: str = "constraint", edits=False, phenotype=None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -541,7 +617,9 @@ def vrm_skin_weights(
             rows, bones, values = (np.asarray(a) for a in edits)
             values = np.where(bones >= 0, edit_weights(bones, values, phenotype), 0.0)
             edits = rows, np.maximum(bones, 0), values
-    if edits is not None and edits is not False:
+    edited = edits is not None and edits is not False
+    if edited:
+        unedited = _sorted_rows(dense, K)
         rows, bones, values = (np.asarray(a) for a in edits)
         dense[rows] = 0.0
         np.add.at(
@@ -549,6 +627,15 @@ def vrm_skin_weights(
             (np.repeat(rows, bones.shape[1]), bones.reshape(-1)),
             values.reshape(-1).astype(np.float64),
         )
+    result, order = _sorted_rows(dense, K)
+    if edited:
+        # the new vertices of a sculpt model follow their edited anchors
+        result, order = blend_new_rows(model, result, order, unedited)
+    return result, order
+
+
+def _sorted_rows(dense: np.ndarray, K: int) -> tuple[np.ndarray, np.ndarray]:
+    """The K strongest bones of dense rows (V, J), normalised, and their indices."""
     order = np.argsort(-dense, axis=1, kind="stable")[:, :K]
     result = np.take_along_axis(dense, order, axis=1)
     result /= result.sum(axis=1, keepdims=True)

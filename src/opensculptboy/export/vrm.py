@@ -449,12 +449,21 @@ def check_topology(topology: str) -> None:
     body mesh with its eyes (``anny``, ``makehuman`` and their modifiers such as ``-quads``,
     ``-full`` or ``-notongue``). The eyes turn with look-at, and the expressions and the
     look-at ranges rest on the eyeball vertices of that mesh. The topology is only parsed,
-    so that no model is built and no data is downloaded.
+    so that no model is built and no data is downloaded. The ``sculpt`` topologies of
+    :mod:`opensculptboy.topology` keep anny's vertices and eyes, so they pass.
     """
     from anny.models.model_data import TopologyConfig
+    from opensculptboy.topology.sculpt import TOPOLOGIES, is_sculpt
 
     if not isinstance(topology, str):
         raise ValueError(f"The topology must be a string (got {topology!r}).")
+    if is_sculpt(topology):
+        if topology not in TOPOLOGIES:
+            raise ValueError(
+                f"Unknown topology {topology!r}; the sculpt topologies are "
+                f"{', '.join(TOPOLOGIES)}."
+            )
+        return
     try:
         config = TopologyConfig.from_string(topology)
     except ValueError as error:
