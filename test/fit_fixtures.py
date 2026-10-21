@@ -152,16 +152,19 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
     translation = rng.uniform(-0.3, 0.3, 3)
     surface = posed @ rotation.T + translation
     vertices, faces = remesh(surface, triangles, rng, cell)
-    # the eyeballs, as separate parts of the handoff: spheres of anny's eyeball radius (level
-    # 2, not remeshed), placed where the target's lid margins rest on them as anny's rest on
-    # its own: the offset field bends the eyeballs themselves out of shape
+    # the eyeballs, as separate parts of the handoff: spheres of anny's eyeball (level 2, not
+    # remeshed) moved as the offset field moves the target's lid margins around them (the
+    # field bends the eyeballs themselves out of shape), so that the lids rest on them as
+    # anny's rest on its own
     from opensculptboy.export.vrm_tables import eyeball_vertices
     from opensculptboy.fit.reference import fit_sphere
 
-    base2 = np.asarray(detailed.topology.apply(rest0))
-    margin = np.zeros(len(base2), bool)
+    with torch.no_grad():
+        plain0 = model(**kwargs)["vertices"][0].numpy()
+    plain = np.asarray(detailed.topology.apply(plain0)) @ rotation.T + translation
+    margin = np.zeros(len(plain), bool)
     margin[triangles.ravel()] = True
-    touching = np.zeros(len(base2), bool)
+    touching = np.zeros(len(plain), bool)
     touching[detailed.triangles[excluded2[detailed.triangles].any(1)].ravel()] = True
     margin &= touching
     eyes = {}
@@ -173,20 +176,9 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
         used = np.unique(tris)
         remap = np.full(len(on), -1)
         remap[used] = np.arange(len(used))
-        centre0, radius, _ = fit_sphere(rest0[rows])
-        ring = margin & (np.linalg.norm(base2 - centre0, axis=1) < 1.4 * radius)
-        reach = np.linalg.norm(base2[ring] - centre0, axis=1)
-        points = surface[ring]
-        centre = fit_sphere(surface[used])[0]
-        for _ in range(
-            20
-        ):  # Gauss-Newton: the ring at its own distances from the centre
-            offset = points - centre
-            length = np.linalg.norm(offset, axis=1)
-            step = np.linalg.lstsq(
-                -offset / length[:, None], reach - length, rcond=None
-            )
-            centre = centre + step[0]
+        centre, radius, _ = fit_sphere(plain0[rows] @ rotation.T + translation)
+        ring = margin & (np.linalg.norm(plain - centre, axis=1) < 1.4 * radius)
+        centre = centre + (surface[ring] - plain[ring]).mean(0)
         ray = surface[used] - centre
         ray /= np.linalg.norm(ray, axis=1, keepdims=True)
         eyes[side] = (centre + radius * ray, remap[tris])
