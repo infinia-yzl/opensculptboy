@@ -201,7 +201,9 @@ class FitOptions:
     lid_sphere: float = 0.99
     lid_margin: float = 0.005
     lid_iterations: int = 10
-    lid_fairness: float = 1.0
+    # the fairness of seat_lids on level 0, 16 times more on each finer level (the
+    # bi-Laplacian of a finer mesh is smaller by the fourth power of its edges)
+    lid_fairness: float = 20.0
     lid_weight: float = 10.0
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
@@ -1586,7 +1588,7 @@ def seat_lids(
     sphere: float = 0.99,
     margin: float = 0.005,
     iterations: int = 10,
-    fairness: float = 1.0,
+    fairness: float = 20.0,
     weight: float = 10.0,
     reach: float = 0.35,
     sphere_reach: float = 0.25,
@@ -1617,7 +1619,9 @@ def seat_lids(
     ``margin``, within ``front`` degrees of the gaze) whose nearest vertex of ``seat.pool``
     x_i is (the reverse term, with normals agreeing to ``reverse_normal_threshold``), which
     pulls the surface over the eyeball as far as the reference's tissue reaches; B is the
-    bi-Laplacian, which keeps the surface fair. A vertex with no target follows the fairing.
+    bi-Laplacian, which keeps the surface fair (a strong ``fairness`` keeps the line where
+    the skin meets the sphere from stepping from vertex to vertex, which folds the corner).
+    A vertex with no target follows the fairing.
 
     With ``clearance``, the region's vertices within the band over the sphere in which the
     exported eyes find outward-facing skin too close (the cornea's shell and the lids'
@@ -2436,7 +2440,7 @@ def fit_levels(
                 sphere=options.lid_sphere,
                 margin=options.lid_margin,
                 iterations=options.lid_iterations,
-                fairness=options.lid_fairness,
+                fairness=options.lid_fairness * 16.0**subdiv,
                 weight=options.lid_weight,
                 front=options.lid_front,
             )
