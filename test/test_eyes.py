@@ -287,6 +287,36 @@ class TestTexture(unittest.TestCase):
         )
 
 
+class TestBakedNormals(unittest.TestCase):
+    def test_baked_normals_move_with_the_iris(self):
+        # a concave iris off the gaze: once fit_baked_iris moves it onto the gaze, its normals
+        # tilt toward the gaze axis all round, even next to the pupil's centre
+        s, phi, left = tex.texel_polar()
+        x, y = s * np.cos(phi), s * np.sin(phi)
+        centre = np.array([0.06, -0.04])
+        dx, dy = x - centre[0], y - centre[1]
+        r = np.hypot(dx, dy)
+        lum = np.where(r < 0.15, 0.01, np.where(r < 0.45, 0.12, 0.7))
+        image = np.repeat(lum[..., None], 3, axis=2)
+        tilt = np.sin(np.radians(20.0)) * (r < 0.4)
+        ux, uy = -dx / np.maximum(r, 1e-9), -dy / np.maximum(r, 1e-9)
+        a = tilt * (ux * -np.sin(phi) + uy * np.cos(phi))  # along E1
+        b = tilt * (ux * -np.cos(phi) + uy * -np.sin(phi))  # along E2 (toward the axis)
+        normals = np.stack([a, b, np.sqrt(1 - a**2 - b**2)], -1)
+        radius = 12.0
+        eye = EyeMaterial(iris_mm=2 * 0.45 * radius, pupil_mm=2 * 0.15 * radius)
+        _, found, moved = tex.fit_baked_iris(
+            image, eye, {"L": radius, "R": radius}, normals=normals
+        )
+        self.assertEqual(
+            {k: v is not None for k, v in found.items()}, {"L": True, "R": True}
+        )
+        for lo, hi in ((0.02, 0.08), (0.1, 0.3)):
+            d = moved[left & (s > lo) & (s < hi)]
+            self.assertGreater(np.median(d[:, 1]), np.sin(np.radians(15.0)))
+            self.assertLess(np.percentile(np.abs(d[:, 0]), 90), 0.1)
+
+
 class TestEyedMesh(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
