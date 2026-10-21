@@ -410,4 +410,12 @@ def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
         else "baked"
         for side, hit in found.items()
     }
-    return tex.srgb(fitted), {"source": "baked", "sides": sides}
+    measured = {
+        side: {
+            "pupil_mm": round(float(2.0 * hit[1] * radii[side]), 2),
+            "iris_mm": round(float(2.0 * hit[2] * radii[side]), 2),
+        }
+        for side, hit in found.items()
+        if hit is not None and not isinstance(hit, str)
+    }
+    return tex.srgb(fitted), {"source": "baked", "sides": sides, "measured": measured}
