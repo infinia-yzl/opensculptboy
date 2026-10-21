@@ -263,8 +263,8 @@ The viewer's Pose section offers the same step under **From a picture**. It read
 
 ```bash
 uv sync --extra viewer                                     # SciPy for the fit, embreex for the texture bake
-opensculptboy fit handoff/ --out arisen.json --detail 1    # replica.glb and appearance.json in handoff/
-opensculptboy export arisen.glb --character arisen.json --detail 1
+opensculptboy fit handoff/ --out fitted.json --detail 1    # replica.glb and appearance.json in handoff/
+opensculptboy export fitted.glb --character fitted.json --detail 1
 ```
 
 The fit places anny by landmarks (or by the bounding geometry when there are none), fits the phenotypes, local changes, face shapes and pose, then moves the whole mesh onto the target with a non-rigid ICP on each level. On a synthetic target with another topology, level 1 of the detail layer lies 0.04 mm from the target on average (0.15 mm from the target to the fitted surface), and the fit takes about 70 s on two cores. The GLB export writes any level; the VRM export keeps within the triangle budget of its version by giving the finer level to the head and the neck alone, or by stepping down. `--textures` bakes the target's colour and normals onto anny's UVs for the glTF and MToon materials. [docs/reference-fit.md](docs/reference-fit.md) describes the handoff folder, the landmarks, the pipeline, the card format, the accuracy and the limits.
