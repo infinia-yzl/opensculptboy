@@ -774,7 +774,7 @@ def vrm_spec(
         images.pop("head_base_color", None)
         images.pop("head_normal", None)
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
-    if set(images) - {"eyes", "eye_base_color"}:
+    if set(images) - {"eyes", "eyes_normal", "eye_base_color"}:
         materials = [_textured_toon_material(images, skin)]
     if "normal" in images or "head_normal" in images:
         body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in

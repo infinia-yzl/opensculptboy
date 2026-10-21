@@ -57,6 +57,8 @@ class BakedTextures:
     )
     # the base colour of the eyeballs on the eye texture (opensculptboy.texture.eyes), or None
     eyes: np.ndarray | None = None  # (S_eye / 2, S_eye, 3) uint8
+    # the eyeballs' tangent-space normals on the eye texture, in the frames of the atlas
+    eyes_normal: np.ndarray | None = None  # (S_eye / 2, S_eye, 3) uint8
     roughness: np.ndarray | None = None  # (S, S) uint8, roughness * 255
     thickness: np.ndarray | None = None  # (S, S) uint8, thickness / thickness_mm * 255
     curvature: np.ndarray | None = None  # (S, S) uint8, (0.5 + 0.5 k / k_max) * 255
@@ -71,11 +73,18 @@ class BakedTextures:
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
-        ``"roughness"``, ``"thickness"``, ``"curvature"``, ``"head_base_color"``, ...)."""
+        ``"eyes_normal"``, ``"roughness"``, ``"thickness"``, ``"curvature"``, ``"head_base_color"``, ...)."""
         from opensculptboy.export.document import png_bytes
 
         files = {"normal": png_bytes(self.normal)}
-        for slot in ("base_color", "eyes", "roughness", "thickness", "curvature"):
+        for slot in (
+            "base_color",
+            "eyes",
+            "eyes_normal",
+            "roughness",
+            "thickness",
+            "curvature",
+        ):
             image = getattr(self, slot)
             if image is not None:
                 files[slot] = png_bytes(image)
@@ -763,14 +772,14 @@ def bake(
                 image = _fill(image, known)
                 ears[slot] = np.clip(np.round(image * 255), 0, 255).astype(np.uint8)
 
-    eyes = None
+    eyes, eyes_normal = None, None
     if (
         eye_box is not None
         and eye_triangles is not None
         and eye_reference is not None
         and eye_size > 0
     ):
-        eyes = _bake_eyes(
+        eyes, eyes_normal = _bake_eyes(
             surface,
             UT,
             UV,
@@ -787,6 +796,7 @@ def bake(
         coverage=coverage,
         covered_share=float(coverage.sum() / max(maps["inside"], 1)),
         eyes=eyes,
+        eyes_normal=eyes_normal,
         roughness=rough_png,
         thickness=thickness,
         curvature=curvature,
@@ -798,8 +808,12 @@ def bake(
 
 
 def _bake_eyes(surface, UT, UV, eye_triangles, target, box, size, max_distance):
-    """The base colour (size / 2, size, 3) of the eye texture: the eyeball triangles laid out
-    by the box of the atlas, each texel taking the reference's eyes along the normal."""
+    """The base colour (size / 2, size, 3) of the eye texture and its tangent-space normals
+    (encoded in the fitted mesh's MikkTSpace frames, as the atlas's are: the box only scales
+    the atlas's UVs), or (None, None): the eyeball triangles laid out by the box of the atlas,
+    each texel taking the reference's eyes along the normal. The normals keep the shading of
+    the reference's eye (a game's eye often bends them into a concave iris) at the eye
+    texture's resolution, which the atlas holds in a few texels."""
     from opensculptboy.texture.eyes import EYE_TEXTURE_ASPECT, to_eye_uvs
 
     width, height = int(size), int(size) // EYE_TEXTURE_ASPECT
@@ -813,10 +827,13 @@ def _bake_eyes(surface, UT, UV, eye_triangles, target, box, size, max_distance):
         pick=np.asarray(eye_triangles, bool),
     )
     if not maps["colour_known"].any():
-        return None
-    return np.clip(
+        return None, None
+    colour = np.clip(
         np.round(_fill(maps["colour"], maps["colour_known"])), 0, 255
     ).astype(np.uint8)
+    normal = _fill(maps["normal"], maps["reached"])
+    normal = np.clip(np.round((normal * 0.5 + 0.5) * 255), 0, 255).astype(np.uint8)
+    return colour, normal
 
 
 def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):

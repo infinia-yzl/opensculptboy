@@ -550,6 +550,7 @@ def eye_texture(
     baked: bytes | None = None,
     normal_map: bytes | None = None,
     want_normals: bool = False,
+    normal_box: bool = False,
 ):
     """
     The eye texture (H, W, 3, 8-bit sRGB) of a file and what it was drawn from:
@@ -557,8 +558,10 @@ def eye_texture(
     baked eye texture ``baked`` on anny's atlas, carried over and fitted, per side) or
     ``"procedural"``. With ``want_normals`` a third value: the baked eyes' normals in the
     layout (:func:`opensculptboy.eyes.texture.carry_baked_normals`, moved with the iris) from
-    ``normal_map`` (the card's normal map on anny's atlas, which the bake fills on the
-    eyeballs with the reference's eyes), or None without it or when the eyes are not baked.
+    ``normal_map`` (the baked eye normals on the eye texture's box of the atlas with
+    ``normal_box``, the ``eyes_normal`` slot, else the card's normal map on anny's whole
+    atlas, which the bake also fills on the eyeballs with the reference's eyes, at a few
+    texels across the iris), or None without it or when the eyes are not baked.
     """
     from opensculptboy.eyes import texture as tex
 
@@ -591,7 +594,9 @@ def eye_texture(
     bent = None
     if with_normals and normal_map is not None:
         atlas = np.asarray(Image.open(io.BytesIO(normal_map)).convert("RGB"))
-        bent = tex.carry_baked_normals(atlas / 255.0, eyed.eyeballs)
+        bent = tex.carry_baked_normals(
+            atlas / 255.0, eyed.eyeballs, box=box if normal_box else None
+        )
         fitted, found, bent = tex.fit_baked_iris(carried, eye, radii, normals=bent)
     else:
         fitted, found = tex.fit_baked_iris(carried, eye, radii)

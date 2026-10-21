@@ -481,6 +481,18 @@ class TestEyedMesh(unittest.TestCase):
                 self.assertLess(np.abs(np.median(d[:, 0])), 0.05)
         outside = (s > 0.5) & (s < 0.9)
         self.assertLess(np.median(np.abs(carried[outside][:, 1])), 0.05)
+        # the same normals baked on the eye texture's box of the atlas (slot eyes_normal)
+        from opensculptboy.texture.eyes import eye_uv_box
+
+        lo, hi = eye_uv_box(self.model)
+        v, u = np.mgrid[0:512, 0:1024]
+        au = lo[0] + (u + 0.5) / 1024 * (hi[0] - lo[0])
+        av = lo[1] + (1 - (v + 0.5) / 512) * (hi[1] - lo[1])
+        boxed = tex._bilinear(bowl, au * size - 0.5, (1 - av) * size - 0.5)
+        carried = tex.carry_baked_normals(boxed, self.eyed.eyeballs, box=(lo, hi))
+        for half in (left, ~left):
+            d = carried[ring & half]
+            self.assertGreater(np.median(d[:, 1]), np.sin(np.radians(15.0)))
         # where the procedural eye stands in (no iris found), the normals are flat
         _, found, moved = tex.fit_baked_iris(
             np.full(carried.shape, 0.5),

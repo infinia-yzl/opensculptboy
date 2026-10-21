@@ -416,7 +416,7 @@ def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
 
 
 # the texture slots of the eyes alone, which leave the skin's material as it is
-EYE_SLOTS = {"eyes", "eye_base_color"}
+EYE_SLOTS = {"eyes", "eyes_normal", "eye_base_color"}
 # the key of the eye materials' settings in their extras
 EYE_EXTRAS = "opensculptboy_eye"
 EYE_EXTRAS_FORMAT = "opensculptboy/eye@1"
@@ -463,8 +463,9 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
             eyed,
             model,
             images.get("eyes"),
-            images.get("normal"),
+            images.get("eyes_normal", images.get("normal")),
             want_normals=True,
+            normal_box="eyes_normal" in images,
         )
         data = png_bytes(pixels)
     normal_texture = None

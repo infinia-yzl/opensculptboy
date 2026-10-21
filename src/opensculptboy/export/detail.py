@@ -145,13 +145,14 @@ def resolve_within_budget(
     return None
 
 
-# the skin's maps on anny's atlas, the eyeballs' base colour on the eye texture
+# the skin's maps on anny's atlas, the eyeballs' base colour and normals on the eye texture
 # (opensculptboy.texture.eyes), the head tile's maps (opensculptboy.texture.tiles) and the ear
 # tile's (opensculptboy.texture.ears)
 TEXTURE_SLOTS = (
     "base_color",
     "normal",
     "eyes",
+    "eyes_normal",
     "roughness",
     "thickness",
     "curvature",

@@ -317,8 +317,9 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
         baked.ear_uvs.save(path, topology)
         names["ear_uvs"] = path.name
     textures = {"subdiv": subdiv}
-    if "eyes" in names:
-        textures["eyes"] = names["eyes"]
+    for slot in ("eyes", "eyes_normal"):
+        if slot in names:
+            textures[slot] = names[slot]
     return textures, baked.material(names)
 
 
