@@ -1955,13 +1955,13 @@ def fit_levels(
         topology = detail_topology(model, subdiv, "full", character.topology)
         w, i = topology.skin_weights(weights0, indices0)
         parametric = np.asarray(topology.apply(rest0))
-        lifted = None
+        carried = None
         if subdiv == 0:
             start_rest = parametric
         else:
             up = detail_topology(model, previous_level, "full", character.topology)
-            lifted = _lift(previous, up, topology)
-            start_rest = parametric + lifted
+            carried = _lift(previous, up, topology)
+            start_rest = parametric + carried
         posed = R_.pose_vertices(start_rest, w, i, transforms, rotation, translation)
         mask = np.asarray(topology.apply(excluded.astype(np.float64))) < 0.5
         level_ears = np.asarray(topology.apply(ears))
@@ -2080,7 +2080,7 @@ def fit_levels(
             rest = R_.unpose(points, w, i, transforms, rotation, translation)
             moved = (
                 anchored.apply(
-                    rest - parametric, topology, parametric, fit_mask, lifted
+                    rest - parametric, topology, parametric, fit_mask, carried
                 )
                 + parametric
             )
@@ -2121,7 +2121,7 @@ def fit_levels(
             topology,
             parametric,
             fit_mask,
-            lifted,
+            carried,
         )
         if anchored.active:
             rows = anchored.share(topology) > 0
