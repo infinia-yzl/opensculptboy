@@ -283,11 +283,19 @@ class Reference:
     def folds(self) -> np.ndarray:
         """The largest angle (degrees) between the normals of two triangles that share an edge
         at each vertex (``opensculptboy.fit.metrics.fold_angles``): the reference's own
-        creases, such as the rim of a thin ear."""
+        creases, such as the rim of a thin ear. The edges are those of the welded surface
+        (``register.welded_ids``), so that the seams where the source splits its vertices (UV
+        seams, an ear stitched to the head) fold as they look."""
         if self._folds is None:
             from opensculptboy.fit.metrics import fold_angles
+            from opensculptboy.fit.register import welded_ids
 
-            self._folds = fold_angles(self.vertices, self.triangles)
+            ids = welded_ids(self.vertices)
+            _, first, joined = np.unique(ids, return_index=True, return_inverse=True)
+            joined = joined.ravel()
+            self._folds = fold_angles(self.vertices[first], joined[self.triangles])[
+                joined
+            ]
         return self._folds
 
     @property

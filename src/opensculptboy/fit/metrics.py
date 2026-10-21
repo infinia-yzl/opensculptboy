@@ -29,7 +29,16 @@ given, over the whole skin, with no mask, no visibility test and no distance cut
   ``folds_not_in_reference`` the share of those folded by 30 degrees more than the reference
   within 3 mm of their closest point (:func:`fold_near`): the crumples and spikes of the fit;
 - ``ears_surround``: the reverse measure of the reference vertices within 15 mm of an ear
-  mask and outside it, where skin stretched from an ear to the head leaves the head uncovered.
+  mask and outside it, where skin stretched from an ear to the head leaves the head uncovered;
+- ``ears_root``: with an attachment line (the ``"ear_attachment"`` region), the fitted vertices
+  whose closest point of the reference lies within :data:`ROOT_RADIUS` of it, the strip where
+  the ear meets the head: their count, ``folds_not_in_reference`` and ``facing_away`` as
+  above, and ``defects`` the share of them with either (a crack along the root shows as folded
+  and flipped slivers there).
+
+The folds of the reference are those of its welded surface (``Reference.folds``): a source
+that splits its vertices at UV seams, or stitches an ear to the head by coincident vertices,
+folds across those seams as much as anywhere.
 
 ``all`` holds every reference vertex for the reverse measure and every fitted vertex but those
 of anny's cavities for the others: the inside of anny's mouth and eye sockets has no
@@ -71,6 +80,9 @@ SURROUND_RADIUS = 0.015
 # the neighbourhood (metres) of a fitted vertex's closest point in which a fold of the
 # reference counts as its own (fold_near)
 FOLD_RADIUS = 0.003
+# fitted vertices whose closest reference point lies within this distance (metres) of the
+# ears' attachment line make the root strip (summary entry "ears_root")
+ROOT_RADIUS = 0.003
 
 
 def anny_regions(model, rest_vertices: np.ndarray | None = None) -> np.ndarray:
@@ -226,6 +238,10 @@ class Measures:
     # "folds_not_in_reference" counts the fitted vertices folded by more than 60 degrees and
     # by 30 more than the reference there, the crumples and spikes of the fit alone
     reference_fold: np.ndarray | None = None
+    # (N,) the fitted vertices of the root strip of the ears (ROOT_RADIUS), and whether each
+    # vertex faces away from the reference (summary entry "ears_root")
+    root: np.ndarray | None = None
+    away: np.ndarray | None = None
 
     def summary(self) -> dict:
         """mean / signed mean / p95 / max per region and over all, in mm and degrees."""
@@ -298,6 +314,16 @@ class Measures:
             out["ears_surround"] = {
                 "reverse_mm": stats(self.reverse[self.surround], 1000.0)
             }
+        if self.root is not None and self.root.any():
+            own, near = self.fold[self.root], self.reference_fold[self.root]
+            folded = (own > 60) & (own > near + 30)
+            away = self.away[self.root]
+            out["ears_root"] = {
+                "n": int(self.root.sum()),
+                "folds_not_in_reference": round(float(folded.mean()), 4),
+                "facing_away": round(float(away.mean()), 4),
+                "defects": round(float((folded | away).mean()), 4),
+            }
         return out
 
 
@@ -349,10 +375,7 @@ def measure(
 
     reference_fold = np.full(len(V), np.nan)
     reference_fold[measured] = fold_near(
-        reference.vertices,
-        fold_angles(reference.vertices, reference.triangles),
-        C,
-        tree=reference.tree,
+        reference.vertices, reference.folds, C, tree=reference.tree
     )
     fitted = T[measured[T].all(1)]
     tri_f, bary_f, _ = closest_triangles(reference.vertices, V, fitted)
@@ -369,6 +392,14 @@ def measure(
         ear_mask = np.asarray(ear_mask, bool)
         gap, _ = cKDTree(reference.vertices[ear_mask]).query(reference.vertices)
         surround = ~ear_mask & (gap < SURROUND_RADIUS)
+    root = None
+    attachment = getattr(reference, "regions", {}).get("ear_attachment")
+    if attachment is not None and np.asarray(attachment).any():
+        from scipy.spatial import cKDTree
+
+        line = reference.vertices[np.asarray(attachment, bool)]
+        root = np.zeros(len(V), bool)
+        root[measured] = cKDTree(line).query(C)[0] < ROOT_RADIUS
     face_regions = regions[fitted[:, 0]].copy()
     on_ears = (regions[fitted] == REGIONS.index("ears")).any(1)
     face_regions[on_ears] = REGIONS.index("ears")
@@ -384,6 +415,8 @@ def measure(
         face_regions,
         surround,
         reference_fold,
+        root,
+        angle_geometric > 90,
     )
 
 
