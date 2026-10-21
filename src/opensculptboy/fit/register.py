@@ -356,7 +356,8 @@ class PatchAnchors:
     refinement leaves out and in proportion to their share to those it fits (``fitted``).
     So the patch of a level is the subdivision of the patched quads of the level below,
     moved as the skin around it moved on this level, and it joins the fitted skin without
-    a step.
+    a step. :func:`fit_levels` fits none of the vertices that the rule touches on a detail
+    level (the skin along the patch's border included), so the rule places them all.
     """
 
     def __init__(self, model, excluded: np.ndarray):
@@ -1951,6 +1952,13 @@ def fit_levels(
             data *= 1.0 - (1.0 - options.lip_margin_weight) * np.clip(
                 np.asarray(topology.apply(margin)), 0.0, 1.0
             )
+        # on a detail level, the vertices that come from a patch of the role "anchors" (in
+        # part, as the skin along its border) take the rule alone: fitted on their own, the
+        # skin along the border moves apart from the patch it carries
+        fit_mask = mask
+        if anchored.active and subdiv > 0:
+            fit_mask = mask & (anchored.share(topology) == 0)
+            data[~fit_mask] = 0.0
         threshold = np.where(
             stiff > 0.5,
             max(options.ear_normal_threshold, options.normal_threshold),
@@ -2014,7 +2022,8 @@ def fit_levels(
                 return points
             rest = R_.unpose(points, w, i, transforms, rotation, translation)
             moved = (
-                anchored.apply(rest - parametric, topology, mask, lifted) + parametric
+                anchored.apply(rest - parametric, topology, fit_mask, lifted)
+                + parametric
             )
             rows = anchored.share(topology) > 0
             out = points.copy()
@@ -2049,7 +2058,7 @@ def fit_levels(
         )
         registered = R_.unpose(fitted, w, i, transforms, rotation, translation)
         offsets[subdiv] = anchored.apply(
-            R_.rest_offsets(registered, parametric), topology, mask, lifted
+            R_.rest_offsets(registered, parametric), topology, fit_mask, lifted
         )
         if anchored.active:
             rows = anchored.share(topology) > 0
