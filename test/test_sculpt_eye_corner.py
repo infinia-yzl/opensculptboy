@@ -15,6 +15,7 @@ The views are orthographic depth rasters along each view direction in the eye's 
 
 import functools
 import unittest
+import unittest.mock
 
 import numpy as np
 import torch
@@ -856,6 +857,155 @@ class TestCornerFit(unittest.TestCase):
                 )
                 self.assertGreater(count, 0)
                 self.assertLessEqual(sculpt, anny)
+
+
+class _SheetTarget:
+    """A reference surface given as a fine mesh, for :func:`register.seat_lids` (the closest
+    vertex stands in for the closest point)."""
+
+    def __init__(self, vertices, triangles):
+        from scipy.spatial import cKDTree
+
+        self.vertices = np.asarray(vertices, dtype=np.float64)
+        self.normals = vertex_normals_of(self.vertices, triangles)
+        self.tree = cKDTree(self.vertices)
+
+    def closest(self, points, rows=None):
+        d, k = self.tree.query(points)
+        return self.vertices[k], self.normals[k], d
+
+
+def vertex_normals_of(points, triangles):
+    from opensculptboy.fit.reference import vertex_normals
+
+    return vertex_normals(points, triangles)
+
+
+def lid_sheet(radius, inward, rows=40, cols=12, fine=1):
+    """A strip of skin that crosses an eyeball's sphere (centre 0, radius ``radius``, gaze +Z)
+    from 1.06 to 0.94 radii, as a lid goes under the eyeball: its rows run from 46 to 34
+    degrees off the gaze, and its triangles face the eyeball (``inward``) or away from it.
+    ``fine`` times as many rows and columns sample the same strip, on which the distance from
+    the centre is :func:`lid_sheet_radius` of the angle off the gaze."""
+    rows, cols = rows * fine, cols * fine
+    s = np.linspace(0.0, 1.0, rows)[:, None]
+    t = np.linspace(-0.5, 0.5, cols)[None, :]
+    rho = radius * (1.06 - 0.12 * s)
+    theta = np.radians(46.0 - 12.0 * s)
+    phi = 0.25 * t
+    points = np.stack(
+        [
+            rho * np.sin(theta) * np.cos(phi),
+            rho * np.sin(theta) * np.sin(phi),
+            rho * np.cos(theta) + 0 * phi,
+        ],
+        -1,
+    ).reshape(-1, 3)
+    i = np.arange(rows - 1)[:, None] * cols + np.arange(cols - 1)[None, :]
+    a, b, c, d = i, i + 1, i + cols, i + cols + 1
+    quads = np.stack([a.ravel(), b.ravel(), d.ravel(), c.ravel()], 1)
+    triangles = np.concatenate([quads[:, [0, 1, 2]], quads[:, [0, 2, 3]]])
+    facing = (normals(points, triangles) * points[triangles].mean(1)).sum(1)
+    if (facing < 0).mean() < 0.5:
+        triangles = triangles[:, ::-1]
+    if not inward:
+        triangles = triangles[:, ::-1]
+    return points, triangles
+
+
+def lid_sheet_radius(points, radius):
+    """How far each point lies off the strip of :func:`lid_sheet`, along the ray from the
+    eyeball's centre (eyeball radii)."""
+    rho = np.linalg.norm(points, axis=1)
+    theta = np.degrees(np.arccos(np.clip(points[:, 2] / rho, -1.0, 1.0)))
+    return rho / radius - (1.06 - 0.01 * (46.0 - theta))
+
+
+class TestLidSeating(unittest.TestCase):
+    """:func:`register.seat_lids` on a strip of skin that goes under an eyeball, as a lower lid
+    does at the inner corner. Facing the eyeball, the strip crosses the clearance band; moved
+    under the eyeball there, its band vertices stood a ring away from the skin outside it, a
+    crease along the lid (level 2 of the real character, folds 80 to 130 degrees past the
+    reference's). The exported eyes count only the skin that faces out from the eyeball, so
+    level 2 moves only that skin out of the band, and follows the reference's own skin under
+    the eyeball."""
+
+    RADIUS = 0.012
+
+    def seat(self, inward, **options):
+        """The strip seated with ``options``, its triangles, the strip before, and the mask of
+        its vertices two rings or more inside its held border."""
+        from opensculptboy.fit import register
+
+        points, triangles = lid_sheet(self.RADIUS, inward)
+        reference = _SheetTarget(*lid_sheet(self.RADIUS, inward, fine=3))
+        grid = np.arange(len(points)).reshape(40, 12)
+        border = np.zeros(len(points), bool)
+        border[grid[:, 0]] = border[grid[:, -1]] = True
+        border[grid[0]] = border[grid[-1]] = True
+        interior = np.zeros(len(points), bool)
+        interior[grid[2:-2, 2:-2]] = True
+        seat = register.LidSeat(
+            ~border,
+            np.where(border, -1, 0),
+            np.ones(len(points), bool),
+            [(np.zeros(3), self.RADIUS)],
+            [np.array([0.0, 0.0, 1.0])],
+        )
+        with unittest.mock.patch.object(register, "Target", _SheetTarget):
+            seated = register.seat_lids(
+                points, triangles, reference, seat, fairness=5120.0, **options
+            )
+        return seated, triangles, points, interior
+
+    def test_skin_facing_the_eyeball_crosses_the_band_smoothly(self):
+        from opensculptboy.fit.metrics import fold_angles
+
+        old, triangles, points, interior = self.seat(True)
+        new, _, _, _ = self.seat(True, clearance_inward=False, follow_inside=True)
+        folds = {
+            name: float(fold_angles(seated, triangles)[interior].max())
+            for name, seated in (("before", points), ("old", old), ("new", new))
+        }
+        off = {
+            name: float(np.abs(lid_sheet_radius(seated[interior], self.RADIUS)).max())
+            for name, seated in (("old", old), ("new", new))
+        }
+        print(
+            f"\nlid strip facing the eyeball: largest folds {folds}, off the strip {off}"
+        )
+        self.assertLess(folds["new"], 15.0)
+        self.assertGreater(folds["old"], 45.0)
+        self.assertLess(off["new"], 0.01)
+        self.assertGreater(off["old"], 0.02)
+
+    def test_skin_facing_out_leaves_the_band(self):
+        from opensculptboy.eyes.geometry import CORNEA_GAP_MM, LID_CLEARANCE_MM
+        from opensculptboy.fit.reference import vertex_normals
+
+        seated, triangles, _, interior = self.seat(
+            False, clearance_inward=False, follow_inside=True
+        )
+        r = np.linalg.norm(seated, axis=1) / self.RADIUS
+        facing = (vertex_normals(seated, triangles) * seated).sum(1) > 0
+        band = (CORNEA_GAP_MM + LID_CLEARANCE_MM) / (self.RADIUS * 1000.0)
+        crossing = interior & (np.abs(r - 1.0) < 0.05)
+        self.assertGreater(int((crossing & facing).sum()), 0)
+        inside = (r >= 1.0) & (r < 1.0 + band - 1e-9)
+        self.assertEqual(int((interior & facing & inside).sum()), 0)
+
+    def test_level_options(self):
+        from opensculptboy.fit.register import FitOptions, _per_level
+
+        options = FitOptions()
+        self.assertEqual(
+            [_per_level(options.lid_clearance_inward, k) for k in (0, 1, 2, 3)],
+            [True, True, False, False],
+        )
+        self.assertEqual(
+            [_per_level(options.lid_follow_inside, k) for k in (0, 1, 2, 3)],
+            [False, False, True, True],
+        )
 
 
 if __name__ == "__main__":
