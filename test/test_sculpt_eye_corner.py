@@ -1,0 +1,434 @@
+# OpenSculptBoy
+# Apache License, Version 2.0
+"""
+Checks of the eye-corner patch of the ``sculpt`` topology
+(``opensculptboy.topology.patches.eye_corner``, docs/sculpt-topology.md): the patch format, the
+ray test of the inner corner from the front and from 35 degrees to either side and 20 degrees
+up or down (no ray between the lids reaches the skin of the socket behind the new surface, and
+the dark pocket that anny shows there closes), the caruncle clear of the eyeball and the lids,
+no crossing or flipped face, at rest, with the eyes turned, in a blink, on phenotype corners and
+face-shape samples, and the corner on the detail levels 1 and 2.
+
+The views are orthographic depth rasters along each view direction in the eye's frame
+(:func:`view_raster`), so the test needs no ray tracer.
+"""
+
+import functools
+import unittest
+
+import numpy as np
+import torch
+
+from opensculptboy.eyes import geometry
+from opensculptboy.topology import base_quad_mesh, validate_patch
+from opensculptboy.topology.patches import eye_corner
+
+# degrees toward the temple (yaw) and up (pitch) off the gaze
+VIEWS = tuple(
+    (yaw, pitch) for yaw in (-35, -17.5, 0, 17.5, 35) for pitch in (-20, 0, 20)
+)
+# the raster's step and the window of the lids' level (eyeball radii); a pixel of the pocket
+# lies RECESS below that level, within NEAR of the eye's centre and NASAL toward the nose
+STEP = 0.01
+WINDOW = 0.25
+RECESS = 0.06
+NEAR = 1.12
+NASAL = 0.4
+
+
+def split(quads):
+    """Triangles of quads (a triangle repeats its last index) and the quad of each."""
+    quads = np.asarray(quads)
+    tri = quads[:, 2] == quads[:, 3]
+    first = quads[:, [0, 1, 3]]
+    second = quads[~tri][:, [1, 2, 3]]
+    source = np.r_[np.arange(len(quads)), np.flatnonzero(~tri)]
+    return np.concatenate([first, second]), source
+
+
+def raster(points, triangles, xs, ys):
+    """The largest z (H, W) of the triangles over a grid (a view along -z) and the triangle
+    there (-1 where none)."""
+    depth = np.full((len(ys), len(xs)), -np.inf)
+    ident = np.full((len(ys), len(xs)), -1)
+    x0, dx, y0, dy = xs[0], xs[1] - xs[0], ys[0], ys[1] - ys[0]
+    p = points[triangles]
+    lo = np.floor((p.min(1)[:, :2] - [x0, y0]) / [dx, dy]).astype(int)
+    hi = np.ceil((p.max(1)[:, :2] - [x0, y0]) / [dx, dy]).astype(int)
+    lo = np.maximum(lo, 0)
+    hi = np.minimum(hi, [len(xs) - 1, len(ys) - 1])
+    for t in np.flatnonzero((hi >= lo).all(1)):
+        a, b, c = p[t]
+        det = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+        if abs(det) < 1e-14:
+            continue
+        gy, gx = np.mgrid[lo[t, 1] : hi[t, 1] + 1, lo[t, 0] : hi[t, 0] + 1]
+        px, py = xs[gx] - a[0], ys[gy] - a[1]
+        u = ((c[1] - a[1]) * px - (c[0] - a[0]) * py) / det
+        v = (-(b[1] - a[1]) * px + (b[0] - a[0]) * py) / det
+        inside = (u >= -1e-9) & (v >= -1e-9) & (u + v <= 1 + 1e-9)
+        z = a[2] + u * (b[2] - a[2]) + v * (c[2] - a[2])
+        better = inside & (z > depth[gy, gx])
+        depth[gy, gx] = np.where(better, z, depth[gy, gx])
+        ident[gy, gx] = np.where(better, t, ident[gy, gx])
+    return depth, ident
+
+
+def corner_views(frame, points, groups, views=VIEWS):
+    """
+    What the views of an eye's inner corner see: ``groups`` maps a name to triangles over
+    ``points`` (Anny's frame), and the eyeball is its fitted sphere (as the eyes of
+    :mod:`opensculptboy.eyes` draw it; anny's own eyeball of 72 vertices lies inside it, and
+    rays pass between its facets and the lids). Returns, by view, the area (mm^2) where the
+    first surface is ``"socket"`` skin inside the eyeball's sphere on the side of the nose
+    (``deep``), and the area of the pocket (``hole``): the first surface not the eyeball and
+    RECESS below the level of what lies around it (the grey closing over WINDOW).
+    """
+    from scipy import ndimage
+
+    local = frame.to_local(points)
+    names = list(groups)
+    tris = np.concatenate([groups[n] for n in names]).astype(np.int64)
+    kind = np.concatenate([np.full(len(groups[n]), i) for i, n in enumerate(names)])
+    near = np.linalg.norm(local[tris].mean(1), axis=1) < 4.5
+    tris, kind = tris[near], kind[near]
+    nasal = -1.0 if frame.centre[0] >= 0 else 1.0
+    xs = np.arange(-1.4, 1.4 + STEP / 2, STEP)
+    ys = np.arange(-0.9, 0.9 + STEP / 2, STEP)
+    gx, gy = np.meshgrid(xs, ys)
+    window = max(3, int(round(WINDOW / STEP)))
+    pixel = (STEP * frame.radius * 1000.0) ** 2
+    out = {"deep": {}, "hole": {}}
+    for yaw, pitch in views:
+        a, b = np.radians(yaw), np.radians(pitch)
+        view = np.array(
+            [-nasal * np.sin(a) * np.cos(b), np.sin(b), np.cos(a) * np.cos(b)]
+        )
+        right = np.cross([0.0, 1.0, 0.0], view)
+        right /= np.linalg.norm(right)
+        turn = np.stack([right, np.cross(view, right), view])
+        depth, ident = raster(local @ turn.T, tris, xs, ys)
+        sphere = np.sqrt(np.maximum(1.0 - gx**2 - gy**2, 0.0))
+        sphere[gx**2 + gy**2 > 1.0] = -np.inf
+        on_sphere = sphere > depth
+        depth = np.where(on_sphere, sphere, depth)
+        ident = np.where(on_sphere, -2, ident)
+        finite = np.isfinite(depth)
+        _, (iy, ix) = ndimage.distance_transform_edt(~finite, return_indices=True)
+        filled = depth[iy, ix]
+        level = ndimage.grey_closing(filled, size=(window, window))
+        hit = np.stack([gx, gy, filled], -1) @ turn
+        first = np.where(ident >= 0, kind[np.maximum(ident, 0)], -1)
+        first[ident == -2] = names.index("eyeball")
+        corner = (nasal * hit[..., 0] > NASAL) & (hit[..., 2] > 0.2)
+        radius = np.linalg.norm(hit, axis=-1)
+        deep = (first == names.index("socket")) & (radius < 1.0) & corner
+        hole = (first >= 0) & (first != names.index("eyeball")) & corner
+        hole &= (level - filled > RECESS) & (radius < NEAR)
+        out["deep"][(yaw, pitch)] = float(deep.sum()) * pixel
+        out["hole"][(yaw, pitch)] = float(hole.sum()) * pixel
+    return out
+
+
+def _segments_cross(p0, p1, a, b, c):
+    d = p1 - p0
+    e1, e2 = b - a, c - a
+    h = np.cross(d, e2)
+    det = (e1 * h).sum(1)
+    ok = np.abs(det) > 1e-18
+    inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    s = p0 - a
+    u = (s * h).sum(1) * inv
+    q = np.cross(s, e1)
+    v = (d * q).sum(1) * inv
+    t = (e2 * q).sum(1) * inv
+    return (
+        ok & (u > 1e-9) & (v > 1e-9) & (u + v < 1 - 1e-9) & (t > 1e-9) & (t < 1 - 1e-9)
+    )
+
+
+def crossings(points, first, second) -> int:
+    """The pairs of triangles of ``first`` and ``second`` (no shared vertex) that cross."""
+    p = points
+    ca, cb = p[first].mean(1), p[second].mean(1)
+    ra = np.linalg.norm(p[first] - ca[:, None], axis=2).max(1)
+    rb = np.linalg.norm(p[second] - cb[:, None], axis=2).max(1)
+    count = 0
+    for i in range(len(first)):
+        near = np.flatnonzero(np.linalg.norm(cb - ca[i], axis=1) < ra[i] + rb)
+        near = near[~np.isin(second[near], first[i]).any(1)]
+        if not len(near):
+            continue
+        a = p[first[i]]
+        b = p[second[near]]
+        hit = np.zeros(len(near), bool)
+        for k in range(3):
+            s0 = np.repeat(a[k][None], len(near), 0)
+            s1 = np.repeat(a[(k + 1) % 3][None], len(near), 0)
+            hit |= _segments_cross(s0, s1, b[:, 0], b[:, 1], b[:, 2])
+            corners = [np.repeat(a[m][None], len(near), 0) for m in range(3)]
+            hit |= _segments_cross(b[:, k], b[:, (k + 1) % 3], *corners)
+        count += int(hit.sum())
+    return count
+
+
+def normals(points, triangles):
+    n = np.cross(
+        points[triangles[:, 1]] - points[triangles[:, 0]],
+        points[triangles[:, 2]] - points[triangles[:, 0]],
+    )
+    return n / np.linalg.norm(n, axis=1, keepdims=True)
+
+
+@functools.lru_cache(maxsize=1)
+def anny_model():
+    import anny
+
+    return anny.Anny(face_shapes="all", facial_actions="all").to(dtype=torch.float64)
+
+
+def eyes_turned(model, degrees):
+    """``local-ref`` pose parameters that turn both eye bones about the vertical."""
+    import roma
+
+    labels = list(model.bone_labels)
+    params = torch.eye(4, dtype=torch.float64).repeat(1, len(labels), 1, 1)
+    turn = roma.rotvec_to_rotmat(torch.tensor([0.0, 0.0, np.radians(degrees)]))
+    for bone in ("eye.L", "eye.R"):
+        params[0, labels.index(bone), :3, :3] = turn
+    return params
+
+
+@functools.lru_cache(maxsize=1)
+def states() -> dict:
+    """Anny's posed vertices (N, 3) in the states the patch must hold in."""
+    from anny.faces.distribution import FaceShapeDistribution
+
+    model = anny_model()
+    blink = {"eyeBlinkLeft": 1.0, "eyeBlinkRight": 1.0}
+
+    def run(pose=None, **kwargs):
+        with torch.no_grad():
+            return model(pose_parameters=pose, **kwargs)["vertices"][0].numpy()
+
+    faces = FaceShapeDistribution(model).sample(
+        batch_size=2, generator=torch.Generator().manual_seed(7), spread=1.0
+    )
+    out = {
+        "rest": run(),
+        "look out": run(eyes_turned(model, 25.0)),
+        "look in": run(eyes_turned(model, -25.0)),
+        "half blink": run(facial_actions={k: 0.5 for k in blink}),
+        "blink": run(facial_actions=blink),
+    }
+    corners = {
+        "compact": dict(gender=0.0, age=0.0, muscle=0.0, weight=0.0, height=0.0),
+        "elongated": dict(gender=1.0, age=1.0, muscle=1.0, weight=1.0, height=1.0),
+        "light": dict(gender=1.0, age=0.0, weight=0.0, muscle=1.0),
+        "heavy": dict(gender=0.0, age=1.0, weight=1.0, muscle=0.0),
+    }
+    for name, phenotype in corners.items():
+        out[name] = run(phenotype_kwargs=phenotype)
+    for i, values in enumerate(faces.double()):
+        out[f"face {i}"] = run(face_shape_kwargs=values[None])
+        out[f"face {i} blink"] = run(
+            face_shape_kwargs=values[None], facial_actions=blink
+        )
+    return out
+
+
+BLINKS = ("blink", "face 0 blink", "face 1 blink")
+
+
+class TestEyeCorner(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.base = base_quad_mesh()
+        cls.patch = eye_corner.build(cls.base)
+        eyes = eye_corner.eyeball_rows(cls.base)
+        cls.eyes = eyes
+        quads = cls.base.quads
+        n = cls.base.vertex_count
+        on_eye = np.zeros(n, bool)
+        on_eye[np.r_[eyes["L"], eyes["R"]]] = True
+        kept = np.ones(len(quads), bool)
+        kept[cls.patch.removed_faces] = False
+        eyeball = on_eye[quads].all(1)
+        cls.eyeball = split(quads[eyeball])[0]
+        cls.skin = split(quads[kept & ~eyeball])[0]
+        cls.removed = split(quads[cls.patch.removed_faces])[0]
+        cls.anny_skin = split(quads[~eyeball])[0]
+        cls.new, source = split(cls.patch.faces)
+        labels = np.array(cls.patch.labels_of_faces())[source]
+        cls.tags = np.array(
+            [lab.split("/")[-1] if "/" in lab else "skin" for lab in labels]
+        )
+
+    def points(self, vertices):
+        return np.concatenate([vertices, self.patch.positions(self.base, vertices)])
+
+    def left(self, points, triangles):
+        return triangles[points[triangles].mean(1)[:, 0] > 0]
+
+    def test_patch_follows_the_format(self):
+        validate_patch(self.patch, self.base)
+        per_eye = len(self.patch.faces) // 2
+        self.assertEqual(len(self.patch.faces), 2 * per_eye)
+        self.assertTrue(20 <= per_eye <= 60, per_eye)
+        self.assertEqual(len(self.patch.removed_faces), 2 * per_eye)
+        labels = set(self.patch.labels_of_faces())
+        self.assertLessEqual(
+            {"eye_corner/caruncle", "eye_corner/conjunctiva"}, labels, labels
+        )
+        self.assertTrue(
+            (self.patch.weights[:, 1:] > 0).any()
+        )  # real blends, not copies
+
+    def test_new_vertices_stay_near_their_anchors(self):
+        rest = states()["rest"]
+        new = self.patch.positions(self.base, rest)
+        used = self.patch.weights > 0
+        spread = np.linalg.norm(rest[self.patch.anchors] - new[:, None], axis=2)
+        self.assertLess(float(spread[used].max()), 0.012)  # metres
+
+    def views(self, name, patched=True):
+        vertices = states()[name]
+        frame = geometry.eye_frame("L", vertices[self.eyes["L"]])
+        if not patched:
+            groups = {"socket": self.anny_skin, "eyeball": self.eyeball}
+            return corner_views(frame, vertices, groups)
+        groups = {"socket": self.skin, "eyeball": self.eyeball, "patch": self.new}
+        return corner_views(frame, self.points(vertices), groups)
+
+    def test_no_ray_reaches_the_socket_behind_the_corner(self):
+        # From the front and from 35 degrees to either side and 20 up or down, between the
+        # lids: no view sees anny's skin of the socket behind the new surface, and the dark
+        # pocket (what lies well below the level around it) closes
+        for name in states():
+            with self.subTest(state=name):
+                before = self.views(name, patched=False)
+                after = self.views(name)
+                self.assertEqual(len(after["deep"]), len(VIEWS))
+                self.assertLess(max(after["deep"].values()), DEEP_LIMIT, after["deep"])
+                if name in BLINKS:
+                    continue
+                self.assertLess(
+                    sum(after["hole"].values()),
+                    HOLE_SHARE * sum(before["hole"].values()) + 0.5,
+                    (before["hole"], after["hole"]),
+                )
+
+    def test_caruncle_stays_clear(self):
+        # The caruncle never crosses the eyeball or the lids, the patch never crosses itself
+        # or anny's skin, at rest, with the eyes turned, in a blink and over the bodies
+        caruncle = self.new[self.tags == "caruncle"]
+        for name, vertices in states().items():
+            with self.subTest(state=name):
+                p = self.points(vertices)
+                mine = self.left(p, caruncle)
+                centre = p[self.eyes["L"]].mean(0)
+                near = self.skin[
+                    np.linalg.norm(p[self.skin].mean(1) - centre, axis=1) < 0.04
+                ]
+                self.assertEqual(crossings(p, mine, self.eyeball), 0)
+                self.assertEqual(crossings(p, mine, near), 0)
+                new = self.left(p, self.new)
+                if name in BLINKS:
+                    # a full blink folds the corner under the closed lids: no more crossings
+                    # of the lids than anny's own pocket makes
+                    pocket = self.left(vertices, self.removed)
+                    self.assertLessEqual(
+                        crossings(p, new, near), crossings(vertices, pocket, near)
+                    )
+                    continue
+                self.assertEqual(crossings(p, new, new), 0)
+                self.assertEqual(crossings(p, new, near), 0)
+
+    def test_no_flipped_faces(self):
+        # Each new face keeps its orientation of the default character over the bodies, as
+        # far as anny's own faces of the pocket keep theirs (the most compact bodies turn one
+        # of anny's faces at the inner ring almost edge-on)
+        rest = states()["rest"]
+        reference = normals(self.points(rest), self.new)
+        anny_reference = normals(rest, self.removed)
+        for name, vertices in states().items():
+            if name in BLINKS:
+                continue
+            with self.subTest(state=name):
+                n = normals(self.points(vertices), self.new)
+                anny = normals(vertices, self.removed)
+                floor = (
+                    min(0.0, float((anny * anny_reference).sum(1).min())) - FLIP_MARGIN
+                )
+                self.assertGreater(float((n * reference).sum(1).min()), floor)
+
+    def test_detail_levels_stay_smooth(self):
+        # Catmull-Clark of the patched quads: no crease sharper than anny's own corner
+        from anny.utils.subdivision import catmull_clark
+
+        rest = states()["rest"]
+        quads = self.base.quads
+        kept = np.ones(len(quads), bool)
+        kept[self.patch.removed_faces] = False
+        centre = rest[self.eyes["L"]].mean(0)
+
+        def sharpest(points, faces, is_patch, levels):
+            local = np.linalg.norm(points[faces].mean(1) - centre, axis=1) < 0.03
+            faces, is_patch = faces[local], is_patch[local]
+            used = np.unique(faces)
+            remap = np.full(len(points), -1)
+            remap[used] = np.arange(len(used))
+            q, p, mark = remap[faces], points[used], is_patch
+            for _ in range(levels):
+                level = catmull_clark(len(p), q)
+                p = np.asarray(level.operator.apply(p))
+                mark = mark[level.parent_faces]
+                q = level.quads
+            n = normals(p, q[:, [0, 1, 2]])
+            # the angle across each edge between two faces of the patch region
+            edges = {}
+            worst = 0.0
+            for f, face in enumerate(q):
+                if not mark[f]:
+                    continue
+                for k in range(4):
+                    key = tuple(sorted((face[k], face[(k + 1) % 4])))
+                    if key in edges:
+                        worst = max(
+                            worst,
+                            float(
+                                np.degrees(
+                                    np.arccos(np.clip(n[f] @ n[edges[key]], -1, 1))
+                                )
+                            ),
+                        )
+                    else:
+                        edges[key] = f
+            return worst
+
+        sculpt = self.points(rest)
+        faces = np.concatenate([quads[kept], self.patch.faces])
+        is_patch = np.r_[
+            np.zeros(kept.sum(), bool), np.ones(len(self.patch.faces), bool)
+        ]
+        anny_faces = quads
+        anny_mark = np.zeros(len(quads), bool)
+        anny_mark[self.patch.removed_faces] = True
+        for levels in (1, 2):
+            with self.subTest(level=levels):
+                mine = sharpest(sculpt, faces, is_patch, levels)
+                theirs = sharpest(rest, anny_faces, anny_mark, levels)
+                self.assertLess(mine, max(theirs, SMOOTH_LIMIT[levels]), (mine, theirs))
+
+
+# the limits of the checks: the area of a view that may see the socket (two pixels' worth),
+# the share of anny's pocket that may stay, and the sharpest angle between faces of the
+# patch on each detail level (degrees)
+DEEP_LIMIT = 0.2
+HOLE_SHARE = 0.5
+FLIP_MARGIN = 0.1
+SMOOTH_LIMIT = {1: 60.0, 2: 35.0}
+
+
+if __name__ == "__main__":
+    unittest.main()

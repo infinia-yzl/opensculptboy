@@ -13,7 +13,8 @@ real eye has the caruncle (a low pink mound) and the plica (a fold of the conjun
 on the eyeball).
 
 The patch finds the pocket on anny's quad mesh (``anny-quads``) from its geometry on the
-default character (:func:`pocket_region`): the rings about the eye are the levels of a
+default character (:func:`pocket_region`; the base mesh holds anny's template, so
+:func:`default_body` builds the default character): the rings about the eye are the levels of a
 breadth-first walk over the skin from the back of the socket, and the pocket is the band of
 quads from the ring just inside the eyeball's sphere (:data:`INNER_RING`) out to the lid
 margins (:data:`OUTER_RING`, one ring further in the canthus), over the angles about the gaze
@@ -34,8 +35,10 @@ along the band's border without a seam:
 - the new vertex is a convex combination of at most :data:`MAX_ANCHORS` anny vertices near it
   (:func:`convex_weights`: non-negative weights that sum to 1, fitted to the designed position
   on the default character), so that every phenotype, local change, face shape, facial action
-  and the skin weights carry over to it exactly (``apply_retopology``), and its UV is the same
-  combination of the anchors' UVs, inside the chart of the removed quads.
+  and the skin weights carry over to it exactly (``apply_retopology``). The new quads keep
+  the UVs of the quads they replace, so the patch covers the same region of the atlas (the
+  same combinations of the anchors' UVs would fold the layout with the plica, and the band's
+  inner ring is a seam of the atlas).
 
 The right eye's patch is the mirror image of the left's across X = 0 (anny's template is
 symmetric), with the same weights. Each new face is tagged ``"caruncle"`` (the mound),
@@ -71,22 +74,26 @@ OUTER_RING_CANTHUS = 12
 SECTOR = (135.0, 232.0)
 CANTHUS = (172.0, 212.0)
 # the design, in eyeball radii: the crest of the plica lies at s = CREST, PLICA_GAP outside the
-# eyeball's sphere and PLICA_SHIFT nearer the gaze axis than anny's skin (over the middle of
-# the band, SHIFT_SPAN of t); the fold returns FOLD_GAP inside the sphere; the caruncle rises
+# eyeball's sphere and PLICA_SHIFT nearer the gaze axis than anny's skin over the middle of the
+# band (SHIFT_SPAN of t); the fold returns from the crest toward the inner ring (FOLD_POWER
+# shapes its profile) and FOLD_GAP inside the sphere; the caruncle rises
 # from the crest to CARUNCLE_SINK under the level of the lids (the grey closing of a front view
 # of the skin over LID_WINDOW, at LID_STEP a texel); the design blends into anny's lid margins
 # over BLEND of t at both ends of the band
-CREST = 0.35
-PLICA_GAP = 0.06
+CREST = 0.4
+PLICA_GAP = 0.1
 PLICA_SHIFT = 0.08
-SHIFT_SPAN = (0.1, 0.95)
+SHIFT_SPAN = (0.25, 0.95)
 FOLD_GAP = 0.03
+FOLD_POWER = 0.5
 CARUNCLE_SINK = 0.0
 LID_WINDOW = 0.25
 LID_STEP = 0.01
-BLEND = 0.2
-# faces with s above CREST are the caruncle's up to SKIN_S, and skin beyond it or where the
-# design replaces less than SKIN_BLEND of anny's lid margins
+BLEND = 0.25
+# faces with s above CARUNCLE_S are the caruncle's up to SKIN_S, and skin beyond it or where
+# the design replaces less than SKIN_BLEND of anny's lid margins; the faces below CARUNCLE_S
+# (the plica, which lies on the eyeball, and the fold) are conjunctiva
+CARUNCLE_S = 0.45
 SKIN_S = 0.8
 SKIN_BLEND = 0.25
 TAGS = ("caruncle", "conjunctiva", "skin")
@@ -180,7 +187,9 @@ def _smoothstep(x):
 
 def blend(t):
     """How far the design replaces anny's lid margins at t across the band."""
-    return _smoothstep(np.asarray(t) / BLEND) * _smoothstep((1.0 - np.asarray(t)) / BLEND)
+    return _smoothstep(np.asarray(t) / BLEND) * _smoothstep(
+        (1.0 - np.asarray(t)) / BLEND
+    )
 
 
 def lid_level(frame, rest, skin_triangles):
@@ -245,7 +254,7 @@ def designed_point(p0, s, t, inner_point, lids):
         return np.r_[xy, z]
     w = s / CREST  # 1 at the crest, 0 at the inner ring
     crest = np.r_[crest_rho * direction, np.sqrt(max(shell**2 - crest_rho**2, 0.0))]
-    q = inner_point + (crest - inner_point) * np.sqrt(w)
+    q = inner_point + (crest - inner_point) * w**FOLD_POWER
     d = np.linalg.norm(q)
     if w < 0.9 and d > 1.0 - FOLD_GAP:
         q = q * (1.0 - FOLD_GAP) / d
@@ -329,7 +338,9 @@ def one_eye(rest, quads, skin_mask, eyeball, side: str, base: BaseQuadMesh) -> d
         for v in quads[q]:
             if v in border:
                 kinds.setdefault(int(v), set()).add(kind)
-    fixed_s = {v: 0.0 if "in" in k else 1.0 for v, k in kinds.items() if k & {"in", "out"}}
+    fixed_s = {
+        v: 0.0 if "in" in k else 1.0 for v, k in kinds.items() if k & {"in", "out"}
+    }
     fixed_t = {v: 0.0 if "A" in k else 1.0 for v, k in kinds.items() if k & {"A", "B"}}
     s_all = harmonic(band, region, fixed_s)
     t_all = harmonic(band, region, fixed_t)
@@ -368,8 +379,10 @@ def one_eye(rest, quads, skin_mask, eyeball, side: str, base: BaseQuadMesh) -> d
     st_of = {int(v): (s_all[pos[v]], t_all[pos[v]]) for v in band}
     face_s = np.array([np.mean([st_of[int(x)][0] for x in q]) for q in region])
     face_t = np.array([np.mean([st_of[int(x)][1] for x in q]) for q in region])
-    tags = np.where(face_s >= CREST, "caruncle", "conjunctiva").astype(object)
-    tags[(face_s >= SKIN_S) | ((blend(face_t) < SKIN_BLEND) & (face_s >= CREST))] = "skin"
+    tags = np.where(face_s >= CARUNCLE_S, "caruncle", "conjunctiva").astype(object)
+    tags[(face_s >= SKIN_S) | ((blend(face_t) < SKIN_BLEND) & (face_s >= CREST))] = (
+        "skin"
+    )
     return dict(
         frame=frame,
         removed=removed,
@@ -411,7 +424,10 @@ def default_body(base: BaseQuadMesh) -> np.ndarray:
     import torch
 
     model = anny.Anny(
-        topology="anny-quads", local_changes="none", facial_actions="none", face_shapes="none"
+        topology="anny-quads",
+        local_changes="none",
+        facial_actions="none",
+        face_shapes="none",
     ).to(dtype=torch.float64)
     if not np.array_equal(model.faces.cpu().numpy(), base.quads):
         raise ValueError("The default character's quads are not the base mesh's.")
@@ -437,7 +453,10 @@ def build(base: BaseQuadMesh) -> Patch:
     n = base.vertex_count
     removed = eye["removed"]
     m = len(eye["inside"])
-    rows = [dict(zip(a.tolist(), w.tolist())) for a, w in zip(eye["anchors"], eye["weights"])]
+    rows = [
+        dict(zip(a.tolist(), w.tolist()))
+        for a, w in zip(eye["anchors"], eye["weights"])
+    ]
     anchors, weights = blend_rows(rows)
     # the new faces keep the removed quads' UVs: the band's inner ring is a seam of the atlas,
     # whose UVs must stay on the border of the region, and the same combinations of the
@@ -467,8 +486,8 @@ def constants() -> dict:
     """The constants the patch was built with, for the data file's record."""
     names = (
         "MAX_ANCHORS ANCHOR_RINGS RING_REACH RING_START INNER_RING OUTER_RING "
-        "OUTER_RING_CANTHUS SECTOR CANTHUS CREST PLICA_GAP PLICA_SHIFT SHIFT_SPAN FOLD_GAP "
-        "CARUNCLE_SINK LID_WINDOW LID_STEP BLEND SKIN_S SKIN_BLEND"
+        "OUTER_RING_CANTHUS SECTOR CANTHUS CREST PLICA_GAP PLICA_SHIFT SHIFT_SPAN FOLD_GAP FOLD_POWER "
+        "CARUNCLE_SINK LID_WINDOW LID_STEP BLEND CARUNCLE_S SKIN_S SKIN_BLEND"
     ).split()
     g = globals()
     return {k.lower(): (list(g[k]) if isinstance(g[k], tuple) else g[k]) for k in names}
