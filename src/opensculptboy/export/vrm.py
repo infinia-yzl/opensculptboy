@@ -625,7 +625,8 @@ def vrm_spec(
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
             from opensculptboy.eyes.mesh import eyed_mesh
 
-            eyed = eyed_mesh(model, None, base, eye, "vrm")
+            baked = None if "eye_base_color" in images else images.get("eyes")
+            eyed = eyed_mesh(model, None, base, eye, "vrm", baked)
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
             targets = eyed.targets(np.stack(targets)) if len(targets) else targets
@@ -687,7 +688,8 @@ def vrm_spec(
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
             from opensculptboy.eyes.mesh import eyed_mesh
 
-            eyed = eyed_mesh(model, mesh, detail.vertices(base), eye, "vrm")
+            baked = None if "eye_base_color" in images else images.get("eyes")
+            eyed = eyed_mesh(model, mesh, detail.vertices(base), eye, "vrm", baked)
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
             targets, vertices = eyed.targets(targets), eyed.vertices(vertices)

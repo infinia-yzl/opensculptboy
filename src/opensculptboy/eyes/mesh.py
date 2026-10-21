@@ -106,6 +106,10 @@ class EyedMesh:
     #                 mesh's eyeball for the texture
     shapes: dict = dataclasses.field(default_factory=dict)  # side -> geometry.EyeShape
     extras: dict = dataclasses.field(default_factory=dict)  # what the file records
+    # the eyes with the iris and pupil sizes they were built with (numbers), and the sizes
+    # found in the baked eye texture by side (empty without one)
+    eye: object = None
+    measured: dict = dataclasses.field(default_factory=dict)
 
     def radii_mm(self) -> dict[str, float]:
         """The radius of each eyeball in millimetres."""
@@ -226,14 +230,54 @@ def _base_mesh(model, mesh):
     return triangles, uv_triangles, uvs
 
 
-def eyed_mesh(model, mesh, rest: np.ndarray, eye, kind: str = "gltf") -> EyedMesh:
+def measure_baked(model, eyeballs: dict, radii: dict, baked: bytes) -> dict:
+    """The iris and pupil diameters (mm) by side that :func:`~opensculptboy.eyes.texture.
+    find_iris` finds in a baked eye texture (PNG or JPEG bytes on anny's atlas) carried over
+    through the mesh's ``eyeballs`` (:attr:`EyedMesh.eyeballs`); sides without an iris are
+    left out."""
+    import io
+
+    from PIL import Image
+
+    from opensculptboy.eyes import texture as tex
+    from opensculptboy.texture.eyes import eye_uv_box
+
+    image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
+    carried = tex.carry_baked(image, eye_uv_box(model), eyeballs)
+    s, phi, left = tex.texel_polar()
+    out = {}
+    for side, half in (("L", left), ("R", ~left)):
+        hit = tex.find_iris(carried[half], s[half], phi[half])
+        if hit is not None:
+            out[side] = {
+                "pupil_mm": round(float(2.0 * hit[1] * radii[side]), 2),
+                "iris_mm": round(float(2.0 * hit[2] * radii[side]), 2),
+            }
+    return out
+
+
+def _mean_sizes(measured: dict) -> dict | None:
+    if not measured:
+        return None
+    return {
+        key: float(np.mean([m[key] for m in measured.values()]))
+        for key in ("iris_mm", "pupil_mm")
+    }
+
+
+def eyed_mesh(
+    model, mesh, rest: np.ndarray, eye, kind: str = "gltf", baked: bytes | None = None
+) -> EyedMesh:
     """
     The mesh of a file with the eyes of ``eye`` (an :class:`~opensculptboy.material.
     EyeMaterial`): ``mesh`` is the base mesh (a :class:`~opensculptboy.detail.subdivision.
     DetailTopology`, or None for anny's own mesh) and ``rest`` (N, 3) its rest vertices in
     Anny's frame. ``kind`` is ``"gltf"`` (a cornea shell over a recessed iris when
-    ``eye.cornea``) or ``"vrm"`` (the single-surface eyeball, at fewer segments). Raises
-    ValueError for a mesh without anny's eyeballs.
+    ``eye.cornea``) or ``"vrm"`` (the single-surface eyeball, at fewer segments). ``baked``
+    is the file's baked eye texture (on anny's atlas), if any: an ``iris_mm`` or ``pupil_mm``
+    of ``"auto"`` or ``"baked"`` takes the size found in it (:func:`measure_baked`, the mean
+    of both eyes), and ``"auto"`` the default without it. Raises ValueError for a mesh
+    without anny's eyeballs, and for ``"baked"`` sizes that no baked iris gives.
     """
     from opensculptboy.export.body import vertex_normals
 
@@ -259,34 +303,54 @@ def eyed_mesh(model, mesh, rest: np.ndarray, eye, kind: str = "gltf") -> EyedMes
     socket_vertices = np.zeros(len(rest), bool)
     frames, bulges, eyeballs, shapes = {}, {}, {}, {}
     skin_rows = np.flatnonzero(skin)
+
     # the frames, and the bulge and the radius scale that clear the lids: the smaller of the
-    # two eyes', so that both eyes match
-    clear = {}
-    for side in ("L", "R"):
-        frame = geometry.eye_frame(side, rest[rows[side]])
-        shape = geometry.EyeShape.of(eye.iris_mm, frame.radius)
-        shell = 1.0 + shape.gap if two_surface else 1.0
-        frames[side] = frame
-        clear[side] = geometry.bulge_clearance(
-            frame, rest[skin_rows], normals[skin_rows], shape, shell
-        )
+    # two eyes', so that both eyes match (the scale does not depend on the iris's size, the
+    # bulge does)
+    def clearance(iris_mm):
+        clear = {}
+        for side in ("L", "R"):
+            frame = geometry.eye_frame(side, rest[rows[side]])
+            shape = geometry.EyeShape.of(iris_mm, frame.radius)
+            shell = 1.0 + shape.gap if two_surface else 1.0
+            frames[side] = frame
+            clear[side] = geometry.bulge_clearance(
+                frame, rest[skin_rows], normals[skin_rows], shape, shell
+            )
+        return clear
+
+    nominal = eye.sized()  # the card's sizes, or the defaults for those from a bake
+    clear = clearance(nominal.iris_mm)
     bulge = min(b for b, _ in clear.values()) * eye.bulge
     scale = min(c for _, c in clear.values())
     for side in ("L", "R"):
-        anchors = rows[side]
         frame = frames[side]
         frame.radius *= scale
-        shape = geometry.EyeShape.of(eye.iris_mm, frame.radius)
-        bulges[side], shapes[side] = bulge, shape
         # the base mesh's eyeball, for the eye texture
         mine = np.zeros(len(rest), bool)
-        mine[anchors] = True
+        mine[rows[side]] = True
         tris = eyeball_tris & mine[triangles].all(1)
         eyeballs[side] = (
             frame.to_local(rest),
             triangles[tris],
             uvs[uv_triangles[tris]],
         )
+    # the sizes of the iris and the pupil: the card's, or those of the baked eyes
+    measured = {}
+    if eye.wants_measure() and baked is not None and eye.source in ("auto", "baked"):
+        radii = {side: f.radius * 1000.0 for side, f in frames.items()}
+        measured = measure_baked(model, eyeballs, radii, baked)
+    eye = eye.sized(_mean_sizes(measured))
+    if eye.iris_mm != nominal.iris_mm:
+        clear = clearance(eye.iris_mm)
+        bulge = min(b for b, _ in clear.values()) * eye.bulge
+        for frame in frames.values():
+            frame.radius *= scale
+    for side in ("L", "R"):
+        anchors = rows[side]
+        frame = frames[side]
+        shape = geometry.EyeShape.of(eye.iris_mm, frame.radius)
+        bulges[side], shapes[side] = bulge, shape
         if two_surface:
             surfaces = {
                 "eyeball": geometry.revolve(geometry.eyeball_profile(shape), segments),
@@ -349,6 +413,8 @@ def eyed_mesh(model, mesh, rest: np.ndarray, eye, kind: str = "gltf") -> EyedMes
         bulge=bulges,
         eyeballs=eyeballs,
         shapes=shapes,
+        eye=eye,
+        measured=measured,
     )
 
 
@@ -384,6 +450,13 @@ def eye_texture(eye, eyed: EyedMesh, model, baked: bytes | None = None):
     """
     from opensculptboy.eyes import texture as tex
 
+    if (
+        eyed.eye is not None and eye.wants_measure()
+    ):  # the sizes the mesh was built with
+        eye = dataclasses.replace(
+            eye, iris_mm=eyed.eye.iris_mm, pupil_mm=eyed.eye.pupil_mm
+        )
+    eye = tex._sized(eye)
     use_baked = baked is not None and eye.source in ("auto", "baked")
     if eye.source == "baked" and baked is None:
         raise ValueError(

@@ -37,10 +37,14 @@ def _kabsch_residual(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.linalg.norm(ca @ rotation.T - cb, axis=1).max())
 
 
-def synthetic_baked_eyes(model, eyed, centre=(0.03, -0.02), pupil_mm=2.8, iris_mm=11.2):
+def synthetic_baked_eyes(
+    model, eyed, centre=(0.03, -0.02), pupil_mm=2.8, iris_mm=11.2, pale_ring=False
+):
     """A baked eye texture on anny's atlas (the box of opensculptboy.texture.eyes): a grey
     iris with a wide pupil, off the gaze by ``centre`` (eyeball radii), as a game's eye
-    texture might come; returns the PNG bytes and the eyeball radius used (mm)."""
+    texture might come, with ``pale_ring`` a pale outer band of the iris (1.2 mm) and a
+    darker limbal ring outside it (0.5 mm); returns the PNG bytes and the eyeball radius used
+    (mm)."""
     from opensculptboy.export.document import png_bytes
     from opensculptboy.texture.eyes import eye_uv_box, to_eye_uvs
 
@@ -57,11 +61,15 @@ def synthetic_baked_eyes(model, eyed, centre=(0.03, -0.02), pupil_mm=2.8, iris_m
             px, np.arange(len(corners)).reshape(-1, 3), d, (w, h)
         )
         r = np.hypot(values[..., 0] - centre[0], values[..., 1] - centre[1]) * radius
-        colour = np.where(
-            (r < pupil_mm / 2)[..., None],
-            0.01,
-            np.where((r < iris_mm / 2)[..., None], 0.12, [0.7, 0.68, 0.66]),
-        )
+        sclera = np.array([0.7, 0.68, 0.66])
+        if pale_ring:
+            band = r < iris_mm / 2 + 0.5
+            sclera = np.where(band[..., None], 0.3, sclera)
+            outer = np.where((r < iris_mm / 2)[..., None], 0.55, sclera)
+            iris = np.where((r < iris_mm / 2 - 1.2)[..., None], 0.12, outer)
+        else:
+            iris = np.where((r < iris_mm / 2)[..., None], 0.12, sclera)
+        colour = np.where((r < pupil_mm / 2)[..., None], 0.01, iris)
         colour = np.where((values[..., 2] > 0)[..., None], colour, [0.7, 0.68, 0.66])
         image[covered] = colour[covered]
     return png_bytes(tex.srgb(image)), radius
@@ -75,7 +83,14 @@ class TestEyeCard(unittest.TestCase):
         self.assertEqual(Character.from_dict(data), card)
         eye = card.eye_material()
         self.assertEqual(eye.pupil_mm, 3.0)
-        self.assertEqual(eye.iris_mm, 11.7)
+        self.assertEqual(eye.iris_mm, "auto")  # the baked size, else 11.7
+        self.assertEqual(eye.sized().iris_mm, 11.7)
+        self.assertEqual(
+            EyeMaterial(iris_mm="baked")
+            .sized({"iris_mm": 11.0, "pupil_mm": 4.5})
+            .pupil_mm,
+            4.5,
+        )
         self.assertTrue(eye.cornea and eye.caruncle)
         self.assertAlmostEqual(eye.cornea_ior, 1.376)
         # the eyes alone keep the exporters' own skin; with skin values, both
@@ -88,7 +103,8 @@ class TestEyeCard(unittest.TestCase):
     def test_invalid_eyes_are_refused(self):
         for eyes in (
             {"pupil_mm": 0.5},
-            {"pupil_mm": 11.0},
+            {"pupil_mm": 11.0, "iris_mm": 11.7},
+            {"iris_mm": "large"},
             {"iris_color": [1, 2]},
             {"source": "photo"},
             {"cornea": 1},
@@ -293,6 +309,44 @@ class TestEyedMesh(unittest.TestCase):
                 self.assertGreater(before, 50)
                 self.assertLess(after, 0.3 * before)
 
+    def test_baked_sizes(self):
+        # "auto" (the default) and "baked" keep the sizes found in the baked eyes; a pale
+        # outer band of the iris belongs to the iris (the limbus is its outer edge, before the
+        # darker limbal ring), as a game's eye texture may draw it
+        for pale in (False, True):
+            with self.subTest(pale_ring=pale):
+                baked, radius = synthetic_baked_eyes(
+                    self.model, self.eyed, pupil_mm=4.6, iris_mm=11.4, pale_ring=pale
+                )
+                eyed = eyed_mesh(
+                    self.model, None, self.rest, EyeMaterial(), "gltf", baked
+                )
+                self.assertAlmostEqual(eyed.eye.iris_mm, 11.4, delta=0.35)
+                self.assertAlmostEqual(eyed.eye.pupil_mm, 4.6, delta=0.35)
+                self.assertEqual(sorted(eyed.measured), ["L", "R"])
+                limbus = eyed.shapes["L"].iris * eyed.frames["L"].radius * 2000
+                self.assertAlmostEqual(limbus, eyed.eye.iris_mm, delta=1e-6)
+                pixels, info = eye_texture(eyed.eye, eyed, self.model, baked)
+                s, phi, left = tex.texel_polar()
+                found = tex.find_iris(tex.linear(pixels)[left], s[left], phi[left])
+                self.assertAlmostEqual(2 * found[1] * radius, 4.6, delta=0.4)
+                self.assertAlmostEqual(2 * found[2] * radius, 11.4, delta=0.5)
+        # without a bake, "auto" is the defaults and "baked" an error
+        self.assertEqual(self.eyed.eye.iris_mm, 11.7)
+        self.assertEqual(self.eyed.eye.pupil_mm, 3.5)
+        with self.assertRaises(ValueError):
+            eyed_mesh(self.model, None, self.rest, EyeMaterial(pupil_mm="baked"))
+        # given sizes win over the bake
+        fixed = eyed_mesh(
+            self.model,
+            None,
+            self.rest,
+            EyeMaterial(iris_mm=11.7, pupil_mm=3.5),
+            "gltf",
+            baked,
+        )
+        self.assertEqual((fixed.eye.iris_mm, fixed.eye.pupil_mm), (11.7, 3.5))
+
     def test_vrm_eyes_have_one_surface(self):
         eyed = eyed_mesh(self.model, None, self.rest, self.eye, "vrm")
         self.assertEqual(sorted({p.name for p in eyed.parts}), ["caruncle", "eyeball"])
@@ -300,7 +354,9 @@ class TestEyedMesh(unittest.TestCase):
 
     def test_baked_eyes_take_the_cards_sizes(self):
         baked, radius = synthetic_baked_eyes(self.model, self.eyed)
-        eye = EyeMaterial(pupil_mm=3.5, iris_tint=1.0, iris_color=[0.05, 0.12, 0.2])
+        eye = EyeMaterial(
+            pupil_mm=3.5, iris_mm=11.7, iris_tint=1.0, iris_color=[0.05, 0.12, 0.2]
+        )
         pixels, info = eye_texture(eye, self.eyed, self.model, baked)
         self.assertEqual(info["sides"], {"L": "baked", "R": "baked"})
         s, phi, left = tex.texel_polar()

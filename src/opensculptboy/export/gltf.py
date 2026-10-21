@@ -192,7 +192,8 @@ def export_glb(
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
             from opensculptboy.eyes.mesh import eyed_mesh
 
-            eyed = eyed_mesh(model, mesh, vertices, eye, "gltf")
+            baked = None if "eye_base_color" in images else images.get("eyes")
+            eyed = eyed_mesh(model, mesh, vertices, eye, "gltf", baked)
             normals = eyed.normals(vertices)
             weights, indices = eyed.skin_weights(weights, indices)
             vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
@@ -442,6 +443,7 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
     from opensculptboy.eyes.geometry import CHAMBER_DEPTH_MM
     from opensculptboy.eyes.mesh import eye_texture
 
+    eye = eyed.eye if eyed.eye is not None else eye  # with the sizes the mesh took
     settings = dict(eye.extras(), bulge={k: float(v) for k, v in eyed.bulge.items()})
 
     def extras(role):
