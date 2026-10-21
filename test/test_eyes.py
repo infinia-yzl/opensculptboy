@@ -389,6 +389,11 @@ class TestExports(unittest.TestCase):
         self.assertGreater(ext["KHR_materials_volume"]["thicknessFactor"], 0.0)
         self.assertIn("KHR_materials_clearcoat", materials["conjunctiva"]["extensions"])
         self.assertIn("baseColorTexture", materials["eyes"]["pbrMetallicRoughness"])
+        # under the cornea the eyeball reflects nothing of its own (no milky veil)
+        self.assertEqual(
+            materials["eyes"]["extensions"]["KHR_materials_specular"]["specularFactor"],
+            0.0,
+        )
         for name in ("eyes", "cornea", "conjunctiva"):
             extras = materials[name]["extras"]["opensculptboy_eye"]
             self.assertEqual(extras["format"], "opensculptboy/eye@1")
@@ -546,9 +551,15 @@ class TestExports(unittest.TestCase):
         self.assertTrue(cornea["shadow_transparent"])
         self.assertEqual(cornea["inputs"]["Transmission Weight"], 1.0)
         self.assertAlmostEqual(cornea["inputs"]["IOR"], 1.376)
+        self.assertEqual(cornea["inputs"]["Coat Weight"], 0.0)
+        self.assertTrue(cornea["drop_volume"])
         eyeball = eye_principled_values(settings["eyes"])
         self.assertFalse(eyeball["shadow_transparent"])
-        self.assertGreater(eyeball["inputs"]["Subsurface Weight"], 0)
+        # no scattering that blurs the iris, no reflection under the cornea
+        self.assertEqual(eyeball["inputs"]["Subsurface Weight"], 0.0)
+        self.assertEqual(eyeball["inputs"]["Specular IOR Level"], 0.0)
+        single = eye_principled_values(dict(settings["eyes"], cornea=False))
+        self.assertNotIn("Specular IOR Level", single["inputs"])
         # the skin settings are read apart from the eyes'
         self.assertEqual(read_skin_settings(str(self.path)), {})
 

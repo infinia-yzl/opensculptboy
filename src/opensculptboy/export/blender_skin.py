@@ -28,12 +28,16 @@ The eyes of :mod:`opensculptboy.eyes` keep their settings under ``opensculptboy_
 ``opensculptboy/eye@1``) with a ``role`` per material, and :func:`apply_eye_materials` sets:
 
 - ``cornea``: a clear refracting surface (Transmission Weight 1 at the cornea's IOR, 1.376 by
-  default, and its roughness) whose shadow rays pass through a Transparent BSDF (a Light Path
-  node's Is Shadow Ray mixes them), so that Cycles lights the iris behind it: a refracting
-  surface blocks the direct light of a path tracer otherwise. EEVEE's refraction is turned on
-  for the material where the Blender version has the setting;
-- ``eyeball``: the sclera's roughness and a little subsurface scattering (1.5 mm), which
-  softens the white of the eye;
+  default, and its roughness; no coat, sheen or subsurface) whose shadow rays pass through a
+  Transparent BSDF (a Light Path node's Is Shadow Ray mixes them), so that Cycles lights the
+  iris behind it: a refracting surface blocks the direct light of a path tracer otherwise. The
+  importer's Volume Absorption of ``KHR_materials_volume`` (density 0) leaves the material
+  output, since the open shell of the cornea encloses no volume. EEVEE's refraction is turned
+  on for the material where the Blender version has the setting;
+- ``eyeball``: the sclera's roughness, no subsurface scattering (a millimetre of it blurs the
+  iris and greys the pupil) and, under a cornea, no specular reflection of its own (Specular
+  IOR Level 0, as the file's ``KHR_materials_specular`` says): its rough reflection would lay a
+  milky veil over the eye;
 - ``conjunctiva``: the caruncle and the skin of the socket, with subsurface scattering.
 
 The script needs nothing but Blender's own Python. Run it on a file with::
@@ -105,7 +109,9 @@ def principled_values(settings: dict, unit_scale: float = 1.0) -> dict:
 def eye_principled_values(settings: dict, unit_scale: float = 1.0) -> dict:
     """
     The Principled BSDF inputs of an eye material's ``opensculptboy_eye`` extras, by name,
-    and whether its shadow rays pass (``"shadow_transparent"``, the cornea).
+    whether its shadow rays pass (``"shadow_transparent"``, the cornea) and whether the
+    importer's volume goes (``"drop_volume"``, the cornea: ``KHR_materials_volume`` gives it a
+    Volume Absorption node of density 0, and the open shell of the cornea encloses no volume).
     """
     role = settings.get("role")
     mm = 1.0 / 1000.0 / unit_scale
@@ -115,26 +121,44 @@ def eye_principled_values(settings: dict, unit_scale: float = 1.0) -> dict:
             "Metallic": 0.0,
             "Roughness": float(settings.get("cornea_roughness", 0.02)),
             "IOR": float(settings.get("cornea_ior", 1.376)),
+            "Specular IOR Level": 0.5,  # the reflection of its IOR, neither more nor less
             "Transmission Weight": 1.0,
+            "Coat Weight": 0.0,
+            "Sheen Weight": 0.0,
+            "Subsurface Weight": 0.0,
             "Alpha": 1.0,
         }
-        return {"inputs": inputs, "shadow_transparent": True}
+        return {"inputs": inputs, "shadow_transparent": True, "drop_volume": True}
     if role == "eyeball":
+        # no subsurface scattering: a millimetre of it blurs the iris and greys the pupil.
+        # Under a cornea (the default) the eyeball reflects nothing of its own: its specular
+        # layer at the sclera's roughness would lay a milky veil over the iris and the sclera
         inputs = {
             "Roughness": float(settings.get("sclera_roughness", 0.45)),
-            "Subsurface Weight": 0.2,
-            "Subsurface Radius": [1.0, 0.45, 0.3],
-            "Subsurface Scale": 1.5 * mm,
+            "Subsurface Weight": 0.0,
         }
-        return {"inputs": inputs, "shadow_transparent": False}
+        if settings.get("cornea", True):
+            inputs["Specular IOR Level"] = 0.0
+            inputs["Coat Weight"] = 0.0
+        return {"inputs": inputs, "shadow_transparent": False, "drop_volume": False}
     if role == "conjunctiva":
         inputs = {
             "Subsurface Weight": 0.35,
             "Subsurface Radius": [1.0, 0.3, 0.2],
             "Subsurface Scale": 2.0 * mm,
         }
-        return {"inputs": inputs, "shadow_transparent": False}
-    return {"inputs": {}, "shadow_transparent": False}
+        return {"inputs": inputs, "shadow_transparent": False, "drop_volume": False}
+    return {"inputs": {}, "shadow_transparent": False, "drop_volume": False}
+
+
+# Principled inputs of Blender 4 and later, and their names in Blender 3
+BLENDER3_INPUTS = {
+    "Transmission Weight": "Transmission",
+    "Specular IOR Level": "Specular",
+    "Coat Weight": "Clearcoat",
+    "Sheen Weight": "Sheen",
+    "Subsurface Weight": "Subsurface",
+}
 
 
 def _principled(material):
@@ -158,15 +182,18 @@ def apply_eye(material, settings: dict, unit_scale: float = 1.0) -> bool:
     values = eye_principled_values(settings, unit_scale)
     for name, value in values["inputs"].items():
         socket = bsdf.inputs.get(name)
-        if socket is None and name == "Transmission Weight":  # Blender 3
-            socket = bsdf.inputs.get("Transmission")
+        if socket is None and name in BLENDER3_INPUTS:  # Blender 3
+            socket = bsdf.inputs.get(BLENDER3_INPUTS[name])
         if socket is not None:
             socket.default_value = value
+    tree = material.node_tree
+    output = next(
+        (n for n in tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial"), None
+    )
+    if values.get("drop_volume") and output is not None:
+        for link in list(output.inputs["Volume"].links):
+            tree.links.remove(link)
     if values["shadow_transparent"]:
-        tree = material.node_tree
-        output = next(
-            (n for n in tree.nodes if n.bl_idname == "ShaderNodeOutputMaterial"), None
-        )
         if output is not None:
             path = tree.nodes.new("ShaderNodeLightPath")
             clear = tree.nodes.new("ShaderNodeBsdfTransparent")

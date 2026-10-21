@@ -342,6 +342,7 @@ class EyeMaterial:
             "cornea_ior": float(self.cornea_ior),
             "cornea_roughness": float(self.cornea_roughness),
             "sclera_roughness": float(self.sclera_roughness),
+            "cornea": bool(self.cornea),
         }
 
 

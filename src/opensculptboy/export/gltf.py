@@ -425,8 +425,11 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
     :class:`~opensculptboy.eyes.mesh.EyedMesh` behind ``body``):
 
     - ``eyes``: the eye texture (:func:`opensculptboy.eyes.mesh.eye_texture`) on the eyeballs;
-      under a cornea a moist, fairly rough surface, and without one (``eye.cornea`` false) a
-      clear coat (``KHR_materials_clearcoat``) at the cornea's IOR for the wet highlight;
+      under a cornea a diffuse surface without a specular reflection of its own
+      (``KHR_materials_specular`` factor 0: the eyeball lies in the eye's own medium, and a
+      reflection there reads as a milky veil over the iris), and without one (``eye.cornea``
+      false) a clear coat (``KHR_materials_clearcoat``) at the cornea's IOR for the wet
+      highlight;
     - ``cornea``: a clear, refracting shell (``KHR_materials_transmission``,
       ``KHR_materials_volume`` with the depth of the anterior chamber as its thickness,
       ``KHR_materials_ior``). As the transmission extension asks, it is OPAQUE: readers
@@ -464,7 +467,12 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
     eyeball = pbr_material(
         "eyes", (1.0, 1.0, 1.0, 1.0), 0.0, eye.sclera_roughness, texture=texture
     )
-    if not eye.cornea:
+    if eye.cornea:
+        # under the cornea the eyeball sits in the eye's own medium: no reflection of its
+        # own, which a renderer would draw as a rough, milky layer over the iris (the cornea
+        # gives the one sharp highlight)
+        eyeball["extensions"] = {"KHR_materials_specular": {"specularFactor": 0.0}}
+    else:
         eyeball["extensions"] = {
             "KHR_materials_clearcoat": {
                 "clearcoatFactor": 1.0,
