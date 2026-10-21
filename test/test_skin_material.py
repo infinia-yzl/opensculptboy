@@ -493,6 +493,39 @@ class TestEarTile(unittest.TestCase):
         zero = detail_topology(self.model, 0)
         self.assertIsNone(with_ear_uvs(zero, self.table)[1])
 
+    def test_pointed_ear_unwrap_has_no_flips(self):
+        """A pointed tip is a cone far from developable: LSCM and ARAP flip triangles there
+        (46 of 6,518 on this target, 179 of 25,968 on level 2 of the real replica), which
+        overlap texels and turn the tangent frames over; ``untangle`` leaves none."""
+        from opensculptboy.fit.register import pinna
+        from opensculptboy.texture import ears as E
+        from test.fit_fixtures import _smoothed, point_ears
+
+        rest0 = self.model.template_vertices.detach().double().numpy()
+        outer = np.asarray(self.topology.apply(pinna(self.model, rest0).astype(float)))
+        weight = _smoothed(outer, self.topology.triangles, 12)
+        pointed = point_ears(self.rest, weight, tip=0.02)
+
+        def flips(table):
+            mesh, mask = E.with_ear_uvs(self.topology, table)
+            return int((E._signed_areas(mesh.uvs, mesh.uv_triangles[mask]) <= 0).sum())
+
+        real = E.untangle
+        try:
+            E.untangle = lambda vertices, triangles, uv: uv
+            plain = E.ear_uv_table(
+                pointed, self.topology, self.ears, np.sign(pointed[:, 0])
+            )
+        finally:
+            E.untangle = real
+        table = E.ear_uv_table(
+            pointed, self.topology, self.ears, np.sign(pointed[:, 0])
+        )
+        self.assertGreater(flips(plain), 10)  # the case the fix is for
+        self.assertEqual(flips(table), 0)
+        stats = E.density(pointed, self.topology, table)
+        self.assertGreater(stats["p5"], 0.4 * stats["p50"])
+
     def test_export(self):
         card = Character(
             name="ears",
