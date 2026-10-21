@@ -79,7 +79,7 @@ The bake writes `<card>.<tier>.normal.png` (and `<card>.<tier>.head_normal.png`,
 }
 ```
 
-Each entry names the mesh its maps belong to; a tier whose mesh has changed since (a card that gained a level) uses them with a warning until `bake-tiers` runs again, and a tier without an entry takes the master's normal map with a warning. The master's normal maps are read at scale 1, and the material's `normal_scale` applies to every tier as to the master. On two cores, `bake-tiers` on a level-2 master with 1,024 to 2,048 texel atlases took 55 s and 2.2 GB of memory: 25 s for the high tier, 10 s for the medium tier, 6 s for the low tier and 13 s for the occlusion, thickness and curvature maps.
+Each entry names the mesh its maps belong to; a tier whose mesh has changed since (a card that gained a level) uses them with a warning until `bake-tiers` runs again, and a tier without an entry takes the master's normal map with a warning. The master's normal maps are read at scale 1, and the material's `normal_scale` applies to every tier as to the master. `bake-tiers` on a level-2 master with 1,024 to 2,048 texel atlases took 55 s and 2.2 GB of memory: 25 s for the high tier, 10 s for the medium tier, 6 s for the low tier and 13 s for the occlusion, thickness and curvature maps.
 
 ### Measured improvement
 
