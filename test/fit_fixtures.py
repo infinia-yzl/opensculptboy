@@ -505,3 +505,59 @@ def pointed_ear_target(
             translation=translation,
         ),
     )
+
+
+def stitched_ear_target(target: dict, grow: float = 0.004) -> dict:
+    """
+    The target of :func:`pointed_ear_target` written as a game writes its head: the ear mask
+    grown over the skin around the root (the vertices within ``grow`` metres of it, reached
+    along the mesh), as the real replica's ear piece holds its tragus and the flat front of its
+    helix root, and the ear cut out as a piece of its own, stitched to the head by coincident
+    vertices along the attachment line (the head keeps the line's vertices, the ear gets copies
+    of them). The mask and the attachment are those of the ear piece.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.spatial import cKDTree
+
+    from opensculptboy.fit.register import mask_border
+
+    V = np.asarray(target["vertices"], dtype=np.float64)
+    T = np.asarray(target["triangles"])
+    ear = np.asarray(target["ear"], bool).copy()
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    A = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(len(V),) * 2).tocsr()
+    A = A + A.T
+    core = V[ear]
+    while True:
+        near = cKDTree(core).query(V)[0] < grow
+        grown = ear | ((A @ ear.astype(np.float64) > 0) & near)
+        if (grown == ear).all():
+            break
+        ear = grown
+    on_ear = ear[T].all(1)
+    line = mask_border(T, ear)
+    line &= np.isin(np.arange(len(V)), T[on_ear]) & np.isin(
+        np.arange(len(V)), T[~on_ear]
+    )
+    seam = np.nonzero(line)[0]
+    copies = np.arange(len(V), len(V) + len(seam))
+    remap = np.arange(len(V))
+    remap[seam] = copies
+    triangles = T.copy()
+    triangles[on_ear] = remap[T[on_ear]]
+    vertices = np.concatenate([V, V[seam]])
+    mask = np.concatenate([ear, np.ones(len(seam), bool)])
+    mask[seam] = False
+    attachment = np.zeros(len(vertices), bool)
+    attachment[copies] = True
+    used = np.unique(triangles)
+    keep = np.zeros(len(vertices), bool)
+    keep[used] = True
+    index = np.cumsum(keep) - 1
+    return dict(
+        target,
+        vertices=vertices[keep],
+        triangles=index[triangles],
+        ear=mask[keep],
+        attachment=attachment[keep],
+    )

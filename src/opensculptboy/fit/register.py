@@ -151,6 +151,10 @@ class FitOptions:
     # (twice as many on each finer level), which then matches the reference's head alone
     ear_fair_rings: int = 2
     ear_repair_rounds: int = 3
+    # on each detail level, the mask of anny's outer ears moves within this many rings of its
+    # border (twice as many on each finer level) to where the mesh crosses the attachment
+    # line (relabel_ears; 0: the pinna of level 0 throughout)
+    ear_relabel_rings: int = 3
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -436,6 +440,27 @@ def _border_edges(triangles: np.ndarray) -> np.ndarray:
     return unique[counts == 1]
 
 
+def welded_ids(vertices: np.ndarray, tolerance: float = 1e-7) -> np.ndarray:
+    """
+    One id (V,) per vertex, shared by the vertices that lie within ``tolerance`` of each other:
+    the vertices of one point of the surface that a file splits at its UV seams, or at the line
+    where two pieces of a mesh are stitched (a game's ear and the head under it). The edges of
+    a mesh whose corners are written by these ids join the pieces again.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    V = np.asarray(vertices, dtype=np.float64)
+    pairs = cKDTree(V).query_pairs(tolerance, output_type="ndarray")
+    if len(pairs) == 0:
+        return np.arange(len(V))
+    A = coo_matrix(
+        (np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(V), len(V))
+    )
+    return connected_components(A, directed=False)[1]
+
+
 def _rows_in(rows: np.ndarray, table: np.ndarray) -> np.ndarray:
     """Mask of the rows (n, 2) of integers that ``table`` (m, 2) holds."""
     if len(rows) == 0 or len(table) == 0:
@@ -485,14 +510,28 @@ class EarSplit:
         self.attachment = attachment
         self._tree = None
         # the vertices of each part along the cut: on a border of the part that is not a
-        # border of the reference
-        whole = _border_edges(T)
+        # border of the reference. The borders join the vertices that the source splits at one
+        # point (welded_ids): an ear stitched to the head by coincident vertices, as a game
+        # writes it, has the attachment line as a border of the reference itself, which would
+        # leave the cut empty
+        ids = welded_ids(reference.vertices)
+        whole = _border_edges(ids[T])
         for part in (self.ear, self.head):
-            edges = part.source_vertices[_border_edges(part.triangles)]
-            cut = ~_rows_in(np.sort(edges, 1), whole)
+            joined = ids[part.source_vertices]
+            edges = _border_edges(part.triangles)
+            # a border of the part where the source splits its vertices (a UV seam) is none
+            own = _rows_in(
+                np.sort(joined[edges], 1), _border_edges(joined[part.triangles])
+            )
+            cut = own & ~_rows_in(np.sort(joined[edges], 1), whole)
             part.cut = np.zeros(len(part.vertices), bool)
-            local = _border_edges(part.triangles)[cut]
-            part.cut[local.ravel()] = True
+            part.cut[edges[cut].ravel()] = True
+        # the vertices along the cut pull no vertex of their part in the reverse term: the
+        # nearest of the head's is the skin beside the root of the ear, which they drew onto
+        # the attachment line next to the root (that the attachment term holds there), and the
+        # two creased into a crack
+        for part in (self.ear, self.head):
+            part.skip_reverse = part.cut
 
     def attach(self, points: np.ndarray):
         """The closest points (n, 3) of the attachment line and their distances."""
@@ -897,6 +936,50 @@ def fair_region(
     return X
 
 
+def relabel_ears(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    ear: np.ndarray,
+    split: "EarSplit",
+    rings: int,
+) -> np.ndarray:
+    """
+    The mask of the fitted mesh's outer ears moved to where the mesh crosses the reference's
+    attachment line: within ``rings`` rings of the border of ``ear``, a vertex belongs to the
+    ear when its closest point of the ear part is nearer than that of the head part (by
+    0.05 mm; else it keeps its label). Of the result, the ear keeps the pieces that hold
+    vertices outside the band and the holes it encloses (the concha), and the head the same.
+
+    :func:`pinna` cuts anny's outer ear where it stands off from the head, and a reference's
+    mask may hold more of the flat skin around the root, as the front of a game's ear does:
+    the head's skin of anny on that strip then had no part to fit but the head beside it, slid
+    off the ear onto it and folded into a crack along the front of the ear.
+    """
+    from scipy.sparse.csgraph import connected_components
+
+    X = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    ear = np.asarray(ear, bool)
+    A = _adjacency(len(X), T)
+    band = mask_border(T, ear) | mask_border(T, ~ear)
+    for _ in range(rings):
+        band |= A @ band.astype(np.float64) > 0
+    rows = np.nonzero(band)[0]
+    de = split.ear.closest(X[rows])[2]
+    dh = split.head.closest(X[rows])[2]
+    out = ear.copy()
+    out[rows[de < dh - 5e-5]] = True
+    out[rows[dh < de - 5e-5]] = False
+    for label in (True, False):
+        # each side keeps its pieces that reach past the band; the others change sides
+        own = np.nonzero(out == label)[0]
+        _, pieces = connected_components(A[own][:, own], directed=False)
+        anchored = np.zeros(pieces.max() + 1, bool)
+        anchored[pieces[~band[own]]] = True
+        out[own[~anchored[pieces]]] = not label
+    return out
+
+
 def fold_defects(
     vertices: np.ndarray,
     triangles: np.ndarray,
@@ -1010,6 +1093,9 @@ def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
     ok = (d < max_distance) & (
         (normals[rows] * reference.normals).sum(1) > normal_threshold
     )
+    skip = getattr(reference, "skip_reverse", None)
+    if skip is not None:
+        ok &= ~skip
     points = reference.vertices[ok]
     rows = rows[ok]
     count = np.bincount(rows, minlength=len(X)).astype(np.float64)
@@ -1571,6 +1657,7 @@ def fit_levels(
         outer0 = pinna(model, rest0, ears, options.pinna_height).astype(np.float64)
     margin = lip_margin(model, excluded, options.lip_margin_rings).astype(np.float64)
     measures, meshes = {}, {}
+    previous_ear = None
     regions0 = reference_region = None
     if options.measure:
         from opensculptboy.fit import metrics
@@ -1607,6 +1694,20 @@ def fit_levels(
         if split is not None:
             level_pinna = np.clip(np.asarray(topology.apply(outer0)), 0.0, 1.0)
             anny_ear = level_pinna > 0.5
+            if subdiv > 0 and options.ear_relabel_rings > 0:
+                if previous_ear is not None:
+                    # the mask of the level below, as the offsets are carried
+                    lifted = _lift(previous_ear[:, None], up, topology)[:, 0]
+                    anny_ear = np.asarray(lifted) > 0.5
+                anny_ear = relabel_ears(
+                    posed,
+                    topology.triangles,
+                    anny_ear,
+                    split,
+                    options.ear_relabel_rings * 2 ** (subdiv - 1),
+                )
+                level_pinna = anny_ear.astype(np.float64)
+                previous_ear = level_pinna
             stiff = level_pinna
         scale = None
         ear_stiffness = (
