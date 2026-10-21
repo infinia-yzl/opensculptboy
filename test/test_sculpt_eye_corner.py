@@ -617,11 +617,65 @@ FLIP_MARGIN = 0.1
 SMOOTH_LIMIT = {1: 60.0, 2: 35.0}
 
 
+# the lids' edge seen from the front and 15 degrees off it: the largest median, over sectors
+# of LID_SECTOR degrees about the gaze, of how far the skin next to the eyeball stands in
+# front of it (eyeball radii), and the sectors of the inner corner (about 180 degrees, toward
+# the nose)
+LID_GAP_LIMIT = 0.04
+LID_SECTOR = 15
+LID_VIEWS = ((0, 0), (15, 0), (-15, 0), (0, 15), (0, -15))
+CORNER_SECTORS = (150, 165, 180, 195)
+
+
+def lid_gaps(points, triangles, centre, radius, axes, nasal, views=LID_VIEWS):
+    """
+    How far the skin stands in front of an eyeball at the edge of the opening: the eyeball is
+    the sphere (``centre``, ``radius``; ``axes`` (3, 3) has the columns +X, up and the gaze)
+    and ``triangles`` the skin. For each view (degrees toward the temple and up), an
+    orthographic depth raster along it finds the skin's pixels next to the sphere's; their
+    depth over the sphere's along the view, in radii, is gathered by the angle about the gaze
+    of the point (0 toward the temple, 90 up, 180 toward the nose, ``nasal`` the sign of +X
+    toward the nose). Returns {sector start: median gap}, over all views.
+    """
+    from scipy import ndimage
+
+    local = ((np.asarray(points) - centre) @ axes) / radius
+    near = np.linalg.norm(local[triangles].mean(1), axis=1) < 2.4
+    tris = triangles[near]
+    step = 0.005
+    xs = np.arange(-1.4, 1.4 + step / 2, step)
+    ys = np.arange(-1.1, 1.1 + step / 2, step)
+    gx, gy = np.meshgrid(xs, ys)
+    gaps = {a: [] for a in range(0, 360, LID_SECTOR)}
+    for yaw, pitch in views:
+        a, b = np.radians(yaw), np.radians(pitch)
+        view = np.array(
+            [-nasal * np.sin(a) * np.cos(b), np.sin(b), np.cos(a) * np.cos(b)]
+        )
+        right = np.cross([0.0, 1.0, 0.0], view)
+        right /= np.linalg.norm(right)
+        turn = np.stack([right, np.cross(view, right), view])
+        depth, ident = raster(local @ turn.T, tris, xs, ys)
+        sphere = np.sqrt(np.maximum(1.0 - gx**2 - gy**2, 0.0))
+        sphere[gx**2 + gy**2 > 1.0] = -np.inf
+        ball = sphere > depth
+        skin = (ident >= 0) & ~ball
+        edge = skin & ndimage.binary_dilation(ball) & (gx**2 + gy**2 <= 1.0)
+        hit = np.stack([gx, gy, depth], -1) @ turn
+        angle = np.degrees(np.arctan2(hit[..., 1], -nasal * hit[..., 0])) % 360
+        gap = depth - sphere
+        for start in gaps:
+            sel = edge & (angle >= start) & (angle < start + LID_SECTOR)
+            gaps[start].extend(gap[sel].tolist())
+    return {k: float(np.median(v)) for k, v in gaps.items() if len(v) >= 3}
+
+
 class TestCornerFit(unittest.TestCase):
-    """The synthetic reference fit (test/fit_fixtures.py) on ``sculpt`` and on ``anny``,
-    levels 0 and 1: the vertices of the patch role ``"anchors"`` (the eye corner) lie at the
-    blends of their anchors in the written offsets, and the corner turns no more faces over
-    than anny's own corner does."""
+    """The synthetic reference fit (test/fit_fixtures.py, with its eyeballs) on ``sculpt`` and
+    on ``anny``, levels 0 and 1: the lids and the inner corner meet the eyeball all around the
+    opening (``register.seat_lids``: no gap or trench between the skin and the eyeball), the
+    written offsets reproduce the fitted mesh, and the corner turns no more faces over than
+    anny's own corner does."""
 
     @classmethod
     def setUpClass(cls):
@@ -642,58 +696,38 @@ class TestCornerFit(unittest.TestCase):
             target["vertices"],
             target["triangles"],
             dict(target["landmarks"]),
+            parts=[
+                (f"eye_{side}", v, t, "eyes") for side, (v, t) in target["eyes"].items()
+            ],
         )
-        reference = Reference.from_handoff(load_handoff(cls.folder / "handoff"))
+        cls.reference = Reference.from_handoff(load_handoff(cls.folder / "handoff"))
         cls.data = compose(["eye_corner"])
         cls.scope = use_sculpt_data(cls.data)
         cls.scope.__enter__()
-        cls.models, cls.results = {}, {}
+        cls.models, cls.results, cls.cards = {}, {}, {}
         for topology in ("anny", "sculpt"):
             cls.models[topology] = fit_model(topology)
             cls.results[topology] = fit_reference(
-                reference,
+                cls.reference,
                 detail=1,
                 name=topology,
                 options=FitOptions(topology=topology, measure=False),
                 model=cls.models[topology],
             )
-        cls.card_path = cls.results["sculpt"].write(cls.folder / "card.json")
+            cls.cards[topology] = cls.results[topology].write(
+                cls.folder / f"{topology}.json"
+            )
 
     @classmethod
     def tearDownClass(cls):
         cls.scope.__exit__(None, None, None)
         cls.tmp.cleanup()
 
-    def test_patch_is_the_blend_of_its_anchors(self):
-        import json
-
-        from opensculptboy import Character
-        from opensculptboy.detail import character_offsets
-        from opensculptboy.fit import register
-        from opensculptboy.topology.lookup import labelled, vertex_anchors
-
-        model = self.models["sculpt"]
-        result = self.results["sculpt"]
-        rows = np.flatnonzero(labelled(model, "eye_corner"))
-        self.assertEqual(len(rows), self.data.new_vertex_count)
-        self.assertTrue((register.patch_roles(model)[rows] == "anchors").all())
-        anchors, weights = vertex_anchors(model)
-        card = Character.from_dict(json.loads(self.card_path.read_text()))
-        written = character_offsets(card, 0, self.folder)
-        np.testing.assert_allclose(written, result.offsets[0], atol=1e-6)
-        for offsets in (result.offsets[0], written):
-            rest = result.parametric_rest + offsets
-            blend = np.einsum("nk, nkd -> nd", weights[rows], rest[anchors[rows]])
-            np.testing.assert_allclose(rest[rows], blend, atol=1e-6)
-        # the posed level 0 too, within the difference of skinning a blend and blending
-        fitted, _ = result.meshes[0]
-        blend = np.einsum("nk, nkd -> nd", weights[rows], fitted[anchors[rows]])
-        self.assertLess(float(np.abs(fitted[rows] - blend).max()), 2e-4)
-
-    def corner_flips(self, topology, subdiv):
-        """Faces of the eye corner (the patch's faces on sculpt, the pocket's on anny) on
-        level ``subdiv`` whose fitted normal turns away from the parametric mesh's."""
+    def level(self, topology, subdiv):
+        """The fitted level's posed vertices, its triangles without the eyeballs, and the
+        parametric posed vertices."""
         from opensculptboy.detail import detail_topology
+        from opensculptboy.export.vrm_tables import eyeball_vertices
         from opensculptboy.fit import register
         from opensculptboy.fit import residual as R_
 
@@ -705,16 +739,84 @@ class TestCornerFit(unittest.TestCase):
             model.vertex_bone_weights.detach().double().numpy(),
             model.vertex_bone_indices.cpu().numpy(),
         )
-        parametric = R_.pose_vertices(
-            np.asarray(level.apply(rest0)),
+        parametric = np.asarray(level.apply(rest0))
+        posed = R_.pose_vertices(
+            parametric + result.offsets[subdiv],
             w,
             i,
             transforms,
             result.rotation,
             result.translation,
         )
-        fitted, triangles = result.meshes[subdiv]
-        corner = np.zeros(len(rest0))
+        eye = np.zeros(len(rest0))
+        for rows in eyeball_vertices(model).values():
+            eye[rows] = 1.0
+        on_eye = np.asarray(level.apply(eye)) > 0.5
+        triangles = level.triangles[~on_eye[level.triangles].all(1)]
+        flat = R_.pose_vertices(
+            parametric, w, i, transforms, result.rotation, result.translation
+        )
+        return posed, triangles, flat, (model, transforms, result)
+
+    def test_written_offsets_reproduce_the_fit(self):
+        import json
+
+        from opensculptboy import Character
+        from opensculptboy.detail import character_offsets
+
+        for topology in ("anny", "sculpt"):
+            card = Character.from_dict(json.loads(self.cards[topology].read_text()))
+            for subdiv in (0, 1):
+                with self.subTest(topology=topology, subdiv=subdiv):
+                    written = character_offsets(card, subdiv, self.folder)
+                    np.testing.assert_allclose(
+                        written, self.results[topology].offsets[subdiv], atol=1e-6
+                    )
+                    posed, _, _, _ = self.level(topology, subdiv)
+                    fitted, _ = self.results[topology].meshes[subdiv]
+                    self.assertLess(float(np.abs(posed - fitted).max()), 1e-6)
+
+    def test_lids_meet_the_eyeball(self):
+        from opensculptboy.fit import register
+
+        for topology in ("anny", "sculpt"):
+            for subdiv in (0, 1):
+                posed, triangles, _, (model, transforms, result) = self.level(
+                    topology, subdiv
+                )
+                eyes = self.reference.eyes
+                gazes = register.eye_gazes(
+                    model, eyes, transforms, result.rotation, result.translation
+                )
+                up0 = result.rotation @ np.array([0.0, 0.0, 1.0])
+                for (centre, radius), gaze in zip(eyes, gazes):
+                    up = up0 - (up0 @ gaze) * gaze
+                    up /= np.linalg.norm(up)
+                    axes = np.stack([np.cross(up, gaze), up, gaze], axis=1)
+                    side = (result.rotation.T @ (centre - result.translation))[0]
+                    nasal = -1.0 if side > 0 else 1.0
+                    gaps = lid_gaps(posed, triangles, centre, radius, axes, nasal)
+                    with self.subTest(topology=topology, subdiv=subdiv, side=side > 0):
+                        worst = max(gaps, key=gaps.get)
+                        corner = max(gaps.get(a, 0.0) for a in CORNER_SECTORS)
+                        print(
+                            f"\n{topology} level {subdiv} {'L' if side > 0 else 'R'}: "
+                            f"largest gap {gaps[worst]:.3f} radii at {worst} degrees, "
+                            f"corner {corner:.3f}, sectors {len(gaps)}"
+                        )
+                        self.assertGreaterEqual(len(gaps), 20)
+                        self.assertLess(gaps[worst], LID_GAP_LIMIT)
+
+    def corner_flips(self, topology, subdiv):
+        """Faces of the eye corner (the patch's faces on sculpt, the pocket's on anny) on
+        level ``subdiv`` whose fitted normal turns away from the parametric mesh's."""
+        from opensculptboy.detail import detail_topology
+
+        model = self.models[topology]
+        fitted, triangles = self.results[topology].meshes[subdiv]
+        _, _, parametric, _ = self.level(topology, subdiv)
+        level = detail_topology(model, subdiv, "full", topology)
+        corner = np.zeros(len(self.results[topology].parametric_rest))
         if topology == "sculpt":
             corner[np.unique(self.data.faces)] = 1.0
         else:

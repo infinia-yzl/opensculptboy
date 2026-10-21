@@ -82,7 +82,8 @@ def remesh(vertices, triangles, rng, cell: float = 0.005, jitter: float = 0.3):
 def synthetic_target(seed: int = 0, cell: float = 0.005):
     """
     A synthetic reference and what made it: a dict with ``vertices`` and ``triangles`` (the
-    remeshed target in Anny's frame), ``landmarks`` (the contract's names, with 1 mm of noise)
+    remeshed target in Anny's frame), ``eyes`` (the eyeballs by side, ``(vertices,
+    triangles)``, not remeshed), ``landmarks`` (the contract's names, with 1 mm of noise)
     and the ``truth`` (card values, placement and the level-2 surface before the remesh).
     """
     import anny
@@ -151,6 +152,19 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
     translation = rng.uniform(-0.3, 0.3, 3)
     surface = posed @ rotation.T + translation
     vertices, faces = remesh(surface, triangles, rng, cell)
+    # the eyeballs, as separate parts of the handoff (level 2, not remeshed)
+    from opensculptboy.export.vrm_tables import eyeball_vertices
+
+    eyes = {}
+    for side, rows in eyeball_vertices(model).items():
+        mine = np.zeros(len(rest0))
+        mine[rows] = 1.0
+        on = np.asarray(detailed.topology.apply(mine)) > 0.99
+        tris = detailed.triangles[on[detailed.triangles].all(1)]
+        used = np.unique(tris)
+        remap = np.full(len(on), -1)
+        remap[used] = np.arange(len(used))
+        eyes[side] = (surface[used], remap[tris])
 
     # landmarks of the true figure
     from anny.keypoints import KeypointsRegressor
@@ -173,6 +187,7 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
         vertices=vertices,
         triangles=faces,
         landmarks=landmarks,
+        eyes=eyes,
         truth=dict(
             phenotype=phenotype,
             local_changes=local,

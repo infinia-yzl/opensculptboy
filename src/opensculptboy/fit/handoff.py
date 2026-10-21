@@ -393,12 +393,14 @@ def write_handoff(
     landmarks: dict[str, np.ndarray] | None = None,
     name: str = "body",
     masks: dict | None = None,
+    parts: list | None = None,
 ) -> pathlib.Path:
     """
-    Write a one-part handoff folder from a mesh in Anny's frame (for tests and examples): the
-    mesh as replica.glb in glTF's frame and the landmarks in appearance.json. ``masks`` maps
+    Write a handoff folder from a mesh in Anny's frame (for tests and examples): the mesh as
+    replica.glb in glTF's frame and the landmarks in appearance.json. ``masks`` maps
     a region (``"ear"``) to a vertex mask (V,) or to a dict of such masks by list name
-    (``{"vertices": ..., "attachment": ...}``), written as one entry of the mesh.
+    (``{"vertices": ..., "attachment": ...}``), written as one entry of the mesh. ``parts``
+    adds further parts as ``(name, vertices, triangles, role)`` (an eyeball: role ``"eyes"``).
     """
     import trimesh
 
@@ -408,13 +410,20 @@ def write_handoff(
     mesh = trimesh.Trimesh(gltf, np.asarray(triangles), process=False)
     scene = trimesh.Scene()
     scene.add_geometry(mesh, node_name=name, geom_name=name)
+    entries = [{"name": name, "role": "skin"}]
+    for part, v, t, role in parts or []:
+        extra = trimesh.Trimesh(
+            np.asarray(v, dtype=np.float64) @ GLTF_TO_ANNY, np.asarray(t), process=False
+        )
+        scene.add_geometry(extra, node_name=part, geom_name=part)
+        entries.append({"name": part, "role": role})
     scene.export(str(folder / "replica.glb"))
     appearance = {
         "landmarks": {
             k: [float(x) for x in np.asarray(v) @ GLTF_TO_ANNY]
             for k, v in (landmarks or {}).items()
         },
-        "parts": [{"name": name, "role": "skin"}],
+        "parts": entries,
         "materials": {},
     }
     if masks:
