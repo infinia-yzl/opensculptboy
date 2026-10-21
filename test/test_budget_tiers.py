@@ -389,6 +389,50 @@ class TestCommand(unittest.TestCase):
                 ),
             )
 
+    def test_export_tier_with_eyes(self):
+        """``--eyes`` puts the eyes of opensculptboy.eyes into a tier's file."""
+        import contextlib
+
+        from opensculptboy.cli import main
+
+        def material_names(path):
+            data = pathlib.Path(path).read_bytes()
+            length = int.from_bytes(data[12:16], "little")
+            return {
+                m.get("name") for m in json.loads(data[20 : 20 + length])["materials"]
+            }
+
+        with tempfile.TemporaryDirectory() as folder:
+            folder = pathlib.Path(folder)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    main(
+                        ["export", str(folder / "m.glb"), "--tier", "medium", "--eyes"]
+                    ),
+                    0,
+                )
+                self.assertEqual(
+                    main(
+                        [
+                            "export",
+                            str(folder / "l.vrm"),
+                            "--tier",
+                            "low",
+                            "--eyes",
+                            "--author",
+                            "test",
+                        ]
+                    ),
+                    0,
+                )
+            self.assertLessEqual(
+                {"eyes", "cornea", "conjunctiva"}, material_names(folder / "m.glb")
+            )
+            vrm = material_names(folder / "l.vrm")
+            # the single-surface MToon eyes of VRM files, and the caruncle's material
+            self.assertLessEqual({"eyes", "conjunctiva"}, vrm)
+            self.assertNotIn("cornea", vrm)
+
 
 def _grey(path) -> np.ndarray:
     from PIL import Image
