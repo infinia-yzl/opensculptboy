@@ -205,6 +205,12 @@ class FitOptions:
     # bi-Laplacian of a finer mesh is smaller by the fourth power of its edges)
     lid_fairness: float = 20.0
     lid_weight: float = 10.0
+    # the rounds in which seat_lids draws the skin out of the eyes' clearance band within its
+    # faired solve, per level (0: moved radially after the solve alone). Level 2's vertices
+    # lie closer together than the band is wide, and moved alone, neighbours along the lid's
+    # edge stepped across it; on the coarser levels the step does not show, and on the
+    # synthetic target the faired version turned more of the corner's faces over on level 1
+    lid_clearance_rounds: tuple = (0, 0, 4)
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -1596,6 +1602,8 @@ def seat_lids(
     reverse_normal_threshold: float = 0.5,
     front: float = 100.0,
     clearance: bool = True,
+    clearance_rounds: int = 4,
+    clearance_weight: float = 10.0,
 ) -> np.ndarray:
     """
     Place the lids and the corner of each eye (``seat.region``) on what the reference shows
@@ -1627,7 +1635,13 @@ def seat_lids(
     exported eyes find outward-facing skin too close (the cornea's shell and the lids'
     clearance, :mod:`opensculptboy.eyes.geometry`) leave it at the end: the reference's skin
     that faces out to the nearer end, the rest under the eyeball, so that the exported
-    eyeball keeps its size and nothing lies between it and its cornea.
+    eyeball keeps its size and nothing lies between it and its cornea. Each vertex takes its
+    side once, as it enters the band, and the same faired solve draws it there (with
+    ``clearance_weight`` times the data weight, for up to ``clearance_rounds`` rounds), so
+    that its neighbours follow; what still lies in the band then moves to the end of its
+    side (all of the band without rounds). Moved there alone on a fine level, neighbours
+    along the lid's edge that fell on either side of the band's middle stepped by its width,
+    a jagged edge at the inner corner.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -1723,16 +1737,48 @@ def seat_lids(
     # skin) and nothing lies between the eyeball and its cornea
     if not clearance:
         return X
-    x = X[rows]
-    ray = x - ce
-    dx = np.linalg.norm(ray, axis=1) / re
-    ray /= np.maximum(dx * re, 1e-12)[:, None]
-    facing = (vertex_normals(X, T)[rows] * ray).sum(1)
     low = 1.0 - SPHERE_TOLERANCE
-    band = (dx >= low) & (dx < 1.0 + mb)
     top = 1.0 + mb
-    out = (facing > 0.0) & (dx >= 0.5 * (low + top)) & skin_ok
-    to = np.where(out, top, min(sphere, low))
+    mid = 0.5 * (low + top)
+    under = min(sphere, low)
+
+    def radial():
+        ray = X[rows] - ce
+        dx = np.linalg.norm(ray, axis=1) / re
+        ray /= np.maximum(dx * re, 1e-12)[:, None]
+        return ray, dx, (vertex_normals(X, T)[rows] * ray).sum(1)
+
+    # each vertex that enters the band takes a side once (1: out to its top, -1: under the
+    # eyeball) and is drawn there, a little past the end, within the faired solve: moved
+    # there alone, neighbours along the lid's edge that fell on either side of the middle
+    # stepped by the width of the band, which showed as a jagged edge at the inner corner
+    side = np.zeros(len(rows), int)
+    for _ in range(clearance_rounds):
+        ray, dx, facing = radial()
+        band = (dx >= low) & (dx < top)
+        new = band & (side == 0)
+        if not new.any() and not (band & (side != 0)).any():
+            break
+        side[new] = np.where(((facing > 0.0) & (dx >= mid) & skin_ok)[new], 1, -1)
+        goal = np.where(side > 0, top + 0.25 * mb, under - 0.25 * SPHERE_TOLERANCE)
+        pinned = side != 0
+        Cc = np.where(pinned[:, None], ce + (re * goal)[:, None] * ray, C)
+        wc = np.where(pinned, clearance_weight * weight, w)
+        A = (factor + scipy.sparse.diags(wc + rr)).tocsc()
+        rhs = (
+            wc[:, None] * Cc
+            + rr[:, None] * mean[rows]
+            + 1e-6 * X[rows]
+            - fairness * (Qro @ X[others])
+        )
+        solve = scipy.sparse.linalg.factorized(A)
+        X[rows] = np.stack([solve(rhs[:, k]) for k in range(3)], 1)
+    # what the fairing leaves in the band moves to the end of its side (without rounds, all
+    # of the band, by the side the rule gives it)
+    ray, dx, facing = radial()
+    band = (dx >= low) & (dx < top)
+    out = np.where(side != 0, side > 0, (facing > 0.0) & (dx >= mid) & skin_ok)
+    to = np.where(out, top, under)
     X[rows[band]] = ce[band] + (re * to)[band, None] * ray[band]
     return X
 
@@ -2443,6 +2489,9 @@ def fit_levels(
                 fairness=options.lid_fairness * 16.0**subdiv,
                 weight=options.lid_weight,
                 front=options.lid_front,
+                clearance_rounds=options.lid_clearance_rounds[
+                    min(subdiv, len(options.lid_clearance_rounds) - 1)
+                ],
             )
             rows = level_seat.region
             offsets[subdiv] = offsets[subdiv].copy()
