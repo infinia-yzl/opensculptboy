@@ -779,6 +779,7 @@ class TestCornerFit(unittest.TestCase):
     def test_lids_meet_the_eyeball(self):
         from opensculptboy.fit import register
 
+        self.assertEqual(len(self.reference.eyes), 2)
         for topology in ("anny", "sculpt"):
             for subdiv in (0, 1):
                 posed, triangles, _, (model, transforms, result) = self.level(

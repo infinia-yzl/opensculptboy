@@ -83,7 +83,7 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
     """
     A synthetic reference and what made it: a dict with ``vertices`` and ``triangles`` (the
     remeshed target in Anny's frame), ``eyes`` (the eyeballs by side, ``(vertices,
-    triangles)``, not remeshed), ``landmarks`` (the contract's names, with 1 mm of noise)
+    triangles)``: spheres, not remeshed), ``landmarks`` (the contract's names, with 1 mm of noise)
     and the ``truth`` (card values, placement and the level-2 surface before the remesh).
     """
     import anny
@@ -152,8 +152,10 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
     translation = rng.uniform(-0.3, 0.3, 3)
     surface = posed @ rotation.T + translation
     vertices, faces = remesh(surface, triangles, rng, cell)
-    # the eyeballs, as separate parts of the handoff (level 2, not remeshed)
+    # the eyeballs, as separate parts of the handoff: level 2 of anny's eyeballs, not
+    # remeshed, projected onto their least-squares spheres (the offset field bends them)
     from opensculptboy.export.vrm_tables import eyeball_vertices
+    from opensculptboy.fit.reference import fit_sphere
 
     eyes = {}
     for side, rows in eyeball_vertices(model).items():
@@ -164,7 +166,10 @@ def synthetic_target(seed: int = 0, cell: float = 0.005):
         used = np.unique(tris)
         remap = np.full(len(on), -1)
         remap[used] = np.arange(len(used))
-        eyes[side] = (surface[used], remap[tris])
+        centre, radius, _ = fit_sphere(surface[used])
+        ray = surface[used] - centre
+        ray /= np.linalg.norm(ray, axis=1, keepdims=True)
+        eyes[side] = (centre + radius * ray, remap[tris])
 
     # landmarks of the true figure
     from anny.keypoints import KeypointsRegressor
