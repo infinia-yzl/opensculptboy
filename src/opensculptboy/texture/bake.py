@@ -70,6 +70,8 @@ class BakedTextures:
     # thickness, curvature; and its UVs
     ears: dict = dataclasses.field(default_factory=dict)
     ear_uvs: object = None  # opensculptboy.texture.ears.EarUVs
+    # the values of the reference's eyes (Reference.eye_values), for material.reference_eyes
+    reference_eyes: dict = dataclasses.field(default_factory=dict)
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
@@ -97,7 +99,8 @@ class BakedTextures:
     def material(self, names: dict[str, str]) -> dict:
         """The ``material`` section of a card for the files ``names`` (slot -> path, as
         :meth:`png_files` names the slots, and ``"ear_uvs"`` the ear tile's UV file), without
-        the eye texture, which the detail layer names."""
+        the eye texture, which the detail layer names, and with the values measured on the
+        reference's eyes (``reference_eyes``)."""
         material = {}
         for slot in ("base_color", "normal", "roughness", "thickness", "curvature"):
             if slot in names:
@@ -120,6 +123,8 @@ class BakedTextures:
         }
         if ears and "ear_uvs" in names:
             material["ears"] = {"uvs": names["ear_uvs"], **ears}
+        if self.reference_eyes:
+            material["reference_eyes"] = dict(self.reference_eyes)
         return material
 
 
@@ -804,6 +809,9 @@ def bake(
         curvature_per_m=float(curvature_per_m),
         head=head,
         ears=ears,
+        reference_eyes=reference.eye_values()
+        if hasattr(reference, "eye_values")
+        else {},
     )
 
 

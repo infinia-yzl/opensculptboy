@@ -44,12 +44,14 @@ Every key of `material.eyes` is optional; colours are linear RGB and sizes milli
 | `seed` | 0 | the procedural pattern |
 | `sclera_roughness` | 0.45 | the eyeball's own surface (under the clear coat of a single surface) |
 | `cornea` | `"auto"` | GLB files: true, the refracting cornea shell over a recessed iris; false, one surface with a clear coat and the iris on its bulge, as the VRM files have; `"auto"`, false when the eye texture comes from a bake and true otherwise |
-| `cornea_ior`, `cornea_roughness` | 1.376, 0.02 | the cornea (on a single surface, the IOR of the eyeball's own surface and the roughness of its clear coat) |
-| `cornea_radius_mm` | 7.8 | the radius of curvature of the cornea's front, which sets the bulge's height and the size of the highlights |
+| `cornea_ior`, `cornea_roughness` | `"auto"` | the cornea (on a single surface, the IOR of the eyeball's own surface and the roughness of its clear coat): numbers, or `"auto"`, the values of the card's `reference_eyes` (below), else 1.376 and 0.02 |
+| `cornea_radius_mm` | `"auto"` | the radius of curvature of the cornea's front, which sets the bulge's height and the size of the highlights: millimetres, or `"auto"`, the value of the card's `reference_eyes`, else 7.8 |
 | `bulge` | 1 | the corneal bulge, a share of its anatomical height (the export lowers it further to clear the lids) |
 | `caruncle` | true | the caruncle and the pink skin of the socket |
 | `caruncle_color` | `[0.42, 0.15, 0.13]` | both of them |
 | `highlight` | 1 | VRM files: the strength of the matcap highlight |
+
+A fitted card also records the values of its reference's eyes: `opensculptboy fit --textures` and `opensculptboy bake` write `material.reference_eyes` (`opensculptboy.fit.reference.Reference.eye_values`, checked by `opensculptboy.material.check_reference_eyes`) when the reference has eye parts. For each eyeball, the eye part whose point lies farthest in front along the gaze is the eye's outer surface (a cornea, or an eyeball drawn as one surface). `cornea_radius_mm` is the radius of curvature of its front (`geometry.front_curvature_mm`, below), `cornea_roughness` its roughness (the median of its roughness texture, or its factor) and `cornea_ior` its index of refraction (its `KHR_materials_ior`, else glTF's own 1.5); each is the mean of both eyes, and a value that the reference does not give is left out. The eyes' `"auto"` values take them, so the exported cornea has the reference's curvature, gloss and IOR without a file of eye values, and a number in `material.eyes` or in the file of `--eyes` overrides each of them. The section turns no eyes on by itself: an export without `--eyes` or `material.eyes` keeps anny's eyeballs. On a real fitted character the bake records a front of 9.25 mm, a roughness of 0.05 and an IOR of 1.5.
 
 The sizes are millimetres, not shares of the eyeball: the default character's eyeball is 32 mm across (anny's template 30 mm), larger than a human's 24 mm, while its lids open about as wide as a human's, so an iris scaled with the eyeball would fill the whole opening.
 
@@ -61,7 +63,7 @@ The sizes are millimetres, not shares of the eyeball: the default character's ey
 - the cornea: a shell 0.15 mm over the sclera, out to 100 degrees from the gaze under the lids, with the corneal bulge, a sphere of `cornea_radius_mm` (7.8 mm) through the limbus (its apex 1.7 mm over the sclera on the default character);
 - the single-surface eyeball (VRM files, `cornea: false`, and baked eyes under `"auto"`): the sclera with the same bulge, the iris drawn on it.
 
-A game's eye is often flatter in front than a human cornea: the eye of the reference of a fitted character has a front of about 9.3 mm radius, 0.3 mm over its 12.1 mm eyeball, and its highlights are as large as that curvature makes them. `geometry.front_curvature_mm` measures it on a reference eye's points (the least-squares sphere through its front within 4 mm of the gaze axis), for a card's `cornea_radius_mm`.
+A game's eye is often flatter in front than a human cornea: the eye of the reference of a fitted character has a front of about 9.3 mm radius, 0.3 mm over its 12.1 mm eyeball, and its highlights are as large as that curvature makes them. `geometry.front_curvature_mm` measures it on a reference eye's points (the least-squares sphere through its front within 4 mm of the gaze axis), and the bake records it in the card's `reference_eyes`, for the eyes' `cornea_radius_mm`.
 
 Anny's lids rest on the sphere of its eyeball. Before it builds the parts, the export checks the outward-facing skin within 80 degrees of the gaze (`bulge_clearance`): the eyeball shrinks by up to 3 % and the bulge drops until the lids stay 0.08 mm outside the eye, with 1 % of those vertices (at least 2) allowed closer, since a fitted or hand-made mesh may touch the eyeball here and there; skin inside the fitted sphere already met anny's eyeball and is left aside. Both eyes take the smaller of their two values. The default character keeps the full bulge.
 

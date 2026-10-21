@@ -171,6 +171,142 @@ class TestEyeCard(unittest.TestCase):
                 check_material({"eyes": eyes})
 
 
+def _flat_front_eye(centre, radius=0.012, cornea=0.0093, limbus=0.005, subdivisions=5):
+    """An eyeball sphere (Anny's frame, gaze -Y) whose front within ``limbus`` of the gaze
+    axis is a flatter cap of radius ``cornea``, as a game's eye often is: (vertices,
+    triangles)."""
+    import trimesh
+
+    ball = trimesh.creation.icosphere(subdivisions=subdivisions, radius=radius)
+    points = np.asarray(ball.vertices, dtype=np.float64).copy()
+    rho = np.hypot(points[:, 0], points[:, 2])
+    cap = (points[:, 1] < 0) & (rho < limbus)
+    z0 = -np.sqrt(radius**2 - limbus**2) + np.sqrt(cornea**2 - limbus**2)
+    points[cap, 1] = z0 - np.sqrt(cornea**2 - rho[cap] ** 2)
+    return points + np.asarray(centre), np.asarray(ball.faces, dtype=np.int64)
+
+
+class TestReferenceEyes(unittest.TestCase):
+    """The values of the reference's eyes that the bake records in material.reference_eyes,
+    and the cornea's "auto" values that take them."""
+
+    measured = {"cornea_radius_mm": 9.3, "cornea_roughness": 0.05, "cornea_ior": 1.5}
+
+    def test_auto_takes_the_reference_values(self):
+        eye = EyeMaterial.from_dict({}, self.measured)
+        self.assertEqual(eye.cornea_radius_mm, 9.3)
+        self.assertEqual(eye.cornea_roughness, 0.05)
+        self.assertEqual(eye.cornea_ior, 1.5)
+        given = EyeMaterial.from_dict(
+            {"cornea_radius_mm": 8.0, "cornea_ior": "auto"}, self.measured
+        )
+        self.assertEqual(given.cornea_radius_mm, 8.0)  # a number wins over the measure
+        self.assertEqual(given.cornea_ior, 1.5)
+        plain = EyeMaterial.from_dict({})
+        self.assertEqual(
+            (plain.cornea_radius_mm, plain.cornea_roughness, plain.cornea_ior),
+            (7.8, 0.02, 1.376),
+        )
+        partial = EyeMaterial.from_dict({}, {"cornea_radius_mm": 9.3})
+        self.assertEqual((partial.cornea_radius_mm, partial.cornea_ior), (9.3, 1.376))
+
+    def test_card(self):
+        card = Character(material={"eyes": {}, "reference_eyes": self.measured})
+        self.assertEqual(
+            Character.from_dict(json.loads(json.dumps(card.to_dict()))), card
+        )
+        self.assertEqual(card.eye_material().cornea_radius_mm, 9.3)
+        self.assertEqual(card.eye_material().sized().extras()["cornea_radius_mm"], 9.3)
+        self.assertIsNone(card.skin_material())
+        # the measured values alone turn no eyes on and keep the exporters' own skin
+        alone = Character(material={"reference_eyes": self.measured})
+        self.assertIsNone(alone.eye_material())
+        self.assertIsNone(alone.skin_material())
+        skin = Character(
+            material={"ior": 1.4, "eyes": {}, "reference_eyes": self.measured}
+        )
+        self.assertEqual(skin.skin_material().eyes.cornea_roughness, 0.05)
+        for bad in (
+            {"cornea_radius_mm": 30.0},
+            {"cornea_ior": "auto"},
+            {"cornea_roughness": True},
+            {"iris_mm": 11.0},
+            [],
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                check_material({"reference_eyes": bad})
+        with self.assertRaises(ValueError):
+            check_material({"eyes": {"cornea_ior": "wet"}})
+
+    def test_measured_on_a_handoff(self):
+        from opensculptboy.fit.handoff import HandoffPart, load_handoff, write_handoff
+        from opensculptboy.fit.reference import Reference
+        import trimesh
+
+        body = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+        eyes = [_flat_front_eye([x, -0.12, 0.0]) for x in (0.03, -0.03)]
+        with tempfile.TemporaryDirectory() as folder:
+            write_handoff(
+                folder,
+                np.asarray(body.vertices),
+                np.asarray(body.faces),
+                parts=[(f"eye_{k}", v, t, "eyes") for k, (v, t) in enumerate(eyes)],
+            )
+            reference = Reference.from_handoff(load_handoff(folder))
+        self.assertEqual(len(reference.eyes), 2)
+        values = reference.eye_values()
+        self.assertAlmostEqual(values["cornea_radius_mm"], 9.3, delta=0.1)
+        # placed elsewhere, the reference measures the same
+        moved = reference.transformed(np.eye(3), np.array([0.0, 0.5, 1.0])).eye_values()
+        self.assertAlmostEqual(moved["cornea_radius_mm"], values["cornea_radius_mm"])
+        # the eye parts' material: the median of a roughness texture, and the IOR
+        for part in reference.eye_reference.parts:
+            part.roughness = np.full((4, 4), 0.05, np.float32)
+            part.ior = 1.5
+        values = reference.eye_values()
+        self.assertEqual(
+            (values["cornea_roughness"], values["cornea_ior"]), (0.05, 1.5)
+        )
+        self.assertIsInstance(reference.eye_reference.parts[0], HandoffPart)
+        self.assertEqual(Reference(body.vertices, body.faces).eye_values(), {})
+
+    def test_material_iors(self):
+        from opensculptboy.fit.handoff import _material_iors
+
+        document = {
+            "asset": {"version": "2.0"},
+            "materials": [
+                {"name": "eye", "extensions": {"KHR_materials_ior": {"ior": 1.33}}},
+                {"name": "skin"},
+                {},
+            ],
+        }
+        data = json.dumps(document).encode()
+        data += b" " * (-len(data) % 4)
+        glb = (
+            b"glTF" + (2).to_bytes(4, "little") + (20 + len(data)).to_bytes(4, "little")
+        )
+        glb += len(data).to_bytes(4, "little") + b"JSON" + data
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "replica.glb"
+            path.write_bytes(glb)
+            self.assertEqual(_material_iors(path), {"eye": 1.33, "skin": 1.5})
+            path.write_bytes(b"not a glb file")
+            self.assertEqual(_material_iors(path), {})
+
+    def test_baked_material_records_them(self):
+        from opensculptboy.texture.bake import BakedTextures
+
+        baked = BakedTextures(
+            None, np.zeros((4, 4, 3), np.uint8), np.ones((4, 4), bool), 1.0
+        )
+        self.assertNotIn("reference_eyes", baked.material({"normal": "n.png"}))
+        baked.reference_eyes = dict(self.measured)
+        material = baked.material({"normal": "n.png"})
+        self.assertEqual(material["reference_eyes"], self.measured)
+        check_material(material)
+
+
 class TestGeometry(unittest.TestCase):
     shape = geometry.EyeShape.of(11.7, 0.015)
 

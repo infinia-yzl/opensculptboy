@@ -90,7 +90,8 @@ SUBSURFACE_DEFAULTS = {
     "anisotropy": 0.0,
     "method": "random_walk_skin",
 }
-_KEYS = set(TEXTURE_KEYS) | set(DEFAULTS) | {"subsurface", "head", "ears", "eyes"}
+_KEYS = set(TEXTURE_KEYS) | set(DEFAULTS)
+_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes"}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -141,10 +142,16 @@ class SkinMaterial:
     def from_dict(cls, data: dict | None) -> "SkinMaterial":
         """The material of a card's ``material`` section; ValueError for an invalid one."""
         data = check_material(data or {})
-        values = {k: v for k, v in data.items() if k not in ("subsurface", "eyes")}
+        values = {
+            k: v
+            for k, v in data.items()
+            if k not in ("subsurface", "eyes", "reference_eyes")
+        }
         subsurface = dict(SUBSURFACE_DEFAULTS)
         subsurface.update(data.get("subsurface", {}))
-        eyes = EyeMaterial.from_dict(data["eyes"]) if "eyes" in data else None
+        eyes = None
+        if "eyes" in data:
+            eyes = EyeMaterial.from_dict(data["eyes"], data.get("reference_eyes"))
         return cls(subsurface=subsurface, eyes=eyes, **values)
 
     def textures(self) -> dict[str, str]:
@@ -231,6 +238,8 @@ def check_material(data: dict) -> dict:
         raise ValueError("material ears needs its 'uvs' file.")
     if "eyes" in data:
         check_eyes(data["eyes"])
+    if "reference_eyes" in data:
+        check_reference_eyes(data["reference_eyes"])
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
         raise ValueError("material subsurface must be a JSON object.")
@@ -280,9 +289,12 @@ EYE_DEFAULTS = {
     #                    one surface with a clear coat and the iris on its bulge (as the VRM
     #                    files have, and as a game's eyes are drawn); "auto": False when the
     #                    eye texture comes from a bake (the reference's eyes), else True
-    "cornea_ior": 1.376,
-    "cornea_roughness": 0.02,
-    "cornea_radius_mm": 7.8,  # the radius of curvature of the cornea's front
+    # the cornea's IOR, roughness and radius of curvature of its front: numbers, or "auto"
+    # (the values of the card's reference_eyes, which the bake measures on the reference's
+    # eyes, else those of EYE_REFERENCE_DEFAULTS)
+    "cornea_ior": "auto",
+    "cornea_roughness": "auto",
+    "cornea_radius_mm": "auto",
     "bulge": 1.0,  # the corneal bulge, a share of its anatomical height (lowered to clear
     #                the lids)
     "caruncle": True,  # the mound in the inner corner and the pink, wet skin of the socket
@@ -290,6 +302,19 @@ EYE_DEFAULTS = {
     "highlight": 1.0,  # VRM: the strength of the matcap highlight
 }
 EYE_SOURCES = ("auto", "procedural", "baked")
+# the cornea's values of eyes without a reference: a human cornea's IOR and front (7.8 mm),
+# and a wet, smooth surface
+EYE_REFERENCE_DEFAULTS = {
+    "cornea_ior": 1.376,
+    "cornea_roughness": 0.02,
+    "cornea_radius_mm": 7.8,
+}
+# the ranges of the cornea's values, in material.eyes and in material.reference_eyes
+_CORNEA_RANGES = {
+    "cornea_ior": (1.0, 2.0),
+    "cornea_roughness": (0.0, 1.0),
+    "cornea_radius_mm": (5.0, 20.0),
+}
 # the iris and pupil sizes of eyes that do not take them from a bake (mm)
 EYE_SIZES = {"iris_mm": 11.7, "pupil_mm": 3.5}
 EYE_SIZE_WORDS = ("auto", "baked")
@@ -328,9 +353,20 @@ class EyeMaterial:
     highlight: float = 1.0
 
     @classmethod
-    def from_dict(cls, data: dict | None) -> "EyeMaterial":
-        """The eyes of a card's ``material.eyes`` section; ValueError for an invalid one."""
-        data = check_eyes(data or {})
+    def from_dict(
+        cls, data: dict | None, reference: dict | None = None
+    ) -> "EyeMaterial":
+        """
+        The eyes of a card's ``material.eyes`` section; ValueError for an invalid one. The
+        cornea's values that are ``"auto"`` or missing take those of ``reference`` (the card's
+        ``material.reference_eyes``, measured on the reference's eyes), else
+        :data:`EYE_REFERENCE_DEFAULTS`.
+        """
+        data = dict(check_eyes(data or {}))
+        reference = check_reference_eyes(reference or {})
+        for key, default in EYE_REFERENCE_DEFAULTS.items():
+            if data.get(key, "auto") == "auto":
+                data[key] = float(reference.get(key, default))
         return cls(
             **{k: (list(v) if isinstance(v, list) else v) for k, v in data.items()}
         )
@@ -418,13 +454,17 @@ def check_eyes(data: dict) -> dict:
         ("limbal_ring_mm", 0.0, 3.0),
         ("veins", 0.0, 1.0),
         ("sclera_roughness", 0.0, 1.0),
-        ("cornea_ior", 1.0, 2.0),
-        ("cornea_roughness", 0.0, 1.0),
-        ("cornea_radius_mm", 5.0, 20.0),
         ("bulge", 0.0, 1.0),
         ("highlight", 0.0, 4.0),
     ):
         if key in data:
+            _number(data[key], f"eyes {key}", low, high)
+    for key, (low, high) in _CORNEA_RANGES.items():
+        if key in data and data[key] != "auto":
+            if isinstance(data[key], str):
+                raise ValueError(
+                    f"eyes {key} must be a number or 'auto' (got {data[key]!r})."
+                )
             _number(data[key], f"eyes {key}", low, high)
     for key, low, high in (("iris_mm", 6.0, 16.0), ("pupil_mm", 1.0, 9.0)):
         if key in data and data[key] not in EYE_SIZE_WORDS:
@@ -451,4 +491,26 @@ def check_eyes(data: dict) -> dict:
         isinstance(data["seed"], bool) or not isinstance(data["seed"], int)
     ):
         raise ValueError("eyes seed must be an integer.")
+    return data
+
+
+def check_reference_eyes(data: dict) -> dict:
+    """
+    Raise ValueError for a ``material.reference_eyes`` section that is not valid; returns it.
+    The section holds the values of a reference's eyes that the bake measured
+    (:meth:`opensculptboy.fit.reference.Reference.eye_values`): some of ``cornea_radius_mm``,
+    ``cornea_roughness`` and ``cornea_ior``, as numbers. The eyes' ``"auto"`` values take
+    them; the section turns no eyes on by itself.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("material reference_eyes must be a JSON object.")
+    unknown = sorted(set(data) - set(_CORNEA_RANGES))
+    if unknown:
+        raise ValueError(
+            f"Unknown reference_eyes keys {unknown}; the keys are {sorted(_CORNEA_RANGES)}."
+        )
+    for key, value in data.items():
+        if isinstance(value, (str, bool)):
+            raise ValueError(f"reference_eyes {key} must be a number (got {value!r}).")
+        _number(value, f"reference_eyes {key}", *_CORNEA_RANGES[key])
     return data

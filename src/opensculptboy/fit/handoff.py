@@ -78,6 +78,9 @@ class HandoffPart:
     normal_scale: float = (
         1.0  # the scale of the normal texture (glTF normalTexture.scale)
     )
+    # the material's index of refraction: KHR_materials_ior, else glTF's own 1.5; None for a
+    # source that does not say
+    ior: float | None = None
     # the vertices of the outer ear by side ("l", "r"), from appearance.json's masks.ear
     ear_vertices: dict | None = None
 
@@ -284,6 +287,7 @@ def load_glb_parts(
     entries = entries or {}
     materials = materials or {}
     scene = trimesh.load(str(path), force="scene", process=False)
+    iors = _material_iors(path)
     parts = []
     for node in scene.graph.nodes_geometry:
         transform, geometry_name = scene.graph[node]
@@ -311,9 +315,39 @@ def load_glb_parts(
                 material=material,
                 normals=_file_normals(geometry, GLTF_TO_ANNY @ transform[:3, :3]),
                 roughness=roughness,
+                ior=iors.get(material),
             )
         )
     return parts
+
+
+def _material_iors(path: str | pathlib.Path) -> dict[str, float]:
+    """The index of refraction of each named material of a GLB file: its
+    ``KHR_materials_ior`` value, else 1.5, the value that glTF gives a material without the
+    extension. Empty for a file that is not GLB."""
+    import struct
+
+    try:
+        with open(path, "rb") as f:
+            head = f.read(20)
+            if len(head) < 20 or head[:4] != b"glTF":
+                return {}
+            length, kind = struct.unpack("<II", head[12:20])
+            if kind != 0x4E4F534A:  # "JSON"
+                return {}
+            document = json.loads(f.read(length))
+    except (OSError, ValueError):
+        return {}
+    iors = {}
+    for material in document.get("materials", []):
+        name = material.get("name")
+        if not isinstance(name, str):
+            continue
+        extension = (material.get("extensions") or {}).get("KHR_materials_ior") or {}
+        value = extension.get("ior", 1.5)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            iors[name] = float(value)
+    return iors
 
 
 def load_handoff(folder: str | pathlib.Path) -> Handoff:

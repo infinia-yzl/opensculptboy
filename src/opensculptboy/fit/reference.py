@@ -375,6 +375,54 @@ class Reference:
             regions,
         )
 
+    def eye_values(self) -> dict:
+        """
+        The values of the reference's eyes that a card's eyes can take
+        (``material.reference_eyes``, :func:`opensculptboy.material.check_reference_eyes`):
+        for each eyeball sphere, the eye part whose point lies farthest in front of it along
+        the gaze is the eye's outer surface (a cornea, or an eyeball drawn as one surface);
+        ``cornea_radius_mm`` is the radius of curvature of that surface's front
+        (:func:`opensculptboy.eyes.geometry.front_curvature_mm`), ``cornea_roughness`` its
+        roughness (the median of its texture, or its factor) and ``cornea_ior`` its index of
+        refraction, each the mean of both eyes. Keys whose values the reference does not give
+        are left out; empty without eyes.
+        """
+        from opensculptboy.eyes.geometry import GAZE, front_curvature_mm
+
+        eyes = self.eye_reference
+        if eyes is None or not self.eyes or eyes.part_offsets is None:
+            return {}
+        found = {"cornea_radius_mm": [], "cornea_roughness": [], "cornea_ior": []}
+        offsets = eyes.part_offsets
+        for centre, radius in self.eyes:
+            best, front = None, -np.inf
+            for k, part in enumerate(eyes.parts):
+                points = eyes.vertices[offsets[k] : offsets[k + 1]]
+                near = np.linalg.norm(points - centre, axis=1) < 1.5 * radius
+                if not near.any():
+                    continue
+                ahead = float(((points[near] - centre) @ GAZE).max())
+                if ahead > front:
+                    best, front = k, ahead
+            if best is None:
+                continue
+            part = eyes.parts[best]
+            points = eyes.vertices[offsets[best] : offsets[best + 1]]
+            curvature = front_curvature_mm(points, centre)
+            if curvature is not None and 5.0 <= curvature <= 20.0:
+                found["cornea_radius_mm"].append(curvature)
+            roughness = getattr(part, "roughness", None)
+            if roughness is not None:
+                found["cornea_roughness"].append(float(np.median(roughness)))
+            ior = getattr(part, "ior", None)
+            if ior is not None and 1.0 <= ior <= 2.0:
+                found["cornea_ior"].append(float(ior))
+        return {
+            key: round(float(np.mean(values)), 3)
+            for key, values in found.items()
+            if values
+        }
+
     def transformed(self, rotation: np.ndarray, translation: np.ndarray):
         """The reference moved by x -> R x + t (the parts keep their own coordinates)."""
         R, t = np.asarray(rotation), np.asarray(translation)
