@@ -238,6 +238,9 @@ def states() -> dict:
 
 
 BLINKS = ("blink", "face 0 blink", "face 1 blink")
+# in a half blink the opening is a slit, and everything between the lids lies below their
+# level: the pocket measure does not apply there, the check of the socket does
+SLITS = BLINKS + ("half blink",)
 
 
 class TestEyeCorner(unittest.TestCase):
@@ -310,7 +313,7 @@ class TestEyeCorner(unittest.TestCase):
                 after = self.views(name)
                 self.assertEqual(len(after["deep"]), len(VIEWS))
                 self.assertLess(max(after["deep"].values()), DEEP_LIMIT, after["deep"])
-                if name in BLINKS:
+                if name in SLITS:
                     continue
                 self.assertLess(
                     sum(after["hole"].values()),
@@ -363,7 +366,8 @@ class TestEyeCorner(unittest.TestCase):
                 self.assertGreater(float((n * reference).sum(1).min()), floor)
 
     def test_detail_levels_stay_smooth(self):
-        # Catmull-Clark of the patched quads: no crease sharper than anny's own corner
+        # Catmull-Clark of the patched quads: no crease of the patch's visible surface
+        # sharper than anny's own corner (or than SMOOTH_LIMIT)
         from anny.utils.subdivision import catmull_clark
 
         rest = states()["rest"]
@@ -372,17 +376,21 @@ class TestEyeCorner(unittest.TestCase):
         kept[self.patch.removed_faces] = False
         centre = rest[self.eyes["L"]].mean(0)
 
-        def sharpest(points, faces, is_patch, levels):
+        def sharpest(points, faces, is_patch, levels, tags=None):
             local = np.linalg.norm(points[faces].mean(1) - centre, axis=1) < 0.03
             faces, is_patch = faces[local], is_patch[local]
             used = np.unique(faces)
             remap = np.full(len(points), -1)
             remap[used] = np.arange(len(used))
             q, p, mark = remap[faces], points[used], is_patch
+            fold = (
+                np.zeros(len(q), bool) if tags is None else tags[local] == "conjunctiva"
+            )
             for _ in range(levels):
                 level = catmull_clark(len(p), q)
                 p = np.asarray(level.operator.apply(p))
                 mark = mark[level.parent_faces]
+                fold = fold[level.parent_faces]
                 q = level.quads
             n = normals(p, q[:, [0, 1, 2]])
             # the angle across each edge between two faces of the patch region
@@ -393,7 +401,7 @@ class TestEyeCorner(unittest.TestCase):
                     continue
                 for k in range(4):
                     key = tuple(sorted((face[k], face[(k + 1) % 4])))
-                    if key in edges:
+                    if key in edges and not (fold[f] and fold[edges[key]]):
                         worst = max(
                             worst,
                             float(
@@ -411,14 +419,98 @@ class TestEyeCorner(unittest.TestCase):
         is_patch = np.r_[
             np.zeros(kept.sum(), bool), np.ones(len(self.patch.faces), bool)
         ]
+        labels = self.patch.labels_of_faces()
+        tags = np.r_[["anny"] * int(kept.sum()), [lab.split("/")[-1] for lab in labels]]
         anny_faces = quads
         anny_mark = np.zeros(len(quads), bool)
         anny_mark[self.patch.removed_faces] = True
         for levels in (1, 2):
             with self.subTest(level=levels):
-                mine = sharpest(sculpt, faces, is_patch, levels)
+                # the visible surface: the fold's crest, where the conjunctiva turns back
+                # under the caruncle, is a fold by design and hidden under it
+                mine = sharpest(sculpt, faces, is_patch, levels, tags)
                 theirs = sharpest(rest, anny_faces, anny_mark, levels)
                 self.assertLess(mine, max(theirs, SMOOTH_LIMIT[levels]), (mine, theirs))
+
+
+class TestSculptEyes(unittest.TestCase):
+    """The eyes of :mod:`opensculptboy.eyes` on the ``sculpt`` topology: no caruncle part of
+    their own, and the patch's caruncle and conjunctiva drawn with the conjunctiva's pink, wet
+    material, in the GLB and the VRM files."""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+
+        from opensculptboy import Character
+        from opensculptboy.topology import compose, use_sculpt_data
+
+        cls.data = compose(["eye_corner"])
+        cls.scope = use_sculpt_data(cls.data)
+        cls.scope.__enter__()
+        cls.card = Character(topology="sculpt", material={"eyes": {}})
+        cls.model = cls.card.build_model(dtype=torch.float64)
+        cls.tmp = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.scope.__exit__(None, None, None)
+        cls.tmp.cleanup()
+
+    def eyed(self, kind="gltf"):
+        from opensculptboy.eyes.mesh import eyed_mesh
+
+        with torch.no_grad():
+            rest = self.model()["rest_vertices"][0].numpy()
+        return eyed_mesh(self.model, None, rest, self.card.eye_material(), kind), rest
+
+    def test_the_patch_is_the_caruncle(self):
+        from opensculptboy.export.body import triangulated_faces
+
+        eyed, rest = self.eyed()
+        self.assertNotIn("caruncle", {p.name for p in eyed.parts})
+        triangles, _ = triangulated_faces(self.model)
+        # the triangles of the patch's caruncle and conjunctiva faces
+        n = self.data.vertex_count
+        pink = [
+            i
+            for i, label in enumerate(self.data.labels)
+            if label in ("eye_corner/caruncle", "eye_corner/conjunctiva")
+        ]
+        faces = self.data.faces[np.isin(self.data.face_labels, pink)]
+        corners = {frozenset(f.tolist()) for f in faces}
+        is_pink = np.array(
+            [any(set(t.tolist()) <= c for c in corners) for t in triangles]
+        )
+        self.assertGreater(is_pink.sum(), 40)
+        socket = eyed.part_mask("socket")[: len(triangles)]
+        kept = eyed.triangles[: len(triangles)]
+        # every pink triangle of the patch takes the conjunctiva (the eyeball's triangles are
+        # gone from the kept list, so compare by vertices)
+        kept_pink = np.array([any(set(t.tolist()) <= c for c in corners) for t in kept])
+        self.assertTrue(socket[kept_pink].all())
+        self.assertGreater(int((triangles >= n).any(1).sum()), 0)
+
+    def test_glb_and_vrm(self):
+        import pathlib
+
+        from opensculptboy import export_glb
+        from opensculptboy.export.vrm import export_vrm
+        from test.gltf_reader import GLB, structure_errors
+
+        folder = pathlib.Path(self.tmp.name)
+        path = folder / "sculpt_eyes.glb"
+        export_glb(path, self.card, self.model)
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        names = [
+            glb.json["materials"][p["material"]]["name"]
+            for p in glb.json["meshes"][0]["primitives"]
+        ]
+        self.assertEqual(sorted(names), ["conjunctiva", "cornea", "eyes", "skin"])
+        vrm = folder / "sculpt_eyes.vrm"
+        export_vrm(vrm, self.card, self.model, author="test")
+        self.assertGreater(vrm.stat().st_size, 0)
 
 
 # the limits of the checks: the area of a view that may see the socket (two pixels' worth),
