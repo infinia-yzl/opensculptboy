@@ -96,6 +96,9 @@ PATCH_ROLE_NAMES = ("fit", "exclude", "anchors")
 # the vertices of an "anchors" patch's region that lie this far from an eyeball's centre at
 # rest (in eyeball radii) or nearer move with the eyeball (PatchAnchors)
 ATTACH_RADIUS = 0.99
+# the rings of fitted skin around an "anchors" patch's faces and anchors that take the
+# harmonic extension in place of their fitted offsets (PatchAnchors)
+SKIN_RINGS = 2
 # The topologies that the fit takes (FitOptions.topology).
 FIT_TOPOLOGIES = ("anny", "sculpt")
 
@@ -353,11 +356,15 @@ class PatchAnchors:
       faces (``attached``) move with the eyeball: the similarity (a scale about its centre and
       a translation) that takes its fitted sphere at rest from before to after the fit, so
       that the fold of the patch stays tucked under an eyeball that the fit moves or scales;
-    - the other free vertices take a harmonic extension over anny's quad mesh of the offsets
-      around them (the fitted skin of the lids and the attached vertices).
+    - the other free vertices, and the fitted skin of the patch's faces and of its anchors
+      with :data:`SKIN_RINGS` rings around them (``skin``), take a harmonic extension over
+      anny's quad mesh of the offsets around them (the fitted skin further out and the
+      attached vertices). A blend of anchors that move apart amplifies the steps between
+      them, and the fitted skin at the corner has such steps where it meets what the fit
+      leaves out; the harmonic field has none, so that the patch keeps its shape.
 
-    The free and attached vertices take these offsets too, so that the patch and its anchors
-    agree in the written offsets.
+    These vertices take these offsets too, so that the patch and its anchors agree in the
+    written offsets.
 
     On a detail level the corner starts as the subdivision of the level below (the offsets
     of that level carried up, ``lifted``), and the rule applies to what the level's
@@ -431,11 +438,18 @@ class PatchAnchors:
             self.eyes.append(rows)
         self.attached = np.flatnonzero(attach)
         self.attached_eye = which[self.attached]
-        unknown = free & ~attach
         adjacency = coo_matrix(
             (np.ones(2 * len(edges)), (edges.ravel(), edges[:, ::-1].ravel())),
             shape=(n, n),
         ).tocsr()
+        # the fitted skin of the patch's faces, of its anchors and SKIN_RINGS rings around
+        # them: the blends of anchors that move apart amplify every step between them
+        skin = border.copy()
+        skin[used] = True
+        for _ in range(SKIN_RINGS):
+            skin |= adjacency @ skin.astype(np.float64) > 0
+        skin &= ~left_out
+        unknown = (free | skin) & ~attach
         index = np.flatnonzero(unknown)
         # a component of unknown vertices without a known neighbour keeps its offsets
         reached = np.zeros(n, bool)
