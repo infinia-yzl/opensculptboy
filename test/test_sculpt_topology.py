@@ -359,14 +359,15 @@ class TestSculptModel(unittest.TestCase):
             a = self.anny(pose_parameters=pose, **kwargs)
             s = self.model(pose_parameters=pose, **kwargs)
         n = self.n
+        # equal on Linux; other BLAS kernels may round the larger arrays differently
         for key in ("rest_vertices", "vertices"):
-            self.assertTrue(torch.equal(s[key][0, :n], a[key][0]), key)
+            self.assertLess(float((s[key][0, :n] - a[key][0]).abs().max()), 1e-12, key)
         rest = a["rest_vertices"][0].numpy()
         blend = np.einsum("mk,mkd->md", self.data.weights, rest[self.data.anchors])
         np.testing.assert_allclose(
             s["rest_vertices"][0, n:].numpy(), blend, rtol=0, atol=1e-12
         )
-        self.assertTrue(torch.equal(s["bone_poses"], a["bone_poses"]))
+        self.assertLess(float((s["bone_poses"] - a["bone_poses"]).abs().max()), 1e-12)
 
     def test_faces_follow_anny(self):
         faces = self.model.faces.numpy()
