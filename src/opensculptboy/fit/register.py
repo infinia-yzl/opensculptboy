@@ -164,11 +164,13 @@ class FitOptions:
     # each tear with mouth_repair_rings rings of its neighbours
     mouth_repair_reach: int | None = 5
     mouth_repair_rings: int = 1
-    # the vertices of the lips' inner roll that are each other's nearest vertex of the other
-    # lip within this distance (metres) on the parametric mesh (lip_contact, the lips split by
+    # the vertices of the lips (outside the inside of the mouth) that are each other's nearest
+    # vertex of the other lip within this distance (metres) on the parametric mesh (lip_contact, the lips split by
     # jaw_share) meet at the mean of their fitted positions (stitch_lips), so that the closed
-    # lips close, and repair_mouth holds them (0: no stitch)
-    lip_contact: float = 0.0015
+    # lips close, and repair_mouth holds them (0: no stitch, the default: on a real replica
+    # 4 mm found 7 to 34 pairs per level, too few to close the slit, and on the synthetic
+    # target it doubled the mouth's tears)
+    lip_contact: float = 0.0
     # repair_mouth also holds the vertices of the mouth within this distance (metres) of the
     # reference whose normals agree with it: the visible lips (0: none held)
     mouth_repair_hold: float = 0.0
@@ -2498,6 +2500,7 @@ def fit_levels(
         outer0 = pinna(model, rest0, ears, options.pinna_height).astype(np.float64)
     margin = lip_margin(model, excluded, options.lip_margin_rings).astype(np.float64)
     lining0 = mouth_lining(model, options.lip_margin_rings).astype(np.float64)
+    cavity0 = mouth_lining(model, 0).astype(np.float64)
     from opensculptboy.fit.metrics import mouth_zone
 
     jaw0 = jaw_share(model)
@@ -2695,7 +2698,7 @@ def fit_levels(
             held = np.zeros(len(parametric), bool)
             if options.lip_contact > 0:
                 jaw = np.asarray(topology.apply(jaw0))
-                roll = level_mouth & ~level_lining
+                roll = level_mouth & ~(np.asarray(topology.apply(cavity0)) > 0.5)
                 pairs = lip_contact(
                     parametric,
                     roll & (jaw < 0.3),
