@@ -593,3 +593,31 @@ def stitched_ear_target(target: dict, grow: float = 0.004) -> dict:
         ear=mask[keep],
         attachment=attachment[keep],
     )
+
+
+def faceted_sphere(radius: float = 0.05, coarse: int = 3, fine: int = 5):
+    """
+    A coarse reference and a fine mesh projected onto its facets, as a fine detail level is
+    projected onto a game character's coarse triangles: ``(reference vertices, reference
+    triangles, fine vertices, fine triangles)``, both icospheres of ``radius`` (subdivided
+    ``coarse`` and ``fine`` times), the fine vertices moved onto their closest points of the
+    reference's flat triangles. A surface that follows the reference without its facets lies
+    on the sphere.
+    """
+    import trimesh
+
+    from opensculptboy.fit.reference import Reference
+    from opensculptboy.fit.register import project_onto
+
+    c = trimesh.creation.icosphere(coarse, radius)
+    f = trimesh.creation.icosphere(fine, radius)
+    reference = Reference(np.asarray(c.vertices), np.asarray(c.faces))
+    projected = project_onto(
+        np.asarray(f.vertices),
+        np.asarray(f.faces),
+        reference,
+        np.ones(len(f.vertices), bool),
+        0.01,
+        0.5,
+    )
+    return reference.vertices, reference.triangles, projected, np.asarray(f.faces)

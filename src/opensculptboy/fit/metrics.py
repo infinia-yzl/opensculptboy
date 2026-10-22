@@ -462,6 +462,37 @@ def fold_angles(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     return out
 
 
+def ripple(
+    vertices: np.ndarray, triangles: np.ndarray, mask: np.ndarray | None = None
+) -> float:
+    """The root mean square (metres) of a mesh's fine ripple over the vertices of ``mask``:
+    the part of each vertex's position along its normal that 10 rounds of Taubin smoothing
+    (lambda 0.5, mu -0.53, umbrella weights) remove. Steps copied from the facets of a coarse
+    reference show here; the broad shape passes the filter."""
+    import scipy.sparse
+
+    from opensculptboy.fit.reference import vertex_normals
+
+    V = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    n = len(V)
+    edges = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    edges = np.concatenate([edges, edges[:, ::-1]])
+    A = scipy.sparse.coo_matrix(
+        (np.ones(len(edges)), (edges[:, 0], edges[:, 1])), (n, n)
+    ).tocsr()
+    A.data[:] = 1.0
+    W = scipy.sparse.diags(1.0 / np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)) @ A
+    smooth = V.copy()
+    for _ in range(10):
+        for factor in (0.5, -0.53):
+            smooth = smooth + factor * (W @ smooth - smooth)
+    along = ((V - smooth) * vertex_normals(V, T)).sum(1)
+    if mask is not None:
+        along = along[np.asarray(mask, bool)]
+    return float(np.sqrt((along**2).mean()))
+
+
 # the facial actions that open the mouth in :func:`mouth_tears` (ARKit names)
 OPEN_MOUTH = {
     "jawOpen": 0.55,

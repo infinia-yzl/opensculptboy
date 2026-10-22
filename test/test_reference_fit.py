@@ -24,7 +24,7 @@ import numpy as np
 import torch
 
 from opensculptboy import Character, export_glb
-from opensculptboy.detail import DetailModel, character_offsets, level
+from opensculptboy.detail import DetailModel, character_offsets, detail_topology, level
 from opensculptboy.export.budget import BUDGETS
 from opensculptboy.fit.handoff import (
     _find_entry,
@@ -48,6 +48,7 @@ from opensculptboy.fit.register import (
     ear_weights,
     excluded_vertices,
     fair_region,
+    fair_skin,
     fit_levels,
     fit_model,
     fit_parameters,
@@ -66,6 +67,7 @@ from opensculptboy.fit.register import (
 )
 from opensculptboy.fit.residual import surface_error
 from test.fit_fixtures import (
+    faceted_sphere,
     pointed_ear_target,
     stitched_ear_target,
     synthetic_target,
@@ -73,6 +75,9 @@ from test.fit_fixtures import (
 
 # the bound of the mean surface error of level 1, both ways (mm)
 LEVEL1_BOUND_MM = 0.5
+# the fine ripple (metres, metrics.ripple) of the synthetic fit's level-1 skin of the head:
+# 124 micrometres projected onto the target's facets alone, 65 with the skin faired
+LEVEL1_RIPPLE_BOUND = 90e-6
 
 
 def _report(title: str, errors: dict) -> None:
@@ -481,6 +486,47 @@ class TestEarParts(unittest.TestCase):
         np.testing.assert_allclose(repaired[ridge, 2], V[ridge, 2], atol=2e-4)
 
 
+class TestSkinFairing(unittest.TestCase):
+    def test_fairing_drops_the_facets(self):
+        # a fine sphere projected onto a coarse one's flat triangles copies their facets;
+        # faired on them, it keeps to the reference and lies close to the true sphere
+        from opensculptboy.fit.metrics import ripple
+
+        RV, RT, X, T = faceted_sphere()
+        reference = Reference(RV, RT)
+        Y = fair_skin(X, T, reference, np.ones(len(X), bool), 160.0, 2, 0.01)
+        radius = 0.05
+
+        def spread(points):
+            return float((np.linalg.norm(points, axis=1) - radius).std())
+
+        # measured: ripple 34 -> 11 micrometres, spread of the radii 49 -> 12
+        self.assertLess(ripple(Y, T), 0.4 * ripple(X, T))
+        self.assertLess(spread(Y), 0.4 * spread(X))
+        self.assertLess(reference.closest(Y)[2].mean(), 1e-4)
+
+    def test_region_leaves_ears_and_held_out(self):
+        from opensculptboy.fit.register import skin_fair_region
+
+        class Flat:
+            # a strip of 6 vertices: 0-1-2-3-4-5 joined by triangles
+            triangles = np.array([[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]])
+
+            @staticmethod
+            def apply(values):
+                return values
+
+        skin0 = np.ones(6)
+        data = np.ones(6)
+        ears = np.zeros(6, bool)
+        ears[0] = True
+        held = np.zeros(6, bool)
+        held[5] = True
+        region = skin_fair_region(Flat, skin0, data, ears, 1, held)
+        # vertex 0 is ear, 1 and 2 lie one face from it, 5 is held
+        np.testing.assert_array_equal(region, [False, False, False, True, True, False])
+
+
 class TestHandoff(unittest.TestCase):
     def test_round_trip_in_anny_frame(self):
         rng = np.random.default_rng(3)
@@ -666,6 +712,20 @@ class TestSyntheticFit(unittest.TestCase):
                     self.result.errors[subdiv]["forward"]["mean"],
                     delta=0.01,
                 )
+
+    def test_skin_keeps_no_facets(self):
+        # the target's triangles are 5 mm cells, larger than level 1's faces on the face;
+        # projected onto them alone, the skin of the head copies them as steps
+        # (FitOptions.skin_fairness, register.fair_skin)
+        from opensculptboy.fit.metrics import REGIONS, anny_regions, level_regions, ripple
+
+        vertices, triangles = self.result.meshes[1]
+        topology = detail_topology(self.model, 1)
+        regions = level_regions(topology, anny_regions(self.model))
+        head = np.isin(regions, [REGIONS.index(k) for k in ("face", "jaw", "neck")])
+        value = ripple(vertices, triangles, head)
+        print(f"\nlevel-1 skin ripple {1e6 * value:.1f} micrometres", file=sys.stderr)
+        self.assertLess(value, LEVEL1_RIPPLE_BOUND)
 
     def test_mouth_opens_without_tears(self):
         # the offsets of the inside of the mouth and the lips' inner margin are smooth
