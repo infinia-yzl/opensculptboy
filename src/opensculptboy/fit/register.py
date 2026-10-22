@@ -2739,8 +2739,10 @@ def fit_levels(
             regions_skin,
             [skin_metrics.REGIONS.index(k) for k in options.skin_fair_regions],
         ).astype(np.float64)
-        # the lips' inner margin and the lining of the mouth keep to the mouth's own rules
-        skin0[(margin > 0) | (lining0 > 0)] = 0.0
+        # the lips' inner margin, the lining of the mouth and the lips' roll (the skin the
+        # seal of the lips moves) keep to the mouth's own rules
+        roll0 = mouth_lining(model, options.lip_seal_rings) > 0
+        skin0[(margin > 0) | (lining0 > 0) | roll0] = 0.0
     measures, meshes = {}, {}
     previous_ear = None
     regions0 = reference_region = None
