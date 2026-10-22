@@ -526,6 +526,21 @@ class TestSkinFairing(unittest.TestCase):
         # vertex 0 is ear, 1 and 2 lie one face from it, 5 is held
         np.testing.assert_array_equal(region, [False, False, False, True, True, False])
 
+    def test_options_per_level(self):
+        # the mouth's repair and seal reach further on level 2 than on levels 0 and 1
+        from opensculptboy.fit.register import FitOptions, _as_levels, _per_level
+
+        options = FitOptions()
+        reach = [
+            _per_level(_as_levels(options.mouth_repair_reach), k) for k in range(3)
+        ]
+        self.assertEqual(reach, [5, 5, 8])
+        seal = [_per_level(_as_levels(options.lip_seal_reach), k) for k in range(3)]
+        self.assertEqual(seal, [0.0015, 0.0015, 0.003])
+        # one value serves every level, and so does None
+        self.assertEqual(_per_level(_as_levels(0.002), 2), 0.002)
+        self.assertIsNone(_per_level(_as_levels(None), 1))
+
     def test_lid_blend_falls_off(self):
         from opensculptboy.fit.register import lid_blend
 
