@@ -145,6 +145,16 @@ class FitOptions:
     # whose normals agree to project_normal_threshold move onto it, but on the ears (0: none)
     project_distance: float = 0.002
     project_normal_threshold: float = 0.8
+    # then the skin of the head (the regions of skin_fair_regions, but the outer ears and the
+    # skin the ear fairing takes, the lips' inner margin and lining, and the patches placed by
+    # their anchors) is faired on the reference (fair_skin): the fairness of each level (see
+    # _per_level; 0: none), the rounds, and the distance (metres) within which a vertex takes
+    # its closest point. A coarse reference looks smooth only through the normals it shades
+    # with, and a fine level projected onto its flat triangles copies their facets as steps
+    skin_fairness: tuple = (0.0, 4.0, 160.0)
+    skin_fair_iterations: int = 2
+    skin_fair_distance: float = 0.002
+    skin_fair_regions: tuple = ("face", "jaw", "neck")
     # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
     # of the inside of the mouth, which follow their neighbours when it is 0
     lip_margin_weight: float = 0.0
@@ -1486,6 +1496,64 @@ def fair_region(
     return X
 
 
+def fair_skin(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    region: np.ndarray,
+    fairness: float,
+    iterations: int = 2,
+    max_distance: float = 0.002,
+    normal_threshold: float = 0.5,
+) -> np.ndarray:
+    """
+    The skin of ``region`` faired on the reference: :func:`fair_region` without its reverse
+    term, so that each vertex keeps to its closest point of the reference while the
+    bi-Laplacian evens out what is finer than the fairness lets through. A coarse reference
+    looks smooth only through the normals it shades with; its flat triangles are facets a few
+    millimetres across, and a fine level projected onto them (:func:`project_onto`) copies
+    them as steps, which shading by the fitted mesh's own normals shows as layers. The
+    fairing keeps the reference's shape at the scale of its triangles and above and drops
+    the steps between them; the closest points hold the surface on the reference, so the
+    vertices of the reference's triangles end up slightly off a convex surface they span.
+    """
+    return fair_region(
+        vertices,
+        triangles,
+        reference,
+        region,
+        iterations,
+        fairness,
+        max_distance,
+        normal_threshold,
+        reverse_weight=0.0,
+        pool=region,
+    )
+
+
+def skin_fair_region(
+    topology,
+    skin0: np.ndarray,
+    data: np.ndarray,
+    ears: np.ndarray,
+    rings: int,
+    held: np.ndarray | None = None,
+) -> np.ndarray:
+    """The vertices of a level that :func:`fair_skin` fairs: those of ``skin0`` (a weight per
+    vertex of level 0, carried to the level) with data, apart from the outer ears ``ears``
+    and the skin within ``rings`` faces of them (which the ears' own fairing takes) and the
+    vertices of ``held``."""
+    region = (np.asarray(topology.apply(skin0)) > 0.5) & (np.asarray(data) > 0)
+    near = np.asarray(ears, bool).copy()
+    adjacency = _adjacency(len(region), topology.triangles)
+    for _ in range(rings):
+        near |= adjacency @ near.astype(np.float64) > 0
+    region &= ~near
+    if held is not None:
+        region &= ~np.asarray(held, bool)
+    return region
+
+
 def relabel_ears(
     vertices: np.ndarray,
     triangles: np.ndarray,
@@ -2662,6 +2730,17 @@ def fit_levels(
         ):
             _log(options, "lips: the reference's lips stand apart; no seal")
             lip_line_ = None
+    skin0 = None
+    if any(f > 0 for f in options.skin_fairness):
+        from opensculptboy.fit import metrics as skin_metrics
+
+        regions_skin = skin_metrics.anny_regions(model, rest0)
+        skin0 = np.isin(
+            regions_skin,
+            [skin_metrics.REGIONS.index(k) for k in options.skin_fair_regions],
+        ).astype(np.float64)
+        # the lips' inner margin and the lining of the mouth keep to the mouth's own rules
+        skin0[(margin > 0) | (lining0 > 0)] = 0.0
     measures, meshes = {}, {}
     previous_ear = None
     regions0 = reference_region = None
@@ -2831,6 +2910,27 @@ def fit_levels(
                 options.project_distance,
                 options.project_normal_threshold,
             )
+        fairness = _per_level(options.skin_fairness, subdiv)
+        if fairness > 0 and skin0 is not None:
+            outer = anny_ear if split is not None else level_ears >= 0.1
+            skin_region = skin_fair_region(
+                topology,
+                skin0,
+                data,
+                outer,
+                options.ear_fair_rings * 2**subdiv,
+                anchored.share(topology) > 0 if anchored.active else None,
+            )
+            fitted = fair_skin(
+                fitted,
+                topology.triangles,
+                target,
+                skin_region,
+                fairness,
+                options.skin_fair_iterations,
+                options.skin_fair_distance,
+            )
+            _log(options, f"level {subdiv}: {int(skin_region.sum())} skin vertices faired")
         fitted = follow_skin(
             posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
         )
