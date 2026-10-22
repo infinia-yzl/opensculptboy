@@ -83,6 +83,8 @@ class HandoffPart:
     ior: float | None = None
     # the vertices of the outer ear by side ("l", "r"), from appearance.json's masks.ear
     ear_vertices: dict | None = None
+    # the material's base colour factor (linear RGBA, glTF baseColorFactor), or None
+    base_color_factor: tuple | None = None
 
     @property
     def is_skin(self) -> bool:
@@ -232,6 +234,21 @@ def _texture_array(image) -> np.ndarray | None:
         return None
 
 
+def _colour_factor(material) -> tuple | None:
+    """The base colour factor of a trimesh material as linear RGBA in 0..1 (trimesh keeps it
+    in 8 bits), or None."""
+    factor = getattr(material, "baseColorFactor", None)
+    if factor is None:
+        return None
+    factor = np.asarray(factor)
+    if factor.size < 3:
+        return None
+    if np.issubdtype(factor.dtype, np.integer):
+        factor = factor / 255.0
+    rgba = np.r_[np.asarray(factor, dtype=np.float64).ravel()[:4], [1.0]][:4]
+    return tuple(float(c) for c in rgba)
+
+
 def _visual(geometry):
     """UVs (glTF convention), base colour, normal texture and roughness (see
     :class:`HandoffPart`) of a trimesh geometry."""
@@ -316,6 +333,9 @@ def load_glb_parts(
                 normals=_file_normals(geometry, GLTF_TO_ANNY @ transform[:3, :3]),
                 roughness=roughness,
                 ior=iors.get(material),
+                base_color_factor=_colour_factor(
+                    getattr(getattr(geometry, "visual", None), "material", None)
+                ),
             )
         )
     return parts

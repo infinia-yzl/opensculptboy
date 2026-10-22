@@ -268,6 +268,8 @@ class Reference:
     # named vertex masks (V,) of the source: "ear" (masks.ear of the handoff) and
     # "ear_attachment" (its vertices along the line where each ear meets the head)
     regions: dict = dataclasses.field(default_factory=dict)
+    # the parts of role "mouth" (teeth, gums, tongue), for the teeth of the bake
+    mouth_parts: list = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=np.float64)
@@ -373,6 +375,7 @@ class Reference:
             eye_reference,
             file_normals,
             regions,
+            [p for p in handoff.parts if p.role == "mouth"],
         )
 
     def eye_values(self) -> dict:
@@ -439,6 +442,14 @@ class Reference:
             else self.eye_reference.transformed(R, t),
             None if self.file_normals is None else self.file_normals @ R.T,
             self.regions,
+            [
+                dataclasses.replace(
+                    p,
+                    vertices=p.vertices @ R.T + t,
+                    normals=None if p.normals is None else p.normals @ R.T,
+                )
+                for p in self.mouth_parts
+            ],
         )
         return moved
 

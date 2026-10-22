@@ -60,7 +60,7 @@ real-time subsurface scattering: the thickness drives translucency through thin 
 the ears, and the curvature picks the row of a pre-integrated skin lookup (Penner 2011). A card
 without the section keeps the material it had before (the detail layer's textures, else a
 plain skin colour). A section that holds nothing but ``eyes`` keeps the exporters' own skin
-as well, and changes the eyes alone.
+as well, and changes the eyes alone; ``teeth`` (:data:`TEETH_DEFAULTS`) likewise adds teeth.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ SUBSURFACE_DEFAULTS = {
     "method": "random_walk_skin",
 }
 _KEYS = set(TEXTURE_KEYS) | set(DEFAULTS)
-_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes"}
+_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes", "teeth"}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -145,7 +145,7 @@ class SkinMaterial:
         values = {
             k: v
             for k, v in data.items()
-            if k not in ("subsurface", "eyes", "reference_eyes")
+            if k not in ("subsurface", "eyes", "reference_eyes", "teeth")
         }
         subsurface = dict(SUBSURFACE_DEFAULTS)
         subsurface.update(data.get("subsurface", {}))
@@ -240,6 +240,8 @@ def check_material(data: dict) -> dict:
         check_eyes(data["eyes"])
     if "reference_eyes" in data:
         check_reference_eyes(data["reference_eyes"])
+    if "teeth" in data:
+        check_teeth(data["teeth"])
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
         raise ValueError("material subsurface must be a JSON object.")
@@ -513,4 +515,88 @@ def check_reference_eyes(data: dict) -> dict:
         if isinstance(value, (str, bool)):
             raise ValueError(f"reference_eyes {key} must be a number (got {value!r}).")
         _number(value, f"reference_eyes {key}", *_CORNEA_RANGES[key])
+    return data
+
+
+# The teeth (``material.teeth``, :mod:`opensculptboy.teeth`): every key is optional. Colours
+# are linear RGB.
+TEETH_DEFAULTS = {
+    "source": "auto",  # "auto" ("reference" with a mesh, else "generic"), "reference",
+    #                    "generic"
+    "mesh": None,  # the reference's teeth in the card's rest frame (a .safetensors file that
+    #                the bake writes, opensculptboy.teeth.mesh.TeethData), relative to the card
+    "color": [0.72, 0.66, 0.56],  # the enamel: a warm off-white
+    "roughness": 0.35,
+    "gums": True,  # generic teeth: the gums along the roots
+    "gum_color": [0.45, 0.13, 0.12],
+}
+TEETH_SOURCES = ("auto", "reference", "generic")
+
+
+@dataclasses.dataclass
+class TeethMaterial:
+    """The resolved teeth of a card: every value of :data:`TEETH_DEFAULTS` present, and
+    ``source`` resolved to ``"reference"`` or ``"generic"``."""
+
+    source: str = "generic"
+    mesh: str | None = None
+    color: list = dataclasses.field(
+        default_factory=lambda: list(TEETH_DEFAULTS["color"])
+    )
+    roughness: float = 0.35
+    gums: bool = True
+    gum_color: list = dataclasses.field(
+        default_factory=lambda: list(TEETH_DEFAULTS["gum_color"])
+    )
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "TeethMaterial":
+        data = check_teeth(dict(data or {}))
+        values = {**TEETH_DEFAULTS, **data}
+        source = values["source"]
+        if source == "auto":
+            source = "reference" if values["mesh"] else "generic"
+        if source == "reference" and not values["mesh"]:
+            raise ValueError("teeth source 'reference' needs the mesh of the bake.")
+        return cls(
+            source=source,
+            mesh=values["mesh"],
+            color=[float(c) for c in values["color"]],
+            roughness=float(values["roughness"]),
+            gums=bool(values["gums"]),
+            gum_color=[float(c) for c in values["gum_color"]],
+        )
+
+    def extras(self) -> dict[str, Any]:
+        """What the files record of the teeth."""
+        return {
+            "source": self.source,
+            "color": [float(c) for c in self.color],
+            "roughness": float(self.roughness),
+            "gums": bool(self.gums and self.source == "generic"),
+        }
+
+
+def check_teeth(data: dict) -> dict:
+    """Raise ValueError for a ``material.teeth`` section that is not valid; returns it."""
+    if not isinstance(data, dict):
+        raise ValueError("material teeth must be a JSON object.")
+    unknown = sorted(set(data) - set(TEETH_DEFAULTS))
+    if unknown:
+        raise ValueError(
+            f"Unknown teeth keys {unknown}; the keys are {sorted(TEETH_DEFAULTS)}."
+        )
+    if data.get("source", "auto") not in TEETH_SOURCES:
+        raise ValueError(
+            f"teeth source must be one of {list(TEETH_SOURCES)} (got {data['source']!r})."
+        )
+    if data.get("mesh") is not None and not isinstance(data["mesh"], str):
+        raise ValueError("teeth mesh must be the path of the bake's teeth file.")
+    for key in ("color", "gum_color"):
+        if key in data:
+            _colour(data[key], f"teeth {key}", 3)
+    if "roughness" in data:
+        _number(data["roughness"], "teeth roughness", 0.0, 1.0)
+    if "gums" in data and not isinstance(data["gums"], bool):
+        raise ValueError("teeth gums must be true or false.")
     return data

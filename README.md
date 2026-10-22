@@ -191,7 +191,7 @@ Accuracy, measured against Anny's own output on the walk, run, arms-crossed and 
 
 Tested so far: the [Khronos glTF validator](https://github.com/KhronosGroup/glTF-Validator) reports no errors and no warnings, and three.js (r186, `GLTFLoader`) draws the skeleton, the morph targets and the animations. Blender, Godot, Unity and Unreal Engine have not been tested yet.
 
-Not in the file yet: painted textures (the material is a plain skin colour, unless the card's detail layer names textures baked from a reference, see [Fit to a reference mesh](#fit-to-a-reference-mesh)), the hair and the soft-tissue correctives (the export uses plain skinning). `--eyes` (or a card's `material.eyes`) replaces anny's plain eyeballs with smooth ones: an iris texture with a pupil of a chosen size, a refracting cornea, and a caruncle that fills the inner corner of the eye; [docs/eyes.md](docs/eyes.md) describes them.
+Not in the file yet: painted textures (the material is a plain skin colour, unless the card's detail layer names textures baked from a reference, see [Fit to a reference mesh](#fit-to-a-reference-mesh)), the hair and the soft-tissue correctives (the export uses plain skinning). `--eyes` (or a card's `material.eyes`) replaces anny's plain eyeballs with smooth ones: an iris texture with a pupil of a chosen size, a refracting cornea, and a caruncle that fills the inner corner of the eye; [docs/eyes.md](docs/eyes.md) describes them. `--teeth` (or a card's `material.teeth`) puts teeth in anny's mouth, which has none: the teeth of the reference for a fitted card, else a generic set; the lower teeth follow the jaw in the expressions; [docs/teeth.md](docs/teeth.md) describes them.
 
 ## VTuber avatars (VRM)
 

@@ -72,6 +72,10 @@ class BakedTextures:
     ear_uvs: object = None  # opensculptboy.texture.ears.EarUVs
     # the values of the reference's eyes (Reference.eye_values), for material.reference_eyes
     reference_eyes: dict = dataclasses.field(default_factory=dict)
+    # the reference's teeth in the card's rest frame (opensculptboy.teeth.mesh.TeethData) and
+    # the colour and roughness it gives them, for material.teeth; None without teeth
+    teeth: object = None
+    teeth_values: dict = dataclasses.field(default_factory=dict)
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
@@ -98,9 +102,10 @@ class BakedTextures:
 
     def material(self, names: dict[str, str]) -> dict:
         """The ``material`` section of a card for the files ``names`` (slot -> path, as
-        :meth:`png_files` names the slots, and ``"ear_uvs"`` the ear tile's UV file), without
-        the eye texture, which the detail layer names, and with the values measured on the
-        reference's eyes (``reference_eyes``)."""
+        :meth:`png_files` names the slots, ``"ear_uvs"`` the ear tile's UV file and
+        ``"teeth"`` the teeth's file), without the eye texture, which the detail layer names,
+        and with the values measured on the reference's eyes (``reference_eyes``) and its
+        teeth (``teeth``)."""
         material = {}
         for slot in ("base_color", "normal", "roughness", "thickness", "curvature"):
             if slot in names:
@@ -125,6 +130,12 @@ class BakedTextures:
             material["ears"] = {"uvs": names["ear_uvs"], **ears}
         if self.reference_eyes:
             material["reference_eyes"] = dict(self.reference_eyes)
+        if "teeth" in names:
+            material["teeth"] = {
+                "source": "reference",
+                "mesh": names["teeth"],
+                **self.teeth_values,
+            }
         return material
 
 
@@ -905,6 +916,15 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
     )
     if baked.ears:
         baked.ear_uvs = ear_uvs
+    mouth = getattr(result.reference, "mouth_parts", None)
+    if mouth:
+        from opensculptboy.teeth.mesh import mouth_rows
+        from opensculptboy.teeth.reference import reference_teeth
+
+        head, _ = mouth_rows(model, topology)
+        found = reference_teeth(mouth, vertices, out["rest_vertices"][0].numpy(), head)
+        if found is not None:
+            baked.teeth, baked.teeth_values = found
     return baked
 
 

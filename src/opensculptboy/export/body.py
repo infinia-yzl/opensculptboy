@@ -398,6 +398,11 @@ def eyeball_triangles(model, body: BodyMesh, mesh=None) -> np.ndarray | None:
     eye[rows] = 1.0
     if mesh is not None:
         eye = np.asarray(mesh.apply(eye))
+    count = int(body.source.max(initial=-1)) + 1
+    if count > len(
+        eye
+    ):  # parts appended after the mesh (the teeth) lie off the eyeballs
+        eye = np.r_[eye, np.zeros(count - len(eye))]
     return (eye > 0.5)[body.source][body.triangles].all(1)
 
 

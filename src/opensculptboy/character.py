@@ -61,9 +61,13 @@ class Character:
 
     def skin_material(self):
         """The :class:`~opensculptboy.material.SkinMaterial` of ``material``, or None (also
-        for a section that holds the eyes or the values of the reference's eyes alone, which
-        keeps the exporters' own skin)."""
-        if not self.material or set(self.material) <= {"eyes", "reference_eyes"}:
+        for a section that holds the eyes, the values of the reference's eyes or the teeth
+        alone, which keeps the exporters' own skin)."""
+        if not self.material or set(self.material) <= {
+            "eyes",
+            "reference_eyes",
+            "teeth",
+        }:
             return None
         from opensculptboy.material import SkinMaterial
 
@@ -79,6 +83,15 @@ class Character:
         return EyeMaterial.from_dict(
             self.material["eyes"], self.material.get("reference_eyes")
         )
+
+    def teeth_material(self):
+        """The :class:`~opensculptboy.material.TeethMaterial` of ``material.teeth``, or None
+        for a mouth without teeth (anny has none)."""
+        if "teeth" not in self.material:
+            return None
+        from opensculptboy.material import TeethMaterial
+
+        return TeethMaterial.from_dict(self.material["teeth"])
 
     def detail_levels(self) -> list[int]:
         """The subdivision levels of the detail layer, in increasing order."""
