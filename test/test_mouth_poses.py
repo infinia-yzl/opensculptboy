@@ -92,6 +92,100 @@ class TestCarry(unittest.TestCase):
         )
 
 
+    def test_lip_rows_off_the_surface_take_the_rig(self):
+        """A lip's rows that lie off the reference's surface (its inner roll and lining)
+        move as the reference's rig moves them: the blend of its joints' turns with the
+        weights at their closest point on the same lip, applied to their own positions (the
+        motion of the surface point alone stretched the lips' inner edge in wide poses)."""
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.fit.poses import _quaternion_matrix
+
+        V, T, jaw = _grid()
+        soup = V[T.ravel()]
+        J = np.zeros((len(soup), 4), int)
+        J[:, 1] = 1
+        W = np.zeros((len(soup), 4))
+        W[:, 1] = jaw[T.ravel()]
+        W[:, 0] = 1.0 - W[:, 1]
+        turn = [np.sin(np.radians(6)), 0.0, 0.0, np.cos(np.radians(6))]
+        pivot = np.array([0.0, 0.0, -0.05])
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            _write_rig_glb(folder / "replica.glb", soup, J, W, pivot)
+            appearance = {
+                "parts": [{"name": "head", "role": "skin"}],
+                "mouth": {
+                    "rig": {"jaw": "lower_jaw"},
+                    "poses": {
+                        "open": {
+                            "known": True,
+                            "joints": {"lower_jaw": {"rotation": turn}},
+                        },
+                    },
+                },
+            }
+            (folder / "appearance.json").write_text(json.dumps(appearance))
+            handoff = load_handoff(folder)
+            reference = Reference.from_handoff(handoff)
+            field = P.reference_pose_fields(handoff, reference)["open"][0]
+            transforms = P.reference_pose_transforms(handoff, reference)["open"]
+        self.assertEqual(transforms[0].shape, (len(reference.vertices), 3, 3))
+        # the transforms reproduce the reference's own motion at its vertices
+        moved = np.einsum("nij,nj->ni", *transforms[:1], reference.vertices)
+        np.testing.assert_allclose(
+            moved + transforms[1] - reference.vertices, field, atol=1e-7
+        )
+        # the lower lip's rows, 4 mm behind the reference's surface
+        lip = (jaw >= 0.5) & (np.abs(V[:, 0]) < 0.02)
+        behind = V.copy()
+        behind[lip, 2] -= 0.004
+        fitted = behind @ GLTF_TO_ANNY.T
+        fitted_side = np.where(lip, 2, 0).astype(np.int8)
+        ref_jaw = W[:, 1]
+        ref_side = np.where(ref_jaw >= P.LOWER_SHARE, 2, 1).astype(np.int8)
+        sides = (fitted_side, ref_side)
+        on_skin = np.ones(len(fitted), bool)
+        with_rig, known = P.carry_field(
+            fitted, T, reference, field, on_skin, sides, transforms=transforms
+        )
+        R = _quaternion_matrix(turn)
+        # away from the lip's border, where the smoothing of rough spots meets the skin
+        inside = lip & (jaw >= 0.6) & (np.abs(V[:, 0]) < 0.015)
+        w = jaw[inside, None]
+        p = behind[inside]
+        want = (1 - w) * p + w * ((p - pivot) @ R.T + pivot)
+        np.testing.assert_allclose(
+            with_rig[inside], (want - p) @ GLTF_TO_ANNY.T, atol=1e-6
+        )
+        self.assertTrue(known[lip].all())
+        # without the rig the rows lie too far from the surface to take its motion
+        plain, known = P.carry_field(fitted, T, reference, field, on_skin, sides)
+        self.assertFalse(known[lip].any())
+
+
+class TestLiningSides(unittest.TestCase):
+    def test_each_lip_claims_its_lining(self):
+        # a strip: upper lip row, three lining rows, lower lip row
+        rows, n = 5, 6
+        V = np.array([[x, 0.0, -r * 0.002] for r in range(rows) for x in range(n)], float)
+        T = []
+        for r in range(rows - 1):
+            for c in range(n - 1):
+                p, q = r * n + c, (r + 1) * n + c
+                T += [[p, p + 1, q], [p + 1, q + 1, q]]
+        side = np.zeros(len(V), np.int8)
+        side[:n] = 1
+        side[-n:] = 2
+        off = np.zeros(len(V), bool)
+        off[n:-n] = True
+        got = P.lining_sides(np.asarray(T), side, off, 3).reshape(rows, n)
+        self.assertTrue((got[0] == 0).all() and (got[-1] == 0).all())
+        self.assertTrue((got[1] == 1).all())
+        self.assertTrue((got[3] == 2).all())
+        self.assertTrue((got[2] == 1).all())  # a tie goes to the upper lip
+        self.assertTrue((P.lining_sides(np.asarray(T), side, off, 0) == 0).all())
+
+
 class TestPiecesMove(unittest.TestCase):
     def test_pieces_cut_from_a_primitive_take_its_motion(self):
         """The inner mouth's pieces are rows of one primitive of the reference: each takes

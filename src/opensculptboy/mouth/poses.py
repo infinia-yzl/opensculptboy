@@ -53,6 +53,11 @@ LIP_SMOOTH_WEIGHT = 4.0
 # a lip's vertex whose carried motion stands out of its neighbours' mean by more than this
 # (metres) is a rough spot
 LIP_ROUGH = 0.0008
+# with the reference's own skin transforms (:func:`reference_pose_transforms`), the weight of
+# the neighbours in the smoothing of the lips' rough spots (the transforms leave less to smooth)
+LIP_SMOOTH_WEIGHT_RIG = 1.0
+# the lining off the skin within this many faces of a lip moves with that lip's transforms
+LINING_RINGS = 3
 
 
 def target_name(pose: str) -> str:
@@ -143,6 +148,100 @@ def reference_pose_fields(handoff, reference, poses: dict | None = None):
         if np.abs(field).max() < 1e-7:
             continue
         out[name] = (field, pieces)
+    return out
+
+
+def reference_pose_transforms(handoff, reference, poses: dict | None = None):
+    """
+    The reference's own skinning under each of its mouth poses (``poses``, name to joint
+    deltas; the handoff's known ``mouth.poses`` when None): a dict of name to (R (V, 3, 3),
+    t (V, 3)), the blended transform of each vertex of ``reference.vertices`` (its skin parts
+    laid end to end) in Anny's frame, so that the posed vertex is ``R @ v + t``. It is the
+    linear blend of the skin's joint matrices with the vertex's own weights, as a glTF viewer
+    skins it, and it moves any point near the vertex as the reference's rig would. A vertex of
+    a part that no skinned primitive matches keeps the identity. Empty when the file has no
+    skinned primitive.
+    """
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY
+    from opensculptboy.fit.poses import GlbRig, _subset_rows
+    from opensculptboy.fit.poses import mouth_poses as known_poses
+
+    poses = known_poses(handoff.appearance) if poses is None else poses
+    rig = GlbRig(handoff.path / "replica.glb")
+    primitives = list(rig.skinned_primitives())
+    if not primitives:
+        return {}
+    C = np.asarray(GLTF_TO_ANNY, np.float64)
+    skin = handoff.skin_parts()
+    rest_world = rig.world()
+    rest = []
+    for _, _, _, s, vertices, joints, weights in primitives:
+        w = weights / np.maximum(weights.sum(1, keepdims=True), 1e-12)
+        M = np.einsum("vk,vkij->vij", w, rig.skin_matrices(s, rest_world)[joints])
+        rest.append((M, w, joints, s))
+    rows = []
+    for part in skin:
+        found = None
+        for k, (M, _, _, _) in enumerate(rest):
+            vertices = primitives[k][4]
+            at = (np.einsum("vij,vj->vi", M[:, :3, :3], vertices) + M[:, :3, 3]) @ C.T
+            if len(at) == len(part.vertices) and np.abs(at - part.vertices).max() < 1e-5:
+                found = (k, np.arange(len(at)))
+            else:
+                sub = _subset_rows(at, part.vertices, 1e-5)
+                if sub is not None:
+                    found = (k, sub)
+            if found is not None:
+                break
+        rows.append((found, len(part.vertices)))
+    out = {}
+    for name, deltas in poses.items():
+        posed_world = rig.world(deltas)
+        blended = []
+        for M, w, joints, s in rest:
+            P = np.einsum("vk,vkij->vij", w, rig.skin_matrices(s, posed_world)[joints])
+            blended.append(P @ np.linalg.inv(M))
+        Rs, ts = [], []
+        for found, n in rows:
+            if found is None:
+                Rs.append(np.repeat(np.eye(3)[None], n, 0))
+                ts.append(np.zeros((n, 3)))
+                continue
+            A = blended[found[0]][found[1]]
+            Rs.append(C @ A[:, :3, :3] @ C.T)
+            ts.append(A[:, :3, 3] @ C.T)
+        out[name] = (np.concatenate(Rs), np.concatenate(ts))
+    return out
+
+
+def lining_sides(
+    triangles: np.ndarray, fitted_side: np.ndarray, off_skin: np.ndarray, rings: int
+) -> np.ndarray:
+    """
+    The lip (1 upper, 2 lower) of the vertices off the skin (``off_skin``: the lining inside
+    the mouth) within ``rings`` faces of either lip of ``fitted_side``, by the lip that
+    reaches them first through the lining (the upper one on a tie); 0 elsewhere and on the
+    lips themselves.
+    """
+    from scipy.sparse import coo_matrix
+
+    T = np.asarray(triangles)
+    n = len(fitted_side)
+    e = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    A = coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)).tocsr()
+    A = ((A + A.T) > 0).astype(np.float64)
+    off = np.asarray(off_skin, bool)
+    reached = {s: np.asarray(fitted_side) == s for s in (1, 2)}
+    out = np.zeros(n, np.int8)
+    for _ in range(max(int(rings), 0)):
+        grown = {s: ((A @ reached[s].astype(np.float64)) > 0) & off for s in (1, 2)}
+        for s in (1, 2):
+            new = grown[s] & (out == 0) & ~reached[1] & ~reached[2]
+            if s == 2:
+                new &= ~grown[1]
+            out[new] = s
+        for s in (1, 2):
+            reached[s] = reached[s] | (out == s)
     return out
 
 
@@ -308,12 +407,14 @@ def smooth_lip_motion(
     rings: int = LIP_SMOOTH_RINGS,
     iterations: int = LIP_SMOOTH_ITERATIONS,
     known: np.ndarray | None = None,
+    weight: float | None = None,
 ) -> np.ndarray:
     """
     A pose's offsets (V, 3) of level 0 with the lips' motion smoothed: the vertices of
     either lip (``side`` 1 or 2) and the skin within ``rings`` faces of them are solved for
     the motion closest to the carried one that is smooth over their neighbours, by
-    ``iterations`` Jacobi steps of (I + w L) o = offsets (w :data:`LIP_SMOOTH_WEIGHT`). The carried motion holds the
+    ``iterations`` Jacobi steps of (I + w L) o = offsets (w ``weight``, by default
+    :data:`LIP_SMOOTH_WEIGHT`). The carried motion holds the
     roughness of the reference's own triangles, which the detail levels fold into creases
     and torn spots on the lips. Edges between the upper and the lower lip are left out, so
     that each lip keeps its own motion, except within one face of the mouth's corners (where
@@ -361,7 +462,7 @@ def smooth_lip_motion(
     W1 = (W + W.T).astype(bool).astype(np.float64)
     near = rough | ((W1 @ rough.astype(np.float64)) > 0)
     rows = np.nonzero(near & region)[0]
-    w = LIP_SMOOTH_WEIGHT
+    w = LIP_SMOOTH_WEIGHT if weight is None else float(weight)
     for _ in range(iterations):
         out[rows] = (data[rows] + w * (W @ out)[rows]) / (1.0 + w * degree[rows, None])
     return out
@@ -375,6 +476,8 @@ def carry_field(
     on_skin: np.ndarray,
     sides=None,
     jaw: np.ndarray | None = None,
+    transforms=None,
+    lining: int = LINING_RINGS,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     A vector field (V, C) of a fitted level (``fitted``, as the fit placed it on the
@@ -384,7 +487,14 @@ def carry_field(
     that point lies within :data:`NEAR_BORDER` of one of the reference's borders; the others
     take the harmonic extension of those (``register.smooth_mouth``); with each vertex's
     share of the jaw (``jaw``), the extension from the vertices of its own jaw, mixed by that
-    share.
+    share. With the reference's own skin transforms of the pose (``transforms``, an (R, t)
+    of :func:`reference_pose_transforms`) and ``sides``, each lip's vertices, and the lining
+    off the skin within ``lining`` faces of it (:func:`lining_sides`), move by the transform
+    of the closest point on the reference's same lip, applied to their own positions (the
+    reference's rig carried to them, as a linear blend of its skin weights): a lip's inner
+    rows and lining, which lie off the reference's surface, roll with that lip as the
+    reference's do, and the rough spots are then smoothed with
+    :data:`LIP_SMOOTH_WEIGHT_RIG`.
     """
     from scipy.spatial import cKDTree
 
@@ -412,13 +522,35 @@ def carry_field(
             if found is None:
                 continue
             distance, tri, bary = found
+            if transforms is not None:
+                out[mine] = _transformed(fitted[mine], reference, transforms, tri, bary)
+                known[mine] = True
+                continue
             ok = distance < ON_REFERENCE
             vals = np.einsum("nk,nkc->nc", bary, field[reference.triangles[tri]])
             out[mine[ok]] = vals[ok]
             known[mine[ok]] = True
             known[mine[~ok]] = False
             out[mine[~ok]] = 0.0
-        out = smooth_lip_motion(out, triangles, fitted_side, known=known)
+        weight = None
+        if transforms is not None:
+            weight = LIP_SMOOTH_WEIGHT_RIG
+            sides_in = lining_sides(
+                triangles, fitted_side, ~np.asarray(on_skin, bool), lining
+            )
+            for side in (1, 2):
+                mine = np.nonzero(sides_in == side)[0]
+                if len(mine) == 0:
+                    continue
+                found = _sided_closest(fitted[mine], reference, ref_side, side)
+                if found is None:
+                    continue
+                _, tri, bary = found
+                out[mine] = _transformed(fitted[mine], reference, transforms, tri, bary)
+                known[mine] = True
+        out = smooth_lip_motion(
+            out, triangles, fitted_side, known=known, weight=weight
+        )
     if jaw is None:
         return smooth_mouth(out, triangles, ~known), known
     # The lining inside the mouth: the extension from the lips of its own jaw (the lower lip
@@ -432,6 +564,16 @@ def carry_field(
     rows = ~known
     filled[rows] = jaw[rows, None] * low[rows] + (1.0 - jaw[rows, None]) * high[rows]
     return filled, known
+
+
+def _transformed(points, reference, transforms, tri, bary) -> np.ndarray:
+    """The offsets (N, 3) of ``points`` under the reference's skin transforms blended at
+    their closest points (triangles ``tri`` with barycentric ``bary``)."""
+    R, t = transforms
+    corners = np.asarray(reference.triangles)[tri]
+    Rb = np.einsum("nk,nkij->nij", bary, R[corners])
+    tb = np.einsum("nk,nki->ni", bary, t[corners])
+    return np.einsum("nij,nj->ni", Rb, points) + tb - points
 
 
 def mouth_poses(
@@ -462,6 +604,14 @@ def mouth_poses(
     fields = reference_pose_fields(handoff, reference, poses)
     if not fields:
         return None
+    transforms = {}
+    if sides is not None:
+        try:
+            transforms = reference_pose_transforms(
+                handoff, reference, {n: _pose_deltas(handoff, poses, n) for n in fields}
+            )
+        except (OSError, ValueError, KeyError):
+            transforms = {}
     R, _ = rigid(np.asarray(fitted)[head], np.asarray(rest)[head])
     pieces = []
     if mouth is not None:
@@ -478,7 +628,7 @@ def mouth_poses(
     names, skin, inner, stats = [], [], [], {}
     for name, (field, moved) in fields.items():
         values, known = carry_field(
-            fitted, triangles, reference, field, on_skin, sides, jaw
+            fitted, triangles, reference, field, on_skin, sides, jaw, transforms.get(name)
         )
         offsets = values @ R.T
         piece = np.zeros((M, 3))
@@ -512,6 +662,13 @@ def mouth_poses(
         np.stack(inner) if M else np.zeros((len(names), 0, 3)),
         stats,
     )
+
+
+def _pose_deltas(handoff, poses, name):
+    from opensculptboy.fit.poses import mouth_poses as known_poses
+
+    poses = known_poses(handoff.appearance) if poses is None else poses
+    return poses[name]
 
 
 def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
