@@ -55,12 +55,14 @@ from opensculptboy.fit.register import (
     fold_defects,
     follow_skin,
     lip_margin,
+    mouth_lining,
     pinna,
     project_onto,
     relabel_ears,
     relax_along,
     repair_folds,
     shared_target_controls,
+    smooth_mouth,
 )
 from opensculptboy.fit.residual import surface_error
 from test.fit_fixtures import (
@@ -305,6 +307,49 @@ def _hairpin(n_u: int = 41, n_v: int = 11, radius: float = 0.0015):
     )
     flap = (uu >= 0.01 + 0.5 * turn).ravel()
     return V, T, flap
+
+
+class TestMouthLining(unittest.TestCase):
+    def test_lining_is_the_mouth_and_its_margin(self):
+        model = fit_model()
+        cavity = mouth_lining(model, 0)
+        margin = mouth_lining(model, 1)
+        self.assertGreater(cavity.sum(), 100)
+        self.assertTrue((margin >= cavity).all())
+        self.assertGreater(margin.sum(), cavity.sum())
+        # the margin is lip_margin's, the eye sockets stay out
+        np.testing.assert_array_equal(
+            margin & ~cavity, lip_margin(model, np.zeros_like(cavity), 1) & ~cavity
+        )
+
+    def test_smooth_mouth_is_harmonic(self):
+        # a grid whose middle is the lining: a linear field on its border extends linearly,
+        # and noise inside the lining is gone
+        n = 12
+        x, y = np.meshgrid(
+            np.arange(n, dtype=np.float64), np.arange(n, dtype=np.float64)
+        )
+        points = np.stack([x.ravel(), y.ravel(), np.zeros(n * n)], 1)
+        quads = [
+            (r * n + c, r * n + c + 1, (r + 1) * n + c + 1, (r + 1) * n + c)
+            for r in range(n - 1)
+            for c in range(n - 1)
+        ]
+        triangles = np.array(
+            [t for a, b, c, d in quads for t in ((a, b, c), (a, c, d))]
+        )
+        lining = ((x > 2) & (x < n - 3) & (y > 2) & (y < n - 3)).ravel()
+        field = np.stack(
+            [0.001 * points[:, 0], -0.002 * points[:, 1], 0 * points[:, 0]], 1
+        )
+        noisy = field.copy()
+        noisy[lining] += np.random.default_rng(0).normal(0, 0.01, (lining.sum(), 3))
+        smooth = smooth_mouth(noisy, triangles, lining)
+        np.testing.assert_allclose(smooth, field, atol=1e-12)
+        # a lining component that touches nothing keeps its offsets
+        alone = np.zeros(n * n, bool)
+        alone[:] = True
+        np.testing.assert_array_equal(smooth_mouth(noisy, triangles, alone), noisy)
 
 
 class TestEarParts(unittest.TestCase):
@@ -621,6 +666,30 @@ class TestSyntheticFit(unittest.TestCase):
                     self.result.errors[subdiv]["forward"]["mean"],
                     delta=0.01,
                 )
+
+    def test_mouth_opens_without_tears(self):
+        # the offsets of the inside of the mouth and the lips' inner margin are smooth
+        # (smooth_mouth), so the mouth's own shapes open it without spikes, and the closed
+        # lips keep no crumple the card without offsets lacks
+        from opensculptboy.fit.metrics import mouth_tears
+
+        card = Character.from_dict(json.loads(self.card_path.read_text()))
+        model = card.build_model(dtype=torch.float64)
+        for subdiv in (0, 1):
+            offsets = character_offsets(card, subdiv, self.folder)
+            tears = mouth_tears(model, card, offsets, subdiv)
+            print(f"\nmouth tears, level {subdiv}: {tears}", file=sys.stderr)
+            for state in ("closed", "open"):
+                with self.subTest(subdiv=subdiv, state=state):
+                    entry = tears[state]
+                    self.assertGreater(entry["edges"], 500)
+                    # the mouth's old handling (the lining with the nearest skin in space,
+                    # no repair) tore 1.9 % and 4.6 % of these edges on levels 0 and 1, and
+                    # the repair alone 1 %; the seal of the lips (fit.lips) folds the skin
+                    # around the rows it moves onto the target's lips, most of it at the
+                    # mouth's corners: 5.9 % and 3.3 % (docs/mouth.md, "Sealed lips")
+                    bound = 0.07 if subdiv == 0 else 0.04
+                    self.assertLessEqual(entry["torn"], bound * entry["edges"])
 
     def test_fitted_card_exports(self):
         from opensculptboy.export.vrm import export_vrm

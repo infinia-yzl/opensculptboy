@@ -460,3 +460,104 @@ def fold_angles(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
     np.maximum.at(out, key[:-1][same, 0], angle)
     np.maximum.at(out, key[:-1][same, 1], angle)
     return out
+
+
+# the facial actions that open the mouth in :func:`mouth_tears` (ARKit names)
+OPEN_MOUTH = {
+    "jawOpen": 0.55,
+    "mouthLowerDownLeft": 0.35,
+    "mouthLowerDownRight": 0.35,
+    "mouthUpperUpLeft": 0.2,
+    "mouthUpperUpRight": 0.2,
+}
+# an edge of the mouth tears where its two triangles part by more than TEAR_ANGLE degrees and
+# by TEAR_EXCESS degrees more than on the same card without its detail offsets
+TEAR_ANGLE = 60.0
+TEAR_EXCESS = 45.0
+
+
+def mouth_zone(model, rest_vertices: np.ndarray, rings: int = 3) -> np.ndarray:
+    """
+    Mask (V,) of the mouth on anny's level 0: the lips (the vertices inside an ellipsoid
+    around the mouth corners and the lips' midpoints, ``ch.L``, ``ch.R``, ``ls`` and ``li``,
+    6 mm wider and taller than they are and 2 cm deep), the inside of the mouth and the
+    vertices within ``rings`` faces of it, the closed parts (the tongue) left out.
+    """
+    from opensculptboy.fit.register import (
+        _Craniofacial,
+        excluded_vertices,
+        mouth_lining,
+    )
+
+    V = np.asarray(rest_vertices, dtype=np.float64)
+    cranio = _Craniofacial(model)
+    points = cranio.weights_matrix.detach().double().cpu().numpy() @ V
+    names = cranio.labels
+    left, right = points[names.index("ch.L")], points[names.index("ch.R")]
+    upper, lower = points[names.index("ls")], points[names.index("li")]
+    centre = 0.5 * (left + right)
+    half = np.array(
+        [
+            0.5 * abs(left[0] - right[0]) + 0.006,
+            0.02,
+            0.5 * abs(upper[2] - lower[2]) + 0.006,
+        ]
+    )
+    lips = (((V - centre) / half) ** 2).sum(1) < 1.0
+    lining = mouth_lining(model, rings)
+    closed = excluded_vertices(model) & ~mouth_lining(model, 0)
+    return (lips | lining) & ~closed
+
+
+def mouth_tears(
+    model,
+    character,
+    offsets: np.ndarray | None,
+    subdiv: int,
+    actions: dict | None = None,
+) -> dict:
+    """
+    The tears of a fitted card's mouth on level ``subdiv`` with its detail ``offsets``: for
+    the closed mouth (the card's own facial actions) and the open one (``actions``,
+    :data:`OPEN_MOUTH` by default, in place of the card's), the count of the edges of the
+    mouth (:func:`mouth_zone`) that part by more than :data:`TEAR_ANGLE` degrees and by
+    :data:`TEAR_EXCESS` more than on the card without its offsets, with ``edges`` the count
+    of the mouth's edges and ``worst_deg`` the largest such excess. Offsets that crumple the
+    lips' lining fold it where the plain card is smooth; the mouth's own shapes act on the
+    rest mesh, so the folds open into spikes when the mouth opens.
+    """
+    import torch
+
+    from opensculptboy.detail import DetailModel
+    from opensculptboy.export.mesh_checks import adjacent_triangles, bends
+
+    kwargs = character.model_kwargs()
+    pose = character.pose_parameters(model)
+    with torch.no_grad():
+        rest0 = model(pose_parameters=pose, **kwargs)["rest_vertices"][0]
+    zone0 = mouth_zone(model, rest0.double().cpu().numpy())
+    detailed = DetailModel(model, subdiv, offsets, "full", character.topology)
+    plain = DetailModel(model, subdiv, None, "full", character.topology)
+    zone = np.asarray(detailed.topology.apply(zone0.astype(np.float64))) > 0.5
+    T = np.asarray(detailed.triangles)
+    pairs = adjacent_triangles(T)
+    inside = zone[T[pairs[:, 0]]].all(1) & zone[T[pairs[:, 1]]].all(1)
+    pairs = pairs[inside]
+    out = {}
+    for state, extra in (
+        ("closed", {}),
+        ("open", {"facial_actions": dict(actions or OPEN_MOUTH)}),
+    ):
+        args = dict(kwargs, **extra)
+        with torch.no_grad():
+            a = detailed.rest(model(pose_parameters=pose, **args)["rest_vertices"])
+            b = plain.rest(model(pose_parameters=pose, **args)["rest_vertices"])
+        bend = bends(a[0].double().cpu().numpy(), T, pairs)
+        excess = bend - bends(b[0].double().cpu().numpy(), T, pairs)
+        torn = (bend > TEAR_ANGLE) & (excess > TEAR_EXCESS)
+        out[state] = {
+            "torn": int(torn.sum()),
+            "edges": int(len(pairs)),
+            "worst_deg": round(float(excess.max()), 2) if len(excess) else 0.0,
+        }
+    return out
