@@ -684,8 +684,12 @@ class TestSyntheticFit(unittest.TestCase):
                     entry = tears[state]
                     self.assertGreater(entry["edges"], 500)
                     # the mouth's old handling (the lining with the nearest skin in space,
-                    # no repair) tore 1.9 % and 4.6 % of these edges on levels 0 and 1
-                    self.assertLessEqual(entry["torn"], 0.01 * entry["edges"])
+                    # no repair) tore 1.9 % and 4.6 % of these edges on levels 0 and 1, and
+                    # the repair alone 1 %; the seal of the lips (fit.lips) folds the skin
+                    # around the rows it moves onto the target's lips, most of it at the
+                    # mouth's corners: 5.9 % and 3.3 % (docs/mouth.md, "Sealed lips")
+                    bound = 0.07 if subdiv == 0 else 0.04
+                    self.assertLessEqual(entry["torn"], bound * entry["edges"])
 
     def test_fitted_card_exports(self):
         from opensculptboy.export.vrm import export_vrm

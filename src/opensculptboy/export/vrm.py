@@ -563,9 +563,6 @@ def vrm_spec(
         _thumbnail_mime_type(png)  # a square PNG or JPEG file
     if model is None:
         model = character.build_model(face_shapes=bool(character.face_shapes))
-    from opensculptboy.mouth.weights import card_model
-
-    model = card_model(model, character, detail_dir)
     labels = list(model.bone_labels)
     actions = list(model.facial_action_labels)
     face_labels = list(model.face_shape_labels)
