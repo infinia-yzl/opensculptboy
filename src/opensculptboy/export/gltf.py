@@ -43,6 +43,7 @@ from opensculptboy.export.body import (
 from opensculptboy.export.detail import ear_mesh, mime_type, texture_images
 from opensculptboy.export.detail import resolve as resolve_detail
 from opensculptboy.export.document import GltfDocument, pbr_material, read_gltf_json
+from opensculptboy.export.mouth import clear_mouth, mouth_interior
 
 __all__ = ["C3", "C4", "export_glb", "read_character", "read_gltf_json"]
 
@@ -232,10 +233,14 @@ def export_glb(
     if mouth is not None:  # the reference's inner mouth holds its own teeth
         teeth = None
     toothed = None
+    # Anny's mouth cavity behind the skin, in the rest mesh and in each morph target; a
+    # reference's inner mouth takes the cavity's place, so it keeps the cavity as it is.
+    interior = None
+    if mouth is None:
+        interior = mouth_interior(model, None if detail is None else detail.topology)
     if detail is None and eye is None and teeth is None and mouth is None:
-        body = build_body(
-            model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
-        )
+        vertices, offsets, _ = clear_mouth(base, rest_vertices[1:] - base, interior)
+        body = build_body(model, vertices, offsets, ANNY_TO_GLTF, max_influences)
     else:
         weights = model.vertex_bone_weights.detach().cpu().double().numpy()
         indices = model.vertex_bone_indices.cpu().numpy()
@@ -243,6 +248,7 @@ def export_glb(
         if detail is not None:
             weights, indices = detail.skin_weights(weights, indices)
             vertices, offsets = detail.vertices(base), detail.targets(offsets)
+        vertices, offsets, _ = clear_mouth(vertices, offsets, interior)
         normals = None
         rows_mesh = mesh  # the file's mesh before the eyes and the teeth
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
