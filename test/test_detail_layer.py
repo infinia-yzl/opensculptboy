@@ -307,8 +307,23 @@ class TestDetailExport(unittest.TestCase):
         weights = np.zeros(len(names))
         weights[names.index("jawOpen")] = 1.0
         opened, _ = evaluate(glb, weights=weights)
+        # The file keeps the mouth cavity behind the skin (opensculptboy.export.mouth): the
+        # random offsets bring the skin close to the cavity, which moves a little in the file.
+        from opensculptboy.detail import detail_topology
+        from opensculptboy.export.mouth import mouth_interior
+
+        cavity = mouth_interior(
+            self.model, detail_topology(self.model, 1, "full")
+        ).cavity
+        cavity = cavity[rows]
         np.testing.assert_allclose(
-            opened - [0.0, lift, 0.0], open_[rows], atol=2e-6, rtol=0
+            (opened - [0.0, lift, 0.0])[~cavity],
+            open_[rows][~cavity],
+            atol=2e-6,
+            rtol=0,
+        )
+        np.testing.assert_allclose(
+            (opened - [0.0, lift, 0.0])[cavity], open_[rows][cavity], atol=3e-3, rtol=0
         )
 
     def test_vrm_keeps_within_its_budget(self):

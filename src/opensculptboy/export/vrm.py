@@ -81,6 +81,7 @@ from opensculptboy.export.document import (
     png_bytes,
 )
 from opensculptboy.export.gltf import _check_names
+from opensculptboy.export.mouth import clear_mouth, mouth_interior
 
 VRM1_LICENSE_URL = "https://vrm.dev/licenses/1.0/"
 PROJECT_URL = "https://github.com/infinia-yzl/opensculptboy"
@@ -599,6 +600,8 @@ def vrm_spec(
     w4, i4, _ = top_skin_weights(weights, indices, 4)
     w4 = w4.astype(np.float64)
     w4 /= w4.sum(axis=1, keepdims=True)
+    # The mouth cavity behind the skin, in the rest mesh and in each facial action.
+    base, offsets, _ = clear_mouth(base, offsets, mouth_interior(model))
     rb = tpose.rebind(
         model,
         base,
@@ -682,10 +685,15 @@ def vrm_spec(
             model.vertex_bone_weights.detach().cpu().double().numpy(),
             model.vertex_bone_indices.cpu().numpy(),
         )
-        rb = tpose.rebind(
-            model,
+        fine, fine_targets, _ = clear_mouth(
             detail.vertices(base),
             detail.targets(rest_targets),
+            mouth_interior(model, detail.topology),
+        )
+        rb = tpose.rebind(
+            model,
+            fine,
+            fine_targets,
             B,
             w4,
             i4,
@@ -709,7 +717,7 @@ def vrm_spec(
             eyed = eyed_mesh(
                 model,
                 mesh,
-                detail.vertices(base),
+                fine,
                 eye,
                 "vrm",
                 baked,

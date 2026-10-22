@@ -29,6 +29,7 @@ import torch
 
 from opensculptboy import Character, export_glb, read_character
 from opensculptboy.export.gltf import C3, C4
+from opensculptboy.export.mouth import mouth_interior
 from test.gltf_reader import (
     GLB,
     evaluate,
@@ -653,7 +654,11 @@ class TestGltfExport(unittest.TestCase):
                 0
             ].numpy()
         expected[:, 1] -= (base @ C3.T)[:, 1].min()
-        self.assertLess(np.abs(vertices - expected).max(), 1e-5)
+        # The file keeps the mouth cavity behind the skin (opensculptboy.export.mouth), which
+        # moves some of its vertices in the targets of the lips pressed or rolled together.
+        cavity = mouth_interior(self.model).cavity[source]
+        self.assertLess(np.abs(vertices - expected)[~cavity].max(), 1e-5)
+        self.assertLess(np.abs(vertices - expected)[cavity].max(), 3e-3)
 
     def test_default_weights_and_round_trip(self):
         glb = GLB(self.paths[4])
