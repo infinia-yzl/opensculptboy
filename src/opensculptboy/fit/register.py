@@ -155,6 +155,9 @@ class FitOptions:
     skin_fair_iterations: int = 2
     skin_fair_distance: float = 0.002
     skin_fair_regions: tuple = ("face", "jaw", "neck")
+    # the fairing also leaves out the lids and eye corners that seat_lids places, and this
+    # many rings of skin around them on level 0 (twice as many on each finer level)
+    skin_fair_lid_rings: int = 1
     # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
     # of the inside of the mouth, which follow their neighbours when it is 0
     lip_margin_weight: float = 0.0
@@ -2915,13 +2918,37 @@ def fit_levels(
         fairness = _per_level(options.skin_fairness, subdiv)
         if fairness > 0 and skin0 is not None:
             outer = anny_ear if split is not None else level_ears >= 0.1
+            held = (
+                anchored.share(topology) > 0
+                if anchored.active
+                else np.zeros(len(fitted), bool)
+            )
+            if seat is not None:
+                # the lids and the eye corners: seat_lids places and fairs them
+                held = held | (
+                    lid_region(
+                        fitted,
+                        topology.triangles,
+                        reference.eyes,
+                        gazes,
+                        mask,
+                        np.asarray(topology.apply(eyeball0)) > 0.5,
+                        options.lid_reach,
+                        options.lid_lining_reach,
+                        options.lid_front,
+                    ).region
+                )
+            if seat is not None and options.skin_fair_lid_rings > 0:
+                adjacency = _adjacency(len(fitted), topology.triangles)
+                for _ in range(options.skin_fair_lid_rings * 2**subdiv):
+                    held = held | (adjacency @ held.astype(np.float64) > 0)
             skin_region = skin_fair_region(
                 topology,
                 skin0,
                 data,
                 outer,
                 options.ear_fair_rings * 2**subdiv,
-                anchored.share(topology) > 0 if anchored.active else None,
+                held,
             )
             fitted = fair_skin(
                 fitted,
