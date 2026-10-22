@@ -149,6 +149,21 @@ class FitOptions:
     # of the inside of the mouth, which follow their neighbours when it is 0
     lip_margin_weight: float = 0.0
     lip_margin_rings: int = 1
+    # the offsets of the inside of the mouth and of the lips' inner margin on each level:
+    # "smooth" (the harmonic extension of the offsets of the skin around them, see
+    # smooth_mouth) or "follow" (each vertex with the nearest fitted skin in space, as the
+    # eye sockets; with closed lips the upper and the lower lip's linings take each other's
+    # displacement and tear apart when the mouth opens)
+    mouth_lining: str = "smooth"
+    # rounds of repair_mouth on each level (0: none): the tears of the mouth that the offsets
+    # add to the parametric mesh, smoothed away in the rest frame
+    mouth_repair_rounds: int = 3
+    # the vertices that repair_mouth may move: those within mouth_repair_reach faces of the
+    # inside of the mouth (the lips' hidden roll; None: the whole mouth of metrics.mouth_zone,
+    # which moved the visible lips off a real target by up to 1.2 mm at the 95th percentile),
+    # each tear with mouth_repair_rings rings of its neighbours
+    mouth_repair_reach: int | None = 5
+    mouth_repair_rings: int = 1
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -621,6 +636,96 @@ def lip_margin(model, excluded: np.ndarray | None = None, rings: int = 1) -> np.
     for _ in range(rings):
         out[np.unique(faces[out[faces].any(1)])] = True
     return out & ~excluded
+
+
+def mouth_lining(model, rings: int = 1) -> np.ndarray:
+    """Mask (V,) of the inside of the mouth (the base-mesh label ``mouth_cavity``) and the
+    lips' inner margin within ``rings`` faces of it."""
+    return lip_margin(model, np.zeros(len(model.template_vertices), bool), rings)
+
+
+def smooth_mouth(
+    offsets: np.ndarray, triangles: np.ndarray, lining: np.ndarray
+) -> np.ndarray:
+    """
+    The offsets (N, 3) with the rows of ``lining`` replaced by the harmonic extension of the
+    others: each lining vertex takes the mean of its neighbours' offsets, with the skin around
+    the lining held. The inside of the mouth then moves with the lips as one smooth sheet in
+    the rest frame, so that the mouth's own shapes (jawOpen and the others, which act on the
+    rest mesh) open it without tears. A component of the lining that touches no other vertex
+    keeps its offsets.
+    """
+    from scipy.sparse import diags
+    from scipy.sparse.csgraph import connected_components
+    from scipy.sparse.linalg import spsolve
+
+    lining = np.asarray(lining, bool)
+    if not lining.any():
+        return offsets
+    A = _adjacency(len(offsets), triangles)
+    rows = np.nonzero(lining)[0]
+    border = np.nonzero(~lining)[0]
+    A_ll = A[rows][:, rows]
+    A_lb = A[rows][:, border]
+    touching = np.asarray(A_lb.sum(1)).ravel() > 0
+    _, labels = connected_components(A_ll, directed=False)
+    anchored = np.isin(labels, np.unique(labels[touching]))
+    keep = rows[anchored]
+    if len(keep) == 0:
+        return np.array(offsets, dtype=np.float64, copy=True)
+    A_ll = A[keep][:, keep]
+    A_lb = A[keep][:, border]
+    degree = np.asarray(A[keep].sum(1)).ravel()
+    L = (diags(degree) - A_ll).tocsc()
+    out = np.array(offsets, dtype=np.float64, copy=True)
+    out[keep] = spsolve(L, A_lb @ out[border]).reshape(len(keep), -1)
+    return out
+
+
+def repair_mouth(
+    offsets: np.ndarray,
+    parametric: np.ndarray,
+    triangles: np.ndarray,
+    zone: np.ndarray,
+    rounds: int = 3,
+    rings: int = 1,
+) -> tuple[np.ndarray, int]:
+    """
+    Repair the tears of the mouth in the rest frame: the vertices of ``zone`` at an edge that
+    folds by more than ``metrics.TEAR_ANGLE`` degrees and by ``metrics.TEAR_EXCESS`` more than
+    on the parametric mesh (``parametric``, the card without its offsets, whose mouth folds
+    only where the lips meet), and ``rings`` rings of their neighbours, take the harmonic
+    extension of the offsets around them (:func:`smooth_mouth`); up to ``rounds`` times while
+    tears remain. The reference cannot judge these folds: its closed lips meet in a crease of
+    their own, which hides a crumple of anny's lining that the mouth's shapes later open.
+    Returns the offsets and the number of tearing vertices found first.
+    """
+    from opensculptboy.export.mesh_checks import adjacent_triangles, bends
+    from opensculptboy.fit.metrics import TEAR_ANGLE, TEAR_EXCESS
+
+    T = np.asarray(triangles)
+    zone = np.asarray(zone, bool)
+    pairs = adjacent_triangles(T)
+    pairs = pairs[zone[T[pairs[:, 0]]].all(1) & zone[T[pairs[:, 1]]].all(1)]
+    if len(pairs) == 0 or rounds <= 0:
+        return np.asarray(offsets, dtype=np.float64), 0
+    plain = bends(parametric, T, pairs)
+    A = _adjacency(len(offsets), T)
+    out = np.asarray(offsets, dtype=np.float64).copy()
+    first = None
+    for _ in range(rounds):
+        bend = bends(parametric + out, T, pairs)
+        torn = (bend > TEAR_ANGLE) & (bend - plain > TEAR_EXCESS)
+        bad = np.zeros(len(out), bool)
+        bad[np.unique(T[pairs[torn]].ravel())] = True
+        if first is None:
+            first = int(bad.sum())
+        if not bad.any():
+            break
+        for _ in range(rings):
+            bad |= A @ bad.astype(np.float64) > 0
+        out = smooth_mouth(out, T, bad & zone)
+    return out, first or 0
 
 
 def ear_weights(model) -> np.ndarray:
@@ -2308,6 +2413,13 @@ def fit_levels(
         split = EarSplit(reference, options.ear_attachment_reach)
         outer0 = pinna(model, rest0, ears, options.pinna_height).astype(np.float64)
     margin = lip_margin(model, excluded, options.lip_margin_rings).astype(np.float64)
+    lining0 = mouth_lining(model, options.lip_margin_rings).astype(np.float64)
+    from opensculptboy.fit.metrics import mouth_zone
+
+    mouth0 = mouth_zone(model, rest0)
+    if options.mouth_repair_reach is not None:
+        mouth0 = mouth0 & mouth_lining(model, options.mouth_repair_reach)
+    mouth0 = mouth0.astype(np.float64)
     measures, meshes = {}, {}
     previous_ear = None
     regions0 = reference_region = None
@@ -2488,6 +2600,38 @@ def fit_levels(
             fit_mask,
             carried,
         )
+        if options.mouth_lining == "smooth":
+            level_lining = np.asarray(topology.apply(lining0)) > 0.5
+            offsets[subdiv] = smooth_mouth(
+                offsets[subdiv], topology.triangles, level_lining
+            )
+            if options.mouth_repair_rounds > 0:
+                before_repair = offsets[subdiv]
+                offsets[subdiv], tears = repair_mouth(
+                    offsets[subdiv],
+                    parametric,
+                    topology.triangles,
+                    np.asarray(topology.apply(mouth0)) > 0.5,
+                    options.mouth_repair_rounds,
+                    options.mouth_repair_rings,
+                )
+                level_lining = level_lining | (
+                    np.abs(offsets[subdiv] - before_repair).max(1) > 0
+                )
+                _log(options, f"level {subdiv}: {tears} mouth tear vertices repaired")
+            fitted = fitted.copy()
+            fitted[level_lining] = R_.pose_vertices(
+                (parametric + offsets[subdiv])[level_lining],
+                w[level_lining],
+                i[level_lining],
+                transforms,
+                rotation,
+                translation,
+            )
+        elif options.mouth_lining != "follow":
+            raise ValueError(
+                f"mouth_lining is 'smooth' or 'follow'; got {options.mouth_lining!r}."
+            )
         if anchored.active:
             rows = anchored.share(topology) > 0
             fitted = fitted.copy()
