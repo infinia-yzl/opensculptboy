@@ -185,7 +185,10 @@ def reference_pose_transforms(handoff, reference, poses: dict | None = None):
         for k, (M, _, _, _) in enumerate(rest):
             vertices = primitives[k][4]
             at = (np.einsum("vij,vj->vi", M[:, :3, :3], vertices) + M[:, :3, 3]) @ C.T
-            if len(at) == len(part.vertices) and np.abs(at - part.vertices).max() < 1e-5:
+            if (
+                len(at) == len(part.vertices)
+                and np.abs(at - part.vertices).max() < 1e-5
+            ):
                 found = (k, np.arange(len(at)))
             else:
                 sub = _subset_rows(at, part.vertices, 1e-5)
@@ -548,9 +551,7 @@ def carry_field(
                 _, tri, bary = found
                 out[mine] = _transformed(fitted[mine], reference, transforms, tri, bary)
                 known[mine] = True
-        out = smooth_lip_motion(
-            out, triangles, fitted_side, known=known, weight=weight
-        )
+        out = smooth_lip_motion(out, triangles, fitted_side, known=known, weight=weight)
     if jaw is None:
         return smooth_mouth(out, triangles, ~known), known
     # The lining inside the mouth: the extension from the lips of its own jaw (the lower lip
@@ -628,7 +629,14 @@ def mouth_poses(
     names, skin, inner, stats = [], [], [], {}
     for name, (field, moved) in fields.items():
         values, known = carry_field(
-            fitted, triangles, reference, field, on_skin, sides, jaw, transforms.get(name)
+            fitted,
+            triangles,
+            reference,
+            field,
+            on_skin,
+            sides,
+            jaw,
+            transforms.get(name),
         )
         offsets = values @ R.T
         piece = np.zeros((M, 3))

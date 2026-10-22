@@ -91,7 +91,6 @@ class TestCarry(unittest.TestCase):
             np.abs(values[~known]).max(), np.abs(field).max() * 1.0001 + 1e-9
         )
 
-
     def test_lip_rows_off_the_surface_take_the_rig(self):
         """A lip's rows that lie off the reference's surface (its inner roll and lining)
         move as the reference's rig moves them: the blend of its joints' turns with the
@@ -167,7 +166,9 @@ class TestLiningSides(unittest.TestCase):
     def test_each_lip_claims_its_lining(self):
         # a strip: upper lip row, three lining rows, lower lip row
         rows, n = 5, 6
-        V = np.array([[x, 0.0, -r * 0.002] for r in range(rows) for x in range(n)], float)
+        V = np.array(
+            [[x, 0.0, -r * 0.002] for r in range(rows) for x in range(n)], float
+        )
         T = []
         for r in range(rows - 1):
             for c in range(n - 1):
