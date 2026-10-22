@@ -36,11 +36,7 @@ def jaw_joint(appearance: dict, rig) -> int | None:
     name = ((appearance.get("mouth") or {}).get("rig") or {}).get("jaw")
     if isinstance(name, str) and name in rig.names:
         return rig.names[name]
-    found = [
-        index
-        for key, index in rig.names.items()
-        if _is_jaw_name(key)
-    ]
+    found = [index for key, index in rig.names.items() if _is_jaw_name(key)]
     return found[0] if len(found) == 1 else None
 
 
