@@ -161,8 +161,9 @@ class FitOptions:
     # ... but rather than held fast, the skin within skin_fair_lid_blend_rings rings of them
     # (on level 0, twice as many on each finer level) is faired with a hold that falls from
     # this weight on the first ring to 0 past the last (lid_blend; 0: held fast), so that the
-    # faired skin joins the lids without a step
-    skin_fair_lid_blend: float = 50.0
+    # faired skin joins the lids without a step; one value, or one per level (on level 1 the
+    # blend turned more faces of the synthetic target's eye corners over than anny's own)
+    skin_fair_lid_blend: float | tuple = (0.0, 0.0, 50.0)
     skin_fair_lid_blend_rings: int = 1
     # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
     # of the inside of the mouth, which follow their neighbours when it is 0
@@ -2988,7 +2989,8 @@ def fit_levels(
             anchor = None
             if seat is not None and options.skin_fair_lid_rings > 0:
                 rings = options.skin_fair_lid_rings * 2**subdiv
-                if options.skin_fair_lid_blend > 0:
+                blend = _per_level(_as_levels(options.skin_fair_lid_blend), subdiv)
+                if blend > 0:
                     # the band around the lids is faired too, held more the nearer it lies
                     # to them: held fast, it kept the reference's facets and ended in a
                     # step under the lower lid
@@ -2996,7 +2998,7 @@ def fit_levels(
                         topology.triangles,
                         held,
                         options.skin_fair_lid_blend_rings * 2**subdiv,
-                        options.skin_fair_lid_blend,
+                        blend,
                     )
                     ring = held.copy()
                     adjacency = _adjacency(len(fitted), topology.triangles)

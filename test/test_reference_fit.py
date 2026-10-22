@@ -537,6 +537,10 @@ class TestSkinFairing(unittest.TestCase):
         self.assertEqual(reach, [5, 5, 8])
         seal = [_per_level(_as_levels(options.lip_seal_reach), k) for k in range(3)]
         self.assertEqual(seal, [0.0015, 0.0015, 0.003])
+        blend = [
+            _per_level(_as_levels(options.skin_fair_lid_blend), k) for k in range(3)
+        ]
+        self.assertEqual(blend, [0.0, 0.0, 50.0])
         # one value serves every level, and so does None
         self.assertEqual(_per_level(_as_levels(0.002), 2), 0.002)
         self.assertIsNone(_per_level(_as_levels(None), 1))
