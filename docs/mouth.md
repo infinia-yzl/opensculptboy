@@ -46,6 +46,43 @@ Measured on the default body, the turn is 21.8 degrees and carries 88.8 % of the
 
 `test.test_mouth_rig` checks the rig, the exact split of `jawOpen`, the GLB animation against the target and the VRM jaw and weights.
 
+## Sealed lips
+
+A reference's closed lips meet along a line. A game's head mesh draws its lips as separate rows whose borders touch, which leaves an opening in the skin; a sculpted head welds them, and they meet at the bottom of a crease. The fit misses that line: the reference's points pull anny's visible lips onto its surface, and the points of a crease project onto its walls, so each of anny's lips stops short. anny's own mouth is also modelled a little open. The fitted lips then part by a slit through which the inside of the mouth shows, widest at the corners.
+
+`opensculptboy.fit.lips` closes them as the reference closes its own:
+
+- `lip_line` finds where the reference's lips end, from the front (anny's -y), within a box around the mouth from anny's craniofacial landmarks `ch.L`, `ch.R`, `ls` and `li`. A reference with an opening there gives the opening's borders (`_opening_line`, its vertices welded where a source splits them at UV seams): in each column of 0.2 mm the border splits into the upper lip's and the lower lip's at its largest step in height, when that step exceeds 0.3 mm, and both lips share one line where the borders touch. Otherwise each column's most recessed point between the lips' fullest points is the bottom of the crease, kept where it lies at least 0.2 mm behind both lips. The result is a `LipLine` with an edge for each lip, one line where the lips meet; a mouth that stands open keeps them apart.
+- `lip_masks` tells anny's lips apart by the displacement of anny's `jawOpen` face unit (`register.jaw_share`): the upper lip is the skin of the mouth that the jaw's opening leaves (under 0.3 of its largest move), the lower lip the skin it carries (over 0.6). Around the corners the share runs between the two, and the middle of the mouth splits it: the line midway between the lips' edges, run out to the corners.
+- `lip_edges` gives the rows where each lip ends: the vertices of the upper lip that no vertex of the upper lip within half an edge's length of their x lies below, and the vertices of the lower lip that none of the lower lip lies above. The rolls behind them stay out, since at the same x they lie higher (or lower). `lip_corners` gives the vertex of the lips nearest each corner landmark, where both edges meet.
+- `seal_lips` moves each edge row onto the reference's edge of the same lip at its own x, and each corner onto the line's nearer end. The mouth's skin within `FitOptions.lip_seal_rings` faces of those rows (3 on level 0, twice as many on each finer level) follows by the harmonic extension of the move in the rest frame, but its skin that lies on the reference (within 0.2 mm, the normals agreeing to 0.5) farther than `FitOptions.lip_seal_reach` (1.5 mm) from the rows stays.
+
+`fit_levels` runs the seal on each level after `smooth_mouth` and before `repair_mouth`, which then holds the sealed rows (`FitOptions.lip_seal`, on by default). `lip_slit` measures what the front view shows between the lips: the area where the fit lies more than 0.5 mm behind the reference within the lips' band, and the part of it within 4 mm of either corner; `lip_gap` the distance from each row of the upper lip to the lower lip's edge at its x. `fit_levels` records both under `FitResult.measures[level]["lips"]` and prints them.
+
+Measured on the first real replica (its mouth an opening whose borders touch along 385 columns), from the same parameters, without the seal and with it:
+
+| Level | Slit seen from the front (mm²) | Of it at the corners | Gap of the edge rows (mean, mm) | Visible lips to the replica (mean / p95, mm) | Torn edges, closed / open |
+|---|---|---|---|---|---|
+| 0 | 65.5 → 48.7 | 27.7 → 16.1 | 3.61 → 0.13 | 0.133 / 0.836 → 0.060 / 0.414 | 12 / 9 → 65 / 53 (of 2,133) |
+| 1 | 48.6 → 3.8 | 24.0 → 0.9 | 3.01 → 0.17 | 0.089 / 0.676 → 0.036 / 0.228 | 33 / 58 → 104 / 101 (of 8,576) |
+| 2 | 30.2 → 2.8 | 7.9 → 0.8 | 2.82 → 0.02 | 0.026 / 0.217 → 0.019 / 0.145 | 78 / 105 → 230 / 233 (of 34,892) |
+
+The gap without the seal is measured to the nearest row of the lower lip, which can only make it smaller. On levels 1 and 2 the lips now meet along the whole line, and small marks remain at the corners of level 2; level 0 is too coarse for its rows to follow the line. The torn edges (`metrics.mouth_tears`: folds over 60 degrees and 45 more than on the card without offsets) grow, most of them at the corners, where the fans of anny's mouth corners take the corner's move within a few faces. Without the corners' own targets (`lip_seal_corners=False`) level 1 kept 9.2 mm² of slit, 6.3 of it at the corners.
+
+## Reference poses
+
+A handoff may carry the reference's own mouth poses under `mouth.poses` of appearance.json: per pose, a `joints` object that gives joints of the GLB file's skins a `translation` and a `rotation` (a quaternion x, y, z, w), and `known: false` for a pose that is a guess. `opensculptboy.fit.poses.GlbRig` reads the file's nodes, skins and skinned primitives, and `pose` applies a pose as the contract defines it: each joint's posed local transform is its own translation plus the delta's and its own rotation times the delta's, and the skins move the vertices by linear blend skinning with their inverse bind matrices, as a glTF viewer does. `posed_parts` gives the posed vertices of every part of a loaded handoff in Anny's frame, matched to the file's primitives by their rest positions.
+
+## The jaw's weights from the reference
+
+A reference's rig need not give its lips to the jaw. A game's face rig moves the lips and the chin with joints of their own, and its mouth poses turn them together with the jaw: on the first real replica no skin vertex takes any weight of the jaw itself. What carries over is how far each point of the skin follows the jaw when the reference opens its mouth. `mouth.weights.reference_jaw_share` poses the reference with each of its known mouth poses that turns the jaw by 2 degrees or more (`MIN_TURN_DEG`) and measures, for each skin vertex with motion d and the motion j that the jaw's turn alone would give it, the share sum(d . j) / sum(j . j) over those poses, clipped to 0..1; skin that the jaw's turn moves by less than 0.5 mm over the poses (`MIN_MOTION`) takes 0. `jaw_share` carries the share to a fitted level: anny's skin within 3 mm of the reference takes the value at its closest point, and the inside of the mouth and the lips' hidden roll take the harmonic extension of those, so that each lip's lining follows its lip. The tongue keeps its own weights.
+
+`opensculptboy fit` (and `attach_jaw_share`) records the share of level 0 as `<card>.mouth.safetensors` (`opensculptboy/mouth-weights@1`) under `detail.mouth`, with the poses it comes from. A card on the `anny-mouth` rig exports with it (`card_model`): on each vertex that the head, the jaw or the share moves, the head's and the jaw's weights together are split as (1 - share, share), and every other bone keeps its weight (`with_jaw_share`). The VRM export shares out the head's weight in those proportions. A card on the `anny` rig keeps its files.
+
+On the first real replica, 7 of its 12 mouth poses turn the jaw by 2 degrees or more (the visemes `a`, `e` and `o`, the emotional `a` and `o`, the widest frame of the talking loop and a cutscene's speech); the closed mouth, the laugh, the teeth view and the visemes `i` and `u` count for nothing.
+
+`test.test_mouth_lips` checks the lip line on surfaces with a touching opening, an open mouth, a crease and none, the seal of anny's own lips onto a line between them, the jaw share of a small skinned GLB file under a pose, and the split of the weights.
+
 ## Next steps
 
-Planned next, in phases: a reference's inner mouth (teeth, gums, tongue, lining) on the jaw and the tongue chain, the lips sealed where the reference's lips meet, and the mouth expressions rebuilt on the jaw from the reference's mouth poses. Whether `anny-mouth` should become the default rig is open: it changes every file's joints and the VRM skin weights near the mouth, and the visemes would need a corrective each.
+Planned next: a reference's inner mouth (teeth, gums, tongue, lining) on the jaw and the tongue chain, and the mouth expressions rebuilt on the jaw from the reference's mouth poses, with the jaw's weights above. Whether `anny-mouth` should become the default rig is open: it changes every file's joints and the VRM skin weights near the mouth, and the visemes would need a corrective each.

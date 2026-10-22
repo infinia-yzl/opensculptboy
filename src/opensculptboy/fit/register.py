@@ -174,6 +174,17 @@ class FitOptions:
     # repair_mouth also holds the vertices of the mouth within this distance (metres) of the
     # reference whose normals agree with it: the visible lips (0: none held)
     mouth_repair_hold: float = 0.0
+    # seal the closed lips (opensculptboy.fit.lips): the rows where anny's upper and lower lips
+    # end move onto the line where the reference's lips meet (its mouth opening, or the bottom
+    # of the crease between its lips), and the lips within lip_seal_rings faces (on level 0,
+    # twice as many on each finer level) follow; repair_mouth then holds those rows
+    lip_seal: bool = True
+    lip_seal_rings: int = 3
+    # the skin of the mouth that lies on the reference stays where the fit put it, but within
+    # this distance (metres) of the sealed rows
+    lip_seal_reach: float = 0.0015
+    # move the vertex nearest each corner landmark onto the line's end as well
+    lip_seal_corners: bool = True
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -269,6 +280,10 @@ class FitResult:
     meshes: dict = dataclasses.field(
         default_factory=dict
     )  # level -> (vertices, triangles)
+    # the share of the jaw on each vertex of level 0 and the reference's poses it comes from
+    # (opensculptboy.mouth.weights.attach_jaw_share), or None
+    jaw_share: np.ndarray | None = None
+    jaw_share_poses: tuple = ()
 
     def write(self, card_path: str | pathlib.Path, textures: dict | None = None):
         """
@@ -314,6 +329,17 @@ class FitResult:
         }
         if textures:
             detail["textures"] = dict(textures)
+        if self.jaw_share is not None:
+            from opensculptboy.mouth.weights import write_mouth_file
+
+            name = f"{stem}.mouth.safetensors"
+            write_mouth_file(
+                card_path.parent / name, self.jaw_share, self.jaw_share_poses
+            )
+            detail["mouth"] = {
+                "jaw_share": name,
+                "poses": list(self.jaw_share_poses),
+            }
         self.character.detail = detail
         card_path.write_text(json.dumps(self.character.to_dict(), indent=2) + "\n")
         return card_path
@@ -2448,6 +2474,96 @@ def fit_reference(
     )
 
 
+def _lip_line(
+    model, reference, rest0, weights0, indices0, transforms, rotation, translation
+):
+    """The mouth's box (anny's craniofacial landmarks on the parametric mesh, posed and
+    placed) and the line where the reference's closed lips meet (``lips.lip_line``)."""
+    from opensculptboy.fit import lips as L_
+
+    posed = R_.pose_vertices(
+        rest0, weights0, indices0, transforms, rotation, translation
+    )
+    cranio = _Craniofacial(model)
+    points = cranio.weights_matrix.detach().double().cpu().numpy() @ posed
+    named = dict(zip(cranio.labels, points))
+    if not all(k in named for k in ("ch.L", "ch.R", "ls", "li")):
+        return None, None
+    box = L_.MouthBox.from_landmarks(named)
+    return box, L_.lip_line(reference.vertices, reference.triangles, box)
+
+
+def _seal_level(
+    offsets,
+    parametric,
+    topology,
+    box,
+    line,
+    zone,
+    cavity,
+    jaw,
+    pose,
+    unpose,
+    rings,
+    reference=None,
+    reach: float = 0.0,
+    with_corners: bool = True,
+):
+    """Seal the lips of one level (``lips.seal_lips``): the edges of anny's lips found on the
+    level's parametric mesh, posed and placed (``lips.lip_edges`` of ``lips.lip_masks``: the
+    upper lip is the skin of the mouth that the jaw's opening leaves, the lower lip the skin
+    it carries, split at the middle of the mouth around the corners), and the mouth's corners
+    (``lips.lip_corners``), moved
+    onto ``line``; the mouth's ``zone`` follows, but its skin on the ``reference`` (within
+    0.2 mm, the normals agreeing) farther than ``reach`` (metres) from those rows."""
+    from opensculptboy.fit import lips as L_
+
+    everything = np.arange(len(parametric))
+    posed = pose(parametric, everything)
+    roll = zone & ~cavity
+    T = np.asarray(topology.triangles)
+    edges = np.concatenate([T[:, [0, 1]], T[:, [1, 2]]])
+    edges = edges[roll[edges].all(1)]
+    if len(edges) == 0:
+        return offsets, L_.Seal(
+            everything[:0], everything[:0], np.zeros(len(everything), bool), 0.0
+        )
+    spacing = float(
+        np.median(np.linalg.norm(posed[edges[:, 0]] - posed[edges[:, 1]], axis=1))
+    )
+    upper, lower = L_.lip_edges(
+        posed, *L_.lip_masks(posed, roll, jaw, box, spacing), box, spacing
+    )
+    corners = L_.lip_corners(posed, roll, box) if with_corners else everything[:0]
+    held = None
+    if reference is not None and reach > 0:
+        from scipy.spatial import cKDTree
+
+        current = pose(parametric + offsets, everything)
+        rows = np.nonzero(zone)[0]
+        _, normal, d = reference.closest(current[rows])[:3]
+        mine = vertex_normals(current, T)[rows]
+        on = (d < 2e-4) & ((normal * mine).sum(1) > 0.5)
+        seeds = np.concatenate([upper, lower, corners])
+        far = cKDTree(current[seeds]).query(current[rows])[0] > reach
+        held = np.zeros(len(everything), bool)
+        held[rows[on & far]] = True
+    return L_.seal_lips(
+        offsets,
+        parametric,
+        T,
+        pose,
+        unpose,
+        line,
+        upper,
+        lower,
+        zone,
+        rings,
+        corners=corners,
+        held=held,
+    )
+
+
 def fit_levels(
     reference: Reference,
     character: Character,
@@ -2508,6 +2624,20 @@ def fit_levels(
     if options.mouth_repair_reach is not None:
         mouth0 = mouth0 & mouth_lining(model, options.mouth_repair_reach)
     mouth0 = mouth0.astype(np.float64)
+    zone_lips0 = mouth_zone(model, rest0).astype(np.float64)
+    lip_box = lip_line_ = None
+    lip_rows = {}
+    if options.lip_seal and options.mouth_lining == "smooth":
+        lip_box, lip_line_ = _lip_line(
+            model, reference, rest0, weights0, indices0, transforms, rotation, translation
+        )
+        _log(
+            options,
+            "lips: no line where the reference's lips meet"
+            if lip_line_ is None
+            else f"lips: the reference's lips end along {len(lip_line_.upper)} points, "
+            f"{1000 * float(np.median(lip_line_.gap())):.2f} mm apart (median)",
+        )
     measures, meshes = {}, {}
     previous_ear = None
     regions0 = reference_region = None
@@ -2696,6 +2826,36 @@ def fit_levels(
             before_repair = offsets[subdiv]
             level_mouth = np.asarray(topology.apply(mouth0)) > 0.5
             held = np.zeros(len(parametric), bool)
+            if lip_line_ is not None:
+                offsets[subdiv], seal = _seal_level(
+                    offsets[subdiv],
+                    parametric,
+                    topology,
+                    lip_box,
+                    lip_line_,
+                    np.asarray(topology.apply(zone_lips0)) > 0.5,
+                    np.asarray(topology.apply(cavity0)) > 0.5,
+                    np.asarray(topology.apply(jaw0)),
+                    lambda p, r: R_.pose_vertices(
+                        p, w[r], i[r], transforms, rotation, translation
+                    ),
+                    lambda p, r: R_.unpose(
+                        p, w[r], i[r], transforms, rotation, translation
+                    ),
+                    options.lip_seal_rings * 2**subdiv,
+                    reference,
+                    options.lip_seal_reach,
+                    options.lip_seal_corners,
+                )
+                held[seal.upper] = True
+                held[seal.lower] = True
+                held[seal.corners] = True
+                lip_rows[subdiv] = (seal.upper, seal.lower)
+                _log(
+                    options,
+                    f"level {subdiv}: lips sealed ({len(seal.upper)} and "
+                    f"{len(seal.lower)} rows moved {seal.shift_mm:.2f} mm)",
+                )
             if options.lip_contact > 0:
                 jaw = np.asarray(topology.apply(jaw0))
                 roll = level_mouth & ~(np.asarray(topology.apply(cavity0)) > 0.5)
@@ -2815,6 +2975,21 @@ def fit_levels(
                     fitted, topology.triangles, regions, reference, reference_region
                 ).summary(),
             }
+            if lip_box is not None:
+                from opensculptboy.fit import lips as L_
+
+                measures[subdiv]["lips"] = L_.lip_slit(
+                    fitted,
+                    topology.triangles,
+                    reference.vertices,
+                    reference.triangles,
+                    lip_box,
+                )
+                if subdiv in lip_rows:
+                    measures[subdiv]["lips"]["gap"] = L_.lip_gap(
+                        parametric + offsets[subdiv], *lip_rows[subdiv]
+                    )
+                _log(options, f"level {subdiv}: lips {measures[subdiv]['lips']}")
         meshes[subdiv] = (fitted, topology.triangles)
         previous, previous_level = offsets[subdiv], subdiv
         seconds[f"level{subdiv}"] = time.perf_counter() - clock

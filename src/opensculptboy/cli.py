@@ -272,6 +272,14 @@ def _fit(args, parser) -> int:
         name=name,
         options=FitOptions(verbose=not args.quiet, topology=args.topology),
     )
+    from opensculptboy.mouth.weights import attach_jaw_share
+
+    if attach_jaw_share(result, handoff):
+        print(
+            "jaw share from the reference's mouth poses: "
+            + ", ".join(result.jaw_share_poses),
+            file=sys.stderr,
+        )
     textures = None
     if args.textures:
         from opensculptboy.texture.bake import bake_fit

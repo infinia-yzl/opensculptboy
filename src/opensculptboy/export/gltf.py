@@ -150,6 +150,9 @@ def export_glb(
         model = character.build_model(
             face_shapes=bool(character.face_shapes) or wants_face
         )
+    from opensculptboy.mouth.weights import card_model
+
+    model = card_model(model, character, detail_dir)
     facial_labels = list(model.facial_action_labels)
     face_labels = list(model.face_shape_labels)
     if morph_targets is None:
