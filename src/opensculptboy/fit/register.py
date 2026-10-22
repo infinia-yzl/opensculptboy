@@ -158,8 +158,8 @@ class FitOptions:
     # the fairing also leaves out the lids and eye corners that seat_lids places, and this
     # many rings of skin around them on level 0 (twice as many on each finer level)
     skin_fair_lid_rings: int = 1
-    # ... but rather than held fast, the skin within skin_fair_lid_blend_rings rings of them
-    # (on level 0, twice as many on each finer level) is faired with a hold that falls from
+    # ... and the skin within skin_fair_lid_blend_rings rings of them (on level 0, twice as
+    # many on each finer level) is faired with a hold that falls from
     # this weight on the first ring to 0 past the last (lid_blend; 0: held fast), so that the
     # faired skin joins the lids without a step; one value, or one per level (on level 1 the
     # blend turned more faces of the synthetic target's eye corners over than anny's own)
