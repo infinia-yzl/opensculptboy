@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import pathlib
+import re
 
 import numpy as np
 
@@ -29,15 +30,27 @@ MIN_MOTION = 5e-4
 
 
 def jaw_joint(appearance: dict, rig) -> int | None:
-    """The node index of the reference's jaw: ``mouth.rig.jaw`` of appearance.json, else a
-    node named like a jaw."""
+    """The node index of the reference's jaw: ``mouth.rig.jaw`` of appearance.json, else the
+    one node whose name holds the word "jaw" or "mandible" with no side or action word beside
+    it (``JAW_EXCLUDED``); None when no name or more than one name qualifies."""
     name = ((appearance.get("mouth") or {}).get("rig") or {}).get("jaw")
     if isinstance(name, str) and name in rig.names:
         return rig.names[name]
-    for key, index in rig.names.items():
-        if key.lower() in ("jaw", "c_jaw", "jaw_main", "mandible"):
-            return index
-    return None
+    found = [
+        index
+        for key, index in rig.names.items()
+        if _is_jaw_name(key)
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+# words that mark a jaw-related node as a side or an action of the jaw
+JAW_EXCLUDED = {"l", "r", "left", "right", "open", "clench", "depress", "end", "tip"}
+
+
+def _is_jaw_name(name: str) -> bool:
+    words = [w for w in re.split(r"[^a-z0-9]+", name.lower()) if w]
+    return bool({"jaw", "mandible"} & set(words)) and not (JAW_EXCLUDED & set(words))
 
 
 def reference_jaw_share(handoff, poses: dict | None = None) -> dict:

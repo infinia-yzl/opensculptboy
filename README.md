@@ -191,7 +191,7 @@ Accuracy, measured against Anny's own output on the walk, run, arms-crossed and 
 
 Tested so far: the [Khronos glTF validator](https://github.com/KhronosGroup/glTF-Validator) reports no errors and no warnings, and three.js (r186, `GLTFLoader`) draws the skeleton, the morph targets and the animations. Blender, Godot, Unity and Unreal Engine have not been tested yet.
 
-Not in the file yet: painted textures (the material is a plain skin colour, unless the card's detail layer names textures baked from a reference, see [Fit to a reference mesh](#fit-to-a-reference-mesh)), the hair and the soft-tissue correctives (the export uses plain skinning). `--eyes` (or a card's `material.eyes`) replaces anny's plain eyeballs with smooth ones: an iris texture with a pupil of a chosen size, a refracting cornea, and a caruncle that fills the inner corner of the eye; [docs/eyes.md](docs/eyes.md) describes them. `--teeth` (or a card's `material.teeth`) puts teeth in anny's mouth, which has none: the teeth of the reference for a fitted card, else a generic set; the lower teeth follow the jaw in the expressions; [docs/teeth.md](docs/teeth.md) describes them.
+Not in the file yet: painted textures (the material is a plain skin colour, unless the card's detail layer names textures baked from a reference, see [Fit to a reference mesh](#fit-to-a-reference-mesh)), the hair and the soft-tissue correctives (the export uses plain skinning). `--eyes` (or a card's `material.eyes`) replaces anny's plain eyeballs with smooth ones: an iris texture with a pupil of a chosen size, a refracting cornea, and a caruncle that fills the inner corner of the eye; [docs/eyes.md](docs/eyes.md) describes them. `--teeth` (or a card's `material.teeth`) puts teeth in anny's mouth, which has none: the teeth of the reference for a fitted card, else a generic set; the lower teeth follow the jaw in the expressions; [docs/teeth.md](docs/teeth.md) describes them. A card fitted to a reference whose handoff describes its inner mouth takes that reference's own gums, palate, tongue, throat and teeth in place of anny's, on the `anny-mouth` rig with a jaw bone and a tongue chain, and its mouth poses as morph targets; [docs/mouth.md](docs/mouth.md) describes them.
 
 ## VTuber avatars (VRM)
 
@@ -229,7 +229,7 @@ Each export prints its counts and checks the budget of its version: 70,000 trian
 
 Tested so far: the files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`); three-vrm loads both versions with their look-at and expressions and turns the forearm twist of VRM 1.0 files, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM have not been tested yet.
 
-Not in the file yet: painted textures (the materials use a plain skin colour, unless the card's detail layer names baked textures), hair, teeth, eyelashes, outfits and spring bones.
+Not in the file yet: painted textures (the materials use a plain skin colour, unless the card's detail layer names baked textures), hair, eyelashes, outfits and spring bones. The teeth of `--teeth` and a reference's inner mouth go in.
 
 ## Pose from a picture
 
