@@ -614,6 +614,8 @@ MOUTH_DEFAULTS = {
     "color": [0.62, 0.2, 0.18],  # the base colour without a map
     "roughness_factor": 1.0,
     "clearcoat": 0.6,  # the wet surface
+    # the reference's mouth poses as rest-frame offsets (opensculptboy.mouth.poses)
+    "poses": None,
 }
 
 
@@ -630,6 +632,7 @@ class MouthMaterial:
     )
     roughness_factor: float = 1.0
     clearcoat: float = 0.6
+    poses: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "MouthMaterial":
@@ -645,6 +648,7 @@ class MouthMaterial:
             color=[float(c) for c in values["color"]],
             roughness_factor=float(values["roughness_factor"]),
             clearcoat=float(values["clearcoat"]),
+            poses=values["poses"],
         )
 
     def textures(self) -> dict[str, str]:
@@ -675,7 +679,7 @@ def check_mouth(data: dict) -> dict:
         raise ValueError(
             f"Unknown mouth keys {unknown}; the keys are {sorted(MOUTH_DEFAULTS)}."
         )
-    for key in ("mesh", "base_color", "normal", "roughness"):
+    for key in ("mesh", "base_color", "normal", "roughness", "poses"):
         if data.get(key) is not None and not isinstance(data[key], str):
             raise ValueError(f"material mouth {key} must be a path.")
     if "color" in data:

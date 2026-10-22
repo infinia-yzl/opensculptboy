@@ -323,6 +323,7 @@ def _fit(args, parser) -> int:
         result.character.material = _merge_material(material, args.material, parser)
         _mouth_rig(result.character)
     result.write(out, textures=textures)
+    _write_mouth_poses(out, handoff, reference)
     summary = {
         "card": str(out),
         "levels": sorted(int(k) for k in result.offsets),
@@ -368,6 +369,16 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
         if slot in names:
             textures[slot] = names[slot]
     return textures, baked.material(names)
+
+
+def _write_mouth_poses(card: pathlib.Path, handoff, reference=None) -> None:
+    """Write a fitted card's mouth poses from its handoff (``opensculptboy.mouth.poses``)
+    when the card has a reference's inner mouth and the handoff moving mouth poses."""
+    from opensculptboy.mouth.poses import write_card_poses
+
+    path = write_card_poses(card, handoff, reference)
+    if path is not None:
+        print(f"mouth poses: {path.name}", file=sys.stderr)
 
 
 def _mouth_rig(character) -> None:
@@ -435,6 +446,10 @@ def _bake(args, parser) -> int:
         ]
     character.detail = detail
     out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    if "mouth" in (character.material or {}):
+        from opensculptboy.fit.handoff import load_handoff
+
+        _write_mouth_poses(out, load_handoff(args.handoff))
     print(
         json.dumps(
             {"card": str(out), "covered": round(baked.covered_share, 4), **textures},

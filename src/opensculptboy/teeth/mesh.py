@@ -247,9 +247,11 @@ class ToothedMesh:
         R, t = self._head_motion(x)
         return np.concatenate([x, self.teeth.points @ R.T + t])
 
-    def targets(self, offsets: np.ndarray) -> np.ndarray:
+    def targets(self, offsets: np.ndarray, overrides: dict | None = None) -> np.ndarray:
         """(R, N + M, 3) morph-target offsets of the mesh's (R, N, 3) (see the module
-        documentation)."""
+        documentation). ``overrides`` gives the offsets (M, 3) of the teeth's points in some
+        targets by row, in place of those the mesh's offsets give them: a reference's mouth
+        poses move its inner mouth by its own motion (:mod:`opensculptboy.mouth.poses`)."""
         offsets = np.asarray(offsets, dtype=np.float64)
         if offsets.ndim != 3 or len(offsets) == 0:
             return offsets
@@ -269,6 +271,8 @@ class ToothedMesh:
                     moved[lower] = points[lower] @ jaw[0].T + jaw[1] - points[lower]
                 elif follow is not None and follow.any():
                     moved[follow] = self._tongue_follow(d, follow)
+            out[r] = moved
+        for r, moved in (overrides or {}).items():
             out[r] = moved
         return np.concatenate([offsets, out], axis=1)
 

@@ -578,6 +578,20 @@ def vrm_spec(
     rest = output["rest_vertices"].detach().double().cpu().numpy()
     base, offsets = rest[0], rest[1:] - rest[0]
     B = output["rest_bone_poses"][0].detach().double().cpu().numpy()
+    # A reference's mouth poses (opensculptboy.mouth.poses): the vowels of speech as targets
+    # "mouth.<pose>", which the presets aa, ih, ou, ee and oh play in place of their mixes.
+    facial_actions = list(actions)
+    mouth_poses, inner_overrides = None, {}
+    if character.mouth_material() is not None:
+        from opensculptboy.mouth import poses as mouth_pose_data
+
+        mouth_poses = mouth_pose_data.card_poses(character, detail_dir)
+    if mouth_poses is not None:
+        mouth_poses = mouth_poses.subset(mouth_pose_data.VRM_VISEMES.values())
+        for k, name in enumerate(mouth_poses.names):
+            inner_overrides[len(actions)] = mouth_poses.inner[k]
+            actions.append(mouth_pose_data.target_name(name))
+        offsets = np.concatenate([offsets, mouth_poses.skin])
 
     # The file's skin weights. The inverse bind takes them refined for the body; the forward
     # bind skins Anny's rest mesh into the T-pose with Anny's own weights, and the file then
@@ -673,7 +687,11 @@ def vrm_spec(
             toothed = _toothed(model, character, None, mesh, rest_now, base, detail_dir)
             normals = toothed.normals(vertices, normals)
             weights, indices = toothed.skin_weights(weights, indices)
-            targets = toothed.targets(np.stack(targets)) if len(targets) else targets
+            targets = (
+                toothed.targets(np.stack(targets), inner_overrides)
+                if len(targets)
+                else targets
+            )
             vertices = toothed.vertices(vertices)
             if eyed is not None:
                 eyed.trailing_triangles = len(toothed.teeth.triangles)
@@ -760,7 +778,8 @@ def vrm_spec(
             )
             normals = toothed.normals(vertices, normals)
             weights, indices = toothed.skin_weights(weights, indices)
-            targets, vertices = toothed.targets(targets), toothed.vertices(vertices)
+            targets = toothed.targets(targets, inner_overrides)
+            vertices = toothed.vertices(vertices)
             ears = toothed.extend_mask(ears)
             if eyed is not None:
                 eyed.trailing_triangles = len(toothed.teeth.triangles)
@@ -906,7 +925,13 @@ def vrm_spec(
     missing = sorted(vrm_tables.required_bones(version) - set(humanoid))
     if missing:
         raise ValueError(f"The humanoid map lacks the required bones {missing}.")
-    expressions = expression_binds(vrm_tables.expressions(version, actions), meshes)
+    table = vrm_tables.expressions(version, facial_actions)
+    if mouth_poses is not None:
+        for e in table:
+            pose = mouth_pose_data.VRM_VISEMES.get(e.name)
+            if e.preset and pose in mouth_poses.names:
+                e.mix = {mouth_pose_data.target_name(pose): 1.0}
+    expressions = expression_binds(table, meshes)
     _check_expressions(version, expressions)
     head = labels.index("head")
     eyes_mid = (joints[labels.index("eye.L")] + joints[labels.index("eye.R")]) / 2

@@ -178,6 +178,40 @@ def export_glb(
         jaw_open, targets, rest_vertices = with_jaw_corrective(
             model, targets, rest_vertices, rest_bone_poses, max_influences
         )
+    # A reference's mouth poses (opensculptboy.mouth.poses): a target "mouth.<pose>" each,
+    # and on the anny-mouth rig a turn of the jaw with a corrective target, played by the
+    # animation "mouth.<pose>.jaw".
+    mouth_poses, pose_turns, inner_overrides = None, [], {}
+    if character.mouth_material() is not None:
+        from opensculptboy.mouth.poses import card_poses
+
+        mouth_poses = card_poses(character, detail_dir)
+    if mouth_poses is not None:
+        from opensculptboy.export.body import MorphTarget
+        from opensculptboy.mouth import poses as mouth_pose_data
+
+        targets, rest_vertices, added, mouth_poses = mouth_pose_data.append_pose_rows(
+            targets, rest_vertices, mouth_poses
+        )
+        for row, k in added.items():
+            inner_overrides[row] = mouth_poses.inner[k]
+        if "jaw" in model.bone_labels:
+            pose_turns = mouth_pose_data.pose_turns(
+                model,
+                rest_vertices[0],
+                mouth_poses,
+                rest_bone_poses[list(model.bone_labels).index("jaw")],
+                max_influences,
+            )
+            extra = []
+            for k, turn in enumerate(pose_turns):
+                name = mouth_pose_data.target_name(mouth_poses.names[k])
+                inner_overrides[len(targets)] = ("corrective", k)
+                targets.append(
+                    MorphTarget(f"{name}.corrective", "corrective", -1, 0.0, 0.0)
+                )
+                extra.append((rest_vertices[0] + turn.corrective)[None])
+            rest_vertices = np.concatenate([rest_vertices, *extra])
     base = rest_vertices[0]
 
     # Mesh: split the vertices at UV seams; normals come from the welded mesh.
@@ -235,7 +269,13 @@ def export_glb(
             )
             normals = toothed.normals(vertices, normals)
             weights, indices = toothed.skin_weights(weights, indices)
-            vertices, offsets = toothed.vertices(vertices), toothed.targets(offsets)
+            overrides = None
+            if inner_overrides:
+                overrides = mouth_pose_data.resolve_overrides(
+                    toothed.teeth, inner_overrides, mouth_poses, pose_turns
+                )
+            vertices = toothed.vertices(vertices)
+            offsets = toothed.targets(offsets, overrides)
             ears = toothed.extend_mask(ears)
             if eyed is not None:
                 eyed.trailing_triangles = len(toothed.teeth.triangles)
@@ -409,6 +449,20 @@ def export_glb(
                 doc, jaw_open, labels, default_local, mesh_node, targets
             )
         )
+    for k, turn in enumerate(pose_turns):
+        name = mouth_pose_data.target_name(mouth_poses.names[k])
+        doc.add_animation(
+            _jaw_open_animation(
+                doc,
+                turn,
+                labels,
+                default_local,
+                mesh_node,
+                targets,
+                name=f"{name}.jaw",
+                corrective=f"{name}.corrective",
+            )
+        )
 
     doc.scene_name = character.name
     doc.scene_nodes = roots + [mesh_node]
@@ -435,6 +489,19 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
     if jaw_open is not None:
         doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
+    if mouth_poses is not None:
+        doc.scene_extras["opensculptboy"].setdefault("mouth", {})["poses"] = {
+            name: dict(
+                mouth_poses.stats.get(name, {}),
+                target=mouth_pose_data.target_name(name),
+                **(
+                    {"jaw_degrees": round(pose_turns[k].angle_degrees, 3)}
+                    if pose_turns
+                    else {}
+                ),
+            )
+            for k, name in enumerate(mouth_poses.names)
+        }
     if toothed is not None:
         key = "teeth" if mouth is None else "inner_mouth"
         doc.scene_extras["opensculptboy"][key] = toothed.extras
@@ -877,13 +944,22 @@ def _animation(
 
 
 def _jaw_open_animation(
-    doc, jaw_open, labels, default_local, mesh_node, targets
+    doc,
+    jaw_open,
+    labels,
+    default_local,
+    mesh_node,
+    targets,
+    name: str | None = None,
+    corrective: str | None = None,
 ) -> dict:
     """The animation ``jawOpen.jaw``: over one second the jaw turns by the turn of
     :class:`~opensculptboy.mouth.jaw.JawOpen` and the target ``jawOpen.corrective`` goes from 0
     to 1, which together give anny's jawOpen; the other targets keep their weights."""
     from opensculptboy.mouth.jaw import CORRECTIVE, JAW_ANIMATION
 
+    name = name or JAW_ANIMATION
+    corrective = corrective or CORRECTIVE
     jaw = labels.index("jaw")
     C = ANNY_TO_GLTF
     local_turn = C @ jaw_open.local_matrix() @ C.T
@@ -894,7 +970,7 @@ def _jaw_open_animation(
     times = doc.accessor(np.array([0.0, 1.0], np.float32), minmax=True)
     weights = np.array([[t.weight for t in targets]] * 2, dtype=np.float32)
     names = [t.name for t in targets]
-    weights[:, names.index(CORRECTIVE)] = [0.0, 1.0]
+    weights[:, names.index(corrective)] = [0.0, 1.0]
     samplers = [
         {
             "input": times,
@@ -911,7 +987,7 @@ def _jaw_open_animation(
         {"sampler": 0, "target": {"node": jaw, "path": "rotation"}},
         {"sampler": 1, "target": {"node": mesh_node, "path": "weights"}},
     ]
-    return {"name": JAW_ANIMATION, "samplers": samplers, "channels": channels}
+    return {"name": name, "samplers": samplers, "channels": channels}
 
 
 def _character_pose(

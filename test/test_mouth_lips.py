@@ -207,8 +207,8 @@ class TestSeal(unittest.TestCase):
 
 
 def _write_rig_glb(path, vertices, joints, weights, jaw_pivot):
-    """A GLB file of one skinned triangle soup: a root joint ``Head_0`` and its child
-    ``C_Jaw`` at ``jaw_pivot`` (glTF's frame), bound at the identity."""
+    """A GLB file of one skinned triangle soup: a root joint ``skull`` and its child
+    ``lower_jaw`` at ``jaw_pivot`` (glTF's frame), bound at the identity."""
     vertices = np.asarray(vertices, np.float32)
     J = np.asarray(joints, np.uint16)
     W = np.asarray(weights, np.float32)
@@ -252,8 +252,8 @@ def _write_rig_glb(path, vertices, joints, weights, jaw_pivot):
         "scene": 0,
         "scenes": [{"nodes": [0, 2]}],
         "nodes": [
-            {"name": "Head_0", "children": [1]},
-            {"name": "C_Jaw", "translation": list(map(float, jaw_pivot))},
+            {"name": "skull", "children": [1]},
+            {"name": "lower_jaw", "translation": list(map(float, jaw_pivot))},
             {"name": "head", "mesh": 0, "skin": 0},
         ],
         "skins": [{"joints": [0, 1], "inverseBindMatrices": 3}],
@@ -302,19 +302,19 @@ class TestJawShare(unittest.TestCase):
             appearance = {
                 "parts": [{"name": "head", "role": "skin"}],
                 "mouth": {
-                    "rig": {"jaw": "C_Jaw"},
+                    "rig": {"jaw": "lower_jaw"},
                     "poses": {
                         "open": {
                             "known": True,
-                            "joints": {"C_Jaw": {"rotation": turn}},
+                            "joints": {"lower_jaw": {"rotation": turn}},
                         },
                         "small": {
                             "known": True,
-                            "joints": {"C_Jaw": {"rotation": [0, 0, 0, 1]}},
+                            "joints": {"lower_jaw": {"rotation": [0, 0, 0, 1]}},
                         },
                         "guess": {
                             "known": False,
-                            "joints": {"C_Jaw": {"rotation": turn}},
+                            "joints": {"lower_jaw": {"rotation": turn}},
                         },
                     },
                 },

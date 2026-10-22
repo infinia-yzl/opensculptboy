@@ -92,6 +92,8 @@ A reference's closed lips meet along a line. A game's head mesh draws its lips a
 - `lip_edges` gives the rows where each lip ends: the vertices of the upper lip that no vertex of the upper lip within half an edge's length of their x lies below, and the vertices of the lower lip that none of the lower lip lies above. The rolls behind them stay out, since at the same x they lie higher (or lower). `lip_corners` gives the vertex of the lips nearest each corner landmark, where both edges meet.
 - `seal_lips` moves each edge row onto the reference's edge of the same lip at its own x, and each corner onto the line's nearer end. The mouth's skin within `FitOptions.lip_seal_rings` faces of those rows (3 on level 0, twice as many on each finer level) follows by the harmonic extension of the move in the rest frame, but its skin that lies on the reference (within 0.2 mm, the normals agreeing to 0.5) farther than `FitOptions.lip_seal_reach` (1.5 mm) from the rows stays.
 
+The seal closes only lips that the reference closes. When the reference's lips stand further apart than `FitOptions.lip_seal_max_gap` (1 mm, the median of its line), the fit leaves them unsealed: a reference cut open at its mouth, as the synthetic target of the tests is, gives the borders of the cut as its line, and moving anny's lips onto them tore the mouth (the seal moved the rows 7.8 mm on level 0 and raised the torn edges from 0.4 % to 5.7 %). A level whose rows would move further than `FitOptions.lip_seal_max_shift` (4 mm, their mean) to reach the line also stays unsealed.
+
 `fit_levels` runs the seal on each level after `smooth_mouth` and before `repair_mouth`, which then holds the sealed rows (`FitOptions.lip_seal`, on by default). `lip_slit` measures what the front view shows between the lips: the area where the fit lies more than 0.5 mm behind the reference within the lips' band, and the part of it within 4 mm of either corner; `lip_gap` the distance from each row of the upper lip to the lower lip's edge at its x. `fit_levels` records both under `FitResult.measures[level]["lips"]` and prints them.
 
 Measured on the first real replica (its mouth an opening whose borders touch along 385 columns), from the same parameters, without the seal and with it:
@@ -120,6 +122,21 @@ On the first real replica, 7 of its 12 mouth poses turn the jaw by 2 degrees or 
 
 `test.test_mouth_lips` checks the lip line on surfaces with a touching opening, an open mouth, a crease and none, the seal of anny's own lips onto a line between them, the jaw share of a small skinned GLB file under a pose, and the split of the weights.
 
+## Mouth expressions from the reference
+
+A fitted character with a reference's inner mouth takes its reference's own mouth poses (`mouth.poses` of appearance.json) as morph targets (`opensculptboy.mouth.poses`):
+
+- `reference_pose_fields` poses the reference with each known pose (`fit.poses.posed_parts`) and gives the motion of every vertex of its skin and of every piece of its inner mouth. A pose that moves nothing (the closed mouth) is left out.
+- `carry_field` carries the skin's motion to level 0 of the fitted card: a vertex within 3 mm of the reference takes the motion at its closest point, unless that point lies within 1.5 mm of a border of the reference (a mouth opening, where the closest point can fall on either lip); the inside of the mouth, the lips' hidden roll and those rows take the harmonic extension of the others (`register.smooth_mouth`), so that each lip's lining follows its own lip.
+- `mouth_poses` turns the motion into the card's rest frame by the rigid motion of the fitted head (the Kabsch fit that also places the inner mouth) and gives the inner mouth's points the motion of their own pieces. The result is a `MouthPoses`: rest-frame offsets per pose for anny's level 0 and for the inner mouth.
+
+`opensculptboy fit --textures` and `opensculptboy bake` write it as `<card>.mouth_poses.safetensors` (`opensculptboy/mouth-poses@1`) and name it under `material.mouth.poses` (`write_card_poses`). The exporters add one morph target `mouth.<pose>` per pose: the offsets of level 0, carried to a detail level by its subdivision like every other target, and the inner mouth's own offsets (`ToothedMesh.targets(overrides=...)`).
+
+- **GLB:** on the `anny-mouth` rig each pose also splits into a turn of the jaw and a corrective, as anny's jawOpen does (`pose_turns`): the target `mouth.<pose>.corrective` and the animation `mouth.<pose>.jaw`, whose last keyframe shows the pose's target. The scene extras list the poses under `opensculptboy.mouth.poses`, with the jaw's turn of each.
+- **VRM:** VRM expressions bind morph targets only. The files take the targets of the vowels (`VRM_VISEMES`: `viseme_a`, `viseme_i`, `viseme_u`, `viseme_e` and `viseme_o`), and the presets `aa`, `ih`, `ou`, `ee` and `oh` (`A`, `I`, `U`, `E`, `O` in VRM 0.x) bind them at weight 1 in place of their ARKit mixes. The other expressions keep their mixes of anny's facial actions.
+
+`test.test_mouth_poses` checks the carry of a posed reference's motion onto a surface, the file, the GLB targets, turns and animations (the animation's last keyframe gives the pose's target, the inner mouth included) and the visemes of both VRM versions.
+
 ## Next steps
 
-Planned next: the mouth expressions rebuilt on the jaw from the reference's mouth poses, with the jaw's weights above. Whether `anny-mouth` should become the default rig is open: it changes every file's joints and the VRM skin weights near the mouth, and the visemes would need a corrective each.
+The mouth expressions come from the reference's poses as whole targets; the ARKit mixes of anny's facial actions stay for the expressions that have no pose. Whether `anny-mouth` should become the default rig is open: it changes every file's joints and the VRM skin weights near the mouth, and the visemes would need a corrective each.

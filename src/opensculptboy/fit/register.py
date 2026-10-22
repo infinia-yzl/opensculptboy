@@ -185,6 +185,12 @@ class FitOptions:
     lip_seal_reach: float = 0.0015
     # move the vertex nearest each corner landmark onto the line's end as well
     lip_seal_corners: bool = True
+    # seal only lips that the reference closes: no seal when the reference's lips stand
+    # further apart than this (metres, the median of its line), as a reference cut open at
+    # its mouth does, and none on a level whose rows would move further than
+    # lip_seal_max_shift (metres, their mean) to reach the line
+    lip_seal_max_gap: float = 0.001
+    lip_seal_max_shift: float = 0.004
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -2645,6 +2651,12 @@ def fit_levels(
             else f"lips: the reference's lips end along {len(lip_line_.upper)} points, "
             f"{1000 * float(np.median(lip_line_.gap())):.2f} mm apart (median)",
         )
+        if (
+            lip_line_ is not None
+            and float(np.median(lip_line_.gap())) > options.lip_seal_max_gap
+        ):
+            _log(options, "lips: the reference's lips stand apart; no seal")
+            lip_line_ = None
     measures, meshes = {}, {}
     previous_ear = None
     regions0 = reference_region = None
@@ -2834,6 +2846,7 @@ def fit_levels(
             level_mouth = np.asarray(topology.apply(mouth0)) > 0.5
             held = np.zeros(len(parametric), bool)
             if lip_line_ is not None:
+                unsealed = offsets[subdiv]
                 offsets[subdiv], seal = _seal_level(
                     offsets[subdiv],
                     parametric,
@@ -2854,6 +2867,15 @@ def fit_levels(
                     options.lip_seal_reach,
                     options.lip_seal_corners,
                 )
+                if seal.shift_mm > 1000 * options.lip_seal_max_shift:
+                    _log(
+                        options,
+                        f"level {subdiv}: lips left unsealed (their rows would move "
+                        f"{seal.shift_mm:.2f} mm to the line)",
+                    )
+                    offsets[subdiv] = unsealed
+                    seal = None
+            if lip_line_ is not None and seal is not None:
                 held[seal.upper] = True
                 held[seal.lower] = True
                 held[seal.corners] = True
