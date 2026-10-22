@@ -164,6 +164,14 @@ class FitOptions:
     # each tear with mouth_repair_rings rings of its neighbours
     mouth_repair_reach: int | None = 5
     mouth_repair_rings: int = 1
+    # the vertices of the lips' inner roll that are each other's nearest vertex of the other
+    # lip within this distance (metres) on the parametric mesh (lip_contact, the lips split by
+    # jaw_share) meet at the mean of their fitted positions (stitch_lips), so that the closed
+    # lips close, and repair_mouth holds them (0: no stitch)
+    lip_contact: float = 0.0015
+    # repair_mouth also holds the vertices of the mouth within this distance (metres) of the
+    # reference whose normals agree with it: the visible lips (0: none held)
+    mouth_repair_hold: float = 0.0
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -679,6 +687,82 @@ def smooth_mouth(
     L = (diags(degree) - A_ll).tocsc()
     out = np.array(offsets, dtype=np.float64, copy=True)
     out[keep] = spsolve(L, A_lb @ out[border]).reshape(len(keep), -1)
+    return out
+
+
+def jaw_share(model) -> np.ndarray:
+    """
+    (V,) how far each vertex moves when the jaw opens, relative to the most it moves: the
+    length of the displacement of anny's ``jawOpen`` face unit (MakeHuman's
+    ``faceunits01``, on the base mesh), over its largest. About 1 on the lower lip and the
+    chin, 0 on the upper lip; a model needs no facial actions for it.
+    """
+    from anny.paths import get_anny_root_dir
+    from opensculptboy.topology.lookup import base_mesh_values
+
+    path = (
+        pathlib.Path(get_anny_root_dir())
+        / "data/faceunits01/targets/faceunits/jawOpen.target"
+    )
+    rows = [
+        line.split()
+        for line in path.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    index = np.array([int(r[0]) for r in rows])
+    length = np.linalg.norm(
+        np.array([[float(x) for x in r[1:4]] for r in rows]), axis=1
+    )
+    from anny.faces.authoring.base_mesh import base_mesh
+
+    table = np.zeros(len(base_mesh().V))
+    table[index] = length
+    out = np.asarray(base_mesh_values(model, table))
+    return out / max(float(out.max()), 1e-12)
+
+
+def lip_contact(
+    parametric: np.ndarray,
+    upper: np.ndarray,
+    lower: np.ndarray,
+    distance: float = 0.0015,
+) -> np.ndarray:
+    """
+    Pairs (P, 2) of a vertex of ``upper`` and a vertex of ``lower`` that are each other's
+    nearest vertex of the other lip and lie within ``distance`` of each other on the
+    parametric mesh (``parametric``, the card without its offsets): the rows where anny's
+    closed lips meet, one partner per vertex.
+    """
+    from scipy.spatial import cKDTree
+
+    up, low = np.nonzero(upper)[0], np.nonzero(lower)[0]
+    if len(up) == 0 or len(low) == 0:
+        return np.zeros((0, 2), np.int64)
+    d_up, k_up = cKDTree(parametric[low]).query(parametric[up])
+    _, k_low = cKDTree(parametric[up]).query(parametric[low])
+    mutual = k_low[k_up] == np.arange(len(up))
+    near = mutual & (d_up < distance)
+    return np.stack([up[near], low[k_up[near]]], 1)
+
+
+def stitch_lips(
+    offsets: np.ndarray, parametric: np.ndarray, pairs: np.ndarray
+) -> np.ndarray:
+    """
+    The offsets (N, 3) with the two vertices of each pair of :func:`lip_contact` moved to the
+    mean of their fitted rest positions (``parametric`` plus the offsets), so that the closed
+    lips meet there. Fitted to a closed mouth, the visible lips follow the reference down to
+    its crease and the roll behind it takes no data, so that the lips part by a slit through
+    which the inside of the mouth shows. The mouth's own shapes part the pair again when it
+    opens.
+    """
+    out = np.asarray(offsets, dtype=np.float64).copy()
+    if len(pairs) == 0:
+        return out
+    a, b = pairs[:, 0], pairs[:, 1]
+    mean = 0.5 * (parametric[a] + out[a] + parametric[b] + out[b])
+    out[a] = mean - parametric[a]
+    out[b] = mean - parametric[b]
     return out
 
 
@@ -2416,6 +2500,7 @@ def fit_levels(
     lining0 = mouth_lining(model, options.lip_margin_rings).astype(np.float64)
     from opensculptboy.fit.metrics import mouth_zone
 
+    jaw0 = jaw_share(model)
     mouth0 = mouth_zone(model, rest0)
     if options.mouth_repair_reach is not None:
         mouth0 = mouth0 & mouth_lining(model, options.mouth_repair_reach)
@@ -2605,20 +2690,51 @@ def fit_levels(
             offsets[subdiv] = smooth_mouth(
                 offsets[subdiv], topology.triangles, level_lining
             )
+            before_repair = offsets[subdiv]
+            level_mouth = np.asarray(topology.apply(mouth0)) > 0.5
+            held = np.zeros(len(parametric), bool)
+            if options.lip_contact > 0:
+                jaw = np.asarray(topology.apply(jaw0))
+                roll = level_mouth & ~level_lining
+                pairs = lip_contact(
+                    parametric,
+                    roll & (jaw < 0.3),
+                    roll & (jaw > 0.6),
+                    options.lip_contact,
+                )
+                offsets[subdiv] = stitch_lips(offsets[subdiv], parametric, pairs)
+                _log(options, f"level {subdiv}: {len(pairs)} lip pairs stitched")
+                held[np.unique(pairs)] = True
+            if options.mouth_repair_rounds > 0 and options.mouth_repair_hold > 0:
+                # the lips' visible skin, on the reference with agreeing normals, stays: the
+                # closed lips meet there in the reference's crease
+                posed_now = R_.pose_vertices(
+                    parametric + offsets[subdiv],
+                    w,
+                    i,
+                    transforms,
+                    rotation,
+                    translation,
+                )
+                rows = np.nonzero(level_mouth & ~held)[0]
+                C, N, d = target.closest(posed_now[rows], rows)[:3]
+                normals = vertex_normals(posed_now, topology.triangles)[rows]
+                held[
+                    rows[(d < options.mouth_repair_hold) & ((normals * N).sum(1) > 0.5)]
+                ] = True
             if options.mouth_repair_rounds > 0:
-                before_repair = offsets[subdiv]
                 offsets[subdiv], tears = repair_mouth(
                     offsets[subdiv],
                     parametric,
                     topology.triangles,
-                    np.asarray(topology.apply(mouth0)) > 0.5,
+                    level_mouth & ~held,
                     options.mouth_repair_rounds,
                     options.mouth_repair_rings,
                 )
-                level_lining = level_lining | (
-                    np.abs(offsets[subdiv] - before_repair).max(1) > 0
-                )
                 _log(options, f"level {subdiv}: {tears} mouth tear vertices repaired")
+            level_lining = level_lining | (
+                np.abs(offsets[subdiv] - before_repair).max(1) > 0
+            )
             fitted = fitted.copy()
             fitted[level_lining] = R_.pose_vertices(
                 (parametric + offsets[subdiv])[level_lining],
