@@ -193,7 +193,9 @@ def export_glb(
             model, character, images, detail, mesh, ears, base, detail_dir
         )
     eyed = None
-    if detail is None and eye is None:
+    teeth = character.teeth_material()
+    toothed = None
+    if detail is None and eye is None and teeth is None:
         body = build_body(
             model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
         )
@@ -205,6 +207,7 @@ def export_glb(
             weights, indices = detail.skin_weights(weights, indices)
             vertices, offsets = detail.vertices(base), detail.targets(offsets)
         normals = None
+        rows_mesh = mesh  # the file's mesh before the eyes and the teeth
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
             from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
@@ -217,6 +220,23 @@ def export_glb(
             vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
             ears = eyed.extend_mask(ears)
             mesh = eyed
+        if teeth is not None:  # the teeth of opensculptboy.teeth
+            from opensculptboy.teeth.mesh import card_teeth, toothed_mesh
+
+            toothed = toothed_mesh(
+                model,
+                None if detail is None else rows_mesh,
+                mesh,
+                vertices,
+                card_teeth(model, character, detail_dir, base),
+            )
+            normals = toothed.normals(vertices, normals)
+            weights, indices = toothed.skin_weights(weights, indices)
+            vertices, offsets = toothed.vertices(vertices), toothed.targets(offsets)
+            ears = toothed.extend_mask(ears)
+            if eyed is not None:
+                eyed.trailing_triangles = len(toothed.teeth.triangles)
+            mesh = toothed
         body = build_body(
             model,
             vertices,
@@ -228,7 +248,10 @@ def export_glb(
             normals=normals,
             mesh=mesh,
         )
-        if eyed is not None:
+        if toothed is not None:
+            source = toothed.anny_vertex(None if eyed is None else eyed.anny_vertex())
+            body.anny_source = source[body.source]
+        elif eyed is not None:
             body.anny_source = eyed.anny_vertex()[body.source]
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
     head_material, head, ear_material = None, None, None
@@ -257,10 +280,13 @@ def export_glb(
         eye_material, eyes = _eye_material(
             doc, model, body, images, None if detail is None else detail.topology
         )
+    teeth_parts = []  # (material, triangle mask) of the teeth of opensculptboy.teeth
+    if toothed is not None:
+        teeth_parts = _teeth_materials(doc, toothed, teeth)
     rest = np.ones(len(body.triangles), bool)
     if eye_material is not None:
         rest &= ~eyes
-    for _, part in eye_parts:
+    for _, part in eye_parts + teeth_parts:
         rest &= ~part
     if ear_material is not None:
         ears &= rest
@@ -310,7 +336,7 @@ def export_glb(
                 targets=primitive.get("targets"),
             )
         )
-    for part_material, part in eye_parts:  # the eyes: eyeballs, corneas, the socket
+    for part_material, part in eye_parts + teeth_parts:  # the eyes and the teeth
         primitives.append(
             body_primitive(
                 doc,
@@ -398,6 +424,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
     if jaw_open is not None:
         doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
+    if toothed is not None:
+        doc.scene_extras["opensculptboy"]["teeth"] = toothed.extras
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -552,6 +580,55 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
         }
         pink["extras"] = extras("conjunctiva")
         out.append((doc.add_material(pink), pink_mask))
+    return out
+
+
+# the key of the teeth materials' settings in their extras
+TEETH_EXTRAS = "opensculptboy_teeth"
+TEETH_EXTRAS_FORMAT = "opensculptboy/teeth@1"
+
+
+def _teeth_materials(doc: GltfDocument, toothed, teeth):
+    """
+    The materials and triangle masks of the teeth of :mod:`opensculptboy.teeth` (a
+    :class:`~opensculptboy.teeth.mesh.ToothedMesh` behind the body): ``teeth``, the enamel's
+    colour and roughness with a clear coat for the wet surface, and ``gums`` (generic teeth),
+    pink and wet. Their extras hold :data:`TEETH_EXTRAS` (``opensculptboy/teeth@1``) with the
+    ``role`` and the teeth's settings.
+    """
+    settings = teeth.extras()
+    toothed.extras = dict(
+        settings,
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+    )
+
+    def extras(role):
+        return {TEETH_EXTRAS: {"format": TEETH_EXTRAS_FORMAT, "role": role, **settings}}
+
+    out = []
+    enamel = pbr_material(
+        "teeth", tuple(teeth.color) + (1.0,), 0.0, float(teeth.roughness)
+    )
+    enamel["extensions"] = {
+        "KHR_materials_clearcoat": {
+            "clearcoatFactor": 0.5,
+            "clearcoatRoughnessFactor": 0.1,
+        }
+    }
+    enamel["extras"] = extras("teeth")
+    out.append((doc.add_material(enamel), toothed.part_mask("teeth")))
+    gums = toothed.part_mask("gums")
+    if gums.any():
+        gum = pbr_material("gums", tuple(teeth.gum_color) + (1.0,), 0.0, 0.45)
+        gum["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 0.8,
+                "clearcoatRoughnessFactor": 0.08,
+            }
+        }
+        gum["extras"] = extras("gums")
+        out.append((doc.add_material(gum), gums))
     return out
 
 

@@ -110,6 +110,9 @@ class EyedMesh:
     # found in the baked eye texture by side (empty without one)
     eye: object = None
     measured: dict = dataclasses.field(default_factory=dict)
+    # the triangles that a later stage appends after this mesh's (the teeth of
+    # opensculptboy.teeth): part_mask leaves them out
+    trailing_triangles: int = 0
 
     def radii_mm(self) -> dict[str, float]:
         """The radius of each eyeball in millimetres."""
@@ -195,7 +198,7 @@ class EyedMesh:
 
     def part_mask(self, *names: str) -> np.ndarray:
         """The mask of the triangles of the named parts (``"socket"`` for the socket's)."""
-        mask = np.zeros(len(self.triangles), bool)
+        mask = np.zeros(len(self.triangles) + self.trailing_triangles, bool)
         start = int(self.kept.sum())
         if "socket" in names:
             mask[:start] = self.socket[self.kept]

@@ -643,6 +643,8 @@ def vrm_spec(
             model, character, images, detail, ear_topology, ears, base, detail_dir
         )
     eyed = None
+    teeth = character.teeth_material()
+    toothed = None
     if detail is None:
         targets = [
             vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
@@ -651,6 +653,7 @@ def vrm_spec(
         # The normals of the rebind: for the inverse bind, Anny's rest normals mapped as the
         # targets.
         vertices, normals = rb.vertices, rb.normals
+        mesh, rest_now = None, base
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
             from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
@@ -662,6 +665,17 @@ def vrm_spec(
             weights, indices = eyed.skin_weights(weights, indices)
             targets = eyed.targets(np.stack(targets)) if len(targets) else targets
             vertices = eyed.vertices(vertices)
+            mesh, rest_now = eyed, eyed.vertices(base)
+        if teeth is not None:  # the teeth of opensculptboy.teeth
+            toothed = _toothed(model, character, None, mesh, rest_now, base, detail_dir)
+            normals = toothed.normals(vertices, normals)
+            weights, indices = toothed.skin_weights(weights, indices)
+            targets = toothed.targets(np.stack(targets)) if len(targets) else targets
+            vertices = toothed.vertices(vertices)
+            if eyed is not None:
+                eyed.trailing_triangles = len(toothed.teeth.triangles)
+            mesh = toothed
+        if mesh is not None:
             body = build_body(
                 model,
                 vertices,
@@ -671,9 +685,9 @@ def vrm_spec(
                 weights,
                 indices,
                 normals=normals,
-                mesh=eyed,
+                mesh=mesh,
             )
-            body.anny_source = eyed.anny_vertex()[body.source]
+            body.anny_source = _anny_source(eyed, toothed)[body.source]
         else:
             body = build_body(
                 model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
@@ -734,6 +748,20 @@ def vrm_spec(
             targets, vertices = eyed.targets(targets), eyed.vertices(vertices)
             ears = eyed.extend_mask(ears)
             mesh = eyed
+        if teeth is not None:  # the teeth of opensculptboy.teeth
+            rest_now = detail.vertices(base)
+            if eyed is not None:
+                rest_now = eyed.vertices(rest_now)
+            toothed = _toothed(
+                model, character, ear_topology, mesh, rest_now, base, detail_dir
+            )
+            normals = toothed.normals(vertices, normals)
+            weights, indices = toothed.skin_weights(weights, indices)
+            targets, vertices = toothed.targets(targets), toothed.vertices(vertices)
+            ears = toothed.extend_mask(ears)
+            if eyed is not None:
+                eyed.trailing_triangles = len(toothed.teeth.triangles)
+            mesh = toothed
         body = build_body(
             model,
             vertices,
@@ -745,8 +773,8 @@ def vrm_spec(
             normals=normals,
             mesh=mesh,
         )
-        if eyed is not None:
-            body.anny_source = eyed.anny_vertex()[body.source]
+        if eyed is not None or toothed is not None:
+            body.anny_source = _anny_source(eyed, toothed)[body.source]
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
@@ -820,6 +848,11 @@ def vrm_spec(
         images.pop("eyes", None)
     if eyed is not None:
         for part_material, part in eye_parts:
+            materials.append(part_material)
+            extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
+            rest &= ~part
+    if toothed is not None:  # the teeth of opensculptboy.teeth
+        for part_material, part in _teeth_toon_materials(toothed, teeth):
             materials.append(part_material)
             extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
             rest &= ~part
@@ -899,6 +932,8 @@ def vrm_spec(
         extras["detail"] = detail.extras()
     if eyed is not None:
         extras["eyes"] = eyed.extras
+    if toothed is not None:
+        extras["teeth"] = toothed.extras
     if images:
         extras["textures"] = sorted(images)
     return VrmSpec(
@@ -1088,6 +1123,42 @@ def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None
         pink.matcap_texture = eyeball.matcap_texture
         pink.matcap_factor = (0.5 * k, 0.5 * k, 0.5 * k)
         out.append((pink, pink_mask))
+    return out
+
+
+def _toothed(model, character, rows_mesh, mesh, rest, base, detail_dir):
+    """The :class:`~opensculptboy.teeth.mesh.ToothedMesh` of a file: the card's teeth after
+    ``mesh`` (the file's mesh with its eyes, or None for anny's own), whose rest vertices are
+    ``rest``; ``rows_mesh`` is the file's mesh before the eyes (None for anny's own) and
+    ``base`` the rest vertices of anny's own mesh."""
+    from opensculptboy.teeth.mesh import card_teeth, toothed_mesh
+
+    return toothed_mesh(
+        model, rows_mesh, mesh, rest, card_teeth(model, character, detail_dir, base)
+    )
+
+
+def _anny_source(eyed, toothed) -> np.ndarray:
+    """The Anny vertex of each vertex of a file's mesh with its eyes and its teeth."""
+    source = None if eyed is None else eyed.anny_vertex()
+    return source if toothed is None else toothed.anny_vertex(source)
+
+
+def _teeth_toon_materials(toothed, teeth):
+    """The MToon materials and triangle masks of the teeth: the enamel, and the gums of
+    generic teeth."""
+    toothed.extras = dict(
+        teeth.extras(),
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+    )
+    out = []
+    enamel = mtoon.soft_material("teeth", tuple(teeth.color) + (1.0,))
+    enamel.shade_color = tuple(0.75 * float(c) for c in teeth.color)
+    out.append((enamel, toothed.part_mask("teeth")))
+    gums = toothed.part_mask("gums")
+    if gums.any():
+        out.append((mtoon.soft_material("gums", tuple(teeth.gum_color) + (1.0,)), gums))
     return out
 
 

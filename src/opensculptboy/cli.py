@@ -91,6 +91,30 @@ def _with_eyes(character, value, parser):
     return dataclasses.replace(character, material={**character.material, "eyes": eyes})
 
 
+def _with_teeth(character, value, parser):
+    """The character with the teeth of ``--teeth``: None keeps the card as it is; "" turns
+    on the teeth of opensculptboy.teeth (the card's, else generic teeth); "off" leaves them
+    out; a file's values are laid over the card's teeth."""
+    if value is None:
+        return character
+    import dataclasses
+
+    from opensculptboy.material import check_teeth
+
+    material = dict(character.material)
+    if value == "off":
+        material.pop("teeth", None)
+        return dataclasses.replace(character, material=material)
+    teeth = dict(material.get("teeth", {}))
+    if value:
+        try:
+            teeth.update(json.loads(pathlib.Path(value).read_text()))
+            check_teeth(teeth)
+        except (OSError, ValueError, TypeError) as error:
+            parser.error(f"--teeth {value}: {_one_line(error)}")
+    return dataclasses.replace(character, material={**material, "teeth": teeth})
+
+
 def _export(args, parser) -> int:
     is_vrm = pathlib.Path(args.output).suffix.lower() == ".vrm"
     wrong = _GLB_ONLY if is_vrm else _VRM_ONLY
@@ -106,6 +130,7 @@ def _export(args, parser) -> int:
     from opensculptboy.export.gltf import export_glb
 
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
+    character = _with_teeth(character, args.teeth, parser)
     model, morph_targets = None, None  # export_glb builds the model it needs
     if args.morph_targets == "none":
         morph_targets = []
@@ -150,6 +175,7 @@ def _export_vrm(args, parser) -> int:
             '"authors": ["NAME"].'
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
+    character = _with_teeth(character, args.teeth, parser)
     # A file over a strict budget fails (exit 1); a character, an option or a thumbnail
     # that a VRM file cannot carry is a usage error (exit 2). Each prints one line, after
     # the warnings of the export.
@@ -316,6 +342,10 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
         path = card.parent / f"{stem}.ear_uvs.safetensors"
         baked.ear_uvs.save(path, topology)
         names["ear_uvs"] = path.name
+    if getattr(baked, "teeth", None) is not None:
+        path = card.parent / f"{stem}.teeth.safetensors"
+        baked.teeth.save(path)
+        names["teeth"] = path.name
     textures = {"subdiv": subdiv}
     for slot in ("eyes", "eyes_normal"):
         if slot in names:
@@ -462,6 +492,15 @@ def main(argv=None) -> int:
         help="smooth eyes with an iris, a cornea and a caruncle in place of anny's eyeballs "
         "(the card's material.eyes, else the defaults); FILE, a JSON object of eye values "
         "(docs/eyes.md), is laid over them",
+    )
+    e.add_argument(
+        "--teeth",
+        nargs="?",
+        const="",
+        metavar="FILE",
+        help="teeth in anny's mouth (the card's material.teeth: the reference's teeth of the "
+        "bake, else generic teeth); FILE, a JSON object of teeth values (docs/teeth.md), is "
+        "laid over them, and 'off' leaves the teeth out",
     )
     g = e.add_argument_group("glTF (.glb) options")
     g.add_argument(
