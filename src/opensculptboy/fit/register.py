@@ -180,8 +180,11 @@ class FitOptions:
     # the vertices that repair_mouth may move: those within mouth_repair_reach faces of the
     # inside of the mouth (the lips' hidden roll; None: the whole mouth of metrics.mouth_zone,
     # which moved the visible lips off a real target by up to 1.2 mm at the 95th percentile),
-    # each tear with mouth_repair_rings rings of its neighbours
-    mouth_repair_reach: int | None = 5
+    # each tear with mouth_repair_rings rings of its neighbours; one value, or one per level
+    # (_per_level): on level 2 it reaches the skin around the mouth's corners, where anny's
+    # lips fold into each other and the fit left a fan of creases (on level 1 the same reach
+    # deepened the corners' pockets)
+    mouth_repair_reach: int | None | tuple = (5, 5, 8)
     mouth_repair_rings: int = 1
     # the vertices of the lips (outside the inside of the mouth) that are each other's nearest
     # vertex of the other lip within this distance (metres) on the parametric mesh (lip_contact, the lips split by
@@ -200,8 +203,9 @@ class FitOptions:
     lip_seal: bool = True
     lip_seal_rings: int = 3
     # the skin of the mouth that lies on the reference stays where the fit put it, but within
-    # this distance (metres) of the sealed rows
-    lip_seal_reach: float = 0.0015
+    # this distance (metres) of the sealed rows; one value, or one per level: on level 2 the
+    # wider reach lets the seal's move spread over more skin around the corners
+    lip_seal_reach: float | tuple = (0.0015, 0.0015, 0.003)
     # move the vertex nearest each corner landmark onto the line's end as well
     lip_seal_corners: bool = True
     # and the rows of both lips within this distance (metres) past the line's ends, onto the
@@ -2744,10 +2748,11 @@ def fit_levels(
     from opensculptboy.fit.metrics import mouth_zone
 
     jaw0 = jaw_share(model)
-    mouth0 = mouth_zone(model, rest0)
-    if options.mouth_repair_reach is not None:
-        mouth0 = mouth0 & mouth_lining(model, options.mouth_repair_reach)
-    mouth0 = mouth0.astype(np.float64)
+    zone0 = mouth_zone(model, rest0)
+    mouth0 = {}  # the mouth that repair_mouth may move, by its reach (per level)
+    for reach in set(_as_levels(options.mouth_repair_reach)):
+        mask = zone0 if reach is None else zone0 & mouth_lining(model, reach)
+        mouth0[reach] = mask.astype(np.float64)
     zone_lips0 = mouth_zone(model, rest0).astype(np.float64)
     lip_box = lip_line_ = None
     lip_rows = {}
@@ -3041,7 +3046,16 @@ def fit_levels(
                 offsets[subdiv], topology.triangles, level_lining
             )
             before_repair = offsets[subdiv]
-            level_mouth = np.asarray(topology.apply(mouth0)) > 0.5
+            level_mouth = (
+                np.asarray(
+                    topology.apply(
+                        mouth0[
+                            _per_level(_as_levels(options.mouth_repair_reach), subdiv)
+                        ]
+                    )
+                )
+                > 0.5
+            )
             held = np.zeros(len(parametric), bool)
             if lip_line_ is not None:
                 unsealed = offsets[subdiv]
