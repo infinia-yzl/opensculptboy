@@ -158,6 +158,12 @@ class FitOptions:
     # the fairing also leaves out the lids and eye corners that seat_lids places, and this
     # many rings of skin around them on level 0 (twice as many on each finer level)
     skin_fair_lid_rings: int = 1
+    # ... but rather than held fast, the skin within skin_fair_lid_blend_rings rings of them
+    # (on level 0, twice as many on each finer level) is faired with a hold that falls from
+    # this weight on the first ring to 0 past the last (lid_blend; 0: held fast), so that the
+    # faired skin joins the lids without a step
+    skin_fair_lid_blend: float = 50.0
+    skin_fair_lid_blend_rings: int = 1
     # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
     # of the inside of the mouth, which follow their neighbours when it is 0
     lip_margin_weight: float = 0.0
@@ -1442,6 +1448,7 @@ def fair_region(
     reverse_weight: float = 1.0,
     reverse_normal_threshold: float = 0.5,
     pool: np.ndarray | None = None,
+    anchor: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Fair the vertices of ``region`` on the reference, the others held: each round solves
@@ -1458,7 +1465,10 @@ def fair_region(
     vertices spread evenly. Each round finds the closest points again. ``pool`` (a mask that
     holds the region; the region by default) gives the vertices among which the reverse term
     finds the nearest of each reference vertex, so that a small region takes only the
-    reference vertices nearest to it.
+    reference vertices nearest to it. ``anchor`` (a weight per vertex) adds
+    ``anchor_i |x_i - x_i^0|^2`` to the sum, which holds the vertices of a large weight near
+    where they were: a region joins the held vertices around it smoothly through a band whose
+    weights fall from large to 0.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -1477,6 +1487,8 @@ def fair_region(
     Q = (B.T @ B).tocsr()
     Qrr = Q[rows][:, rows]
     Qro = Q[rows][:, others]
+    X0 = X[rows].copy()
+    h = np.zeros(len(rows)) if anchor is None else np.asarray(anchor, np.float64)[rows]
     for _ in range(iterations):
         C, N, d, off = target.closest(X[rows], rows, edge=True)
         normals = vertex_normals(X, T)
@@ -1487,10 +1499,11 @@ def fair_region(
             X, normals, pool_rows, target, max_distance, reverse_normal_threshold
         )
         r = (np.broadcast_to(reverse_weight, (len(X),)) * r)[rows]
-        A = (scipy.sparse.diags(w + r + 1e-6) + fairness * Qrr).tocsc()
+        A = (scipy.sparse.diags(w + r + h + 1e-6) + fairness * Qrr).tocsc()
         rhs = (
             w[:, None] * C
             + r[:, None] * P[rows]
+            + h[:, None] * X0
             + 1e-6 * X[rows]
             - fairness * (Qro @ X[others])
         )
@@ -1508,6 +1521,7 @@ def fair_skin(
     iterations: int = 2,
     max_distance: float = 0.002,
     normal_threshold: float = 0.5,
+    anchor: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     The skin of ``region`` faired on the reference: :func:`fair_region` without its reverse
@@ -1531,7 +1545,30 @@ def fair_skin(
         normal_threshold,
         reverse_weight=0.0,
         pool=region,
+        anchor=anchor,
     )
+
+
+def lid_blend(
+    triangles: np.ndarray, held: np.ndarray, rings: int, weight: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    The band of ``rings`` rings of faces around the vertices of ``held`` and the weights that
+    hold it in :func:`fair_skin` (``anchor``): ``weight`` on the first ring, falling with the
+    square of the ring's distance to 0 past the last, so that the faired skin joins the held
+    lids without a step. Returns (the band's mask, the weights over all vertices).
+    """
+    held = np.asarray(held, bool)
+    adjacency = _adjacency(len(held), triangles)
+    reached = held.copy()
+    anchor = np.zeros(len(held))
+    band = np.zeros(len(held), bool)
+    for k in range(1, rings + 1):
+        ring = (adjacency @ reached.astype(np.float64) > 0) & ~reached
+        anchor[ring] = weight * (1.0 - (k - 1) / rings) ** 2
+        band |= ring
+        reached |= ring
+    return band, anchor
 
 
 def skin_fair_region(
@@ -1890,6 +1927,11 @@ def lid_region(
         pool |= used & ~eyeball & (d < lining_reach)
     which[~region] = -1
     return LidSeat(region, which, pool, list(eyes), [np.asarray(g) for g in gazes])
+
+
+def _as_levels(value) -> tuple:
+    """A per-level option given as one value for every level, or as a tuple."""
+    return tuple(value) if isinstance(value, (tuple, list)) else (value,)
 
 
 def _per_level(values: tuple, subdiv: int):
@@ -2938,10 +2980,28 @@ def fit_levels(
                         options.lid_front,
                     ).region
                 )
+            anchor = None
             if seat is not None and options.skin_fair_lid_rings > 0:
-                adjacency = _adjacency(len(fitted), topology.triangles)
-                for _ in range(options.skin_fair_lid_rings * 2**subdiv):
-                    held = held | (adjacency @ held.astype(np.float64) > 0)
+                rings = options.skin_fair_lid_rings * 2**subdiv
+                if options.skin_fair_lid_blend > 0:
+                    # the band around the lids is faired too, held more the nearer it lies
+                    # to them: held fast, it kept the reference's facets and ended in a
+                    # step under the lower lid
+                    band, anchor = lid_blend(
+                        topology.triangles,
+                        held,
+                        options.skin_fair_lid_blend_rings * 2**subdiv,
+                        options.skin_fair_lid_blend,
+                    )
+                    ring = held.copy()
+                    adjacency = _adjacency(len(fitted), topology.triangles)
+                    for _ in range(rings):
+                        ring = ring | (adjacency @ ring.astype(np.float64) > 0)
+                    held = held | (ring & ~band)
+                else:
+                    adjacency = _adjacency(len(fitted), topology.triangles)
+                    for _ in range(rings):
+                        held = held | (adjacency @ held.astype(np.float64) > 0)
             skin_region = skin_fair_region(
                 topology,
                 skin0,
@@ -2958,6 +3018,7 @@ def fit_levels(
                 fairness,
                 options.skin_fair_iterations,
                 options.skin_fair_distance,
+                anchor=anchor,
             )
             _log(
                 options,
@@ -3001,7 +3062,7 @@ def fit_levels(
                     ),
                     options.lip_seal_rings * 2**subdiv,
                     reference,
-                    options.lip_seal_reach,
+                    _per_level(_as_levels(options.lip_seal_reach), subdiv),
                     options.lip_seal_corners,
                     options.lip_seal_beyond,
                 )

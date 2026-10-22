@@ -526,6 +526,46 @@ class TestSkinFairing(unittest.TestCase):
         # vertex 0 is ear, 1 and 2 lie one face from it, 5 is held
         np.testing.assert_array_equal(region, [False, False, False, True, True, False])
 
+    def test_lid_blend_falls_off(self):
+        from opensculptboy.fit.register import lid_blend
+
+        # a strip of 8 vertices, each pair of neighbours joined: 0-1-...-7
+        triangles = np.array([[k, k + 1, k + 2] for k in range(6)])
+        held = np.zeros(8, bool)
+        held[0] = True
+        band, anchor = lid_blend(triangles, held, 3, 50.0)
+        # vertices 1 and 2 share a face with 0; the next rings follow
+        self.assertTrue(band[1] and band[2] and not band[0])
+        self.assertEqual(anchor[0], 0.0)
+        self.assertEqual(anchor[1], 50.0)
+        # the weights fall with each ring and end at 0 past the band
+        rings = sorted({float(a) for a in anchor[band]}, reverse=True)
+        self.assertEqual(rings[0], 50.0)
+        self.assertTrue(all(a > b for a, b in zip(rings, rings[1:])))
+        self.assertTrue((anchor[~band] == 0).all())
+
+    def test_band_joins_held_skin_without_a_step(self):
+        # a cap of a faceted sphere held as projected (the seated lids), the rest faired:
+        # held fast, a band around the cap keeps the facets and ends in a step; faired with a
+        # falling hold, the band joins the cap and the faired skin smoothly
+        from opensculptboy.fit.metrics import ripple
+        from opensculptboy.fit.register import _adjacency, lid_blend
+
+        RV, RT, X, T = faceted_sphere()
+        reference = Reference(RV, RT)
+        cap = X[:, 2] > 0.035
+        adjacency = _adjacency(len(X), T)
+        ring = cap.copy()
+        for _ in range(3):
+            ring |= adjacency @ ring.astype(np.float64) > 0
+        fast = fair_skin(X, T, reference, ~ring, 160.0, 2, 0.01)
+        band, anchor = lid_blend(T, cap, 3, 50.0)
+        blended = fair_skin(X, T, reference, ~cap, 160.0, 2, 0.01, anchor=anchor)
+        # measured: ripple over the band 32 -> 19 micrometres; the cap stays where it was
+        self.assertLess(ripple(blended, T, band), 0.7 * ripple(fast, T, band))
+        np.testing.assert_allclose(blended[cap], X[cap])
+        self.assertLess(reference.closest(blended[band])[2].mean(), 1e-4)
+
 
 class TestHandoff(unittest.TestCase):
     def test_round_trip_in_anny_frame(self):
