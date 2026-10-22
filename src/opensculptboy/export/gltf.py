@@ -194,8 +194,11 @@ def export_glb(
         )
     eyed = None
     teeth = character.teeth_material()
+    mouth = character.mouth_material()
+    if mouth is not None:  # the reference's inner mouth holds its own teeth
+        teeth = None
     toothed = None
-    if detail is None and eye is None and teeth is None:
+    if detail is None and eye is None and teeth is None and mouth is None:
         body = build_body(
             model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
         )
@@ -220,7 +223,7 @@ def export_glb(
             vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
             ears = eyed.extend_mask(ears)
             mesh = eyed
-        if teeth is not None:  # the teeth of opensculptboy.teeth
+        if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
             from opensculptboy.teeth.mesh import card_teeth, toothed_mesh
 
             toothed = toothed_mesh(
@@ -269,7 +272,11 @@ def export_glb(
         material = doc.add_material(_textured_material(doc, images))
     else:
         material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
-    if "normal" in images or "head_normal" in images:
+    if (
+        "normal" in images
+        or "head_normal" in images
+        or (mouth is not None and mouth.normal)
+    ):
         body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
     joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
     eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
@@ -281,9 +288,13 @@ def export_glb(
             doc, model, body, images, None if detail is None else detail.topology
         )
     teeth_parts = []  # (material, triangle mask) of the teeth of opensculptboy.teeth
-    if toothed is not None:
+    hidden = np.zeros(len(body.triangles), bool)
+    if toothed is not None and mouth is not None:
+        teeth_parts = _mouth_materials(doc, toothed, mouth, detail_dir)
+        hidden = toothed.hidden_mask()
+    elif toothed is not None:
         teeth_parts = _teeth_materials(doc, toothed, teeth)
-    rest = np.ones(len(body.triangles), bool)
+    rest = ~hidden
     if eye_material is not None:
         rest &= ~eyes
     for _, part in eye_parts + teeth_parts:
@@ -425,7 +436,8 @@ def export_glb(
     if jaw_open is not None:
         doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
     if toothed is not None:
-        doc.scene_extras["opensculptboy"]["teeth"] = toothed.extras
+        key = "teeth" if mouth is None else "inner_mouth"
+        doc.scene_extras["opensculptboy"][key] = toothed.extras
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -630,6 +642,59 @@ def _teeth_materials(doc: GltfDocument, toothed, teeth):
         gum["extras"] = extras("gums")
         out.append((doc.add_material(gum), gums))
     return out
+
+
+def _mouth_materials(doc: GltfDocument, toothed, mouth, detail_dir):
+    """
+    The material and triangle mask of a reference's inner mouth (:mod:`opensculptboy.mouth.inner`
+    behind the body): ``mouth``, the reference's own maps (base colour, normal, roughness in
+    G) with a clear coat for the wet surface, over every part (teeth, gums, palate, tongue,
+    floor, throat). Its extras hold :data:`TEETH_EXTRAS` (``opensculptboy/teeth@1``) with the
+    role ``mouth`` and the mouth's settings.
+    """
+    from opensculptboy.teeth.mesh import PARTS
+
+    folder = pathlib.Path(detail_dir or ".")
+    settings = mouth.extras()
+    toothed.extras = dict(
+        settings,
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+        hidden=int(toothed.hidden_mask().sum()),
+    )
+    textures = {}
+    for slot, name in mouth.textures().items():
+        data = (folder / name).read_bytes()
+        textures[slot] = doc.add_texture(
+            doc.add_image(data, mime_type(data), f"mouth_{slot}")
+        )
+    material = pbr_material(
+        "mouth",
+        tuple(mouth.color) + (1.0,)
+        if "base_color" not in textures
+        else (1.0, 1.0, 1.0, 1.0),
+        0.0,
+        float(mouth.roughness_factor) if "roughness" in textures else 0.35,
+        texture=textures.get("base_color"),
+    )
+    if "roughness" in textures:
+        material["pbrMetallicRoughness"]["metallicRoughnessTexture"] = {
+            "index": textures["roughness"]
+        }
+    if "normal" in textures:
+        material["normalTexture"] = {"index": textures["normal"]}
+    if mouth.clearcoat > 0:
+        material["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": float(mouth.clearcoat),
+                "clearcoatRoughnessFactor": 0.1,
+            }
+        }
+    material["extras"] = {
+        TEETH_EXTRAS: {"format": TEETH_EXTRAS_FORMAT, "role": "mouth", **settings}
+    }
+    parts = toothed.part_mask(*PARTS)
+    return [(doc.add_material(material), parts)]
 
 
 def _eye_normal_pixels(body, eyed, bent) -> np.ndarray:
@@ -877,6 +942,10 @@ def _keyframes(
     default_local,
 ) -> dict:
     """One glTF animation for ``local-ref`` pose parameters (frames, bones, 4, 4)."""
+    if is_mouth_rig(character.rig):  # the mouth stays shut unless the pose moves it
+        from opensculptboy.mouth.rig import hold_mouth_bones
+
+        pose_parameters = hold_mouth_bones(model, character, pose_parameters)
     with torch.no_grad():
         out = model(
             pose_parameters=pose_parameters,

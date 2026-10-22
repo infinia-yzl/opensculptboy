@@ -85,6 +85,13 @@ class HandoffPart:
     ear_vertices: dict | None = None
     # the material's base colour factor (linear RGBA, glTF baseColorFactor), or None
     base_color_factor: tuple | None = None
+    # a piece of the inner mouth of appearance.json's ``mouth`` (opensculptboy.mouth.handoff):
+    # its role in the contract, and its skin: the joint names and each vertex's strongest
+    # joints (indices into ``joints``) with their weights
+    mouth_role: str | None = None
+    joints: list | None = None
+    joint_slots: np.ndarray | None = None  # (V, K) int
+    joint_weights: np.ndarray | None = None  # (V, K)
 
     @property
     def is_skin(self) -> bool:
@@ -99,6 +106,8 @@ class Handoff:
     parts: list[HandoffPart]
     landmarks: dict[str, np.ndarray]  # name -> (3,) in Anny's frame, as given
     appearance: dict  # appearance.json as read
+    # the converted maps of the inner mouth by slot (opensculptboy.mouth.handoff)
+    mouth_textures: dict = dataclasses.field(default_factory=dict)
 
     def skin_parts(self) -> list[HandoffPart]:
         return [p for p in self.parts if p.is_skin]
@@ -398,7 +407,14 @@ def load_handoff(folder: str | pathlib.Path) -> Handoff:
             raise ValueError(f"Landmark {name!r} must be [x, y, z]; got {value!r}.")
         landmarks[name] = GLTF_TO_ANNY @ point
     _attach_ear_masks(parts, (appearance.get("masks") or {}).get("ear"))
-    return Handoff(folder, parts, landmarks, appearance)
+    from opensculptboy.mouth.handoff import mouth_parts, mouth_textures
+
+    mouth = mouth_parts(folder, appearance)
+    if mouth:  # the described pieces take the place of the mouth's primitives
+        parts = [p for p in parts if p.role != "mouth"] + mouth
+    return Handoff(
+        folder, parts, landmarks, appearance, mouth_textures(folder, appearance)
+    )
 
 
 def _attach_ear_masks(parts: list[HandoffPart], entries) -> None:
@@ -447,6 +463,7 @@ def write_handoff(
     name: str = "body",
     masks: dict | None = None,
     parts: list | None = None,
+    mouth: list | None = None,
 ) -> pathlib.Path:
     """
     Write a handoff folder from a mesh in Anny's frame (for tests and examples): the mesh as
@@ -454,6 +471,8 @@ def write_handoff(
     a region (``"ear"``) to a vertex mask (V,) or to a dict of such masks by list name
     (``{"vertices": ..., "attachment": ...}``), written as one entry of the mesh. ``parts``
     adds further parts as ``(name, vertices, triangles, role)`` (an eyeball: role ``"eyes"``).
+    ``mouth`` adds the pieces of an inner mouth as ``(role, vertices, triangles)`` (the roles
+    of :mod:`opensculptboy.mouth.handoff`), each its own mesh named in ``mouth.pieces``.
     """
     import trimesh
 
@@ -470,6 +489,21 @@ def write_handoff(
         )
         scene.add_geometry(extra, node_name=part, geom_name=part)
         entries.append({"name": part, "role": role})
+    pieces = []
+    for role, v, t in mouth or []:
+        t = np.asarray(t, dtype=np.int64)
+        rows = np.unique(t)
+        remap = np.full(len(v), -1)
+        remap[rows] = np.arange(len(rows))
+        name = f"mouth_{role}"
+        extra = trimesh.Trimesh(
+            np.asarray(v, dtype=np.float64)[rows] @ GLTF_TO_ANNY,
+            remap[t],
+            process=False,
+        )
+        scene.add_geometry(extra, node_name=name, geom_name=name)
+        entries.append({"name": name, "role": "mouth"})
+        pieces.append({"mesh": name, "primitive": 0, "role": role})
     scene.export(str(folder / "replica.glb"))
     appearance = {
         "landmarks": {
@@ -479,6 +513,8 @@ def write_handoff(
         "parts": entries,
         "materials": {},
     }
+    if pieces:
+        appearance["mouth"] = {"pieces": pieces}
     if masks:
         appearance["masks"] = {}
         for region, value in masks.items():

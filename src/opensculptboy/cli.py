@@ -313,6 +313,7 @@ def _fit(args, parser) -> int:
             baked, out, int(max(result.offsets)), result.character.topology
         )
         result.character.material = _merge_material(material, args.material, parser)
+        _mouth_rig(result.character)
     result.write(out, textures=textures)
     summary = {
         "card": str(out),
@@ -346,11 +347,28 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
         path = card.parent / f"{stem}.teeth.safetensors"
         baked.teeth.save(path)
         names["teeth"] = path.name
+    if getattr(baked, "mouth", None) is not None:  # the reference's inner mouth
+        path = card.parent / f"{stem}.mouth.safetensors"
+        baked.mouth.save(path)
+        names["mouth"] = path.name
+        for slot, source in baked.mouth_textures.items():
+            path = card.parent / f"{stem}.mouth_{slot}.png"
+            path.write_bytes(pathlib.Path(source).read_bytes())
+            names[f"mouth_{slot}"] = path.name
     textures = {"subdiv": subdiv}
     for slot in ("eyes", "eyes_normal"):
         if slot in names:
             textures[slot] = names[slot]
     return textures, baked.material(names)
+
+
+def _mouth_rig(character) -> None:
+    """Give a card with a reference's inner mouth (``material.mouth``) the ``anny-mouth``
+    rig, whose jaw and tongue bones move it."""
+    from opensculptboy.mouth.rig import MOUTH_RIG
+
+    if "mouth" in (character.material or {}) and character.rig == "anny":
+        character.rig = MOUTH_RIG
 
 
 def _merge_material(material: dict, path: str | None, parser) -> dict:
@@ -396,6 +414,7 @@ def _bake(args, parser) -> int:
     level = args.level if args.level is not None else max(character.detail_levels())
     textures, material = _write_textures(baked, out, int(level), character.topology)
     character.material = _merge_material(material, args.material, parser)
+    _mouth_rig(character)
     detail = dict(character.detail)
     detail["textures"] = textures
     if out.parent.resolve() != card.parent.resolve():

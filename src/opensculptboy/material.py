@@ -91,7 +91,7 @@ SUBSURFACE_DEFAULTS = {
     "method": "random_walk_skin",
 }
 _KEYS = set(TEXTURE_KEYS) | set(DEFAULTS)
-_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes", "teeth"}
+_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes", "teeth", "mouth"}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -145,7 +145,7 @@ class SkinMaterial:
         values = {
             k: v
             for k, v in data.items()
-            if k not in ("subsurface", "eyes", "reference_eyes", "teeth")
+            if k not in ("subsurface", "eyes", "reference_eyes", "teeth", "mouth")
         }
         subsurface = dict(SUBSURFACE_DEFAULTS)
         subsurface.update(data.get("subsurface", {}))
@@ -242,6 +242,8 @@ def check_material(data: dict) -> dict:
         check_reference_eyes(data["reference_eyes"])
     if "teeth" in data:
         check_teeth(data["teeth"])
+    if "mouth" in data:
+        check_mouth(data["mouth"])
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
         raise ValueError("material subsurface must be a JSON object.")
@@ -599,4 +601,87 @@ def check_teeth(data: dict) -> dict:
         _number(data["roughness"], "teeth roughness", 0.0, 1.0)
     if "gums" in data and not isinstance(data["gums"], bool):
         raise ValueError("teeth gums must be true or false.")
+    return data
+
+
+# The inner mouth of a reference (opensculptboy.mouth.inner): the bake writes it, with the
+# reference's converted mouth maps, as paths relative to the card.
+MOUTH_DEFAULTS = {
+    "mesh": None,  # the reference's inner mouth in the card's rest frame (MouthData)
+    "base_color": None,  # the mouth's maps on the mesh's UVs
+    "normal": None,
+    "roughness": None,  # its G channel times roughness_factor
+    "color": [0.62, 0.2, 0.18],  # the base colour without a map
+    "roughness_factor": 1.0,
+    "clearcoat": 0.6,  # the wet surface
+}
+
+
+@dataclasses.dataclass
+class MouthMaterial:
+    """The resolved inner mouth of a card: every value of :data:`MOUTH_DEFAULTS`."""
+
+    mesh: str
+    base_color: str | None = None
+    normal: str | None = None
+    roughness: str | None = None
+    color: list = dataclasses.field(
+        default_factory=lambda: list(MOUTH_DEFAULTS["color"])
+    )
+    roughness_factor: float = 1.0
+    clearcoat: float = 0.6
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "MouthMaterial":
+        data = check_mouth(dict(data or {}))
+        if not data.get("mesh"):
+            raise ValueError("material mouth needs the mesh of the bake.")
+        values = {**MOUTH_DEFAULTS, **data}
+        return cls(
+            mesh=values["mesh"],
+            base_color=values["base_color"],
+            normal=values["normal"],
+            roughness=values["roughness"],
+            color=[float(c) for c in values["color"]],
+            roughness_factor=float(values["roughness_factor"]),
+            clearcoat=float(values["clearcoat"]),
+        )
+
+    def textures(self) -> dict[str, str]:
+        """The maps by slot (``base_color``, ``normal``, ``roughness``) that the card names."""
+        return {
+            slot: path
+            for slot in ("base_color", "normal", "roughness")
+            if (path := getattr(self, slot))
+        }
+
+    def extras(self) -> dict[str, Any]:
+        """What the files record of the inner mouth."""
+        return {
+            "source": "reference",
+            "textures": sorted(self.textures()),
+            "color": [float(c) for c in self.color],
+            "roughness_factor": float(self.roughness_factor),
+            "clearcoat": float(self.clearcoat),
+        }
+
+
+def check_mouth(data: dict) -> dict:
+    """Raise ValueError for a ``material.mouth`` section that is not valid; returns it."""
+    if not isinstance(data, dict):
+        raise ValueError("material mouth must be a JSON object.")
+    unknown = sorted(set(data) - set(MOUTH_DEFAULTS))
+    if unknown:
+        raise ValueError(
+            f"Unknown mouth keys {unknown}; the keys are {sorted(MOUTH_DEFAULTS)}."
+        )
+    for key in ("mesh", "base_color", "normal", "roughness"):
+        if data.get(key) is not None and not isinstance(data[key], str):
+            raise ValueError(f"material mouth {key} must be a path.")
+    if "color" in data:
+        _colour(data["color"], "mouth color", 3)
+    if "roughness_factor" in data:
+        _number(data["roughness_factor"], "mouth roughness_factor", 0.0, None)
+    if "clearcoat" in data:
+        _number(data["clearcoat"], "mouth clearcoat", 0.0, 1.0)
     return data

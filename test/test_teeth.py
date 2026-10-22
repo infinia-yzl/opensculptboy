@@ -22,7 +22,7 @@ import torch
 from opensculptboy import Character, export_glb
 from opensculptboy.material import TeethMaterial, check_material
 from opensculptboy.teeth.generic import generic_teeth, mouth_frame
-from opensculptboy.teeth.mesh import TeethData, mouth_rows, rigid, toothed_mesh
+from opensculptboy.teeth.mesh import TeethData, rigid, toothed_mesh
 from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 
 

@@ -644,6 +644,9 @@ def vrm_spec(
         )
     eyed = None
     teeth = character.teeth_material()
+    mouth = character.mouth_material()
+    if mouth is not None:  # the reference's inner mouth holds its own teeth
+        teeth = None
     toothed = None
     if detail is None:
         targets = [
@@ -666,7 +669,7 @@ def vrm_spec(
             targets = eyed.targets(np.stack(targets)) if len(targets) else targets
             vertices = eyed.vertices(vertices)
             mesh, rest_now = eyed, eyed.vertices(base)
-        if teeth is not None:  # the teeth of opensculptboy.teeth
+        if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
             toothed = _toothed(model, character, None, mesh, rest_now, base, detail_dir)
             normals = toothed.normals(vertices, normals)
             weights, indices = toothed.skin_weights(weights, indices)
@@ -748,7 +751,7 @@ def vrm_spec(
             targets, vertices = eyed.targets(targets), eyed.vertices(vertices)
             ears = eyed.extend_mask(ears)
             mesh = eyed
-        if teeth is not None:  # the teeth of opensculptboy.teeth
+        if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
             rest_now = detail.vertices(base)
             if eyed is not None:
                 rest_now = eyed.vertices(rest_now)
@@ -803,6 +806,12 @@ def vrm_spec(
     inverse_bind = np.tile(np.eye(4), (len(labels), 1, 1))
     inverse_bind[:, :3, 3] = -joints
     skins = [SpecSkin(character.rig, list(range(len(labels))), inverse_bind, root)]
+    if mouth is not None:  # the maps of the reference's inner mouth
+        for slot, name in mouth.textures().items():
+            if slot != "roughness":
+                images[f"mouth_{slot}"] = (
+                    pathlib.Path(detail_dir or ".") / name
+                ).read_bytes()
     # VRM files hold the base colour, the normal map, the eyes and the head tile's two maps
     for slot in [k for k in images if k not in VRM_TEXTURE_SLOTS]:
         images.pop(slot)
@@ -822,9 +831,9 @@ def vrm_spec(
         images.pop("head_base_color", None)
         images.pop("head_normal", None)
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
-    if set(images) - {"eyes", "eyes_normal", "eye_base_color"}:
+    if set(images) - {"eyes", "eyes_normal", "eye_base_color"} - MOUTH_SLOTS:
         materials = [_textured_toon_material(images, skin)]
-    if "normal" in images or "head_normal" in images:
+    if "normal" in images or "head_normal" in images or "mouth_normal" in images:
         body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
     primitives = [SpecPrimitive(material=0)]
     eye_material = None if eyed is not None else _eye_toon_material(images, model)
@@ -851,7 +860,13 @@ def vrm_spec(
             materials.append(part_material)
             extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
             rest &= ~part
-    if toothed is not None:  # the teeth of opensculptboy.teeth
+    if toothed is not None and mouth is not None:  # the reference's inner mouth
+        rest &= ~toothed.hidden_mask()
+        for part_material, part in _mouth_toon_materials(toothed, mouth, images):
+            materials.append(part_material)
+            extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
+            rest &= ~part
+    elif toothed is not None:  # the teeth of opensculptboy.teeth
         for part_material, part in _teeth_toon_materials(toothed, teeth):
             materials.append(part_material)
             extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
@@ -933,7 +948,7 @@ def vrm_spec(
     if eyed is not None:
         extras["eyes"] = eyed.extras
     if toothed is not None:
-        extras["teeth"] = toothed.extras
+        extras["teeth" if mouth is None else "inner_mouth"] = toothed.extras
     if images:
         extras["textures"] = sorted(images)
     return VrmSpec(
@@ -964,6 +979,8 @@ def vrm_spec(
     )
 
 
+# the maps of a reference's inner mouth (opensculptboy.mouth.inner)
+MOUTH_SLOTS = {"mouth_base_color", "mouth_normal"}
 # the textures of a VRM file, in the order of VrmSpec.images (their texture indices)
 VRM_TEXTURE_SLOTS = (
     "base_color",
@@ -975,6 +992,8 @@ VRM_TEXTURE_SLOTS = (
     "ears_normal",
     "eye_base_color",
     "eye_matcap",
+    "mouth_base_color",
+    "mouth_normal",
 )
 
 
@@ -1124,6 +1143,31 @@ def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None
         pink.matcap_factor = (0.5 * k, 0.5 * k, 0.5 * k)
         out.append((pink, pink_mask))
     return out
+
+
+def _mouth_toon_materials(toothed, mouth, images):
+    """The MToon material and triangle mask of a reference's inner mouth: its own base
+    colour (lit and shade) and normal maps, with a soft ramp, over every part."""
+    from opensculptboy.teeth.mesh import PARTS
+
+    toothed.extras = dict(
+        mouth.extras(),
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+        hidden=int(toothed.hidden_mask().sum()),
+    )
+    colour = (
+        (1.0, 1.0, 1.0, 1.0)
+        if "mouth_base_color" in images
+        else tuple(mouth.color) + (1.0,)
+    )
+    material = mtoon.soft_material("mouth", colour)
+    material.shade_color = (0.7, 0.55, 0.55)
+    material.base_texture = material.shade_texture = _texture_index(
+        images, "mouth_base_color"
+    )
+    material.normal_texture = _texture_index(images, "mouth_normal")
+    return [(material, toothed.part_mask(*PARTS))]
 
 
 def _toothed(model, character, rows_mesh, mesh, rest, base, detail_dir):

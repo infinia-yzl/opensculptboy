@@ -320,3 +320,37 @@ def split_head_weights(weights, indices, labels, model):
     result = np.take_along_axis(dense, order, axis=1)
     result /= result.sum(axis=1, keepdims=True)
     return result, np.where(result > 0, order, 0).astype(np.int64)
+
+
+def hold_mouth_bones(model, character, pose_parameters):
+    """
+    ``local-ref`` pose parameters (frames, bones, 4, 4) with each mouth bone that a pose
+    leaves at the identity held at its rest turn relative to its parent.
+
+    The identity of ``local-ref`` turns a bone to its orientation on anny's reference body,
+    and the mouth bones' rest frames follow the face: on a fitted face the jaw and the tongue
+    rest several degrees from their reference turn, so a pose that leaves them at the
+    identity opens the mouth. The rest turn of each mouth bone is its parameter in the rest
+    pose of the character (``get_pose_parameterization`` of the rest bone poses).
+    """
+    labels = list(model.bone_labels)
+    rows = [labels.index(b) for b in MOUTH_BONES if b in labels]
+    if not rows or pose_parameters is None:
+        return pose_parameters
+    params = pose_parameters.clone()
+    eye = torch.eye(3, dtype=params.dtype, device=params.device)
+    still = [j for j in rows if (params[:, j, :3, :3] - eye).abs().max() < 1e-9]
+    if not still:
+        return params
+    n = len(labels)
+    identity = torch.eye(4, dtype=params.dtype).repeat(1, n, 1, 1)
+    with torch.no_grad():
+        out = model(pose_parameters=identity, **character.model_kwargs())
+        rest = out["rest_bone_poses"]
+        held = model.get_pose_parameterization(
+            {"rest_bone_poses": rest, "bone_poses": rest}, "local-ref"
+        )
+    held = held.to(params.dtype)
+    for j in still:
+        params[:, j] = held[0, j]
+    return params

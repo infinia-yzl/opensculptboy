@@ -270,6 +270,8 @@ class Reference:
     regions: dict = dataclasses.field(default_factory=dict)
     # the parts of role "mouth" (teeth, gums, tongue), for the teeth of the bake
     mouth_parts: list = dataclasses.field(default_factory=list)
+    # the converted maps of the inner mouth by slot (paths), from the handoff's ``mouth``
+    mouth_textures: dict = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=np.float64)
@@ -376,6 +378,7 @@ class Reference:
             file_normals,
             regions,
             [p for p in handoff.parts if p.role == "mouth"],
+            dict(getattr(handoff, "mouth_textures", None) or {}),
         )
 
     def eye_values(self) -> dict:
@@ -450,6 +453,7 @@ class Reference:
                 )
                 for p in self.mouth_parts
             ],
+            self.mouth_textures,
         )
         return moved
 

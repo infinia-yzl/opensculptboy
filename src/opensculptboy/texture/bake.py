@@ -76,6 +76,11 @@ class BakedTextures:
     # the colour and roughness it gives them, for material.teeth; None without teeth
     teeth: object = None
     teeth_values: dict = dataclasses.field(default_factory=dict)
+    # the reference's inner mouth in the card's rest frame
+    # (opensculptboy.mouth.inner.MouthData) and the paths of its maps by slot, for
+    # material.mouth; None without a described mouth
+    mouth: object = None
+    mouth_textures: dict = dataclasses.field(default_factory=dict)
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
@@ -130,7 +135,12 @@ class BakedTextures:
             material["ears"] = {"uvs": names["ear_uvs"], **ears}
         if self.reference_eyes:
             material["reference_eyes"] = dict(self.reference_eyes)
-        if "teeth" in names:
+        if "mouth" in names:
+            material["mouth"] = {"mesh": names["mouth"]}
+            for slot in ("base_color", "normal", "roughness"):
+                if f"mouth_{slot}" in names:
+                    material["mouth"][slot] = names[f"mouth_{slot}"]
+        elif "teeth" in names:
             material["teeth"] = {
                 "source": "reference",
                 "mesh": names["teeth"],
@@ -922,9 +932,17 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         from opensculptboy.teeth.reference import reference_teeth
 
         head, _ = mouth_rows(model, topology)
-        found = reference_teeth(mouth, vertices, out["rest_vertices"][0].numpy(), head)
-        if found is not None:
-            baked.teeth, baked.teeth_values = found
+        rest = out["rest_vertices"][0].numpy()
+        from opensculptboy.mouth.inner import reference_mouth
+
+        inner = reference_mouth(mouth, vertices, rest, head)
+        if inner is not None:  # the whole inner mouth that the handoff describes
+            baked.mouth = inner
+            baked.mouth_textures = dict(getattr(result.reference, "mouth_textures", {}))
+        else:
+            found = reference_teeth(mouth, vertices, rest, head)
+            if found is not None:
+                baked.teeth, baked.teeth_values = found
     return baked
 
 

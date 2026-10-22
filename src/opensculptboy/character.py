@@ -71,6 +71,7 @@ class Character:
             "eyes",
             "reference_eyes",
             "teeth",
+            "mouth",
         }:
             return None
         from opensculptboy.material import SkinMaterial
@@ -96,6 +97,16 @@ class Character:
         from opensculptboy.material import TeethMaterial
 
         return TeethMaterial.from_dict(self.material["teeth"])
+
+    def mouth_material(self):
+        """The :class:`~opensculptboy.material.MouthMaterial` of ``material.mouth`` (the inner
+        mouth of the reference, which takes the place of anny's cavity and tongue and of the
+        teeth), or None."""
+        if "mouth" not in self.material:
+            return None
+        from opensculptboy.material import MouthMaterial
+
+        return MouthMaterial.from_dict(self.material["mouth"])
 
     def detail_levels(self) -> list[int]:
         """The subdivision levels of the detail layer, in increasing order."""
@@ -165,6 +176,10 @@ class Character:
         params[0, 0, :3, 3] = torch.as_tensor(
             self.pose.get("root", (0, 0, 0)), dtype=dtype
         )
+        from opensculptboy.mouth.rig import hold_mouth_bones, is_mouth_rig
+
+        if is_mouth_rig(self.rig):  # the mouth stays shut unless the pose moves it
+            params = hold_mouth_bones(model, self, params)
         return params
 
     @staticmethod
