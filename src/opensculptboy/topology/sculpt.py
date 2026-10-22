@@ -526,15 +526,27 @@ def sculpt_model(
     from anny.models import build_model_data
     from anny.models.model_data import AnnyModelConfig, RigConfig, TopologyConfig
 
+    from opensculptboy.mouth.rig import is_mouth_rig, mouth_model_data, mouth_rig_config
+
     triangulate = _triangulated(topology)
-    rig_config = RigConfig.from_string(rig) if isinstance(rig, str) else rig
-    base_data = build_model_data(
-        rig=rig_config,
-        topology=TopologyConfig.from_string(BASE),
-        local_changes=local_changes,
-        facial_actions=facial_actions,
-        face_shapes=face_shapes,
-    )
+    if is_mouth_rig(rig):
+        # the anny-mouth rig of opensculptboy.mouth, which anny's RigConfig does not name
+        rig_config = mouth_rig_config()
+        base_data = mouth_model_data(
+            topology=TopologyConfig.from_string(BASE),
+            local_changes=local_changes,
+            facial_actions=facial_actions,
+            face_shapes=face_shapes,
+        )
+    else:
+        rig_config = RigConfig.from_string(rig) if isinstance(rig, str) else rig
+        base_data = build_model_data(
+            rig=rig_config,
+            topology=TopologyConfig.from_string(BASE),
+            local_changes=local_changes,
+            facial_actions=facial_actions,
+            face_shapes=face_shapes,
+        )
     data = sculpt_data() if data is None else data
     model_data = sculpt_model_data(base_data, data, triangulate=triangulate)
     model = anny.Anny.from_model_data(
@@ -571,6 +583,10 @@ def build_model(topology: str = "anny", **kwargs):
     :class:`anny.Anny` otherwise (same keyword arguments)."""
     if is_sculpt(topology):
         return sculpt_model(topology=topology, **kwargs)
+    from opensculptboy.mouth.rig import is_mouth_rig, mouth_model
+
+    if is_mouth_rig(kwargs.get("rig")):
+        return mouth_model(topology=topology, **kwargs)
     import anny
 
     return anny.Anny(topology=topology, **kwargs)

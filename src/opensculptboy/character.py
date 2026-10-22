@@ -28,6 +28,10 @@ class Character:
     ``model.facial_action_labels`` (0 to 1, the ARKit blend shape names). Missing names keep
     their defaults.
 
+    ``rig`` is ``"anny"`` (anny's default rig) or ``"anny-mouth"``, anny's rig with MakeHuman's
+    jaw bone and tongue chain (:mod:`opensculptboy.mouth`), whose GLB files also open the mouth
+    by a turn of the jaw and whose VRM files map the humanoid jaw.
+
     ``pose`` holds an optional still pose in Anny's ``local-ref`` parameters: ``"bones"`` maps
     bone labels (``model.bone_labels``) to unit quaternions (x, y, z, w), each the bone's turn
     relative to its parent, and ``"root"`` moves the root bone (x, y, z in metres, Anny's
@@ -103,10 +107,16 @@ class Character:
             facial_actions="all",
             face_shapes="all" if face_shapes else "none",
         )
+        from opensculptboy.mouth.rig import is_mouth_rig
+
         if self.topology.split("-")[0] == "sculpt":
             from opensculptboy.topology import sculpt_model
 
             model = sculpt_model(**kwargs)
+        elif is_mouth_rig(self.rig):
+            from opensculptboy.mouth.rig import mouth_model
+
+            model = mouth_model(**kwargs)
         else:
             model = anny.Anny(**kwargs)
         return model.to(dtype=dtype)

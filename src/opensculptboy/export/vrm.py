@@ -81,6 +81,7 @@ from opensculptboy.export.document import (
     png_bytes,
 )
 from opensculptboy.export.gltf import _check_names
+from opensculptboy.mouth.rig import MOUTH_RIG, is_mouth_rig, split_head_weights
 
 VRM1_LICENSE_URL = "https://vrm.dev/licenses/1.0/"
 PROJECT_URL = "https://github.com/infinia-yzl/opensculptboy"
@@ -531,10 +532,10 @@ def vrm_spec(
     version = vrm_version(version)
     character = character or Character()
     check_topology(character.topology)
-    if character.rig != "anny":
+    if character.rig not in ("anny", MOUTH_RIG):
         raise ValueError(
-            f"VRM export supports the 'anny' rig only; the character has the "
-            f"{character.rig!r} rig."
+            f"VRM export supports the 'anny' rig and the {MOUTH_RIG!r} rig; the character "
+            f"has the {character.rig!r} rig."
         )
     twist = twist or ("constraint" if version == "1.0" else "merge")
     if twist not in ("constraint", "merge"):
@@ -581,21 +582,34 @@ def vrm_spec(
     # The file's skin weights. The inverse bind takes them refined for the body; the forward
     # bind skins Anny's rest mesh into the T-pose with Anny's own weights, and the file then
     # takes the weights of vrm_skin_weights as they are.
+    # On the anny-mouth rig the weights are those of the anny rig for the same body, with the
+    # head's weight shared with the jaw and the tongue (mouth.rig.split_head_weights).
+    weight_model, weight_B = model, B
+    if is_mouth_rig(character.rig):
+        weight_model = dataclasses.replace(character, rig="anny").build_model(
+            face_shapes=bool(character.face_shapes),
+            dtype=model.template_vertices.dtype,
+        )
+        weight_B = B[[labels.index(b) for b in weight_model.bone_labels]]
     if bind == "inverse":
         from opensculptboy.export.authoring.refine import body_skin_weights
 
         weights, indices, refinement = body_skin_weights(
-            model,
+            weight_model,
             twist,
             base,
-            B,
+            weight_B,
             phenotype=character.phenotype,
             keep_leg_spread=keep_leg_spread,
             refine=refine_weights,
         )
     else:
-        weights, indices = vrm_tables.vrm_skin_weights(model, twist)
+        weights, indices = vrm_tables.vrm_skin_weights(weight_model, twist)
         refinement = "forward bind" if refine_weights else "off"
+    if weight_model is not model:
+        weights, indices = split_head_weights(
+            weights, indices, list(weight_model.bone_labels), model
+        )
     w4, i4, _ = top_skin_weights(weights, indices, 4)
     w4 = w4.astype(np.float64)
     w4 /= w4.sum(axis=1, keepdims=True)
@@ -839,7 +853,7 @@ def vrm_spec(
 
     humanoid = {
         bone: labels.index(label)
-        for bone, label in vrm_tables.humanoid_bones(version).items()
+        for bone, label in vrm_tables.humanoid_bones(version, labels).items()
     }
     missing = sorted(vrm_tables.required_bones(version) - set(humanoid))
     if missing:

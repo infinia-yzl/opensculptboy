@@ -32,6 +32,7 @@ import roma
 import torch
 
 from opensculptboy.character import Character
+from opensculptboy.mouth.rig import is_mouth_rig
 from opensculptboy.export.body import (
     ANNY_TO_GLTF,
     body_primitive,
@@ -168,6 +169,15 @@ def export_glb(
     # Rows of parameter values: row 0 is the base mesh, one more row per morph target.
     targets, facial_rows, face_rows = morph_target_rows(model, character, morph_targets)
     rest_vertices, rest_bone_poses = rest_rows(model, character, facial_rows, face_rows)
+    # On the anny-mouth rig: jawOpen as a turn of the jaw and the corrective target that
+    # completes it (opensculptboy.mouth.jaw), played by the animation "jawOpen.jaw".
+    jaw_open = None
+    if is_mouth_rig(character.rig):
+        from opensculptboy.mouth.jaw import with_jaw_corrective
+
+        jaw_open, targets, rest_vertices = with_jaw_corrective(
+            model, targets, rest_vertices, rest_bone_poses, max_influences
+        )
     base = rest_vertices[0]
 
     # Mesh: split the vertices at UV seams; normals come from the welded mesh.
@@ -356,6 +366,12 @@ def export_glb(
         doc.add_animation(
             _animation(doc, model, character, name, parents, default_local)
         )
+    if jaw_open is not None:
+        doc.add_animation(
+            _jaw_open_animation(
+                doc, jaw_open, labels, default_local, mesh_node, targets
+            )
+        )
 
     doc.scene_name = character.name
     doc.scene_nodes = roots + [mesh_node]
@@ -380,6 +396,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["ear_tile"] = True
     if eyed is not None:
         doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
+    if jaw_open is not None:
+        doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -714,6 +732,44 @@ def _animation(
         parents,
         default_local,
     )
+
+
+def _jaw_open_animation(
+    doc, jaw_open, labels, default_local, mesh_node, targets
+) -> dict:
+    """The animation ``jawOpen.jaw``: over one second the jaw turns by the turn of
+    :class:`~opensculptboy.mouth.jaw.JawOpen` and the target ``jawOpen.corrective`` goes from 0
+    to 1, which together give anny's jawOpen; the other targets keep their weights."""
+    from opensculptboy.mouth.jaw import CORRECTIVE, JAW_ANIMATION
+
+    jaw = labels.index("jaw")
+    C = ANNY_TO_GLTF
+    local_turn = C @ jaw_open.local_matrix() @ C.T
+    rest = default_local[jaw, :3, :3]
+    quats = _quaternions(np.stack([rest, rest @ local_turn]))
+    if np.dot(quats[0], quats[1]) < 0:
+        quats[1] = -quats[1]
+    times = doc.accessor(np.array([0.0, 1.0], np.float32), minmax=True)
+    weights = np.array([[t.weight for t in targets]] * 2, dtype=np.float32)
+    names = [t.name for t in targets]
+    weights[:, names.index(CORRECTIVE)] = [0.0, 1.0]
+    samplers = [
+        {
+            "input": times,
+            "output": doc.accessor(quats.astype(np.float32)),
+            "interpolation": "LINEAR",
+        },
+        {
+            "input": times,
+            "output": doc.accessor(weights.reshape(-1)),
+            "interpolation": "LINEAR",
+        },
+    ]
+    channels = [
+        {"sampler": 0, "target": {"node": jaw, "path": "rotation"}},
+        {"sampler": 1, "target": {"node": mesh_node, "path": "weights"}},
+    ]
+    return {"name": JAW_ANIMATION, "samplers": samplers, "channels": channels}
 
 
 def _character_pose(

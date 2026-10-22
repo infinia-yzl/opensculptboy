@@ -988,7 +988,7 @@ def humanoid_error(
     parents = [int(p) for p in vrm_tables.file_parents(model, version, twist)]
     order = _parents_first(parents)
     humanoid = sorted(
-        labels.index(b) for b in vrm_tables.humanoid_bones(version).values()
+        labels.index(b) for b in vrm_tables.humanoid_bones(version, labels).values()
     )
     ancestors = {}
     for j in humanoid:

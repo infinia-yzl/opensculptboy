@@ -122,6 +122,8 @@ def _name_0(name_1: str) -> str:
 
 
 HUMANOID_0 = {_name_0(k): v for k, v in HUMANOID_1.items()}
+# The humanoid jaw of VRM 1.0 and 0.x (both name it "jaw"), on rigs that have the bone.
+JAW_BONE = "jaw"
 
 REQUIRED_1 = {
     "hips",
@@ -245,10 +247,15 @@ def _check_twist(twist: str) -> None:
         raise ValueError(f"Unknown twist mode {twist!r}; use 'constraint' or 'merge'.")
 
 
-def humanoid_bones(version: str) -> dict[str, str]:
-    """VRM humanoid bone name -> anny bone label, for ``version`` "1.0" or "0.x"."""
+def humanoid_bones(version: str, labels=None) -> dict[str, str]:
+    """VRM humanoid bone name -> anny bone label, for ``version`` "1.0" or "0.x". With the
+    bone ``labels`` of a model that has the jaw (the ``anny-mouth`` rig of
+    :mod:`opensculptboy.mouth.rig`), the map also takes the optional humanoid ``jaw``."""
     _check_version(version)
-    return dict(HUMANOID_1 if version == "1.0" else HUMANOID_0)
+    bones = dict(HUMANOID_1 if version == "1.0" else HUMANOID_0)
+    if labels is not None and JAW_BONE in labels:
+        bones["jaw"] = JAW_BONE
+    return bones
 
 
 def required_bones(version: str) -> set[str]:
