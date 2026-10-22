@@ -185,6 +185,9 @@ class FitOptions:
     lip_seal_reach: float = 0.0015
     # move the vertex nearest each corner landmark onto the line's end as well
     lip_seal_corners: bool = True
+    # and the rows of both lips within this distance (metres) past the line's ends, onto the
+    # line where the lips meet carried on past its end, so that the corners close
+    lip_seal_beyond: float = 0.002
     # seal only lips that the reference closes: no seal when the reference's lips stand
     # further apart than this (metres, the median of its line), as a reference cut open at
     # its mouth does, and none on a level whose rows would move further than
@@ -2514,6 +2517,7 @@ def _seal_level(
     reference=None,
     reach: float = 0.0,
     with_corners: bool = True,
+    beyond: float = 0.0,
 ):
     """Seal the lips of one level (``lips.seal_lips``): the edges of anny's lips found on the
     level's parametric mesh, posed and placed (``lips.lip_edges`` of ``lips.lip_masks``: the
@@ -2567,6 +2571,7 @@ def _seal_level(
         rings,
         corners=corners,
         held=held,
+        beyond=beyond,
     )
 
 
@@ -2866,6 +2871,7 @@ def fit_levels(
                     reference,
                     options.lip_seal_reach,
                     options.lip_seal_corners,
+                    options.lip_seal_beyond,
                 )
                 if seal.shift_mm > 1000 * options.lip_seal_max_shift:
                     _log(

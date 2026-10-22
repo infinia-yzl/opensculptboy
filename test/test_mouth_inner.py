@@ -259,6 +259,23 @@ class TestCard(unittest.TestCase):
         check_material({"mouth": {"mesh": "m", "base_color": "b.png"}})
 
 
+class TestBehindMouth(unittest.TestCase):
+    def test_rows_hide_behind_their_own_arch(self):
+        """A row of the cavity that stays with the head hides only behind the pieces that
+        stay with the head: behind the lower gums it would open into a hole as the jaw turns."""
+        from opensculptboy.teeth.mesh import behind_mouth
+
+        points = np.array([[0.0, 0.0, 0.01], [0.0, 0.0, -0.01]])  # upper, lower piece
+        arch = np.array([0, 1], np.uint8)
+        rest = np.array([[0.0, 0.002, 0.01], [0.0, 0.002, -0.01], [0.0, 0.002, -0.01]])
+        rows = np.arange(3)
+        lower = np.array(
+            [False, False, True]
+        )  # row 1 stays with the head, row 2 the jaw
+        self.assertEqual(behind_mouth(rest, rows, points).tolist(), [0, 1, 2])
+        self.assertEqual(behind_mouth(rest, rows, points, arch, lower).tolist(), [0, 2])
+
+
 class TestMouthMesh(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

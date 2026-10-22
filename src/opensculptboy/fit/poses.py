@@ -223,5 +223,46 @@ def posed_parts(handoff, deltas: dict, tolerance: float = 1e-5) -> list:
             ):
                 match = moved
                 break
+        if match is None and len(part.vertices):
+            # a piece cut from a primitive (the inner mouth's pieces of
+            # opensculptboy.mouth.handoff): its vertices are some of the primitive's rows
+            for rest, moved in posed:
+                rows = _subset_rows(rest, part.vertices, tolerance)
+                if rows is not None:
+                    match = moved[rows]
+                    break
         out.append(match)
     return out
+
+
+def _subset_rows(rest: np.ndarray, vertices: np.ndarray, tolerance: float):
+    """The rows of ``rest`` at the positions of ``vertices`` (each within ``tolerance``), or
+    None when some vertex has no row there."""
+    if len(vertices) > len(rest):
+        return None
+    lo = np.minimum(vertices.min(0), rest.min(0))
+    cell = np.floor((rest - lo) / tolerance).astype(np.int64)
+    keys = {}
+    for i, c in enumerate(map(tuple, cell)):
+        keys.setdefault(c, i)
+    want = np.floor((vertices - lo) / tolerance).astype(np.int64)
+    rows = np.empty(len(vertices), np.int64)
+    for i, c in enumerate(map(tuple, want)):
+        row = None
+        for dx in (0, -1, 1):
+            for dy in (0, -1, 1):
+                for dz in (0, -1, 1):
+                    row = keys.get((c[0] + dx, c[1] + dy, c[2] + dz))
+                    if row is not None and (
+                        np.abs(rest[row] - vertices[i]).max() < tolerance
+                    ):
+                        break
+                    row = None
+                if row is not None:
+                    break
+            if row is not None:
+                break
+        if row is None:
+            return None
+        rows[i] = row
+    return rows

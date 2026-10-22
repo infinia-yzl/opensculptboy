@@ -452,6 +452,7 @@ def seal_lips(
     rings: int,
     corners: np.ndarray | None = None,
     held: np.ndarray | None = None,
+    beyond: float = 0.0,
 ) -> tuple[np.ndarray, Seal]:
     """
     The rest-frame offsets (N, 3) of a level with the lips sealed: the rows ``upper`` and
@@ -460,22 +461,40 @@ def seal_lips(
     their own x, so that both lips end where the reference's end and meet where they meet,
     the ``corners`` (:func:`lip_corners`) move onto the line's nearer end, and the vertices of
     ``region`` within ``rings`` faces of those rows, but those of ``held``, follow by the
-    harmonic extension of the move; the rest of the mesh stays. ``pose`` and ``unpose`` map
+    harmonic extension of the move; the rows of both edges within ``beyond`` metres past an
+    end of the line move onto the line where the lips meet, carried on past that end, so that
+    the corners close. The rest of the mesh stays. ``pose`` and ``unpose`` map
     rows of rest points to the posed frame and back, ``pose(points, rows)``.
     """
     n = len(parametric)
     rest = parametric + offsets
     rows, target = [], []
+    ends = line.ends
+    middle = 0.5 * (line.upper + line.lower)
     for edge, curve in ((upper, line.upper), (lower, line.lower)):
-        goal, inside = on_line(pose(rest[edge], edge), curve)
+        at = pose(rest[edge], edge)
+        goal, inside = on_line(at, curve)
         rows.append(edge[inside])
         target.append(goal[inside])
+        # rows just past the line's ends close the mouth's corners: both lips move onto the
+        # line where they meet, carried on past its end (a corner left open showed as a
+        # dark notch)
+        if beyond > 0 and len(middle) >= 2:
+            for end, a, b in ((0, 0, 1), (1, -1, -2)):
+                tangent = middle[a] - middle[b]
+                if abs(tangent[0]) < 1e-9:
+                    continue
+                dx = at[:, 0] - ends[end, 0]
+                past = ~inside & (np.sign(dx) == np.sign(tangent[0]))
+                past &= np.abs(dx) <= beyond
+                if past.any():
+                    rows.append(edge[past])
+                    target.append(ends[end] + dx[past, None] / tangent[0] * tangent)
     rows, target = np.concatenate(rows), np.concatenate(target)
     given = np.zeros(0, np.int64) if corners is None else np.asarray(corners)
     # a corner that is a row of an edge within the line's span keeps that row's target
     extra = np.setdiff1d(given, rows)
     if len(extra):
-        ends = line.ends
         at = pose(rest[extra], extra)
         pick = np.argmin(np.abs(at[:, None, 0] - ends[None, :, 0]), axis=1)
         rows = np.concatenate([rows, extra])

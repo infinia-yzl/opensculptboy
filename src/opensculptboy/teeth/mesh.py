@@ -176,24 +176,47 @@ COLUMN = 0.004
 FRONT_MARGIN = 0.0005
 
 
-def behind_mouth(rest: np.ndarray, rows: np.ndarray, points: np.ndarray) -> np.ndarray:
+def behind_mouth(
+    rest: np.ndarray,
+    rows: np.ndarray,
+    points: np.ndarray,
+    arch: np.ndarray | None = None,
+    lower: np.ndarray | None = None,
+) -> np.ndarray:
     """
     The rows of anny's cavity (``rows`` of ``rest``) that lie behind the front of an inner
     mouth (``points``, in the same frame; Anny faces -Y): those with a point of the mouth
     within :data:`COLUMN` across the depth (X and Z) whose depth is no more than
     :data:`FRONT_MARGIN` behind theirs. The cavity's lining in front of the mouth stays, so
     that it still closes the space between the lips and the front of the mouth.
+
+    With the points' ``arch`` (0 with the head, 1 with the jaw) and the mask ``lower`` of the
+    cavity's rows that follow the jaw (by the rows of ``rest``), a row hides only behind the
+    points of its own arch: a jaw's turn moves both alike, so the mouth still covers it when
+    the mouth opens. (Cheek lining that stays with the head, hidden behind the lower gums at
+    rest, showed as holes in every open pose.)
     """
     from scipy.spatial import cKDTree
 
     rows = np.asarray(rows, dtype=np.int64)
     if len(rows) == 0 or len(points) == 0:
         return rows
-    columns = cKDTree(points[:, [0, 2]]).query_ball_point(rest[rows][:, [0, 2]], COLUMN)
-    front = np.array(
-        [points[c, 1].min() if c else np.inf for c in columns], dtype=np.float64
-    )
-    return rows[rest[rows, 1] > front - FRONT_MARGIN]
+    if arch is None or lower is None:
+        groups = [(np.ones(len(rows), bool), np.ones(len(points), bool))]
+    else:
+        arch = np.asarray(arch)
+        on_jaw = np.asarray(lower, bool)[rows]
+        groups = [(~on_jaw, arch == 0), (on_jaw, arch == 1)]
+    keep = np.zeros(len(rows), bool)
+    for which, mine in groups:
+        if not which.any() or not mine.any():
+            continue
+        p = points[mine]
+        r = rows[which]
+        columns = cKDTree(p[:, [0, 2]]).query_ball_point(rest[r][:, [0, 2]], COLUMN)
+        front = np.array([p[c, 1].min() if c else np.inf for c in columns])
+        keep[np.flatnonzero(which)] = rest[r, 1] > front - FRONT_MARGIN
+    return rows[keep]
 
 
 def _base_mesh(model, base):
@@ -433,7 +456,20 @@ def toothed_mesh(model, mesh, base, rest: np.ndarray, teeth: TeethData) -> Tooth
     hidden = None
     if getattr(teeth, "interior", False):  # a reference's inner mouth hides anny's own
         gone = np.zeros(count, bool)
-        gone[behind_mouth(rest, cavity_rows(model, mesh), teeth.points)] = True
+        lower = None
+        if "jaw" in model.bone_labels:  # the anny-mouth rig: rows that follow the jaw
+            weights = model.vertex_bone_weights.detach().cpu().double().numpy()
+            indices = model.vertex_bone_indices.cpu().numpy()
+            jaw = (weights * (indices == list(model.bone_labels).index("jaw"))).sum(1)
+            if mesh is not None and mesh.operators:
+                jaw = np.asarray(mesh.apply(jaw))
+            lower = np.zeros(count, bool)
+            lower[: len(jaw)] = jaw > 0.5
+        gone[
+            behind_mouth(
+                rest, cavity_rows(model, mesh), teeth.points, teeth.arch, lower
+            )
+        ] = True
         gone[tongue] = True
         hidden = gone[np.asarray(triangles)].all(1)
     return ToothedMesh(

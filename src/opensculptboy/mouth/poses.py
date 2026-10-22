@@ -44,6 +44,15 @@ ON_REFERENCE = 0.003
 NEAR_BORDER = 0.0015
 # the reference's skin that follows the jaw by this share or more counts to the lower lip
 LOWER_SHARE = 0.35
+# the lips' carried motion is smoothed over the lips and this many rings of faces around
+# them, by this many Jacobi steps (:func:`smooth_lip_motion`)
+LIP_SMOOTH_RINGS = 2
+LIP_SMOOTH_ITERATIONS = 30
+# the weight of the neighbours against the carried motion itself (a screened smoothing)
+LIP_SMOOTH_WEIGHT = 4.0
+# a lip's vertex whose carried motion stands out of its neighbours' mean by more than this
+# (metres) is a rough spot
+LIP_ROUGH = 0.0008
 
 
 def target_name(pose: str) -> str:
@@ -292,6 +301,72 @@ def _sided_closest(points, reference, ref_side, side, k: int = 12):
     return best, tri, bary
 
 
+def smooth_lip_motion(
+    offsets: np.ndarray,
+    triangles: np.ndarray,
+    side: np.ndarray,
+    rings: int = LIP_SMOOTH_RINGS,
+    iterations: int = LIP_SMOOTH_ITERATIONS,
+    known: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    A pose's offsets (V, 3) of level 0 with the lips' motion smoothed: the vertices of
+    either lip (``side`` 1 or 2) and the skin within ``rings`` faces of them are solved for
+    the motion closest to the carried one that is smooth over their neighbours, by
+    ``iterations`` Jacobi steps of (I + w L) o = offsets (w :data:`LIP_SMOOTH_WEIGHT`). The carried motion holds the
+    roughness of the reference's own triangles, which the detail levels fold into creases
+    and torn spots on the lips. Edges between the upper and the lower lip are left out, so
+    that each lip keeps its own motion, except within one face of the mouth's corners (where
+    the lips' vertices meet), whose junction takes the mean of both. With ``known``, only
+    the vertices that took the reference's motion directly are smoothed, among themselves:
+    the lining's extension, filled in afterwards, would pull the lips' edges toward it.
+    """
+    from opensculptboy.fit.lips import _adjacency, rings_from
+
+    side = np.asarray(side)
+    lips = np.nonzero(side > 0)[0]
+    if len(lips) == 0 or iterations <= 0:
+        return offsets
+    n = len(offsets)
+    A = _adjacency(n, triangles).tocoo()
+    i, j = A.row, A.col
+    across = ((side[i] == 1) & (side[j] == 2)) | ((side[i] == 2) & (side[j] == 1))
+    corners = (
+        rings_from(triangles, np.unique(i[across]), 1, n) if across.any() else None
+    )
+    keep = ~across
+    if corners is not None:
+        keep |= corners[i] & corners[j]
+    if known is not None:  # only the motion carried from the reference itself
+        known = np.asarray(known, bool)
+        keep &= known[i] & known[j]
+    from scipy.sparse import coo_matrix
+
+    W = coo_matrix((np.ones(int(keep.sum())), (i[keep], j[keep])), shape=(n, n)).tocsr()
+    degree = np.asarray(W.sum(1)).ravel()
+    region = rings_from(triangles, lips, rings, n) & (degree > 0)
+    if known is not None:
+        region &= known
+    data = np.asarray(offsets, dtype=np.float64)
+    out = data.copy()
+    # only the rough spots: the vertices that stand out of their neighbours' mean by more
+    # than LIP_ROUGH, and one ring around them, take the mean of their neighbours (a real
+    # ramp of the motion, as where a lip's edge moves more than the skin outside it, stands
+    # out by little and keeps its carried motion)
+    safe = np.maximum(degree, 1.0)[:, None]
+    rough = np.linalg.norm(data - (W @ data) / safe, axis=1) > LIP_ROUGH
+    rough &= region
+    if not rough.any():
+        return out
+    W1 = (W + W.T).astype(bool).astype(np.float64)
+    near = rough | ((W1 @ rough.astype(np.float64)) > 0)
+    rows = np.nonzero(near & region)[0]
+    w = LIP_SMOOTH_WEIGHT
+    for _ in range(iterations):
+        out[rows] = (data[rows] + w * (W @ out)[rows]) / (1.0 + w * degree[rows, None])
+    return out
+
+
 def carry_field(
     fitted: np.ndarray,
     triangles: np.ndarray,
@@ -299,6 +374,7 @@ def carry_field(
     field: np.ndarray,
     on_skin: np.ndarray,
     sides=None,
+    jaw: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     A vector field (V, C) of a fitted level (``fitted``, as the fit placed it on the
@@ -306,7 +382,9 @@ def carry_field(
     took it directly: the vertices of ``on_skin`` within :data:`ON_REFERENCE` of the
     reference take the value at their closest point, interpolated over its triangle, unless
     that point lies within :data:`NEAR_BORDER` of one of the reference's borders; the others
-    take the harmonic extension of those (``register.smooth_mouth``).
+    take the harmonic extension of those (``register.smooth_mouth``); with each vertex's
+    share of the jaw (``jaw``), the extension from the vertices of its own jaw, mixed by that
+    share.
     """
     from scipy.spatial import cKDTree
 
@@ -340,7 +418,20 @@ def carry_field(
             known[mine[ok]] = True
             known[mine[~ok]] = False
             out[mine[~ok]] = 0.0
-    return smooth_mouth(out, triangles, ~known), known
+        out = smooth_lip_motion(out, triangles, fitted_side, known=known)
+    if jaw is None:
+        return smooth_mouth(out, triangles, ~known), known
+    # The lining inside the mouth: the extension from the lips of its own jaw (the lower lip
+    # and the skin that follows the jaw, and the rest), mixed by each row's share of the jaw,
+    # so that the lower lip's lining rolls with the lower lip.
+    jaw = np.clip(np.asarray(jaw, dtype=np.float64), 0.0, 1.0)
+    on_jaw = jaw >= 0.5
+    low = smooth_mouth(out, triangles, ~(known & on_jaw))
+    high = smooth_mouth(out, triangles, ~(known & ~on_jaw))
+    filled = out.copy()
+    rows = ~known
+    filled[rows] = jaw[rows, None] * low[rows] + (1.0 - jaw[rows, None]) * high[rows]
+    return filled, known
 
 
 def mouth_poses(
@@ -354,6 +445,7 @@ def mouth_poses(
     mouth=None,
     poses: dict | None = None,
     sides=None,
+    jaw: np.ndarray | None = None,
 ) -> MouthPoses | None:
     """
     The :class:`MouthPoses` of a fitted level 0 (``fitted`` as the fit placed it on the
@@ -361,7 +453,9 @@ def mouth_poses(
     reference's frame into the rest frame, ``on_skin`` the vertices that can lie on the
     reference) from the reference's mouth poses, with the offsets of the points of the card's
     inner mouth (``mouth``, a :class:`~opensculptboy.mouth.inner.MouthData` whose points are
-    the handoff's pieces in order). None when the handoff has no moving pose.
+    the handoff's pieces in order); ``jaw`` is each vertex's share of the jaw
+    (``register.jaw_share``), for the lining inside the mouth (:func:`carry_field`). None
+    when the handoff has no moving pose.
     """
     from opensculptboy.teeth.mesh import rigid
 
@@ -383,7 +477,9 @@ def mouth_poses(
     M = 0 if mouth is None else len(mouth.points)
     names, skin, inner, stats = [], [], [], {}
     for name, (field, moved) in fields.items():
-        values, known = carry_field(fitted, triangles, reference, field, on_skin, sides)
+        values, known = carry_field(
+            fitted, triangles, reference, field, on_skin, sides, jaw
+        )
         offsets = values @ R.T
         piece = np.zeros((M, 3))
         if M:
@@ -429,7 +525,7 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
 
     from opensculptboy.character import Character
     from opensculptboy.fit.reference import Reference
-    from opensculptboy.fit.register import excluded_vertices
+    from opensculptboy.fit.register import excluded_vertices, jaw_share
     from opensculptboy.mouth.inner import MouthData, fitted_meshes
     from opensculptboy.teeth.mesh import mouth_rows
 
@@ -461,6 +557,7 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
             reference,
             _share(handoff, reference),
         ),
+        jaw=np.asarray(jaw_share(model)),
     )
     if result is None:
         return None

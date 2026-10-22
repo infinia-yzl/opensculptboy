@@ -92,6 +92,160 @@ class TestCarry(unittest.TestCase):
         )
 
 
+class TestPiecesMove(unittest.TestCase):
+    def test_pieces_cut_from_a_primitive_take_its_motion(self):
+        """The inner mouth's pieces are rows of one primitive of the reference: each takes
+        the posed rows of that primitive (a piece left at rest stood its tongue against the
+        teeth in every open pose)."""
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.fit.poses import posed_parts
+
+        V, T, jaw = _grid()
+        soup = V[T.ravel()]
+        J = np.zeros((len(soup), 4), int)
+        J[:, 1] = 1
+        W = np.zeros((len(soup), 4))
+        W[:, 1] = jaw[T.ravel()]
+        W[:, 0] = 1.0 - W[:, 1]
+        turn = [np.sin(np.radians(8)), 0.0, 0.0, np.cos(np.radians(8))]
+        lower = np.flatnonzero(W[:, 1] > 0.5)
+        lower = lower[: len(lower) // 3 * 3]
+        upper = np.flatnonzero(W[:, 1] <= 0.5)
+        upper = upper[: len(upper) // 3 * 3]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            _write_rig_glb(folder / "replica.glb", soup, J, W, [0.0, 0.0, -0.05])
+            pieces = [
+                {
+                    "role": "tongue",
+                    "mesh": "head",
+                    "primitive": 0,
+                    "vertices": lower.tolist(),
+                },
+                {
+                    "role": "palate",
+                    "mesh": "head",
+                    "primitive": 0,
+                    "vertices": upper.tolist(),
+                },
+            ]
+            appearance = {
+                "parts": [{"name": "head", "role": "skin"}],
+                "mouth": {
+                    "rig": {"jaw": "lower_jaw"},
+                    "pieces": pieces,
+                    "poses": {
+                        "open": {
+                            "known": True,
+                            "joints": {"lower_jaw": {"rotation": turn}},
+                        }
+                    },
+                },
+            }
+            (folder / "appearance.json").write_text(json.dumps(appearance))
+            handoff = load_handoff(folder)
+            whole = next(p for p in handoff.parts if not p.mouth_role)
+            moved = posed_parts(handoff, {"lower_jaw": {"rotation": turn}})
+        k_whole = handoff.parts.index(whole)
+        full = moved[k_whole]
+        self.assertIsNotNone(full)
+        for role, rows in (("tongue", lower), ("palate", upper)):
+            k = next(i for i, p in enumerate(handoff.parts) if p.mouth_role == role)
+            self.assertIsNotNone(moved[k], role)
+            piece = handoff.parts[k].vertices
+            np.testing.assert_allclose(piece, (soup[rows] @ GLTF_TO_ANNY.T), atol=1e-6)
+            np.testing.assert_allclose(moved[k], full[rows], atol=1e-9)
+        # the tongue's piece follows the jaw's turn
+        k = next(i for i, p in enumerate(handoff.parts) if p.mouth_role == "tongue")
+        self.assertGreater(
+            np.linalg.norm(moved[k] - handoff.parts[k].vertices, axis=1).max(), 1e-3
+        )
+
+
+class TestLipMotion(unittest.TestCase):
+    """The lips' carried motion is smoothed within each lip, and the lining inside the mouth
+    follows the lips of its own jaw."""
+
+    @staticmethod
+    def _strip(n=30):
+        # two rows of lips (upper above, lower below) joined only at both ends (the corners)
+        x = np.linspace(-0.02, 0.02, n)
+        V = np.concatenate(
+            [
+                np.c_[x, 0 * x, 0.002 + 0 * x],
+                np.c_[x, 0 * x, 0.004 + 0 * x],
+                np.c_[x, 0 * x, -0.002 + 0 * x],
+                np.c_[x, 0 * x, -0.004 + 0 * x],
+            ]
+        )
+        T = []
+        for a, b in ((0, 1), (2, 3)):
+            for i in range(n - 1):
+                p, q = a * n + i, b * n + i
+                T += [[p, p + 1, q], [p + 1, q + 1, q]]
+        for i in (0, n - 2):  # the corners: the lips meet
+            T += [[i, i + 1, 2 * n + i], [i + 1, 2 * n + i + 1, 2 * n + i]]
+        side = np.r_[np.ones(2 * n, np.int8), np.full(2 * n, 2, np.int8)]
+        return V, np.asarray(T), side
+
+    def test_each_lip_keeps_its_motion(self):
+        V, T, side = self._strip()
+        rng = np.random.default_rng(0)
+        offsets = np.where(side[:, None] == 2, [0.0, 0.0, -0.02], [0.0, 0.0, -0.004])
+        rough = offsets + rng.normal(0, 0.002, offsets.shape)
+        out = P.smooth_lip_motion(rough, T, side)
+        n = len(V) // 4
+        middle = np.r_[n // 3 : 2 * n // 3]
+        for lip, want in ((1, -0.004), (2, -0.02)):
+            rows = np.flatnonzero(side == lip)
+            rows = rows[np.isin(rows % n, middle)]
+            # the noise is smoothed (by at least a third), and each lip's own motion stays
+            self.assertLess(
+                np.abs(out[rows, 2] - want).mean(),
+                0.67 * np.abs(rough[rows, 2] - want).mean(),
+            )
+            self.assertLess(abs(out[rows, 2].mean() - want), 0.001)
+
+    def test_a_smooth_ramp_keeps_its_motion(self):
+        V, T, side = self._strip()
+        ramp = np.zeros((len(V), 3))
+        ramp[:, 2] = -0.5 * V[:, 0] - np.where(side == 2, 0.01, 0.002)
+        n = len(V) // 4
+        rows = np.flatnonzero(np.isin(np.arange(len(V)) % n, np.r_[4 : n - 4]))
+        # away from the corners, where both lips meet, a ramp stands out of nothing
+        np.testing.assert_allclose(
+            P.smooth_lip_motion(ramp, T, side)[rows], ramp[rows], atol=1e-9
+        )
+
+    def test_lining_follows_its_own_jaw(self):
+        from opensculptboy.fit.register import smooth_mouth
+
+        # a lining strip between an upper lip (row 0) and a lower lip (last row)
+        rows, n = 9, 5
+        z = np.linspace(0.01, -0.01, rows)
+        x = np.linspace(-0.01, 0.01, n)
+        V = np.array([[xi, 0.0, zi] for zi in z for xi in x])
+        T = []
+        for r in range(rows - 1):
+            for c in range(n - 1):
+                p, q = r * n + c, (r + 1) * n + c
+                T += [[p, p + 1, q], [p + 1, q + 1, q]]
+        T = np.asarray(T)
+        known = np.zeros(len(V), bool)
+        known[:n] = known[-n:] = True
+        out = np.zeros((len(V), 3))
+        out[-n:, 2] = -0.02  # the lower lip moves down
+        jaw = np.repeat(np.r_[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0], n)
+        plain = smooth_mouth(out, T, ~known)
+        # the old extension: a ramp from the upper lip to the lower
+        self.assertGreater(plain[2 * n, 2], -0.015)
+        mixed = jaw[:, None] * smooth_mouth(out, T, ~(known & (jaw >= 0.5)))
+        mixed += (1 - jaw[:, None]) * smooth_mouth(out, T, ~(known & (jaw < 0.5)))
+        # the rows of the jaw roll with the lower lip, the others stay with the upper
+        np.testing.assert_allclose(mixed[4 * n : 8 * n, 2], -0.02, atol=1e-9)
+        np.testing.assert_allclose(mixed[n : 4 * n, 2], 0.0, atol=1e-9)
+
+
 class TestSides(unittest.TestCase):
     def test_closest_point_on_triangles(self):
         rng = np.random.default_rng(0)
