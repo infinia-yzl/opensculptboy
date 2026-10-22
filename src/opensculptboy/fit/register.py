@@ -2932,7 +2932,10 @@ def fit_levels(
                 options.skin_fair_iterations,
                 options.skin_fair_distance,
             )
-            _log(options, f"level {subdiv}: {int(skin_region.sum())} skin vertices faired")
+            _log(
+                options,
+                f"level {subdiv}: {int(skin_region.sum())} skin vertices faired",
+            )
         fitted = follow_skin(
             posed, fitted, ~mask, topology.triangles, eyes=reference.eyes
         )

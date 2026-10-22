@@ -717,7 +717,12 @@ class TestSyntheticFit(unittest.TestCase):
         # the target's triangles are 5 mm cells, larger than level 1's faces on the face;
         # projected onto them alone, the skin of the head copies them as steps
         # (FitOptions.skin_fairness, register.fair_skin)
-        from opensculptboy.fit.metrics import REGIONS, anny_regions, level_regions, ripple
+        from opensculptboy.fit.metrics import (
+            REGIONS,
+            anny_regions,
+            level_regions,
+            ripple,
+        )
 
         vertices, triangles = self.result.meshes[1]
         topology = detail_topology(self.model, 1)
