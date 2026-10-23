@@ -55,6 +55,23 @@ class BodyMesh:
     dropped_weight: (
         float  # the largest skin weight left out by the truncation to k bones
     )
+    # MikkTSpace tangents (N, 4) with the sign in w (add_tangents), written as TANGENT
+    tangents: np.ndarray | None = None
+    # the Anny vertex of each vertex for _ANNY_VERTEX, where it is not ``source`` (the eye
+    # parts of opensculptboy.eyes name the nearest Anny vertex of what they follow)
+    anny_source: np.ndarray | None = None
+
+    def add_tangents(self) -> None:
+        """Compute the MikkTSpace tangents of the mesh as the file holds it (positions,
+        normals and UVs of the split vertices), for its normal maps."""
+        from opensculptboy.texture.tangents import mikktspace
+
+        if self.uvs is None:
+            return
+        uv = np.stack(
+            [self.uvs[:, 0], 1.0 - self.uvs[:, 1]], 1
+        )  # OBJ: v = 0 at the bottom
+        self.tangents = mikktspace(self.positions, self.normals, uv, self.triangles)
 
 
 @dataclasses.dataclass
@@ -169,6 +186,11 @@ def triangulated_faces(model) -> tuple[np.ndarray, np.ndarray | None]:
     def split(f):
         return np.concatenate([f[:, [0, 1, 2]], f[:, [0, 2, 3]]])
 
+    # the sculpt-quads topology writes a triangle as [a, b, c, c]: drop its empty half
+    tri = faces[:, 2] == faces[:, 3]
+    if tri.any():
+        keep = np.concatenate([np.ones(len(faces), bool), ~tri])
+        return split(faces)[keep], None if uv_faces is None else split(uv_faces)[keep]
     return split(faces), None if uv_faces is None else split(uv_faces)
 
 
@@ -219,6 +241,7 @@ def build_body(
     vertex_bone_weights: np.ndarray | None = None,
     vertex_bone_indices: np.ndarray | None = None,
     normals: np.ndarray | None = None,
+    mesh=None,
 ) -> BodyMesh:
     """
     glTF vertex data of a body mesh.
@@ -234,13 +257,24 @@ def build_body(
             model's own (for example the VRM weights with the eyelids moved to the head).
         normals: (V, 3) welded unit normals in Anny's frame, in place of the normals of
             ``vertices`` (for example toon face normals).
+        mesh: a :class:`~opensculptboy.detail.subdivision.DetailTopology` (a level of the
+            detail layer) whose triangles and UVs replace the model's; ``vertices`` and the
+            skin weights then hold one row per vertex of that mesh, and ``source`` maps each
+            glTF vertex to its vertex of the mesh.
 
     Returns:
         A :class:`BodyMesh`; normals come from the welded ``vertices`` unless given.
     """
     vertices = np.asarray(vertices, dtype=np.float64)
     frame = np.asarray(frame, dtype=np.float64)
-    triangles, uv_triangles = triangulated_faces(model)
+    if mesh is None:
+        triangles, uv_triangles = triangulated_faces(model)
+        texture_coordinates = model.texture_coordinates
+        if texture_coordinates is not None:
+            texture_coordinates = texture_coordinates.detach().cpu().double().numpy()
+    else:
+        triangles, uv_triangles = mesh.triangles, mesh.uv_triangles
+        texture_coordinates = mesh.uvs
     if normals is None:
         normals = vertex_normals(vertices, triangles)
     else:
@@ -250,12 +284,12 @@ def build_body(
                 f"normals of shape {normals.shape} for vertices of shape {vertices.shape}."
             )
     triangle_faces = np.arange(len(triangles))
-    if uv_triangles is not None and model.texture_coordinates is not None:
+    if uv_triangles is not None and texture_coordinates is not None:
         pairs = np.stack([triangles.reshape(-1), uv_triangles.reshape(-1)], axis=1)
         unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
         source, uv_source = unique[:, 0], unique[:, 1]
         split = inverse.reshape(-1, 3)
-        uvs = model.texture_coordinates.detach().cpu().double().numpy()[uv_source]
+        uvs = np.asarray(texture_coordinates, dtype=np.float64)[uv_source]
         uvs = np.stack(
             [uvs[:, 0], 1.0 - uvs[:, 1]], axis=1
         )  # glTF puts v = 0 at the top
@@ -292,7 +326,8 @@ def body_attributes(
 ) -> dict:
     """
     Write the vertex data of a body mesh into a document and return the attributes of its
-    primitives: positions (plus ``translation``), normals, UVs, ``_ANNY_VERTEX`` and the
+    primitives: positions (plus ``translation``), normals, the tangents when the body has
+    them (:meth:`BodyMesh.add_tangents`), UVs, ``_ANNY_VERTEX`` and the
     JOINTS/WEIGHTS sets, 4 bones each. ``joint_type`` is the integer type of the joint indices;
     by default uint8 when they all fit, uint16 otherwise.
     """
@@ -303,6 +338,10 @@ def body_attributes(
         ),
         "NORMAL": doc.accessor(body.normals.astype(np.float32), ARRAY_BUFFER),
     }
+    if body.tangents is not None:
+        attributes["TANGENT"] = doc.accessor(
+            body.tangents.astype(np.float32), ARRAY_BUFFER
+        )
     if body.uvs is not None:
         attributes["TEXCOORD_0"] = doc.accessor(
             body.uvs.astype(np.float32), ARRAY_BUFFER
@@ -310,8 +349,9 @@ def body_attributes(
     if anny_vertex:
         # The Anny vertex of each glTF vertex (float: glTF allows unsigned int for indices
         # only), so that keypoint regressors and other per-vertex data of Anny apply to the file.
+        source = body.source if body.anny_source is None else body.anny_source
         attributes["_ANNY_VERTEX"] = doc.accessor(
-            body.source.astype(np.float32), ARRAY_BUFFER
+            source.astype(np.float32), ARRAY_BUFFER
         )
     if joint_type is None:
         joint_type = np.uint8 if int(body.joints.max(initial=0)) < 256 else np.uint16
@@ -331,6 +371,39 @@ def body_targets(
     return [
         {"POSITION": doc.morph_accessor(t, sparse=sparse_targets)} for t in body.targets
     ]
+
+
+def head_tile_triangles(model, body: BodyMesh, topology: str = "anny"):
+    """The mask (T,) of the triangles of ``body`` on the head tile's UV island
+    (:mod:`opensculptboy.texture.tiles`), or None without UVs or a head island."""
+    from opensculptboy.texture.tiles import on_head_tile
+
+    if body.uvs is None:
+        return None
+    uv = np.stack([body.uvs[:, 0], 1.0 - body.uvs[:, 1]], 1)
+    return on_head_tile(model, uv, body.triangles, topology)
+
+
+def eyeball_triangles(model, body: BodyMesh, mesh=None) -> np.ndarray | None:
+    """
+    The mask (T,) of the triangles of ``body`` that lie on anny's eyeballs, or None for a mesh
+    without eyeballs. ``mesh`` is the detail mesh that ``body`` was built on, if any.
+    """
+    from opensculptboy.texture.eyes import eyeball_rows
+
+    rows = eyeball_rows(model)
+    if rows is None:
+        return None
+    eye = np.zeros(len(model.template_vertices))
+    eye[rows] = 1.0
+    if mesh is not None:
+        eye = np.asarray(mesh.apply(eye))
+    count = int(body.source.max(initial=-1)) + 1
+    if count > len(
+        eye
+    ):  # parts appended after the mesh (the teeth) lie off the eyeballs
+        eye = np.r_[eye, np.zeros(count - len(eye))]
+    return (eye > 0.5)[body.source][body.triangles].all(1)
 
 
 def body_primitive(

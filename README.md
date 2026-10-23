@@ -39,6 +39,7 @@ The `opensculptboy` distribution holds two packages: `anny` (`src/anny`), the up
 - Export to glTF 2.0 (`.glb`) with the skeleton, the skin weights, facial morph targets and animations (see [Export to glTF](#export-to-gltf)).
 - Export to VRM 1.0 and VRM 0.x (`.vrm`) for VTuber apps, with the humanoid bone map, expressions, perfect sync, look-at and toon materials (see [VTuber avatars (VRM)](#vtuber-avatars-vrm)).
 - Pose a character from a picture, and draw it flat as a silhouette, a line drawing or a toon picture (see [Pose from a picture](#pose-from-a-picture)).
+- Fit a character to a reference mesh of any topology, with a detail layer of subdivided offsets for the shape beyond anny's parameters (see [Fit to a reference mesh](#fit-to-a-reference-mesh)).
 - Planned: a desktop companion.
 - Apache License 2.0, with CC0 and other permissive data (see [LICENSE_THINGS](LICENSE_THINGS)).
 
@@ -190,7 +191,7 @@ Accuracy, measured against Anny's own output on the walk, run, arms-crossed and 
 
 Tested so far: the [Khronos glTF validator](https://github.com/KhronosGroup/glTF-Validator) reports no errors and no warnings, and three.js (r186, `GLTFLoader`) draws the skeleton, the morph targets and the animations. Blender, Godot, Unity and Unreal Engine have not been tested yet.
 
-Not in the file yet: textures (the material is a plain skin colour), the hair, the soft-tissue correctives (the export uses plain skinning) and the eyes' shading.
+Not in the file yet: painted textures (the material is a plain skin colour, unless the card's detail layer names textures baked from a reference, see [Fit to a reference mesh](#fit-to-a-reference-mesh)), the hair and the soft-tissue correctives (the export uses plain skinning). `--eyes` (or a card's `material.eyes`) replaces anny's plain eyeballs with smooth ones: an iris texture with a pupil of a chosen size, a refracting cornea, and a caruncle that fills the inner corner of the eye; [docs/eyes.md](docs/eyes.md) describes them. `--teeth` (or a card's `material.teeth`) puts teeth in anny's mouth, which has none: the teeth of the reference for a fitted card, else a generic set; the lower teeth follow the jaw in the expressions; [docs/teeth.md](docs/teeth.md) describes them. A card fitted to a reference whose handoff describes its inner mouth takes that reference's own gums, palate, tongue, throat and teeth in place of anny's, on the `anny-mouth` rig with a jaw bone and a tongue chain, and its mouth poses as morph targets; [docs/mouth.md](docs/mouth.md) describes them.
 
 ## VTuber avatars (VRM)
 
@@ -228,7 +229,7 @@ Each export prints its counts and checks the budget of its version: 70,000 trian
 
 Tested so far: the files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`); three-vrm loads both versions with their look-at and expressions and turns the forearm twist of VRM 1.0 files, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM have not been tested yet.
 
-Not in the file yet: textures (the materials use a plain skin colour), hair, teeth, eyelashes, outfits and spring bones.
+Not in the file yet: painted textures (the materials use a plain skin colour, unless the card's detail layer names baked textures), hair, eyelashes, outfits and spring bones. The teeth of `--teeth` and a reference's inner mouth go in.
 
 ## Pose from a picture
 
@@ -255,6 +256,18 @@ How it works: each bone turns to follow its landmarks, with hinges at the elbows
 Pictures can be noisy, and pictures made by AI models can draw anatomy that no body has, so some landmarks land in the wrong place. The head takes its turn from the face mesh when MediaPipe finds a face, and otherwise from the head points that agree with each other, in 3D or in the picture alone. A hand with impossible proportions keeps its rest pose, and the optimisation limits how far any single bad landmark can pull the pose. A drawn or stylised face can still leave the head's turn unclear, so three angles correct it by hand: `--head-turn` (toward the figure's right), `--head-up` and `--head-tilt` (toward the right shoulder), or `head=dict(turn=..., up=..., tilt=...)` in Python.
 
 The viewer's Pose section offers the same step under **From a picture**. It reads the body, the head and the fingers, without the optimisation and the facial expression. Head turn, Head up and Head tilt sliders correct the head after a picture. It saves the pose shown as a character card or as a silhouette SVG. The picture stays in the browser, and MediaPipe's code and models load from their CDNs the first time.
+
+## Fit to a reference mesh
+
+`opensculptboy fit` fits anny to a target mesh of any topology, such as a game character exported with landmarks, and keeps what anny's parameters cannot reach as a detail layer: per-vertex offsets on one or two levels of Catmull-Clark subdivision of anny's mesh, stored next to the card in `.safetensors` files.
+
+```bash
+uv sync --extra viewer                                     # SciPy for the fit, embreex for the texture bake
+opensculptboy fit handoff/ --out fitted.json --detail 1    # replica.glb and appearance.json in handoff/
+opensculptboy export fitted.glb --character fitted.json --detail 1
+```
+
+The fit places anny by landmarks (or by the bounding geometry when there are none), fits the phenotypes, local changes, face shapes and pose, then moves the whole mesh onto the target with a non-rigid ICP on each level. On a synthetic target with another topology, level 1 of the detail layer lies 0.04 mm from the target on average (0.15 mm from the target to the fitted surface), and the fit takes about 70 s. The GLB export writes any level; the VRM export keeps within the triangle budget of its version by giving the finer level to the head and the neck alone, or by stepping down. `--textures` bakes the target's colour and normals onto anny's UVs for the glTF and MToon materials. [docs/reference-fit.md](docs/reference-fit.md) describes the handoff folder, the landmarks, the pipeline, the card format, the accuracy and the limits.
 
 ## Technical details
 

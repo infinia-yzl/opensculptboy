@@ -1,0 +1,594 @@
+# OpenSculptBoy
+# Apache License, Version 2.0
+"""
+Honest measures of a fitted surface against its reference, by region.
+
+The registration ends by moving vertices onto the reference (``project_onto``), so a distance
+from the fitted vertices to the reference says little about what the registration got right:
+it is close to 0 by construction. :func:`measure` therefore measures a fitted mesh as it is
+given, over the whole skin, with no mask, no visibility test and no distance cut-off:
+
+- ``forward``: each skin vertex of the fitted mesh to the reference surface, signed along the
+  reference's normal (positive: the fit lies outside the reference, too full; negative: inside);
+- ``reverse``: every vertex of the reference skin to the fitted surface (every triangle of
+  anny's body mesh, the inside of the mouth and the eye sockets included, the closed parts
+  such as the eyeballs left out), signed the same way (positive: the fit lies outside);
+- ``normal_angle``: the angle in degrees between each fitted vertex normal and the
+  reference's interpolated normal at its closest point, both against the reference's
+  geometric normals (``geometric``) and against the normals its file shades with (``file``,
+  the same when the source has none), with ``facing_away`` the share of fitted vertices
+  whose normal turns from the reference's by more than 90 degrees (a flipped sheet, the inside
+  of a crumple, a spike; or a vertex on the rim of a thin part whose closest point lies on the
+  other side);
+- ``face``: the centroid of each fitted triangle to the reference surface, unsigned, with the
+  share of triangles over 1 mm: a triangle that bridges a gap of the reference (the skin
+  stretched from the back of an ear to the head) has its corners on the reference and its
+  middle in the air, which the vertex measures miss;
+- ``folded_over_60deg``: the share of fitted vertices at an edge whose two triangles part by
+  more than 60 degrees (creases, crumples and spikes; the rim of a thin part folds too), and
+  ``folds_not_in_reference`` the share of those folded by 30 degrees more than the reference
+  within 3 mm of their closest point (:func:`fold_near`): the crumples and spikes of the fit;
+- ``ears_surround``: the reverse measure of the reference vertices within 15 mm of an ear
+  mask and outside it, where skin stretched from an ear to the head leaves the head uncovered;
+- ``ears_root``: with an attachment line (the ``"ear_attachment"`` region), the fitted vertices
+  whose closest point of the reference lies within :data:`ROOT_RADIUS` of it, the strip where
+  the ear meets the head: their count, ``folds_not_in_reference`` and ``facing_away`` as
+  above, and ``defects`` the share of them with either (a crack along the root shows as folded
+  and flipped slivers there).
+
+The folds of the reference are those of its welded surface (``Reference.folds``): a source
+that splits its vertices at UV seams, or stitches an ear to the head by coincident vertices,
+folds across those seams as much as anywhere.
+
+``all`` holds every reference vertex for the reverse measure and every fitted vertex but those
+of anny's cavities for the others: the inside of anny's mouth and eye sockets has no
+counterpart in a skin that closes them, and its own region ``cavity`` reports it. Each measure
+gives the mean of the absolute values, the signed mean, the 95th percentile and
+the maximum of the absolute values, per region (:data:`REGIONS`) and over all. The regions come
+from anny's mesh (:func:`anny_regions`: the base-mesh labels, the outer ears of
+``ear_weights``, the dominant bones and the craniofacial landmarks of the rest mesh) and pass to
+the reference by its nearest fitted vertex, with two exceptions taken from the source itself:
+the reference's ``"ear"`` mask (``masks.ear`` of a handoff) makes the ears, and the reference
+vertices within :data:`SEAM_RADIUS` of a border that two skin parts share (the seam of a head
+part and a body part at the neck) make ``neck_seam``. A fitted vertex takes the region of its
+closest reference vertex where that is the ears or the seam, and its own region otherwise.
+Compute the measures on the geometry before and after any final projection; the two together
+tell the registration from the projection.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+
+import numpy as np
+
+REGIONS = (
+    "face",
+    "jaw",
+    "ears",
+    "scalp",
+    "neck",
+    "neck_seam",
+    "body",
+    "hands",
+    "cavity",
+)
+# reference vertices within this distance (metres) of a border shared by two skin parts
+SEAM_RADIUS = 0.01
+# reference vertices outside an ear mask within this distance (metres) of it
+SURROUND_RADIUS = 0.015
+# the neighbourhood (metres) of a fitted vertex's closest point in which a fold of the
+# reference counts as its own (fold_near)
+FOLD_RADIUS = 0.003
+# fitted vertices whose closest reference point lies within this distance (metres) of the
+# ears' attachment line make the root strip (summary entry "ears_root")
+ROOT_RADIUS = 0.003
+
+
+def anny_regions(model, rest_vertices: np.ndarray | None = None) -> np.ndarray:
+    """
+    The region (an index into :data:`REGIONS`, or -1 for the closed parts that no measure
+    takes: the eyeballs and the tongue) of each vertex of anny's level-0 mesh, from its rest
+    mesh (``rest_vertices``, the template by default; metres, Z up, facing -Y):
+
+    - ``hands``: the base-mesh labels ``hand.L`` and ``hand.R``;
+    - ``cavity``: the inside of the mouth and the eye sockets;
+    - ``ears``: the outer ears (``ear_weights`` over 0.5);
+    - ``neck``: the vertices whose strongest bone is a neck bone;
+    - of the base-mesh label ``head``: ``jaw`` below the mouth corners (cheilion) and in front
+      of 1 cm behind the tragion, which holds the jaw line, its angle and the skin under the
+      chin; ``face`` above it and in front of the tragion, below 6 cm under the top of the head;
+      ``scalp`` the rest;
+    - ``body``: everything else.
+    """
+    from anny.faces.authoring.base_mesh import base_mesh
+    from opensculptboy.fit.register import (
+        EXCLUDED_LABELS,
+        _Craniofacial,
+        ear_weights,
+        excluded_vertices,
+    )
+
+    if rest_vertices is None:
+        rest_vertices = model.template_vertices.detach().double().cpu().numpy()
+    V = np.asarray(rest_vertices, dtype=np.float64)
+    from opensculptboy.topology.lookup import base_mesh_rows
+
+    mesh = base_mesh()
+    base = base_mesh_rows(model)  # a new sculpt vertex: its strongest anchor's label
+    labels = np.full(len(mesh.V), "", dtype=object)
+    for name in np.unique(mesh.face_labels):
+        labels[np.unique(mesh.quads[mesh.face_labels == name])] = name
+    labels = labels[base]
+    region = np.full(len(V), REGIONS.index("body"), np.int64)
+    weights = model.vertex_bone_weights.detach().cpu().numpy()
+    indices = model.vertex_bone_indices.cpu().numpy()
+    bones = list(model.bone_labels)
+    strongest = indices[np.arange(len(indices)), weights.argmax(1)]
+    neck = np.isin(strongest, [k for k, b in enumerate(bones) if b.startswith("neck")])
+    cranio = _Craniofacial(model)
+    points = cranio.weights_matrix.detach().double().numpy() @ V
+    names = cranio.labels
+    mouth_z = 0.5 * (points[names.index("ch.L"), 2] + points[names.index("ch.R"), 2])
+    tragion_y = 0.5 * (points[names.index("t.L"), 1] + points[names.index("t.R"), 1])
+    top = points[names.index("v"), 2]
+    head = labels == "head"
+    jaw = head & (V[:, 2] < mouth_z) & (V[:, 1] < tragion_y + 0.01)
+    face = head & ~jaw & (V[:, 1] < tragion_y) & (V[:, 2] < top - 0.06)
+    region[head] = REGIONS.index("scalp")
+    region[face] = REGIONS.index("face")
+    region[jaw] = REGIONS.index("jaw")
+    region[neck & ~np.isin(labels, ["hand.L", "hand.R"])] = REGIONS.index("neck")
+    region[ear_weights(model) > 0.5] = REGIONS.index("ears")
+    region[np.isin(labels, ["hand.L", "hand.R"])] = REGIONS.index("hands")
+    region[np.isin(labels, list(EXCLUDED_LABELS))] = REGIONS.index("cavity")
+    closed = excluded_vertices(model) & ~np.isin(labels, list(EXCLUDED_LABELS))
+    region[closed] = -1
+    return region
+
+
+def level_regions(topology, regions0: np.ndarray) -> np.ndarray:
+    """The regions of level 0 carried to a level of the detail layer (the strongest share)."""
+    regions0 = np.asarray(regions0)
+    shares = np.zeros((len(regions0), len(REGIONS) + 1))
+    shares[np.arange(len(regions0)), regions0 + 1] = 1.0  # column 0: the closed parts
+    shares = np.asarray(topology.apply(shares))
+    return shares.argmax(1) - 1
+
+
+def seam_vertices(reference, tolerance: float = 5e-4) -> np.ndarray:
+    """Mask (V,) of the reference vertices on a border of one skin part that lies on another
+    part (within ``tolerance``): the seam of a head part and a body part."""
+    from scipy.spatial import cKDTree
+
+    offsets = getattr(reference, "part_offsets", None)
+    out = np.zeros(len(reference.vertices), bool)
+    if offsets is None or len(offsets) < 3:
+        return out
+    T = reference.triangles
+    edges = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), 1)
+    unique, counts = np.unique(edges, axis=0, return_counts=True)
+    border = np.unique(unique[counts == 1])
+    part = np.searchsorted(offsets, np.arange(len(reference.vertices)), "right") - 1
+    for k in range(len(offsets) - 1):
+        own = border[part[border] == k]
+        others = np.nonzero(part != k)[0]
+        if len(own) == 0 or len(others) == 0:
+            continue
+        d, _ = cKDTree(reference.vertices[others]).query(reference.vertices[own])
+        out[own[d < tolerance]] = True
+    return out
+
+
+def reference_regions(
+    reference, fitted_vertices: np.ndarray, fitted_regions: np.ndarray
+) -> np.ndarray:
+    """The region of each reference vertex: that of its nearest fitted vertex (of the measured
+    regions), the ears from the reference's ``"ear"`` mask when it has one, and the seam."""
+    from scipy.spatial import cKDTree
+
+    rows = np.nonzero(fitted_regions >= 0)[0]
+    _, nearest = cKDTree(np.asarray(fitted_vertices)[rows]).query(reference.vertices)
+    region = np.asarray(fitted_regions)[rows[nearest]]
+    ears = REGIONS.index("ears")
+    mask = reference.regions.get("ear") if hasattr(reference, "regions") else None
+    if mask is not None:
+        others = rows[fitted_regions[rows] != ears]
+        _, near = cKDTree(np.asarray(fitted_vertices)[others]).query(
+            reference.vertices[region == ears]
+        )
+        region[region == ears] = fitted_regions[others[near]]
+        region[mask] = ears
+    seam = seam_vertices(reference)
+    if seam.any():
+        distance, _ = cKDTree(reference.vertices[seam]).query(reference.vertices)
+        region[distance < SEAM_RADIUS] = REGIONS.index("neck_seam")
+    return region
+
+
+@dataclasses.dataclass
+class Measures:
+    """Per-vertex measures of a fitted mesh, and their summary (:meth:`summary`)."""
+
+    forward: (
+        np.ndarray
+    )  # (N,) signed distance (metres) of each fitted vertex; NaN if closed
+    reverse: (
+        np.ndarray
+    )  # (R,) signed distance of each reference vertex to the fitted surface
+    angle_geometric: (
+        np.ndarray
+    )  # (N,) degrees, against the reference's geometric normals
+    angle_file: (
+        np.ndarray
+    )  # (N,) degrees, against the normals the reference shades with
+    regions: np.ndarray  # (N,) region of each fitted vertex
+    reference_regions: np.ndarray  # (R,) region of each reference vertex
+    # (N,) the largest angle in degrees between the normals of two triangles that share an
+    # edge at the vertex: folds and crumples show as large values
+    fold: np.ndarray | None = None
+    # (T,) the distance (metres) of each fitted triangle's centroid to the reference, and the
+    # region of each triangle: a triangle that bridges a gap (between the back of an ear and
+    # the head) has its corners on the reference and its middle in the air
+    face_distance: np.ndarray | None = None
+    face_regions: np.ndarray | None = None
+    # (R,) the reference vertices around the ears, outside the ear mask and within
+    # SURROUND_RADIUS of it: where skin stretched from an ear to the head leaves the head
+    # uncovered (summary entry "ears_surround", reverse only)
+    surround: np.ndarray | None = None
+    # (N,) the reference's largest fold near each fitted vertex's closest point (fold_near):
+    # "folds_not_in_reference" counts the fitted vertices folded by more than 60 degrees and
+    # by 30 more than the reference there, the crumples and spikes of the fit alone
+    reference_fold: np.ndarray | None = None
+    # (N,) the fitted vertices of the root strip of the ears (ROOT_RADIUS), and whether each
+    # vertex faces away from the reference (summary entry "ears_root")
+    root: np.ndarray | None = None
+    away: np.ndarray | None = None
+
+    def summary(self) -> dict:
+        """mean / signed mean / p95 / max per region and over all, in mm and degrees."""
+
+        def stats(values, scale):
+            values = np.asarray(values, dtype=np.float64)
+            values = values[np.isfinite(values)]
+            if len(values) == 0:
+                return None
+            a = np.abs(values) * scale
+            return {
+                "mean": round(float(a.mean()), 4),
+                "signed": round(float(values.mean() * scale), 4),
+                "p95": round(float(np.percentile(a, 95)), 4),
+                "max": round(float(a.max()), 4),
+                "n": int(len(a)),
+            }
+
+        out = {}
+        cavity = REGIONS.index("cavity")
+        for k, name in enumerate(("all",) + REGIONS):
+            fwd = (
+                (self.regions >= 0) & (self.regions != cavity)
+                if name == "all"
+                else self.regions == k - 1
+            )
+            rev = (
+                np.ones(len(self.reverse), bool)
+                if name == "all"
+                else self.reference_regions == k - 1
+            )
+            entry = {
+                "forward_mm": stats(self.forward[fwd], 1000.0),
+                "reverse_mm": stats(self.reverse[rev], 1000.0),
+                "angle_geometric_deg": stats(self.angle_geometric[fwd], 1.0),
+                "angle_file_deg": stats(self.angle_file[fwd], 1.0),
+            }
+            angles = self.angle_geometric[fwd]
+            angles = angles[np.isfinite(angles)]
+            if len(angles):
+                entry["facing_away"] = round(float((angles > 90).mean()), 4)
+            if self.fold is not None:
+                folds = self.fold[fwd]
+                folds = folds[np.isfinite(folds)]
+                if len(folds):
+                    entry["folded_over_60deg"] = round(float((folds > 60).mean()), 4)
+                if self.reference_fold is not None:
+                    own = self.fold[fwd]
+                    near = self.reference_fold[fwd]
+                    finite = np.isfinite(own) & np.isfinite(near)
+                    if finite.any():
+                        spurious = (own > 60) & (own > near + 30)
+                        entry["folds_not_in_reference"] = round(
+                            float(spurious[finite].mean()), 4
+                        )
+            if self.face_distance is not None:
+                faces = (
+                    (self.face_regions >= 0) & (self.face_regions != cavity)
+                    if name == "all"
+                    else self.face_regions == k - 1
+                )
+                entry["face_mm"] = stats(self.face_distance[faces], 1000.0)
+                if entry["face_mm"] is not None:
+                    entry["faces_over_1mm"] = round(
+                        float((self.face_distance[faces] > 0.001).mean()), 4
+                    )
+            if any(v is not None for v in entry.values()):
+                out[name] = entry
+        if self.surround is not None and self.surround.any():
+            out["ears_surround"] = {
+                "reverse_mm": stats(self.reverse[self.surround], 1000.0)
+            }
+        if self.root is not None and self.root.any():
+            own, near = self.fold[self.root], self.reference_fold[self.root]
+            folded = (own > 60) & (own > near + 30)
+            away = self.away[self.root]
+            out["ears_root"] = {
+                "n": int(self.root.sum()),
+                "folds_not_in_reference": round(float(folded.mean()), 4),
+                "facing_away": round(float(away.mean()), 4),
+                "defects": round(float((folded | away).mean()), 4),
+            }
+        return out
+
+
+def measure(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    regions: np.ndarray,
+    reference,
+    reference_region: np.ndarray | None = None,
+) -> Measures:
+    """
+    The measures of a fitted mesh (see the module documentation). ``regions`` (N,) gives the
+    region of each fitted vertex (:func:`anny_regions`, carried by :func:`level_regions`; -1
+    for the closed parts, which no measure takes), and ``reference_region`` the region of each
+    reference vertex (:func:`reference_regions` of these vertices by default; pass one
+    labelling to compare several meshes region by region).
+    """
+    from anny.hair import closest_triangles
+    from opensculptboy.fit.reference import vertex_normals
+
+    V = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    regions = np.asarray(regions).copy()
+    if reference_region is None:
+        reference_region = reference_regions(reference, V, regions)
+    measured = regions >= 0
+    normals = vertex_normals(V, T)
+    C, N, d, tri, bary = reference.closest(V[measured])
+    corners = reference.triangles[tri]
+    signed = ((V[measured] - C) * N).sum(1)
+    forward = np.full(len(V), np.nan)
+    forward[measured] = signed
+    shading = np.einsum("nk, nkd -> nd", bary, reference.shading_normals[corners])
+    shading /= np.maximum(np.linalg.norm(shading, axis=1, keepdims=True), 1e-12)
+
+    def angle(a, b):
+        return np.degrees(np.arccos(np.clip((a * b).sum(1), -1.0, 1.0)))
+
+    angle_geometric = np.full(len(V), np.nan)
+    angle_file = np.full(len(V), np.nan)
+    angle_geometric[measured] = angle(normals[measured], N)
+    angle_file[measured] = angle(normals[measured], shading)
+    # the fitted vertices on the ears or the seam of the source take that region
+    nearest = corners[np.arange(len(corners)), np.argmax(bary, 1)]
+    source = reference_region[nearest]
+    special = np.isin(source, [REGIONS.index("ears"), REGIONS.index("neck_seam")])
+    rows = np.nonzero(measured)[0]
+    regions[rows[special]] = source[special]
+
+    reference_fold = np.full(len(V), np.nan)
+    reference_fold[measured] = fold_near(
+        reference.vertices, reference.folds, C, tree=reference.tree
+    )
+    fitted = T[measured[T].all(1)]
+    tri_f, bary_f, _ = closest_triangles(reference.vertices, V, fitted)
+    points = np.einsum("nk, nkd -> nd", bary_f, V[fitted[tri_f]])
+    n_f = np.einsum("nk, nkd -> nd", bary_f, normals[fitted[tri_f]])
+    n_f /= np.maximum(np.linalg.norm(n_f, axis=1, keepdims=True), 1e-12)
+    reverse = -((reference.vertices - points) * n_f).sum(1)
+    _, _, face_distance, _, _ = reference.closest(V[fitted].mean(1))
+    surround = None
+    ear_mask = getattr(reference, "regions", {}).get("ear")
+    if ear_mask is not None and np.asarray(ear_mask).any():
+        from scipy.spatial import cKDTree
+
+        ear_mask = np.asarray(ear_mask, bool)
+        gap, _ = cKDTree(reference.vertices[ear_mask]).query(reference.vertices)
+        surround = ~ear_mask & (gap < SURROUND_RADIUS)
+    root = None
+    attachment = getattr(reference, "regions", {}).get("ear_attachment")
+    if attachment is not None and np.asarray(attachment).any():
+        from scipy.spatial import cKDTree
+
+        line = reference.vertices[np.asarray(attachment, bool)]
+        root = np.zeros(len(V), bool)
+        root[measured] = cKDTree(line).query(C)[0] < ROOT_RADIUS
+    face_regions = regions[fitted[:, 0]].copy()
+    on_ears = (regions[fitted] == REGIONS.index("ears")).any(1)
+    face_regions[on_ears] = REGIONS.index("ears")
+    return Measures(
+        forward,
+        reverse,
+        angle_geometric,
+        angle_file,
+        regions,
+        reference_region,
+        fold_angles(V, T),
+        face_distance,
+        face_regions,
+        surround,
+        reference_fold,
+        root,
+        angle_geometric > 90,
+    )
+
+
+def fold_near(
+    vertices: np.ndarray,
+    folds: np.ndarray,
+    points: np.ndarray,
+    radius: float = FOLD_RADIUS,
+    tree=None,
+) -> np.ndarray:
+    """The largest of ``folds`` (one per vertex of ``vertices``) within ``radius`` of each of
+    ``points`` (of its 32 nearest vertices; 0 where none is that close): whether the reference
+    itself folds near a fitted vertex, as the rim of a thin ear does."""
+    from scipy.spatial import cKDTree
+
+    tree = tree or cKDTree(vertices)
+    d, k = tree.query(points, k=min(32, len(vertices)), distance_upper_bound=radius)
+    d, k = d.reshape(len(points), -1), k.reshape(len(points), -1)
+    padded = np.r_[np.asarray(folds, dtype=np.float64), 0.0]
+    return padded[np.where(np.isfinite(d), k, len(vertices))].max(1)
+
+
+def fold_angles(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """For each vertex, the largest angle (degrees) between the normals of two triangles that
+    share an edge at it (0 for a vertex on no shared edge)."""
+    V = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    n = np.cross(V[T[:, 1]] - V[T[:, 0]], V[T[:, 2]] - V[T[:, 0]])
+    n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-20)
+    edges = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    owner = np.tile(np.arange(len(T)), 3)
+    key = np.sort(edges, 1)
+    order = np.lexsort((key[:, 1], key[:, 0]))
+    key, owner, edges = key[order], owner[order], edges[order]
+    same = (key[1:] == key[:-1]).all(1)
+    a, b = owner[:-1][same], owner[1:][same]
+    angle = np.degrees(np.arccos(np.clip((n[a] * n[b]).sum(1), -1.0, 1.0)))
+    out = np.zeros(len(V))
+    np.maximum.at(out, key[:-1][same, 0], angle)
+    np.maximum.at(out, key[:-1][same, 1], angle)
+    return out
+
+
+def ripple(
+    vertices: np.ndarray, triangles: np.ndarray, mask: np.ndarray | None = None
+) -> float:
+    """The root mean square (metres) of a mesh's fine ripple over the vertices of ``mask``:
+    the part of each vertex's position along its normal that 10 rounds of Taubin smoothing
+    (lambda 0.5, mu -0.53, umbrella weights) remove. Steps copied from the facets of a coarse
+    reference show here; the broad shape passes the filter."""
+    import scipy.sparse
+
+    from opensculptboy.fit.reference import vertex_normals
+
+    V = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    n = len(V)
+    edges = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    edges = np.concatenate([edges, edges[:, ::-1]])
+    A = scipy.sparse.coo_matrix(
+        (np.ones(len(edges)), (edges[:, 0], edges[:, 1])), (n, n)
+    ).tocsr()
+    A.data[:] = 1.0
+    W = scipy.sparse.diags(1.0 / np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)) @ A
+    smooth = V.copy()
+    for _ in range(10):
+        for factor in (0.5, -0.53):
+            smooth = smooth + factor * (W @ smooth - smooth)
+    along = ((V - smooth) * vertex_normals(V, T)).sum(1)
+    if mask is not None:
+        along = along[np.asarray(mask, bool)]
+    return float(np.sqrt((along**2).mean()))
+
+
+# the facial actions that open the mouth in :func:`mouth_tears` (ARKit names)
+OPEN_MOUTH = {
+    "jawOpen": 0.55,
+    "mouthLowerDownLeft": 0.35,
+    "mouthLowerDownRight": 0.35,
+    "mouthUpperUpLeft": 0.2,
+    "mouthUpperUpRight": 0.2,
+}
+# an edge of the mouth tears where its two triangles part by more than TEAR_ANGLE degrees and
+# by TEAR_EXCESS degrees more than on the same card without its detail offsets
+TEAR_ANGLE = 60.0
+TEAR_EXCESS = 45.0
+
+
+def mouth_zone(model, rest_vertices: np.ndarray, rings: int = 3) -> np.ndarray:
+    """
+    Mask (V,) of the mouth on anny's level 0: the lips (the vertices inside an ellipsoid
+    around the mouth corners and the lips' midpoints, ``ch.L``, ``ch.R``, ``ls`` and ``li``,
+    6 mm wider and taller than they are and 2 cm deep), the inside of the mouth and the
+    vertices within ``rings`` faces of it, the closed parts (the tongue) left out.
+    """
+    from opensculptboy.fit.register import (
+        _Craniofacial,
+        excluded_vertices,
+        mouth_lining,
+    )
+
+    V = np.asarray(rest_vertices, dtype=np.float64)
+    cranio = _Craniofacial(model)
+    points = cranio.weights_matrix.detach().double().cpu().numpy() @ V
+    names = cranio.labels
+    left, right = points[names.index("ch.L")], points[names.index("ch.R")]
+    upper, lower = points[names.index("ls")], points[names.index("li")]
+    centre = 0.5 * (left + right)
+    half = np.array(
+        [
+            0.5 * abs(left[0] - right[0]) + 0.006,
+            0.02,
+            0.5 * abs(upper[2] - lower[2]) + 0.006,
+        ]
+    )
+    lips = (((V - centre) / half) ** 2).sum(1) < 1.0
+    lining = mouth_lining(model, rings)
+    closed = excluded_vertices(model) & ~mouth_lining(model, 0)
+    return (lips | lining) & ~closed
+
+
+def mouth_tears(
+    model,
+    character,
+    offsets: np.ndarray | None,
+    subdiv: int,
+    actions: dict | None = None,
+) -> dict:
+    """
+    The tears of a fitted card's mouth on level ``subdiv`` with its detail ``offsets``: for
+    the closed mouth (the card's own facial actions) and the open one (``actions``,
+    :data:`OPEN_MOUTH` by default, in place of the card's), the count of the edges of the
+    mouth (:func:`mouth_zone`) that part by more than :data:`TEAR_ANGLE` degrees and by
+    :data:`TEAR_EXCESS` more than on the card without its offsets, with ``edges`` the count
+    of the mouth's edges and ``worst_deg`` the largest such excess. Offsets that crumple the
+    lips' lining fold it where the plain card is smooth; the mouth's own shapes act on the
+    rest mesh, so the folds open into spikes when the mouth opens.
+    """
+    import torch
+
+    from opensculptboy.detail import DetailModel
+    from opensculptboy.export.mesh_checks import adjacent_triangles, bends
+
+    kwargs = character.model_kwargs()
+    pose = character.pose_parameters(model)
+    with torch.no_grad():
+        rest0 = model(pose_parameters=pose, **kwargs)["rest_vertices"][0]
+    zone0 = mouth_zone(model, rest0.double().cpu().numpy())
+    detailed = DetailModel(model, subdiv, offsets, "full", character.topology)
+    plain = DetailModel(model, subdiv, None, "full", character.topology)
+    zone = np.asarray(detailed.topology.apply(zone0.astype(np.float64))) > 0.5
+    T = np.asarray(detailed.triangles)
+    pairs = adjacent_triangles(T)
+    inside = zone[T[pairs[:, 0]]].all(1) & zone[T[pairs[:, 1]]].all(1)
+    pairs = pairs[inside]
+    out = {}
+    for state, extra in (
+        ("closed", {}),
+        ("open", {"facial_actions": dict(actions or OPEN_MOUTH)}),
+    ):
+        args = dict(kwargs, **extra)
+        with torch.no_grad():
+            a = detailed.rest(model(pose_parameters=pose, **args)["rest_vertices"])
+            b = plain.rest(model(pose_parameters=pose, **args)["rest_vertices"])
+        bend = bends(a[0].double().cpu().numpy(), T, pairs)
+        excess = bend - bends(b[0].double().cpu().numpy(), T, pairs)
+        torn = (bend > TEAR_ANGLE) & (excess > TEAR_EXCESS)
+        out[state] = {
+            "torn": int(torn.sum()),
+            "edges": int(len(pairs)),
+            "worst_deg": round(float(excess.max()), 2) if len(excess) else 0.0,
+        }
+    return out

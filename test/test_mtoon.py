@@ -504,6 +504,35 @@ class TestVrm0(unittest.TestCase, MaterialAssertions):
                     skip.append("matcap_factor")
                 self.assertMaterialsClose(material, back, skip=skip)
 
+    def test_texture_transform(self):
+        # the eye material: one KHR_texture_transform on every texture but the matcap in 1.0,
+        # the ST vector of _MainTex in 0.x, and the same transform back through three-vrm
+        transform = {"offset": [-30.125, -36.5], "scale": [18.75, 37.5]}
+        m = mtoon.soft_material("eyes", (1.0, 1.0, 1.0, 1.0))
+        m.base_texture = m.shade_texture = 0
+        m.normal_texture, m.matcap_texture = 1, 2
+        m.texture_transform = transform
+        out = mtoon.to_vrm1(m)
+        ext = out["extensions"]["VRMC_materials_mtoon"]
+        for info in (
+            out["pbrMetallicRoughness"]["baseColorTexture"],
+            ext["shadeMultiplyTexture"],
+            out["normalTexture"],
+        ):
+            self.assertEqual(info["extensions"]["KHR_texture_transform"], transform)
+        self.assertNotIn("extensions", ext["matcapTexture"])
+        self.assertEqual(mtoon.from_vrm1(out).texture_transform, transform)
+        _, props = mtoon.to_vrm0(m)
+        self.assertEqual(
+            props["vectorProperties"]["_MainTex"],
+            [-30.125, 1.0 - 37.5 + 36.5, 18.75, 37.5],
+        )
+        back = through_v0(m)
+        for key in ("offset", "scale"):
+            np.testing.assert_allclose(back.texture_transform[key], transform[key])
+        with self.assertRaisesRegex(ValueError, "texture_transform"):
+            mtoon.check(dataclasses.replace(m, texture_transform={"shift": [0, 0]}))
+
     def test_shading_ramps_agree(self):
         # The 0.x ramp of the encoded pair is the 1.0 ramp of the material at every N.L.
         rng = random.Random(3)

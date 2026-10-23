@@ -192,6 +192,10 @@ class ToonMaterial:
     outline_width_texture: int | None = None
     # Write depth in BLEND mode; renderQueueOffsetNumber then runs from 0 to 9 instead of -9 to 0.
     transparent_with_zwrite: bool = False
+    # A KHR_texture_transform ({"offset": [u, v], "scale": [u, v]}, glTF UVs) of every texture
+    # but the matcap: KHR_texture_transform on each texture info in VRM 1.0, the ST vector of
+    # _MainTex in VRM 0.x, which MToon 0.x applies to every texture (None: none).
+    texture_transform: dict | None = None
 
 
 def soft_material(
@@ -294,6 +298,17 @@ def check(material: ToonMaterial) -> None:
         index = getattr(m, label)
         if index is not None and not (_is_integer(index) and index >= 0):
             problems.append(f"{label} must be a glTF texture index, not {index!r}")
+    t = m.texture_transform
+    if t is not None:
+        if not isinstance(t, dict) or set(t) - {"offset", "scale"}:
+            problems.append("texture_transform takes only an offset and a scale")
+        elif not all(
+            len(v) == 2 and all(_is_number(x) and math.isfinite(x) for x in v)
+            for v in (t.get("offset", (0.0, 0.0)), t.get("scale", (1.0, 1.0)))
+        ):
+            problems.append(
+                "texture_transform offset and scale must be pairs of finite numbers"
+            )
     low, high = queue_offset_range(m) if m.alpha_mode in ALPHA_MODES else (-9, 9)
     offset = m.render_queue_offset
     if not (_is_integer(offset) and low <= offset <= high):
@@ -310,25 +325,36 @@ def _floats(values) -> list[float]:
     return [float(v) for v in values]
 
 
-def _texture(index: int) -> dict:
-    return {"index": int(index)}
+def _texture(index: int, transform: dict | None = None) -> dict:
+    info = {"index": int(index)}
+    if transform is not None:
+        info["extensions"] = {"KHR_texture_transform": _transform(transform)}
+    return info
+
+
+def _transform(transform: dict) -> dict:
+    return {
+        "offset": _floats(transform.get("offset", (0.0, 0.0))),
+        "scale": _floats(transform.get("scale", (1.0, 1.0))),
+    }
 
 
 def _gltf_material(m: ToonMaterial) -> dict:
     """The core glTF material: the lit colour, the fallback PBR factors, emission and alpha."""
+    t = m.texture_transform
     pbr = {"baseColorFactor": _floats(m.base_color)}
     if m.base_texture is not None:
-        pbr["baseColorTexture"] = _texture(m.base_texture)
+        pbr["baseColorTexture"] = _texture(m.base_texture, t)
     pbr["metallicFactor"] = 0.0
     pbr["roughnessFactor"] = 1.0
     out = {"name": m.name, "pbrMetallicRoughness": pbr}
     if m.normal_texture is not None:
         out["normalTexture"] = {
-            **_texture(m.normal_texture),
+            **_texture(m.normal_texture, t),
             "scale": float(m.normal_scale),
         }
     if m.emissive_texture is not None:
-        out["emissiveTexture"] = _texture(m.emissive_texture)
+        out["emissiveTexture"] = _texture(m.emissive_texture, t)
     out["emissiveFactor"] = _floats(m.emissive)
     out["alphaMode"] = m.alpha_mode
     if m.alpha_mode == "MASK":  # glTF ignores alphaCutoff in the other modes
@@ -363,8 +389,9 @@ def to_vrm1(material: ToonMaterial) -> dict:
         "renderQueueOffsetNumber": int(m.render_queue_offset),
         "shadeColorFactor": _floats(m.shade_color),
     }
+    t = m.texture_transform
     if m.shade_texture is not None:
-        ext["shadeMultiplyTexture"] = _texture(m.shade_texture)
+        ext["shadeMultiplyTexture"] = _texture(m.shade_texture, t)
     ext["shadingShiftFactor"] = float(m.shading_shift)
     ext["shadingToonyFactor"] = float(m.shading_toony)
     ext["giEqualizationFactor"] = float(m.gi_equalization)
@@ -373,14 +400,14 @@ def to_vrm1(material: ToonMaterial) -> dict:
         ext["matcapTexture"] = _texture(m.matcap_texture)
     ext["parametricRimColorFactor"] = _floats(m.rim_color)
     if m.rim_multiply_texture is not None:
-        ext["rimMultiplyTexture"] = _texture(m.rim_multiply_texture)
+        ext["rimMultiplyTexture"] = _texture(m.rim_multiply_texture, t)
     ext["rimLightingMixFactor"] = float(m.rim_lighting_mix)
     ext["parametricRimFresnelPowerFactor"] = float(m.rim_fresnel_power)
     ext["parametricRimLiftFactor"] = float(m.rim_lift)
     ext["outlineWidthMode"] = m.outline_width_mode
     ext["outlineWidthFactor"] = float(m.outline_width)
     if m.outline_width_texture is not None:
-        ext["outlineWidthMultiplyTexture"] = _texture(m.outline_width_texture)
+        ext["outlineWidthMultiplyTexture"] = _texture(m.outline_width_texture, t)
     ext["outlineColorFactor"] = _floats(m.outline_color)
     ext["outlineLightingMixFactor"] = float(m.outline_lighting_mix)
     out["extensions"] = {"VRMC_materials_mtoon": ext}
@@ -414,8 +441,8 @@ def from_vrm1(material: dict) -> ToonMaterial:
     Read a glTF material with ``VRMC_materials_mtoon`` back into a :class:`ToonMaterial`.
 
     Missing factors take the defaults of the MToon 1.0 README. Only the first 3 components of a
-    colour factor count (three-vrm's 0.x reader gives 4). Texture transforms and the UV animation
-    are not read.
+    colour factor count (three-vrm's 0.x reader gives 4). The texture transform comes from the
+    base colour texture (an identity transform reads as none); the UV animation is not read.
     """
     pbr = material.get("pbrMetallicRoughness") or {}
     ext = {
@@ -430,6 +457,15 @@ def from_vrm1(material: dict) -> ToonMaterial:
         return tuple(float(v) for v in list(values)[:size])
 
     normal = material.get("normalTexture")
+    transform = (
+        ((pbr.get("baseColorTexture") or {}).get("extensions") or {}).get(
+            "KHR_texture_transform"
+        )
+    ) or None
+    if transform is not None:
+        transform = _transform(transform)
+        if transform == {"offset": [0.0, 0.0], "scale": [1.0, 1.0]}:
+            transform = None
     return ToonMaterial(
         name=material.get("name", ""),
         base_color=colour(pbr.get("baseColorFactor", [1.0, 1.0, 1.0, 1.0]), 4),
@@ -460,6 +496,7 @@ def from_vrm1(material: dict) -> ToonMaterial:
         rim_multiply_texture=index(ext.get("rimMultiplyTexture")),
         outline_width_texture=index(ext.get("outlineWidthMultiplyTexture")),
         transparent_with_zwrite=bool(ext["transparentWithZWrite"]),
+        texture_transform=transform,
     )
 
 
@@ -772,6 +809,12 @@ def to_vrm0(
         name: colours[name] if name in colours else list(IDENTITY_ST)
         for name in V0_VECTOR_PROPERTIES
     }
+    if m.texture_transform is not None:
+        # Unity's UVs put v = 0 at the bottom: the inverse of three-vrm's port of the ST vector
+        # (VRMMaterialsV0CompatPlugin.ts _portTextureTransform, as v0_to_v1 repeats it)
+        t = _transform(m.texture_transform)
+        (ou, ov), (su, sv) = t["offset"], t["scale"]
+        vectors["_MainTex"] = [ou, 1.0 - sv - ov, su, sv]
     slots = {
         "_MainTex": m.base_texture,
         "_ShadeTexture": m.shade_texture,

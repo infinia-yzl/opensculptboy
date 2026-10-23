@@ -487,6 +487,9 @@ def rebind(
     method: str = "forward",
     keep_leg_spread: bool = False,
     max_influences: int = 4,
+    triangles: np.ndarray | None = None,
+    vertex_bone_weights: np.ndarray | None = None,
+    vertex_bone_indices: np.ndarray | None = None,
 ) -> Rebind:
     """
     The bind mesh and targets of a VRM file.
@@ -526,6 +529,10 @@ def rebind(
             ``"inverse"`` (v' = (sum_j w4_ij X_j^-1)^-1 v_i with the file's weights).
         keep_leg_spread: passed to :func:`vrm_t_pose`.
         max_influences: the bones per vertex that the file keeps (4 in a VRM file).
+        triangles, vertex_bone_weights, vertex_bone_indices: the triangles (for the normals)
+            and Anny's full skin weights (for the forward bind) of another mesh on the same
+            rig, such as a level of the detail layer (:mod:`opensculptboy.detail`); the
+            model's own by default.
 
     Returns:
         A :class:`Rebind`; ``joint_positions`` are the heads of T_j, and ``offset`` centres
@@ -542,7 +549,8 @@ def rebind(
     B = np.asarray(rest_bone_poses, dtype=np.float64)
     vertices = np.asarray(rest_vertices, dtype=np.float64)
     offsets = np.asarray(target_offsets, dtype=np.float64).reshape(-1, *vertices.shape)
-    triangles, _ = triangulated_faces(model)
+    if triangles is None:
+        triangles, _ = triangulated_faces(model)
     T = (
         vrm_t_pose(model, torch.from_numpy(B), keep_leg_spread=keep_leg_spread)
         .cpu()
@@ -550,8 +558,11 @@ def rebind(
     )
     X = T @ rigid_inverse(B)
     if method == "forward":
-        weights = model.vertex_bone_weights.detach().cpu().double().numpy()
-        indices = model.vertex_bone_indices.cpu().numpy()
+        weights = vertex_bone_weights
+        indices = vertex_bone_indices
+        if weights is None:
+            weights = model.vertex_bone_weights.detach().cpu().double().numpy()
+            indices = model.vertex_bone_indices.cpu().numpy()
         M = blend(weights, indices, X)
         linear = M[:, :3, :3]
         bind = (linear @ vertices[..., None])[..., 0] + M[:, :3, 3]
@@ -977,7 +988,7 @@ def humanoid_error(
     parents = [int(p) for p in vrm_tables.file_parents(model, version, twist)]
     order = _parents_first(parents)
     humanoid = sorted(
-        labels.index(b) for b in vrm_tables.humanoid_bones(version).values()
+        labels.index(b) for b in vrm_tables.humanoid_bones(version, labels).values()
     )
     ancestors = {}
     for j in humanoid:

@@ -32,6 +32,7 @@ import roma
 import torch
 
 from opensculptboy.character import Character
+from opensculptboy.mouth.rig import is_mouth_rig
 from opensculptboy.export.body import (
     ANNY_TO_GLTF,
     body_primitive,
@@ -39,7 +40,10 @@ from opensculptboy.export.body import (
     morph_target_rows,
     rest_rows,
 )
+from opensculptboy.export.detail import ear_mesh, mime_type, texture_images
+from opensculptboy.export.detail import resolve as resolve_detail
 from opensculptboy.export.document import GltfDocument, pbr_material, read_gltf_json
+from opensculptboy.export.mouth import clear_mouth, mouth_interior
 
 __all__ = ["C3", "C4", "export_glb", "read_character", "read_gltf_json"]
 
@@ -89,6 +93,10 @@ def export_glb(
     max_influences: int = 4,
     ground: bool = True,
     base_color: Sequence[float] = (0.80, 0.62, 0.52, 1.0),
+    detail_level: int = 0,
+    detail_region: str = "full",
+    detail_dir: str | pathlib.Path | None = None,
+    textures=None,
 ) -> dict:
     """
     Write a character as a binary glTF 2.0 file.
@@ -113,6 +121,22 @@ def export_glb(
         ground: stand the rest pose on the floor (y = 0). The poses and clips of
             ``anny.poses`` stand on the floor in any case.
         base_color: the linear RGBA base colour of the material.
+        detail_level: the level of the character's detail layer (``character.detail``, see
+            :mod:`opensculptboy.detail`): 0 is anny's own mesh, 1 and 2 its Catmull-Clark
+            subdivisions, with the card's offsets of that level added to the rest mesh and the
+            skin weights, UVs and morph targets carried to the finer mesh. Level 0 of a card
+            without detail writes the file as it was before the detail layer existed.
+        detail_region: ``"full"`` (the whole body at ``detail_level``) or ``"head"`` (the head
+            and the neck at ``detail_level``, the rest one level coarser).
+        detail_dir: the folder that the paths of the detail layer are relative to (the card's
+            folder); the current folder when None.
+        textures: None for the skin textures that the card names (its detail layer's and its
+            skin material's; none for most cards), False for none, or a mapping of texture
+            slots (:data:`opensculptboy.export.detail.TEXTURE_SLOTS`) to PNG or JPEG files
+            (paths or bytes) laid out on anny's UVs. A card with a ``material`` section gets
+            the skin material of :func:`_skin_material`, with the head tile's textures on a
+            primitive of their own; a file with a normal texture carries MikkTSpace
+            ``TANGENT`` attributes.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -146,17 +170,245 @@ def export_glb(
     # Rows of parameter values: row 0 is the base mesh, one more row per morph target.
     targets, facial_rows, face_rows = morph_target_rows(model, character, morph_targets)
     rest_vertices, rest_bone_poses = rest_rows(model, character, facial_rows, face_rows)
+    # On the anny-mouth rig: jawOpen as a turn of the jaw and the corrective target that
+    # completes it (opensculptboy.mouth.jaw), played by the animation "jawOpen.jaw".
+    jaw_open = None
+    if is_mouth_rig(character.rig):
+        from opensculptboy.mouth.jaw import with_jaw_corrective
+
+        jaw_open, targets, rest_vertices = with_jaw_corrective(
+            model, targets, rest_vertices, rest_bone_poses, max_influences
+        )
+    # A reference's mouth poses (opensculptboy.mouth.poses): a target "mouth.<pose>" each,
+    # and on the anny-mouth rig a turn of the jaw with a corrective target, played by the
+    # animation "mouth.<pose>.jaw".
+    mouth_poses, pose_turns, inner_overrides = None, [], {}
+    if character.mouth_material() is not None:
+        from opensculptboy.mouth.poses import card_poses
+
+        mouth_poses = card_poses(character, detail_dir)
+    if mouth_poses is not None:
+        from opensculptboy.export.body import MorphTarget
+        from opensculptboy.mouth import poses as mouth_pose_data
+
+        targets, rest_vertices, added, mouth_poses = mouth_pose_data.append_pose_rows(
+            targets, rest_vertices, mouth_poses
+        )
+        for row, k in added.items():
+            inner_overrides[row] = mouth_poses.inner[k]
+        if "jaw" in model.bone_labels:
+            pose_turns = mouth_pose_data.pose_turns(
+                model,
+                rest_vertices[0],
+                mouth_poses,
+                rest_bone_poses[list(model.bone_labels).index("jaw")],
+                max_influences,
+            )
+            extra = []
+            for k, turn in enumerate(pose_turns):
+                name = mouth_pose_data.target_name(mouth_poses.names[k])
+                inner_overrides[len(targets)] = ("corrective", k)
+                targets.append(
+                    MorphTarget(f"{name}.corrective", "corrective", -1, 0.0, 0.0)
+                )
+                extra.append((rest_vertices[0] + turn.corrective)[None])
+            rest_vertices = np.concatenate([rest_vertices, *extra])
     base = rest_vertices[0]
 
     # Mesh: split the vertices at UV seams; normals come from the welded mesh.
-    body = build_body(
-        model, base, rest_vertices[1:] - base, ANNY_TO_GLTF, max_influences
-    )
+    detail = resolve_detail(model, character, detail_level, detail_dir, detail_region)
+    images = texture_images(character, textures, detail_dir)
+    skin = character.skin_material()
+    eye = character.eye_material()
+    mesh, ears = ear_mesh(character, skin, images, detail, detail_dir)
+    if textures is None:  # the card's maps, baked on its finest level
+        from opensculptboy.texture.levels import level_normals
+
+        images = level_normals(
+            model, character, images, detail, mesh, ears, base, detail_dir
+        )
+    eyed = None
+    teeth = character.teeth_material()
+    mouth = character.mouth_material()
+    if mouth is not None:  # the reference's inner mouth holds its own teeth
+        teeth = None
+    toothed = None
+    # Anny's mouth cavity behind the skin, in the rest mesh and in each morph target; a
+    # reference's inner mouth takes the cavity's place, so it keeps the cavity as it is.
+    interior = None
+    if mouth is None:
+        interior = mouth_interior(model, None if detail is None else detail.topology)
+    if detail is None and eye is None and teeth is None and mouth is None:
+        vertices, offsets, _ = clear_mouth(base, rest_vertices[1:] - base, interior)
+        body = build_body(model, vertices, offsets, ANNY_TO_GLTF, max_influences)
+    else:
+        weights = model.vertex_bone_weights.detach().cpu().double().numpy()
+        indices = model.vertex_bone_indices.cpu().numpy()
+        vertices, offsets = base, rest_vertices[1:] - base
+        if detail is not None:
+            weights, indices = detail.skin_weights(weights, indices)
+            vertices, offsets = detail.vertices(base), detail.targets(offsets)
+            if mouth_poses is not None:
+                offsets = mouth_pose_data.add_level_corrections(
+                    offsets, detail.topology, mouth_poses, added, inner_overrides
+                )
+        vertices, offsets, _ = clear_mouth(vertices, offsets, interior)
+        normals = None
+        rows_mesh = mesh  # the file's mesh before the eyes and the teeth
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
+
+            baked = None if "eye_base_color" in images else images.get("eyes")
+            eyed = eyed_mesh(
+                model, mesh, vertices, eye, "gltf", baked, skin_baked=baked_skin(images)
+            )
+            normals = eyed.normals(vertices)
+            weights, indices = eyed.skin_weights(weights, indices)
+            vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
+            ears = eyed.extend_mask(ears)
+            mesh = eyed
+        if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
+            from opensculptboy.teeth.mesh import card_teeth, toothed_mesh
+
+            toothed = toothed_mesh(
+                model,
+                None if detail is None else rows_mesh,
+                mesh,
+                vertices,
+                card_teeth(model, character, detail_dir, base),
+            )
+            normals = toothed.normals(vertices, normals)
+            weights, indices = toothed.skin_weights(weights, indices)
+            overrides = None
+            if inner_overrides:
+                overrides = mouth_pose_data.resolve_overrides(
+                    toothed.teeth, inner_overrides, mouth_poses, pose_turns
+                )
+            vertices = toothed.vertices(vertices)
+            offsets = toothed.targets(offsets, overrides)
+            ears = toothed.extend_mask(ears)
+            if eyed is not None:
+                eyed.trailing_triangles = len(toothed.teeth.triangles)
+            mesh = toothed
+        body = build_body(
+            model,
+            vertices,
+            offsets,
+            ANNY_TO_GLTF,
+            max_influences,
+            weights,
+            indices,
+            normals=normals,
+            mesh=mesh,
+        )
+        if toothed is not None:
+            source = toothed.anny_vertex(None if eyed is None else eyed.anny_vertex())
+            body.anny_source = source[body.source]
+        elif eyed is not None:
+            body.anny_source = eyed.anny_vertex()[body.source]
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
-    material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
+    head_material, head, ear_material = None, None, None
+    if skin is not None:
+        written: dict = {}  # slot -> texture index, so that each image is written once
+        material = doc.add_material(_skin_material(doc, skin, images, written))
+        head_material, head = _head_material(
+            doc, model, body, skin, images, written, character.topology
+        )
+        if ears is not None:
+            ear_material = doc.add_material(
+                _skin_material(doc, skin, images, written, "ears", "ears_")
+            )
+    elif set(images) - EYE_SLOTS:
+        material = doc.add_material(_textured_material(doc, images))
+    else:
+        material = doc.add_material(pbr_material("skin", base_color, 0.0, 0.6))
+    if (
+        "normal" in images
+        or "head_normal" in images
+        or (mouth is not None and mouth.normal)
+    ):
+        body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
     joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
-    primitive = body_primitive(doc, body, material, joint_type=joint_type)
-    mesh = {"name": character.name, "primitives": [primitive]}
+    eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
+    if eyed is not None:
+        eye_material, eyes = None, None
+        eye_parts = _eye_part_materials(doc, model, body, eyed, eye, images)
+    else:
+        eye_material, eyes = _eye_material(
+            doc, model, body, images, None if detail is None else detail.topology
+        )
+    teeth_parts = []  # (material, triangle mask) of the teeth of opensculptboy.teeth
+    hidden = np.zeros(len(body.triangles), bool)
+    if toothed is not None and mouth is not None:
+        teeth_parts = _mouth_materials(doc, toothed, mouth, detail_dir)
+        hidden = toothed.hidden_mask()
+    elif toothed is not None:
+        teeth_parts = _teeth_materials(doc, toothed, teeth)
+    rest = ~hidden
+    if eye_material is not None:
+        rest &= ~eyes
+    for _, part in eye_parts + teeth_parts:
+        rest &= ~part
+    if ear_material is not None:
+        ears &= rest
+        rest &= ~ears
+    if head_material is not None:
+        head &= rest
+        rest &= ~head
+    primitive = body_primitive(
+        doc,
+        body,
+        material,
+        triangles=None if rest.all() else body.triangles[rest],
+        joint_type=joint_type,
+        anny_vertex=detail is None or detail.subdiv == 0,
+    )
+    primitives = [primitive]
+    if ear_material is not None:  # the ear tile: the outer ears on UVs of their own
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                ear_material,
+                triangles=body.triangles[ears],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    if head_material is not None:  # the head tile: the same vertices, its own textures
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                head_material,
+                triangles=body.triangles[head],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    if eye_material is not None:  # the eyeballs: the same vertices, their own texture
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                eye_material,
+                triangles=body.triangles[eyes],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    for part_material, part in eye_parts + teeth_parts:  # the eyes and the teeth
+        primitives.append(
+            body_primitive(
+                doc,
+                body,
+                part_material,
+                triangles=body.triangles[part],
+                attributes=primitive["attributes"],
+                targets=primitive.get("targets"),
+            )
+        )
+    mesh = {"name": character.name, "primitives": primitives}
     if targets:
         mesh["weights"] = [t.weight for t in targets]
         mesh["extras"] = {"targetNames": [t.name for t in targets]}
@@ -201,6 +453,26 @@ def export_glb(
         doc.add_animation(
             _animation(doc, model, character, name, parents, default_local)
         )
+    if jaw_open is not None:
+        doc.add_animation(
+            _jaw_open_animation(
+                doc, jaw_open, labels, default_local, mesh_node, targets
+            )
+        )
+    for k, turn in enumerate(pose_turns):
+        name = mouth_pose_data.target_name(mouth_poses.names[k])
+        doc.add_animation(
+            _jaw_open_animation(
+                doc,
+                turn,
+                labels,
+                default_local,
+                mesh_node,
+                targets,
+                name=f"{name}.jaw",
+                corrective=f"{name}.corrective",
+            )
+        )
 
     doc.scene_name = character.name
     doc.scene_nodes = roots + [mesh_node]
@@ -215,8 +487,36 @@ def export_glb(
             "frame": "metres, Y up, the figure faces +Z",
         }
     }
+    if detail is not None:
+        doc.scene_extras["opensculptboy"]["detail"] = detail.extras()
+    if images:
+        doc.scene_extras["opensculptboy"]["textures"] = sorted(images)
+    if head_material is not None:
+        doc.scene_extras["opensculptboy"]["head_tile"] = True
+    if ear_material is not None:
+        doc.scene_extras["opensculptboy"]["ear_tile"] = True
+    if eyed is not None:
+        doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
+    if jaw_open is not None:
+        doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
+    if mouth_poses is not None:
+        doc.scene_extras["opensculptboy"].setdefault("mouth", {})["poses"] = {
+            name: dict(
+                mouth_poses.stats.get(name, {}),
+                target=mouth_pose_data.target_name(name),
+                **(
+                    {"jaw_degrees": round(pose_turns[k].angle_degrees, 3)}
+                    if pose_turns
+                    else {}
+                ),
+            )
+            for k, name in enumerate(mouth_poses.names)
+        }
+    if toothed is not None:
+        key = "teeth" if mouth is None else "inner_mouth"
+        doc.scene_extras["opensculptboy"][key] = toothed.extras
     size = doc.write(path)
-    return dict(
+    summary = dict(
         path=str(path),
         bytes=size,
         vertices=int(len(body.source)),
@@ -227,6 +527,406 @@ def export_glb(
         max_influences=max_influences,
         largest_dropped_weight=body.dropped_weight,
     )
+    if detail is not None:
+        summary["detail"] = detail.extras()
+    return summary
+
+
+def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
+    """
+    The material of the eyeballs with the eye texture of ``images`` (its texture info carries
+    the ``KHR_texture_transform`` of :func:`opensculptboy.texture.eyes.eye_texture_transform`)
+    and the mask of the eyeball triangles, or (None, None) without an eye texture.
+    """
+    from opensculptboy.export.body import eyeball_triangles
+    from opensculptboy.texture.eyes import eye_texture_transform
+
+    if "eyes" not in images:
+        return None, None
+    transform = eye_texture_transform(model)
+    eyes = eyeball_triangles(model, body, mesh)
+    if transform is None or eyes is None or not eyes.any():
+        return None, None
+    data = images["eyes"]
+    texture = doc.add_texture(doc.add_image(data, mime_type(data), "eyes"))
+    material = pbr_material("eyes", (1.0, 1.0, 1.0, 1.0), 0.0, 0.3, texture=texture)
+    material["pbrMetallicRoughness"]["baseColorTexture"]["extensions"] = {
+        "KHR_texture_transform": transform
+    }
+    return doc.add_material(material), eyes
+
+
+# the texture slots of the eyes alone, which leave the skin's material as it is
+EYE_SLOTS = {"eyes", "eyes_normal", "eye_base_color"}
+# the key of the eye materials' settings in their extras
+EYE_EXTRAS = "opensculptboy_eye"
+EYE_EXTRAS_FORMAT = "opensculptboy/eye@1"
+
+
+def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict):
+    """
+    The materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (an
+    :class:`~opensculptboy.eyes.mesh.EyedMesh` behind ``body``):
+
+    - ``eyes``: the eye texture (:func:`opensculptboy.eyes.mesh.eye_texture`) on the eyeballs;
+      under a cornea a diffuse surface without a specular reflection of its own
+      (``KHR_materials_specular`` factor 0: the eyeball lies in the eye's own medium, and a
+      reflection there reads as a milky veil over the iris), and without one (``eye.cornea``
+      false) a clear coat (``KHR_materials_clearcoat``) at the cornea's IOR for the wet
+      highlight;
+    - ``cornea``: a clear, refracting shell (``KHR_materials_transmission``,
+      ``KHR_materials_volume`` with the depth of the anterior chamber as its thickness,
+      ``KHR_materials_ior``). As the transmission extension asks, it is OPAQUE: readers
+      without the extension draw it white, so ``eye.cornea`` false suits them better;
+    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat).
+
+    The extras of each hold :data:`EYE_EXTRAS` (``opensculptboy/eye@1``) with its ``role``
+    and the eye's settings, which :mod:`opensculptboy.export.blender_skin` reads.
+    """
+    from opensculptboy.eyes.geometry import CHAMBER_DEPTH_MM
+    from opensculptboy.eyes.mesh import eye_texture
+
+    eye = eyed.eye if eyed.eye is not None else eye  # with the sizes the mesh took
+    settings = dict(eye.extras(), bulge={k: float(v) for k, v in eyed.bulge.items()})
+
+    def extras(role):
+        return {EYE_EXTRAS: {"format": EYE_EXTRAS_FORMAT, "role": role, **settings}}
+
+    from opensculptboy.export.document import png_bytes
+
+    bent = None
+    if "eye_base_color" in images:
+        data = images["eye_base_color"]
+        source = {"source": "texture"}
+    else:
+        pixels, source, bent = eye_texture(
+            eye,
+            eyed,
+            model,
+            images.get("eyes"),
+            images.get("eyes_normal", images.get("normal")),
+            want_normals=True,
+            normal_box="eyes_normal" in images,
+        )
+        data = png_bytes(pixels)
+    normal_texture = None
+    if bent is not None and body.tangents is not None:
+        # the reference's eye normals (a concave iris, a soft limbus) in the file's frames
+        normal_texture = doc.add_texture(
+            doc.add_image(
+                png_bytes(_eye_normal_pixels(body, eyed, bent)),
+                "image/png",
+                "eye_normal",
+            )
+        )
+    eyed.extras = {
+        "radius_mm": [float(f.radius * 1000) for f in eyed.frames.values()],
+        "bulge": settings["bulge"],
+        "cornea": bool(eye.cornea),
+        "caruncle": bool(eye.caruncle),
+        **source,
+    }
+    texture = doc.add_texture(doc.add_image(data, mime_type(data), "eye_base_color"))
+    out = []
+    eyeball = pbr_material(
+        "eyes", (1.0, 1.0, 1.0, 1.0), 0.0, eye.sclera_roughness, texture=texture
+    )
+    if eye.cornea:
+        # under the cornea the eyeball sits in the eye's own medium: no reflection of its
+        # own, which a renderer would draw as a rough, milky layer over the iris (the cornea
+        # gives the one sharp highlight)
+        eyeball["extensions"] = {"KHR_materials_specular": {"specularFactor": 0.0}}
+    else:
+        eyeball["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 1.0,
+                "clearcoatRoughnessFactor": float(eye.cornea_roughness),
+            },
+            "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
+        }
+    if normal_texture is not None:
+        eyeball["normalTexture"] = {"index": normal_texture}
+    eyeball["extras"] = extras("eyeball")
+    out.append((doc.add_material(eyeball), eyed.part_mask("eyeball")))
+    if eye.cornea:
+        cornea = pbr_material("cornea", (1.0, 1.0, 1.0, 1.0), 0.0, eye.cornea_roughness)
+        cornea["extensions"] = {
+            "KHR_materials_transmission": {"transmissionFactor": 1.0},
+            "KHR_materials_volume": {"thicknessFactor": CHAMBER_DEPTH_MM / 1000.0},
+            "KHR_materials_ior": {"ior": float(eye.cornea_ior)},
+        }
+        cornea["extras"] = extras("cornea")
+        out.append((doc.add_material(cornea), eyed.part_mask("cornea")))
+    pink_mask = eyed.part_mask("caruncle", "socket")
+    # a fitted character on sculpt keeps its corner in the skin's material (eyed_mesh)
+    if eye.caruncle and pink_mask.any():
+        pink = pbr_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,), 0.0, 0.5)
+        pink["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 0.8,
+                "clearcoatRoughnessFactor": 0.08,
+            }
+        }
+        pink["extras"] = extras("conjunctiva")
+        out.append((doc.add_material(pink), pink_mask))
+    return out
+
+
+# the key of the teeth materials' settings in their extras
+TEETH_EXTRAS = "opensculptboy_teeth"
+TEETH_EXTRAS_FORMAT = "opensculptboy/teeth@1"
+
+
+def _teeth_materials(doc: GltfDocument, toothed, teeth):
+    """
+    The materials and triangle masks of the teeth of :mod:`opensculptboy.teeth` (a
+    :class:`~opensculptboy.teeth.mesh.ToothedMesh` behind the body): ``teeth``, the enamel's
+    colour and roughness with a clear coat for the wet surface, and ``gums`` (generic teeth),
+    pink and wet. Their extras hold :data:`TEETH_EXTRAS` (``opensculptboy/teeth@1``) with the
+    ``role`` and the teeth's settings.
+    """
+    settings = teeth.extras()
+    toothed.extras = dict(
+        settings,
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+    )
+
+    def extras(role):
+        return {TEETH_EXTRAS: {"format": TEETH_EXTRAS_FORMAT, "role": role, **settings}}
+
+    out = []
+    enamel = pbr_material(
+        "teeth", tuple(teeth.color) + (1.0,), 0.0, float(teeth.roughness)
+    )
+    enamel["extensions"] = {
+        "KHR_materials_clearcoat": {
+            "clearcoatFactor": 0.5,
+            "clearcoatRoughnessFactor": 0.1,
+        }
+    }
+    enamel["extras"] = extras("teeth")
+    out.append((doc.add_material(enamel), toothed.part_mask("teeth")))
+    gums = toothed.part_mask("gums")
+    if gums.any():
+        gum = pbr_material("gums", tuple(teeth.gum_color) + (1.0,), 0.0, 0.45)
+        gum["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": 0.8,
+                "clearcoatRoughnessFactor": 0.08,
+            }
+        }
+        gum["extras"] = extras("gums")
+        out.append((doc.add_material(gum), gums))
+    return out
+
+
+def _mouth_materials(doc: GltfDocument, toothed, mouth, detail_dir):
+    """
+    The material and triangle mask of a reference's inner mouth (:mod:`opensculptboy.mouth.inner`
+    behind the body): ``mouth``, the reference's own maps (base colour, normal, roughness in
+    G) with a clear coat for the wet surface, over every part (teeth, gums, palate, tongue,
+    floor, throat). Its extras hold :data:`TEETH_EXTRAS` (``opensculptboy/teeth@1``) with the
+    role ``mouth`` and the mouth's settings.
+    """
+    from opensculptboy.teeth.mesh import PARTS
+
+    folder = pathlib.Path(detail_dir or ".")
+    settings = mouth.extras()
+    toothed.extras = dict(
+        settings,
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+        hidden=int(toothed.hidden_mask().sum()),
+    )
+    textures = {}
+    for slot, name in mouth.textures().items():
+        data = (folder / name).read_bytes()
+        textures[slot] = doc.add_texture(
+            doc.add_image(data, mime_type(data), f"mouth_{slot}")
+        )
+    material = pbr_material(
+        "mouth",
+        tuple(mouth.color) + (1.0,)
+        if "base_color" not in textures
+        else (1.0, 1.0, 1.0, 1.0),
+        0.0,
+        float(mouth.roughness_factor) if "roughness" in textures else 0.35,
+        texture=textures.get("base_color"),
+    )
+    if "roughness" in textures:
+        material["pbrMetallicRoughness"]["metallicRoughnessTexture"] = {
+            "index": textures["roughness"]
+        }
+    if "normal" in textures:
+        material["normalTexture"] = {"index": textures["normal"]}
+    if mouth.clearcoat > 0:
+        material["extensions"] = {
+            "KHR_materials_clearcoat": {
+                "clearcoatFactor": float(mouth.clearcoat),
+                "clearcoatRoughnessFactor": 0.1,
+            }
+        }
+    material["extras"] = {
+        TEETH_EXTRAS: {"format": TEETH_EXTRAS_FORMAT, "role": "mouth", **settings}
+    }
+    parts = toothed.part_mask(*PARTS)
+    return [(doc.add_material(material), parts)]
+
+
+def _eye_normal_pixels(body, eyed, bent) -> np.ndarray:
+    """The tangent-space normal map of the eye texture's layout that lays ``bent`` (the baked
+    eyes' normals, :func:`opensculptboy.eyes.texture.carry_baked_normals`) on the file's
+    eyeballs, in their MikkTSpace frames (``body.tangents``)."""
+    from opensculptboy.eyes.texture import encode_normals
+
+    triangles = body.triangles[eyed.part_mask("eyeball")]
+    uvs = np.stack([body.uvs[:, 0], 1.0 - body.uvs[:, 1]], 1)  # OBJ convention
+    # glTF frame -> Anny's (rows: v_anny = v_gltf @ C) -> each eye's frame
+    surfaces = []
+    for side, frame in eyed.frames.items():
+        mine = (uvs[triangles, 0] < 0.5).all(1) == (side == "L")
+        tris = triangles[mine]
+        used = np.unique(tris)
+        local = np.full(len(body.uvs), -1)
+        local[used] = np.arange(len(used))
+        to_eye = ANNY_TO_GLTF @ frame.axes
+        normals = body.normals[used] @ to_eye
+        tangents = np.c_[body.tangents[used, :3] @ to_eye, body.tangents[used, 3]]
+        surfaces.append((uvs[used], local[tris], normals, tangents))
+    return encode_normals(bent, surfaces)
+
+
+# the key of the skin's subsurface settings and real-time skin maps in a material's extras
+SKIN_EXTRAS = "opensculptboy_skin"
+SKIN_EXTRAS_FORMAT = "opensculptboy/skin@1"
+
+
+def _texture(doc: GltfDocument, images: dict, slot: str, cache: dict) -> int | None:
+    """The texture of an image slot, written once per document."""
+    if slot not in images:
+        return None
+    if slot not in cache:
+        data = images[slot]
+        cache[slot] = doc.add_texture(doc.add_image(data, mime_type(data), slot))
+    return cache[slot]
+
+
+def _skin_material(
+    doc: GltfDocument,
+    skin,
+    images: dict,
+    cache: dict,
+    name: str = "skin",
+    prefix: str = "",
+    transform: dict | None = None,
+) -> dict:
+    """
+    The glTF material of a card's skin (:class:`~opensculptboy.material.SkinMaterial`): the
+    base colour, roughness and normal textures of ``images`` (slots ``prefix + "base_color"``
+    and so on) behind ``transform`` (a ``KHR_texture_transform``) when given, the specular
+    reflection (``KHR_materials_specular``, ``KHR_materials_ior``), and the subsurface
+    settings with the thickness and curvature maps in the extras under :data:`SKIN_EXTRAS`
+    (glTF has no ratified subsurface extension). ``cache`` maps the slots already written
+    to their textures.
+    """
+
+    def info(slot):
+        index = _texture(doc, images, slot, cache)
+        if index is None:
+            return None
+        entry = {"index": index}
+        if transform is not None:
+            entry["extensions"] = {"KHR_texture_transform": dict(transform)}
+        return entry
+
+    pbr = {"baseColorFactor": [float(c) for c in skin.base_color_factor]}
+    base = info(prefix + "base_color")
+    if base is not None:
+        pbr["baseColorTexture"] = base
+    pbr["metallicFactor"] = 0.0
+    rough = info(prefix + "roughness")
+    # a roughness texture is multiplied by the factor; without one, the number is the value
+    pbr["roughnessFactor"] = float(
+        skin.roughness_factor if rough is not None else skin.roughness_value
+    )
+    if rough is not None:
+        pbr["metallicRoughnessTexture"] = rough
+    material = {"name": name, "pbrMetallicRoughness": pbr}
+    normal = info(prefix + "normal")
+    if normal is not None:
+        normal["scale"] = float(skin.normal_scale)
+        material["normalTexture"] = normal
+    material["extensions"] = {
+        "KHR_materials_specular": {
+            "specularFactor": float(skin.specular),
+            "specularColorFactor": [float(c) for c in skin.specular_color],
+        },
+        "KHR_materials_ior": {"ior": float(skin.ior)},
+    }
+    extras = {"format": SKIN_EXTRAS_FORMAT, "subsurface": skin.subsurface_extras()}
+    for slot, scale_key, scale in (
+        ("thickness", "max_mm", skin.thickness_mm),
+        ("curvature", "max_per_m", skin.curvature_per_m),
+    ):
+        # the head tile keeps anny's UVs and reads the atlas's maps; the ear tile has its own
+        source = slot
+        if prefix + slot in images or prefix == "ears_":
+            source = prefix + slot
+        index = _texture(doc, images, source, cache)
+        if index is not None:
+            extras[slot] = {"index": index, "texCoord": 0, scale_key: float(scale)}
+    material["extras"] = {SKIN_EXTRAS: extras}
+    return material
+
+
+def _head_material(
+    doc: GltfDocument, model, body, skin, images: dict, cache: dict, topology: str
+):
+    """
+    The material of the head tile (:mod:`opensculptboy.texture.tiles`): the skin's settings
+    with the head tile's textures behind the tile's ``KHR_texture_transform``, and the mask
+    of the head tile's triangles; (None, None) when the card has no head tile textures.
+    """
+    from opensculptboy.export.body import head_tile_triangles
+    from opensculptboy.texture.tiles import head_texture_transform
+
+    if not any(slot.startswith("head_") for slot in images):
+        return None, None
+    transform = head_texture_transform(model, topology)
+    mask = head_tile_triangles(model, body, topology)
+    if transform is None or mask is None or not mask.any():
+        return None, None
+    material = _skin_material(doc, skin, images, cache, "head", "head_", transform)
+    # the slots that the head tile lacks fall back to the atlas, without the transform
+    for slot, key in (
+        ("base_color", "baseColorTexture"),
+        ("roughness", "metallicRoughnessTexture"),
+    ):
+        if "head_" + slot not in images and slot in images:
+            material["pbrMetallicRoughness"][key] = {
+                "index": _texture(doc, images, slot, cache)
+            }
+    if "head_normal" not in images and "normal" in images:
+        material["normalTexture"] = {
+            "index": _texture(doc, images, "normal", cache),
+            "scale": float(skin.normal_scale),
+        }
+    return doc.add_material(material), mask
+
+
+def _textured_material(doc: GltfDocument, images: dict) -> dict:
+    """The skin material with the baked base colour and normal textures of ``images``."""
+    texture = None
+    if "base_color" in images:
+        data = images["base_color"]
+        texture = doc.add_texture(doc.add_image(data, mime_type(data), "base_color"))
+    material = pbr_material("skin", (1.0, 1.0, 1.0, 1.0), 0.0, 0.6, texture=texture)
+    if "normal" in images:
+        data = images["normal"]
+        normal = doc.add_texture(doc.add_image(data, mime_type(data), "normal"))
+        material["normalTexture"] = {"index": normal}
+    return material
 
 
 def _animation(
@@ -251,6 +951,53 @@ def _animation(
         parents,
         default_local,
     )
+
+
+def _jaw_open_animation(
+    doc,
+    jaw_open,
+    labels,
+    default_local,
+    mesh_node,
+    targets,
+    name: str | None = None,
+    corrective: str | None = None,
+) -> dict:
+    """The animation ``jawOpen.jaw``: over one second the jaw turns by the turn of
+    :class:`~opensculptboy.mouth.jaw.JawOpen` and the target ``jawOpen.corrective`` goes from 0
+    to 1, which together give anny's jawOpen; the other targets keep their weights."""
+    from opensculptboy.mouth.jaw import CORRECTIVE, JAW_ANIMATION
+
+    name = name or JAW_ANIMATION
+    corrective = corrective or CORRECTIVE
+    jaw = labels.index("jaw")
+    C = ANNY_TO_GLTF
+    local_turn = C @ jaw_open.local_matrix() @ C.T
+    rest = default_local[jaw, :3, :3]
+    quats = _quaternions(np.stack([rest, rest @ local_turn]))
+    if np.dot(quats[0], quats[1]) < 0:
+        quats[1] = -quats[1]
+    times = doc.accessor(np.array([0.0, 1.0], np.float32), minmax=True)
+    weights = np.array([[t.weight for t in targets]] * 2, dtype=np.float32)
+    names = [t.name for t in targets]
+    weights[:, names.index(corrective)] = [0.0, 1.0]
+    samplers = [
+        {
+            "input": times,
+            "output": doc.accessor(quats.astype(np.float32)),
+            "interpolation": "LINEAR",
+        },
+        {
+            "input": times,
+            "output": doc.accessor(weights.reshape(-1)),
+            "interpolation": "LINEAR",
+        },
+    ]
+    channels = [
+        {"sampler": 0, "target": {"node": jaw, "path": "rotation"}},
+        {"sampler": 1, "target": {"node": mesh_node, "path": "weights"}},
+    ]
+    return {"name": name, "samplers": samplers, "channels": channels}
 
 
 def _character_pose(
@@ -281,6 +1028,10 @@ def _keyframes(
     default_local,
 ) -> dict:
     """One glTF animation for ``local-ref`` pose parameters (frames, bones, 4, 4)."""
+    if is_mouth_rig(character.rig):  # the mouth stays shut unless the pose moves it
+        from opensculptboy.mouth.rig import hold_mouth_bones
+
+        pose_parameters = hold_mouth_bones(model, character, pose_parameters)
     with torch.no_grad():
         out = model(
             pose_parameters=pose_parameters,

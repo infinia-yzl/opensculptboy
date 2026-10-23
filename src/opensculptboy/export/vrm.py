@@ -68,12 +68,21 @@ from opensculptboy.export.body import (
     top_skin_weights,
     triangulated_faces,
 )
+from opensculptboy.export.detail import (
+    ear_mesh,
+    mime_type,
+    resolve_within_budget,
+    texture_images,
+)
 from opensculptboy.export.document import (
     ELEMENT_ARRAY_BUFFER,
     MORPH_EPSILON,
     GltfDocument,
+    png_bytes,
 )
 from opensculptboy.export.gltf import _check_names
+from opensculptboy.export.mouth import clear_mouth, mouth_interior
+from opensculptboy.mouth.rig import MOUTH_RIG, is_mouth_rig, split_head_weights
 
 VRM1_LICENSE_URL = "https://vrm.dev/licenses/1.0/"
 PROJECT_URL = "https://github.com/infinia-yzl/opensculptboy"
@@ -424,6 +433,9 @@ class VrmSpec:
     skin_weights: np.ndarray
     skin_indices: np.ndarray
     parents: list[int]
+    # Skin textures (slot, PNG or JPEG bytes), written first so that their texture indices
+    # are their positions in this list.
+    images: list[tuple[str, bytes]] = dataclasses.field(default_factory=list)
 
 
 def vrm_version(version: str) -> str:
@@ -439,12 +451,21 @@ def check_topology(topology: str) -> None:
     body mesh with its eyes (``anny``, ``makehuman`` and their modifiers such as ``-quads``,
     ``-full`` or ``-notongue``). The eyes turn with look-at, and the expressions and the
     look-at ranges rest on the eyeball vertices of that mesh. The topology is only parsed,
-    so that no model is built and no data is downloaded.
+    so that no model is built and no data is downloaded. The ``sculpt`` topologies of
+    :mod:`opensculptboy.topology` keep anny's vertices and eyes, so they pass.
     """
     from anny.models.model_data import TopologyConfig
+    from opensculptboy.topology.sculpt import TOPOLOGIES, is_sculpt
 
     if not isinstance(topology, str):
         raise ValueError(f"The topology must be a string (got {topology!r}).")
+    if is_sculpt(topology):
+        if topology not in TOPOLOGIES:
+            raise ValueError(
+                f"Unknown topology {topology!r}; the sculpt topologies are "
+                f"{', '.join(TOPOLOGIES)}."
+            )
+        return
     try:
         config = TopologyConfig.from_string(topology)
     except ValueError as error:
@@ -498,18 +519,24 @@ def vrm_spec(
     keep_leg_spread: bool = False,
     keep_anny_vertex: bool = False,
     refine_weights: bool = True,
+    detail_level: int = 0,
+    detail_dir: str | pathlib.Path | None = None,
+    budget: str = "warn",
+    textures=None,
 ) -> VrmSpec:
     """
     The content of a VRM file of a character (see :func:`export_vrm` for the arguments).
+    ``budget`` chooses the detail mesh within the budget of the version (see
+    :func:`opensculptboy.export.detail.resolve_within_budget`).
     """
     # Every check runs before the model is built.
     version = vrm_version(version)
     character = character or Character()
     check_topology(character.topology)
-    if character.rig != "anny":
+    if character.rig not in ("anny", MOUTH_RIG):
         raise ValueError(
-            f"VRM export supports the 'anny' rig only; the character has the "
-            f"{character.rig!r} rig."
+            f"VRM export supports the 'anny' rig and the {MOUTH_RIG!r} rig; the character "
+            f"has the {character.rig!r} rig."
         )
     twist = twist or ("constraint" if version == "1.0" else "merge")
     if twist not in ("constraint", "merge"):
@@ -552,28 +579,63 @@ def vrm_spec(
     rest = output["rest_vertices"].detach().double().cpu().numpy()
     base, offsets = rest[0], rest[1:] - rest[0]
     B = output["rest_bone_poses"][0].detach().double().cpu().numpy()
+    # A reference's mouth poses (opensculptboy.mouth.poses): the vowels of speech as targets
+    # "mouth.<pose>", which the presets aa, ih, ou, ee and oh play in place of their mixes.
+    facial_actions = list(actions)
+    mouth_poses, inner_overrides = None, {}
+    if character.mouth_material() is not None:
+        from opensculptboy.mouth import poses as mouth_pose_data
+
+        mouth_poses = mouth_pose_data.card_poses(character, detail_dir)
+    pose_rows = {}  # target index -> pose
+    if mouth_poses is not None:
+        mouth_poses = mouth_poses.subset(mouth_pose_data.VRM_VISEMES.values())
+        for k, name in enumerate(mouth_poses.names):
+            inner_overrides[len(actions)] = mouth_poses.inner[k]
+            pose_rows[len(actions)] = k
+            actions.append(mouth_pose_data.target_name(name))
+        offsets = np.concatenate([offsets, mouth_poses.skin])
 
     # The file's skin weights. The inverse bind takes them refined for the body; the forward
     # bind skins Anny's rest mesh into the T-pose with Anny's own weights, and the file then
     # takes the weights of vrm_skin_weights as they are.
+    # On the anny-mouth rig the weights are those of the anny rig for the same body, with the
+    # head's weight shared with the jaw and the tongue (mouth.rig.split_head_weights).
+    weight_model, weight_B = model, B
+    if is_mouth_rig(character.rig):
+        weight_model = dataclasses.replace(character, rig="anny").build_model(
+            face_shapes=bool(character.face_shapes),
+            dtype=model.template_vertices.dtype,
+        )
+        weight_B = B[[labels.index(b) for b in weight_model.bone_labels]]
     if bind == "inverse":
         from opensculptboy.export.authoring.refine import body_skin_weights
 
         weights, indices, refinement = body_skin_weights(
-            model,
+            weight_model,
             twist,
             base,
-            B,
+            weight_B,
             phenotype=character.phenotype,
             keep_leg_spread=keep_leg_spread,
             refine=refine_weights,
         )
     else:
-        weights, indices = vrm_tables.vrm_skin_weights(model, twist)
+        weights, indices = vrm_tables.vrm_skin_weights(weight_model, twist)
         refinement = "forward bind" if refine_weights else "off"
+    if weight_model is not model:
+        weights, indices = split_head_weights(
+            weights, indices, list(weight_model.bone_labels), model
+        )
     w4, i4, _ = top_skin_weights(weights, indices, 4)
     w4 = w4.astype(np.float64)
     w4 /= w4.sum(axis=1, keepdims=True)
+    # Anny's mouth cavity behind the skin, in the rest mesh and in each facial action; a
+    # reference's inner mouth takes the cavity's place, so it keeps the cavity as it is.
+    replica_mouth = character.mouth_material() is not None
+    base, offsets, _ = clear_mouth(
+        base, offsets, None if replica_mouth else mouth_interior(model)
+    )
     rb = tpose.rebind(
         model,
         base,
@@ -585,14 +647,175 @@ def vrm_spec(
         keep_leg_spread=keep_leg_spread,
     )
     eyes = vrm_tables.eyeball_vertices(model)
-    targets = [
-        vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
-        for a, t in zip(actions, rb.targets)
-    ]
-    # The normals of the rebind: for the inverse bind, Anny's rest normals mapped as the targets.
-    body = build_body(
-        model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
+    detail = resolve_within_budget(
+        model,
+        character,
+        detail_level,
+        "vrm1" if version == "1.0" else "vrm0",
+        budget,
+        detail_dir,
     )
+    images = texture_images(character, textures, detail_dir)
+    skin = character.skin_material()
+    eye = character.eye_material()
+    ear_topology, ears = ear_mesh(character, skin, images, detail, detail_dir)
+    if textures is None:  # the card's maps, baked on its finest level
+        from opensculptboy.texture.levels import level_normals
+
+        images = level_normals(
+            model, character, images, detail, ear_topology, ears, base, detail_dir
+        )
+    eyed = None
+    teeth = character.teeth_material()
+    mouth = character.mouth_material()
+    if mouth is not None:  # the reference's inner mouth holds its own teeth
+        teeth = None
+    toothed = None
+    if detail is None:
+        targets = [
+            vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
+            for a, t in zip(actions, rb.targets)
+        ]
+        # The normals of the rebind: for the inverse bind, Anny's rest normals mapped as the
+        # targets.
+        vertices, normals = rb.vertices, rb.normals
+        mesh, rest_now = None, base
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
+
+            baked = None if "eye_base_color" in images else images.get("eyes")
+            eyed = eyed_mesh(
+                model, None, base, eye, "vrm", baked, skin_baked=baked_skin(images)
+            )
+            normals = eyed.normals(vertices, normals)
+            weights, indices = eyed.skin_weights(weights, indices)
+            targets = eyed.targets(np.stack(targets)) if len(targets) else targets
+            vertices = eyed.vertices(vertices)
+            mesh, rest_now = eyed, eyed.vertices(base)
+        if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
+            toothed = _toothed(model, character, None, mesh, rest_now, base, detail_dir)
+            normals = toothed.normals(vertices, normals)
+            weights, indices = toothed.skin_weights(weights, indices)
+            targets = (
+                toothed.targets(np.stack(targets), inner_overrides)
+                if len(targets)
+                else targets
+            )
+            vertices = toothed.vertices(vertices)
+            if eyed is not None:
+                eyed.trailing_triangles = len(toothed.teeth.triangles)
+            mesh = toothed
+        if mesh is not None:
+            body = build_body(
+                model,
+                vertices,
+                targets,
+                G,
+                4,
+                weights,
+                indices,
+                normals=normals,
+                mesh=mesh,
+            )
+            body.anny_source = _anny_source(eyed, toothed)[body.source]
+        else:
+            body = build_body(
+                model, rb.vertices, targets, G, 4, weights, indices, normals=rb.normals
+            )
+    else:
+        # The detail mesh: Anny's rest mesh subdivided with the card's offsets, rebound into
+        # the T-pose with the subdivided file weights. The lid-only targets zero the eyeballs
+        # before the subdivision, which keeps them zero (the eyeballs are closed meshes).
+        rest_targets = np.stack(
+            [
+                vrm_tables.lid_only(t, eyes) if a.startswith("eyeLook") else t
+                for a, t in zip(actions, offsets)
+            ]
+        ).reshape(len(actions), *base.shape)
+        weights, indices = detail.skin_weights(weights, indices)
+        w4, i4, _ = top_skin_weights(weights, indices, 4)
+        w4 = w4.astype(np.float64)
+        w4 /= w4.sum(axis=1, keepdims=True)
+        full_w, full_i = detail.skin_weights(
+            model.vertex_bone_weights.detach().cpu().double().numpy(),
+            model.vertex_bone_indices.cpu().numpy(),
+        )
+        level_targets = detail.targets(rest_targets)
+        if pose_rows:  # each pose's own carry on the level (mouth.poses)
+            level_targets = mouth_pose_data.add_level_corrections(
+                level_targets, detail.topology, mouth_poses, pose_rows, None
+            )
+        fine, fine_targets, _ = clear_mouth(
+            detail.vertices(base),
+            level_targets,
+            None if replica_mouth else mouth_interior(model, detail.topology),
+        )
+        rb = tpose.rebind(
+            model,
+            fine,
+            fine_targets,
+            B,
+            w4,
+            i4,
+            method=bind,
+            keep_leg_spread=keep_leg_spread,
+            triangles=detail.topology.triangles,
+            vertex_bone_weights=full_w,
+            vertex_bone_indices=full_i,
+        )
+        keep_anny_vertex = keep_anny_vertex and detail.subdiv == 0
+        vertices, targets, normals, mesh = (
+            rb.vertices,
+            rb.targets,
+            rb.normals,
+            ear_topology,
+        )
+        if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
+
+            baked = None if "eye_base_color" in images else images.get("eyes")
+            eyed = eyed_mesh(
+                model,
+                mesh,
+                fine,
+                eye,
+                "vrm",
+                baked,
+                skin_baked=baked_skin(images),
+            )
+            normals = eyed.normals(vertices, normals)
+            weights, indices = eyed.skin_weights(weights, indices)
+            targets, vertices = eyed.targets(targets), eyed.vertices(vertices)
+            ears = eyed.extend_mask(ears)
+            mesh = eyed
+        if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
+            rest_now = detail.vertices(base)
+            if eyed is not None:
+                rest_now = eyed.vertices(rest_now)
+            toothed = _toothed(
+                model, character, ear_topology, mesh, rest_now, base, detail_dir
+            )
+            normals = toothed.normals(vertices, normals)
+            weights, indices = toothed.skin_weights(weights, indices)
+            targets = toothed.targets(targets, inner_overrides)
+            vertices = toothed.vertices(vertices)
+            ears = toothed.extend_mask(ears)
+            if eyed is not None:
+                eyed.trailing_triangles = len(toothed.teeth.triangles)
+            mesh = toothed
+        body = build_body(
+            model,
+            vertices,
+            targets,
+            G,
+            4,
+            weights,
+            indices,
+            normals=normals,
+            mesh=mesh,
+        )
+        if eyed is not None or toothed is not None:
+            body.anny_source = _anny_source(eyed, toothed)[body.source]
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
@@ -621,13 +844,93 @@ def vrm_spec(
     inverse_bind = np.tile(np.eye(4), (len(labels), 1, 1))
     inverse_bind[:, :3, 3] = -joints
     skins = [SpecSkin(character.rig, list(range(len(labels))), inverse_bind, root)]
+    if mouth is not None:  # the maps of the reference's inner mouth
+        for slot, name in mouth.textures().items():
+            if slot != "roughness":
+                images[f"mouth_{slot}"] = (
+                    pathlib.Path(detail_dir or ".") / name
+                ).read_bytes()
+    # VRM files hold the base colour, the normal map, the eyes and the head tile's two maps
+    for slot in [k for k in images if k not in VRM_TEXTURE_SLOTS]:
+        images.pop(slot)
+    # the eyes of opensculptboy.eyes draw a baked eye texture into their own
+    baked_eyes = images.pop("eyes", None) if eyed is not None else None
+    if skin is None:
+        images.pop("head_base_color", None)
+        images.pop("head_normal", None)
+    ear_material = None
+    if ears is not None:
+        ear_material = _tile_toon_material("ears", images, skin, "ears_")
+    if ear_material is None:
+        images.pop("ears_base_color", None)
+        images.pop("ears_normal", None)
+    head_material = _head_toon_material(images, model, skin, character.topology)
+    if head_material is None:
+        images.pop("head_base_color", None)
+        images.pop("head_normal", None)
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
+    if set(images) - {"eyes", "eyes_normal", "eye_base_color"} - MOUTH_SLOTS:
+        materials = [_textured_toon_material(images, skin)]
+    if "normal" in images or "head_normal" in images or "mouth_normal" in images:
+        body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
+    primitives = [SpecPrimitive(material=0)]
+    eye_material = None if eyed is not None else _eye_toon_material(images, model)
+    eye_triangles = None
+    if eyed is not None:  # the eyes of opensculptboy.eyes: their texture and the matcap
+        eye_parts = _eye_part_toon_materials(images, eyed, eye, model, baked_eyes)
+    if eye_material is not None:
+        from opensculptboy.export.body import eyeball_triangles
+
+        eye_triangles = eyeball_triangles(
+            model, body, None if detail is None else detail.topology
+        )
+    rest = np.ones(len(body.triangles), bool)
+    extra = []
+    if eye_triangles is not None and eye_triangles.any():
+        # the eyeballs: the same vertices and targets, their own texture
+        materials.append(eye_material)
+        extra.append(SpecPrimitive(len(materials) - 1, body.triangles[eye_triangles]))
+        rest &= ~eye_triangles
+    else:
+        images.pop("eyes", None)
+    if eyed is not None:
+        for part_material, part in eye_parts:
+            materials.append(part_material)
+            extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
+            rest &= ~part
+    if toothed is not None and mouth is not None:  # the reference's inner mouth
+        rest &= ~toothed.hidden_mask()
+        for part_material, part in _mouth_toon_materials(toothed, mouth, images):
+            materials.append(part_material)
+            extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
+            rest &= ~part
+    elif toothed is not None:  # the teeth of opensculptboy.teeth
+        for part_material, part in _teeth_toon_materials(toothed, teeth):
+            materials.append(part_material)
+            extra.append(SpecPrimitive(len(materials) - 1, body.triangles[part]))
+            rest &= ~part
+    if ear_material is not None and (ears & rest).any():
+        ears = ears & rest
+        materials.append(ear_material)
+        extra.insert(0, SpecPrimitive(len(materials) - 1, body.triangles[ears]))
+        rest &= ~ears
+    if head_material is not None:
+        from opensculptboy.export.body import head_tile_triangles
+
+        head = head_tile_triangles(model, body, character.topology)
+        if head is not None and (head & rest).any():
+            head &= rest
+            materials.append(head_material)
+            extra.insert(0, SpecPrimitive(len(materials) - 1, body.triangles[head]))
+            rest &= ~head
+    if extra:
+        primitives = [SpecPrimitive(material=0, triangles=body.triangles[rest])] + extra
     meshes = [
         SpecMesh(
             name="body",
             body=body,
             translation=offset,
-            primitives=[SpecPrimitive(material=0)],
+            primitives=primitives,
             target_names=actions,
         )
     ]
@@ -636,12 +939,18 @@ def vrm_spec(
 
     humanoid = {
         bone: labels.index(label)
-        for bone, label in vrm_tables.humanoid_bones(version).items()
+        for bone, label in vrm_tables.humanoid_bones(version, labels).items()
     }
     missing = sorted(vrm_tables.required_bones(version) - set(humanoid))
     if missing:
         raise ValueError(f"The humanoid map lacks the required bones {missing}.")
-    expressions = expression_binds(vrm_tables.expressions(version, actions), meshes)
+    table = vrm_tables.expressions(version, facial_actions)
+    if mouth_poses is not None:
+        for e in table:
+            pose = mouth_pose_data.VRM_VISEMES.get(e.name)
+            if e.preset and pose in mouth_poses.names:
+                e.mix = {mouth_pose_data.target_name(pose): 1.0}
+    expressions = expression_binds(table, meshes)
     _check_expressions(version, expressions)
     head = labels.index("head")
     eyes_mid = (joints[labels.index("eye.L")] + joints[labels.index("eye.R")]) / 2
@@ -678,6 +987,14 @@ def vrm_spec(
         "frame": "metres, Y up, the figure faces "
         + ("+Z" if version == "1.0" else "-Z"),
     }
+    if detail is not None:
+        extras["detail"] = detail.extras()
+    if eyed is not None:
+        extras["eyes"] = eyed.extras
+    if toothed is not None:
+        extras["teeth" if mouth is None else "inner_mouth"] = toothed.extras
+    if images:
+        extras["textures"] = sorted(images)
     return VrmSpec(
         version=version,
         frame=G.copy(),
@@ -702,7 +1019,235 @@ def vrm_spec(
         skin_weights=w4,
         skin_indices=i4,
         parents=parents,
+        images=[(slot, images[slot]) for slot in VRM_TEXTURE_SLOTS if slot in images],
     )
+
+
+# the maps of a reference's inner mouth (opensculptboy.mouth.inner)
+MOUTH_SLOTS = {"mouth_base_color", "mouth_normal"}
+# the textures of a VRM file, in the order of VrmSpec.images (their texture indices)
+VRM_TEXTURE_SLOTS = (
+    "base_color",
+    "normal",
+    "eyes",
+    "head_base_color",
+    "head_normal",
+    "ears_base_color",
+    "ears_normal",
+    "eye_base_color",
+    "eye_matcap",
+    "mouth_base_color",
+    "mouth_normal",
+)
+
+
+def _texture_index(images: dict, slot: str) -> int | None:
+    present = [k for k in VRM_TEXTURE_SLOTS if k in images]
+    return present.index(slot) if slot in present else None
+
+
+def _skin_ramp(material: mtoon.ToonMaterial, skin) -> None:
+    """Set the MToon ramp of a card's skin material: the shade colour and the shading shift
+    and toony factors of :func:`opensculptboy.export.skin_ramp.skin_toon_ramp`, which
+    imitate the warmth of its subsurface scattering."""
+    from opensculptboy.export.skin_ramp import skin_toon_ramp
+
+    ramp = skin_toon_ramp(skin)
+    factor = skin.base_color_factor
+    material.base_color = tuple(float(c) for c in factor)
+    material.shade_color = tuple(r * float(c) for r, c in zip(ramp.shade_ratio, factor))
+    material.shading_shift = ramp.shading_shift
+    material.shading_toony = ramp.shading_toony
+    material.normal_scale = float(skin.normal_scale)
+
+
+def _textured_toon_material(images: dict, skin=None) -> mtoon.ToonMaterial:
+    """
+    The skin's MToon material with the baked textures: the base colour texture is the lit and
+    the shade texture (the shade colour darkens it), and the normal texture is the normal map.
+    The texture indices follow the order of ``VrmSpec.images``, which come first in the file.
+    A card's skin material (``skin``) sets the ramp (:func:`_skin_ramp`).
+    """
+    material = mtoon.soft_material("skin", (1.0, 1.0, 1.0, 1.0))
+    material.shade_color = (0.78, 0.62, 0.60)
+    if "base_color" in images:
+        material.base_texture = material.shade_texture = _texture_index(
+            images, "base_color"
+        )
+    if "normal" in images:
+        material.normal_texture = _texture_index(images, "normal")
+    if skin is not None:
+        _skin_ramp(material, skin)
+    return material
+
+
+def _tile_toon_material(name: str, images: dict, skin, prefix: str, transform=None):
+    """The MToon material of a tile of the skin (its base colour and normal map, slots
+    ``prefix + "base_color"`` and ``prefix + "normal"``) with the skin's ramp, or None when
+    the card has no skin material or the tile lacks either map (MToon 0.x applies one
+    transform to every texture of a material)."""
+    if (
+        skin is None
+        or prefix + "base_color" not in images
+        or prefix + "normal" not in images
+    ):
+        return None
+    material = mtoon.soft_material(name, (1.0, 1.0, 1.0, 1.0))
+    material.base_texture = material.shade_texture = _texture_index(
+        images, prefix + "base_color"
+    )
+    material.normal_texture = _texture_index(images, prefix + "normal")
+    material.texture_transform = transform
+    _skin_ramp(material, skin)
+    return material
+
+
+def _head_toon_material(images: dict, model, skin, topology: str):
+    """
+    The head tile's MToon material (:mod:`opensculptboy.texture.tiles`): the skin's ramp
+    with the head tile's base colour and normal map behind its texture transform, or None
+    when the card has no skin material or the tile lacks either map (MToon 0.x applies one
+    transform to every texture of a material).
+    """
+    from opensculptboy.texture.tiles import head_texture_transform
+
+    transform = head_texture_transform(model, topology)
+    if transform is None:
+        return None
+    return _tile_toon_material("head", images, skin, "head_", transform)
+
+
+def _eye_toon_material(images: dict, model) -> mtoon.ToonMaterial | None:
+    """
+    The eyeballs' MToon material with the eye texture as the lit and the shade texture, behind
+    the texture transform of :func:`opensculptboy.texture.eyes.eye_texture_transform`, or None
+    without an eye texture. Its texture index follows the skin's textures in ``VrmSpec.images``.
+    """
+    from opensculptboy.texture.eyes import eye_texture_transform
+
+    if "eyes" not in images:
+        return None
+    transform = eye_texture_transform(model)
+    if transform is None:
+        return None
+    material = mtoon.soft_material("eyes", (1.0, 1.0, 1.0, 1.0))
+    material.shade_color = (0.85, 0.85, 0.85)
+    material.base_texture = material.shade_texture = _texture_index(images, "eyes")
+    material.texture_transform = transform
+    return material
+
+
+def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None):
+    """
+    The MToon materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (the
+    single-surface eyeball, the caruncle and the skin of the socket), with their textures put
+    into ``images`` (slots ``eye_base_color`` and ``eye_matcap``): the eye texture is the lit
+    and the shade texture, with a soft ramp, and the matcap of
+    :func:`opensculptboy.eyes.texture.matcap_pixels` (scaled by ``eye.highlight``) gives the
+    wet highlight, which stays toward the light of the view as the eye turns. MToon 0.x does
+    not mask the matcap, and neither does this material in 1.0. ``baked`` is the baked eye
+    texture on anny's atlas, if any.
+    """
+    from opensculptboy.eyes.mesh import eye_texture
+    from opensculptboy.eyes.texture import matcap_pixels
+
+    if "eye_base_color" in images:
+        source = {"source": "texture"}
+    else:
+        pixels, source = eye_texture(eye, eyed, model, baked)
+        images["eye_base_color"] = png_bytes(pixels)
+    images["eye_matcap"] = png_bytes(matcap_pixels())
+    eyed.extras = {
+        "radius_mm": [float(f.radius * 1000) for f in eyed.frames.values()],
+        "bulge": {k: float(v) for k, v in eyed.bulge.items()},
+        "cornea": False,
+        "caruncle": bool(eye.caruncle),
+        **source,
+    }
+    out = []
+    eyeball = mtoon.ToonMaterial(
+        name="eyes",
+        shade_color=(0.82, 0.80, 0.80),
+        shading_shift=-0.2,
+        shading_toony=0.4,
+        gi_equalization=0.6,
+    )
+    eyeball.base_texture = eyeball.shade_texture = _texture_index(
+        images, "eye_base_color"
+    )
+    eyeball.matcap_texture = _texture_index(images, "eye_matcap")
+    k = float(eye.highlight)
+    eyeball.matcap_factor = (k, k, k)
+    out.append((eyeball, eyed.part_mask("eyeball")))
+    pink_mask = eyed.part_mask("caruncle", "socket")
+    # a fitted character on sculpt keeps its corner in the skin's material (eyed_mesh)
+    if eye.caruncle and pink_mask.any():
+        pink = mtoon.soft_material("conjunctiva", tuple(eye.caruncle_color) + (1.0,))
+        pink.matcap_texture = eyeball.matcap_texture
+        pink.matcap_factor = (0.5 * k, 0.5 * k, 0.5 * k)
+        out.append((pink, pink_mask))
+    return out
+
+
+def _mouth_toon_materials(toothed, mouth, images):
+    """The MToon material and triangle mask of a reference's inner mouth: its own base
+    colour (lit and shade) and normal maps, with a soft ramp, over every part."""
+    from opensculptboy.teeth.mesh import PARTS
+
+    toothed.extras = dict(
+        mouth.extras(),
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+        hidden=int(toothed.hidden_mask().sum()),
+    )
+    colour = (
+        (1.0, 1.0, 1.0, 1.0)
+        if "mouth_base_color" in images
+        else tuple(mouth.color) + (1.0,)
+    )
+    material = mtoon.soft_material("mouth", colour)
+    material.shade_color = (0.7, 0.55, 0.55)
+    material.base_texture = material.shade_texture = _texture_index(
+        images, "mouth_base_color"
+    )
+    material.normal_texture = _texture_index(images, "mouth_normal")
+    return [(material, toothed.part_mask(*PARTS))]
+
+
+def _toothed(model, character, rows_mesh, mesh, rest, base, detail_dir):
+    """The :class:`~opensculptboy.teeth.mesh.ToothedMesh` of a file: the card's teeth after
+    ``mesh`` (the file's mesh with its eyes, or None for anny's own), whose rest vertices are
+    ``rest``; ``rows_mesh`` is the file's mesh before the eyes (None for anny's own) and
+    ``base`` the rest vertices of anny's own mesh."""
+    from opensculptboy.teeth.mesh import card_teeth, toothed_mesh
+
+    return toothed_mesh(
+        model, rows_mesh, mesh, rest, card_teeth(model, character, detail_dir, base)
+    )
+
+
+def _anny_source(eyed, toothed) -> np.ndarray:
+    """The Anny vertex of each vertex of a file's mesh with its eyes and its teeth."""
+    source = None if eyed is None else eyed.anny_vertex()
+    return source if toothed is None else toothed.anny_vertex(source)
+
+
+def _teeth_toon_materials(toothed, teeth):
+    """The MToon materials and triangle masks of the teeth: the enamel, and the gums of
+    generic teeth."""
+    toothed.extras = dict(
+        teeth.extras(),
+        points=int(len(toothed.teeth.points)),
+        triangles=int(len(toothed.teeth.triangles)),
+    )
+    out = []
+    enamel = mtoon.soft_material("teeth", tuple(teeth.color) + (1.0,))
+    enamel.shade_color = tuple(0.75 * float(c) for c in teeth.color)
+    out.append((enamel, toothed.part_mask("teeth")))
+    gums = toothed.part_mask("gums")
+    if gums.any():
+        out.append((mtoon.soft_material("gums", tuple(teeth.gum_color) + (1.0,)), gums))
+    return out
 
 
 def _rest_output(model, character: Character, actions, face_labels) -> dict:
@@ -894,6 +1439,8 @@ def portrait_png(
 def vrm_document(spec: VrmSpec) -> GltfDocument:
     """The glTF document of a spec, with the ``VRMC_vrm`` (1.0) or ``VRM`` (0.x) extension."""
     doc = GltfDocument(f"OpenSculptBoy VRM exporter (anny {_anny_version()})")
+    for slot, data in spec.images:
+        doc.add_texture(doc.add_image(data, mime_type(data), slot))
     properties = []
     for material in spec.materials:
         if spec.version == "1.0":
@@ -1257,6 +1804,9 @@ def export_vrm(
     budget: str = "warn",
     keep_anny_vertex: bool = False,
     refine_weights: bool = True,
+    detail_level: int = 0,
+    detail_dir: str | pathlib.Path | None = None,
+    textures=None,
 ) -> dict:
     """
     Write a character as a VRM file.
@@ -1297,6 +1847,16 @@ def export_vrm(
             :func:`~opensculptboy.export.vrm_tables.vrm_skin_weights`. When the data file
             ``data/vrm/skin_weights.safetensors`` is missing or was made for another model,
             the export warns and keeps those weights. The forward bind never refines.
+        detail_level: the finest level of the character's detail layer to write (see
+            :func:`opensculptboy.export.gltf.export_glb`). Unless ``budget`` is ``"off"``,
+            the file keeps within the triangle budget of its version: a full level over it
+            gives the level on the head and the neck alone, and a level still over it steps
+            down, with a :class:`~opensculptboy.export.budget.BudgetWarning`. The scene
+            extras record the level in use.
+        detail_dir: the folder that the paths of the detail layer are relative to.
+        textures: None for the skin textures of the card's detail layer, False for none, or
+            a mapping of ``"base_color"`` and ``"normal"`` to PNG or JPEG files; they fill
+            the base, shade and normal slots of the skin's MToon material.
 
     Returns:
         A summary: counts, the file size, the version and the budget messages.
@@ -1325,6 +1885,10 @@ def export_vrm(
         keep_leg_spread=keep_leg_spread,
         keep_anny_vertex=keep_anny_vertex,
         refine_weights=refine_weights,
+        detail_level=detail_level,
+        detail_dir=detail_dir,
+        budget=budget,
+        textures=textures,
     )
     return write_vrm(spec, path, budget=budget)
 
