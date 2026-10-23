@@ -218,12 +218,12 @@ class FitOptions:
     # lip_seal_max_shift (metres, their mean) to reach the line
     lip_seal_max_gap: float = 0.001
     lip_seal_max_shift: float = 0.004
-    # after the seal and the repair, the skin within lip_corner_radius (metres) of each corner of
-    # the mouth (outside the inside of the mouth) is faired on the reference (fair_skin) with
-    # this fairness on each level (_per_level; 0: none), the sealed rows held by
-    # lip_corner_hold: the lips' roll is left out of the skin fairing, and the seal and the
-    # repair left a crumple of small folds where anny's lips meet the cheek, which the closed
-    # mouth showed as short lines at its corners
+    # after the seal and the repair, the skin within lip_corner_radius (metres) of each end of
+    # the reference's lip line (the mouth's visible corners), outside the inside of the mouth,
+    # is faired on the reference (fair_skin) with this fairness on each level (_per_level; 0:
+    # none), the sealed rows held by lip_corner_hold: the skin fairing leaves the lips' roll
+    # out, and the seal and the repair left small folds where anny's lips meet the cheek, which
+    # the closed mouth showed as short lines at its corners
     lip_corner_fairness: float | tuple = (0.0, 4.0, 160.0)
     lip_corner_radius: float = 0.004
     lip_corner_hold: float = 1000.0
@@ -3207,7 +3207,7 @@ def fit_levels(
                     parametric,
                     topology.triangles,
                     target,
-                    np.stack([lip_box.left, lip_box.right]),
+                    lip_line_.ends,
                     np.asarray(topology.apply(cavity0)) > 0.5,
                     (seal.upper, seal.lower),
                     lambda p, r: R_.pose_vertices(
