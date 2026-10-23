@@ -387,7 +387,7 @@ def tier_textures(
             if not tier.ear_tile_size or mesh[0] == 0 or slot[5:] not in tier.maps:
                 continue
             size = (tier.ear_tile_size, tier.ear_tile_size // 2)
-        elif slot == "eyes":
+        elif slot in ("eyes", "eyes_normal"):
             size = (tier.eye_size, tier.eye_size // 2)
         else:
             continue

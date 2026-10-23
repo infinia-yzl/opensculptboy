@@ -390,7 +390,8 @@ class TestCommand(unittest.TestCase):
             )
 
     def test_export_tier_with_eyes(self):
-        """``--eyes`` puts the eyes of opensculptboy.eyes into a tier's file."""
+        """``--eyes`` and ``--teeth`` put the eyes of opensculptboy.eyes and the teeth of
+        opensculptboy.teeth into a tier's file."""
         import contextlib
 
         from opensculptboy.cli import main
@@ -407,7 +408,14 @@ class TestCommand(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(
                     main(
-                        ["export", str(folder / "m.glb"), "--tier", "medium", "--eyes"]
+                        [
+                            "export",
+                            str(folder / "m.glb"),
+                            "--tier",
+                            "medium",
+                            "--eyes",
+                            "--teeth",
+                        ]
                     ),
                     0,
                 )
@@ -426,7 +434,8 @@ class TestCommand(unittest.TestCase):
                     0,
                 )
             self.assertLessEqual(
-                {"eyes", "cornea", "conjunctiva"}, material_names(folder / "m.glb")
+                {"eyes", "cornea", "conjunctiva", "teeth", "gums"},
+                material_names(folder / "m.glb"),
             )
             vrm = material_names(folder / "l.vrm")
             # the single-surface MToon eyes of VRM files, and the caruncle's material

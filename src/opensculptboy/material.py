@@ -112,7 +112,16 @@ SUBSURFACE_DEFAULTS = {
     "method": "random_walk_skin",
 }
 _KEYS = set(TEXTURE_KEYS) | set(DEFAULTS)
-_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes", "teeth", "mouth", "tiers"}
+_KEYS |= {
+    "subsurface",
+    "head",
+    "ears",
+    "eyes",
+    "reference_eyes",
+    "teeth",
+    "mouth",
+    "tiers",
+}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -714,6 +723,8 @@ def check_mouth(data: dict) -> dict:
     if "clearcoat" in data:
         _number(data["clearcoat"], "mouth clearcoat", 0.0, 1.0)
     return data
+
+
 def _check_tiers(tiers) -> None:
     if not isinstance(tiers, dict):
         raise ValueError("material tiers must be a JSON object keyed by tier name.")

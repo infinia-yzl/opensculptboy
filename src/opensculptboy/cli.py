@@ -245,6 +245,7 @@ def _export_tier(args, parser) -> int:
             f"{', '.join(given)}: not for the {kind} file of the {tier.name} tier."
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
+    character = _with_teeth(character, args.teeth, parser)
     kwargs = {}
     if is_vrm:
         from opensculptboy.export.vrm import VrmMeta

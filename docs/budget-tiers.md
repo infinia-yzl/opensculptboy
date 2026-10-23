@@ -44,6 +44,8 @@ The maps of each tier, on the atlas and on the tiles that the tier keeps:
 
 `--morph-targets`, `--influences`, `--animation` and the VRM options still apply to a tier and override its choices; `--detail` does not, since the tier sets the level.
 
+The eyes, the teeth and a reference's inner mouth come with every tier: `--eyes` and `--teeth` apply to a tier as they do to any export, the eye texture and its normal map shrink to the tier's eye size, and a card with a reference's inner mouth keeps its pieces, their maps (at their own size) and its mouth poses (`mouth.<pose>` targets in glTF, the vowels in VRM) in every tier.
+
 ## Budgets
 
 | Tier | Triangle budget | Largest texture | Texels (every map present) | GPU memory, RGBA8 with mipmaps | GPU memory, BC7 with mipmaps |
