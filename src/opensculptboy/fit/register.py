@@ -165,6 +165,9 @@ class FitOptions:
     # blend turned more faces of the synthetic target's eye corners over than anny's own)
     skin_fair_lid_blend: float | tuple = (0.0, 0.0, 50.0)
     skin_fair_lid_blend_rings: int = 1
+    # the lips' roll that the fairing leaves out: the skin within this many faces of the
+    # inside of the mouth on level 0 (None: lip_seal_rings, the skin the seal moves)
+    skin_fair_lip_rings: int | None = None
     # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
     # of the inside of the mouth, which follow their neighbours when it is 0
     lip_margin_weight: float = 0.0
@@ -227,6 +230,7 @@ class FitOptions:
     lip_corner_fairness: float | tuple = (0.0, 4.0, 160.0)
     lip_corner_radius: float = 0.004
     lip_corner_hold: float = 1000.0
+    lip_corner_normal_threshold: float = 0.5
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -1578,6 +1582,7 @@ def _fair_corners(
     hold,
     iterations,
     max_distance,
+    normal_threshold: float = 0.5,
 ):
     """Fair the skin around the mouth's corners on the reference (:func:`fair_skin`): the
     vertices within ``radius`` of either corner (``corners``, posed and placed), but those of
@@ -1605,6 +1610,7 @@ def _fair_corners(
         fairness,
         iterations,
         max_distance,
+        normal_threshold,
         anchor=anchor,
     )
     rows = np.nonzero(region)[0]
@@ -2851,7 +2857,11 @@ def fit_levels(
         ).astype(np.float64)
         # the lips' inner margin, the lining of the mouth and the lips' roll (the skin the
         # seal of the lips moves) keep to the mouth's own rules
-        roll0 = mouth_lining(model, options.lip_seal_rings) > 0
+        roll0 = (
+            mouth_lining(model, options.skin_fair_lip_rings) > 0
+            if options.skin_fair_lip_rings is not None
+            else mouth_lining(model, options.lip_seal_rings) > 0
+        )
         skin0[(margin > 0) | (lining0 > 0) | roll0] = 0.0
     measures, meshes = {}, {}
     previous_ear = None
@@ -3221,6 +3231,7 @@ def fit_levels(
                     options.lip_corner_hold,
                     options.skin_fair_iterations,
                     options.skin_fair_distance,
+                    options.lip_corner_normal_threshold,
                 )
                 _log(
                     options,
