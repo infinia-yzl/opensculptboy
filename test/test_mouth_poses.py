@@ -396,6 +396,139 @@ class TestSides(unittest.TestCase):
             np.testing.assert_allclose(got[:, 1], expected, atol=1e-12)
 
 
+def _bilinear(n_coarse):
+    """The operator from a coarse grid of n by n points (_grid) to the grid of 2n - 1 by
+    2n - 1 points over the same square, as one SparseOperator."""
+    from anny.utils.subdivision import SparseOperator
+
+    n = 2 * n_coarse - 1
+    rows, cols, vals = [], [], []
+    for i in range(n):
+        for j in range(n):
+            ii = [i // 2] if i % 2 == 0 else [i // 2, i // 2 + 1]
+            jj = [j // 2] if j % 2 == 0 else [j // 2, j // 2 + 1]
+            w = 1.0 / (len(ii) * len(jj))
+            for a in ii:
+                for b in jj:
+                    rows.append(i * n + j)
+                    cols.append(a * n_coarse + b)
+                    vals.append(w)
+    return SparseOperator(rows, cols, vals, (n * n, n_coarse * n_coarse))
+
+
+class TestFineCarry(unittest.TestCase):
+    def test_level0_takes_the_finer_motion(self):
+        """Level 0's offsets are solved so that their subdivision follows the motion carried
+        to the finer level, each row held to its own offset."""
+        from types import SimpleNamespace
+        from unittest import mock
+
+        op = _bilinear(11)
+        Vf, Tf, _ = _grid(n=21)
+        rng = np.random.default_rng(1)
+        truth = rng.normal(scale=1e-3, size=(op.shape[1], 3))
+        fine_field = op.apply(truth)
+        coarse = truth + rng.normal(scale=1e-3, size=truth.shape)
+        topology = SimpleNamespace(operators=[op], triangles=Tf)
+        n0 = op.shape[1]
+        data = P._fine_setup(
+            (topology, Vf),
+            np.ones(n0, bool),
+            (np.zeros(n0, np.int8), np.zeros(1, np.int8)),
+            np.zeros(n0),
+        )
+        with mock.patch.object(P, "carry_field", return_value=(fine_field, None)):
+            out = P._through_fine(coarse, data, None, None, None)
+        before = np.abs(op.apply(coarse) - fine_field).mean()
+        after = np.abs(op.apply(out) - fine_field).mean()
+        self.assertLess(after, 0.6 * before)
+
+    def test_rounded_pose_corners_follow(self):
+        """A pose that moves only a band of the reference narrower than level 0's rows (the
+        corners of a rounded mouth, pulled together in the vowels O and U): level 0 carried
+        alone smears the band over its rows, and its offsets solved through the finer level
+        follow the band's motion there."""
+        from types import SimpleNamespace
+
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
+        size = 0.06
+        Vf, Tf, _ = _grid(n=41, size=size)
+        Vc, Tc, _ = _grid(n=21, size=size)
+        # the jaw moves a band 1.5 mm below the lips' line, toward the corners
+        band = (Vf[:, 1] < 0) & (Vf[:, 1] > -0.0016) & (np.abs(Vf[:, 0]) > 0.009)
+        weight = np.where(band, 1.0, 0.0)
+        soup = Vf[Tf.ravel()]
+        J = np.zeros((len(soup), 4), int)
+        J[:, 1] = 1
+        W = np.zeros((len(soup), 4))
+        W[:, 1] = weight[Tf.ravel()]
+        W[:, 0] = 1.0 - W[:, 1]
+        turn = [np.sin(np.radians(6)), 0.0, 0.0, np.cos(np.radians(6))]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            _write_rig_glb(folder / "replica.glb", soup, J, W, [0.0, 0.0, -0.05])
+            appearance = {
+                "parts": [{"name": "head", "role": "skin"}],
+                "mouth": {
+                    "rig": {"jaw": "lower_jaw"},
+                    "poses": {
+                        "o": {
+                            "known": True,
+                            "joints": {"lower_jaw": {"rotation": turn}},
+                        },
+                    },
+                },
+            }
+            (folder / "appearance.json").write_text(json.dumps(appearance))
+            handoff = load_handoff(folder)
+            reference = Reference.from_handoff(handoff)
+            field = P.reference_pose_fields(handoff, reference)["o"][0]
+            transforms = P.reference_pose_transforms(handoff, reference)["o"]
+        coarse = Vc @ GLTF_TO_ANNY.T
+        fine = Vf @ GLTF_TO_ANNY.T
+        from scipy.spatial import cKDTree
+
+        d, i = cKDTree(reference.vertices).query(fine)
+        self.assertLess(d.max(), 1e-6)
+        target = field[i]  # the reference's motion at the finer level's vertices
+        ref_side = np.where(np.asarray(reference.vertices)[:, 2] < 0, 2, 1).astype(
+            np.int8
+        )  # Anny's z is glTF's y
+        side_c = np.where(Vc[:, 1] < 0, 2, 1).astype(np.int8)
+        on_skin = np.ones(len(coarse), bool)
+        values0, _ = P.carry_field(
+            coarse,
+            Tc,
+            reference,
+            field,
+            on_skin,
+            (side_c, ref_side),
+            transforms=transforms,
+        )
+        op = _bilinear(21)
+        topology = SimpleNamespace(operators=[op], triangles=Tf)
+        data = P._fine_setup((topology, fine), on_skin, (side_c, ref_side), None)
+        out = P._through_fine(values0, data, reference, field, transforms)
+        # the motion the finer level carries itself
+        fine_values, _ = P.carry_field(
+            fine,
+            *data[1:2],
+            reference,
+            field,
+            data[3],
+            data[4],
+            data[5],
+            transforms,
+            lining=P.LINING_RINGS * 2,
+        )
+        rows = np.abs(Vf[:, 1]) < 0.0046
+        before = np.linalg.norm(op.apply(values0)[rows] - fine_values[rows], axis=1)
+        after = np.linalg.norm(op.apply(out)[rows] - fine_values[rows], axis=1)
+        self.assertGreater(np.abs(target[band]).max(), 1e-3)
+        self.assertLess(after.mean(), 0.8 * before.mean())
+
+
 class TestFile(unittest.TestCase):
     def test_round_trip(self):
         rng = np.random.default_rng(1)
