@@ -165,9 +165,6 @@ class FitOptions:
     # blend turned more faces of the synthetic target's eye corners over than anny's own)
     skin_fair_lid_blend: float | tuple = (0.0, 0.0, 50.0)
     skin_fair_lid_blend_rings: int = 1
-    # the lips' roll that the fairing leaves out: the skin within this many faces of the
-    # inside of the mouth on level 0 (None: lip_seal_rings, the skin the seal moves)
-    skin_fair_lip_rings: int | None = None
     # the data weight of the lips' inner margin: the vertices within lip_margin_rings faces
     # of the inside of the mouth, which follow their neighbours when it is 0
     lip_margin_weight: float = 0.0
@@ -224,13 +221,17 @@ class FitOptions:
     # after the seal and the repair, the skin within lip_corner_radius (metres) of each end of
     # the reference's lip line (the mouth's visible corners), outside the inside of the mouth,
     # is faired on the reference (fair_skin) with this fairness on each level (_per_level; 0:
-    # none), the sealed rows held by lip_corner_hold: the skin fairing leaves the lips' roll
-    # out, and the seal and the repair left small folds where anny's lips meet the cheek, which
-    # the closed mouth showed as short lines at its corners
-    lip_corner_fairness: float | tuple = (0.0, 4.0, 160.0)
+    # none): the skin fairing leaves the lips' roll out, and the closed mouth showed short lines
+    # beside its corners, the reference's facets and the folds of anny's lips meeting the
+    # cheek. The closest points count only where the normals agree to
+    # lip_corner_normal_threshold (at 0.5 the walls of the reference's corner pocket drew the
+    # corner into a pit), and the sealed rows within the radius are held by lip_corner_hold
+    # (0: free, which on a real replica left the fewest lines and kept the lips closed; a held
+    # row ended in a fan of creases)
+    lip_corner_fairness: float | tuple = (0.0, 40.0, 160.0)
     lip_corner_radius: float = 0.004
-    lip_corner_hold: float = 1000.0
-    lip_corner_normal_threshold: float = 0.5
+    lip_corner_hold: float = 0.0
+    lip_corner_normal_threshold: float = 0.8
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -2857,11 +2858,7 @@ def fit_levels(
         ).astype(np.float64)
         # the lips' inner margin, the lining of the mouth and the lips' roll (the skin the
         # seal of the lips moves) keep to the mouth's own rules
-        roll0 = (
-            mouth_lining(model, options.skin_fair_lip_rings) > 0
-            if options.skin_fair_lip_rings is not None
-            else mouth_lining(model, options.lip_seal_rings) > 0
-        )
+        roll0 = mouth_lining(model, options.lip_seal_rings) > 0
         skin0[(margin > 0) | (lining0 > 0) | roll0] = 0.0
     measures, meshes = {}, {}
     previous_ear = None
