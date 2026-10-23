@@ -14,14 +14,6 @@ It is built on [Anny](https://github.com/naver/anny), the parametric body model 
 
 ## From sliders to avatar
 
-<!-- GIFs for steps 1 to 3, added when they exist (1 a generic character; 2 and 3 Milo, the example fitted character):
-<p align="center">
-  <img src="docs/figures/readme_shape.gif" alt="Shaping a character in the web viewer" width="32%"/>
-  <img src="docs/figures/readme_pose.gif" alt="Milo, a fitted game character, taking the pose of a picture" width="32%"/>
-  <img src="docs/figures/readme_fit.gif" alt="Anny's body fitted to Milo, a game character" width="32%"/>
-</p>
--->
-
 1. **Shape**: sculpt a body and a face with sliders, or roll a random face. Add one of 25 hairstyles. [Web viewer](docs/viewer.md) · [Body model](docs/body-model.md)
 2. **Pose**: pick from 50 poses and 7 animation clips, or copy the pose of a photo or a drawing. [Pose from a picture](docs/pose-from-picture.md)
 3. **Bring your own**: fit the body to a 3D character that you already have, and keep its fine shape, skin, eyes, teeth and mouth movements. [Fit to a reference](docs/reference-fit.md)
