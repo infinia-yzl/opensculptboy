@@ -218,6 +218,15 @@ class FitOptions:
     # lip_seal_max_shift (metres, their mean) to reach the line
     lip_seal_max_gap: float = 0.001
     lip_seal_max_shift: float = 0.004
+    # after the seal and the repair, the skin within lip_corner_radius (metres) of each corner of
+    # the mouth (outside the inside of the mouth) is faired on the reference (fair_skin) with
+    # this fairness on each level (_per_level; 0: none), the sealed rows held by
+    # lip_corner_hold: the lips' roll is left out of the skin fairing, and the seal and the
+    # repair left a crumple of small folds where anny's lips meet the cheek, which the closed
+    # mouth showed as short lines at its corners
+    lip_corner_fairness: float | tuple = (0.0, 4.0, 160.0)
+    lip_corner_radius: float = 0.004
+    lip_corner_hold: float = 10.0
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"
@@ -1552,6 +1561,56 @@ def fair_skin(
         pool=region,
         anchor=anchor,
     )
+
+
+def _fair_corners(
+    offsets,
+    parametric,
+    triangles,
+    target,
+    corners,
+    cavity,
+    held_rows,
+    pose,
+    unpose,
+    fairness,
+    radius,
+    hold,
+    iterations,
+    max_distance,
+):
+    """Fair the skin around the mouth's corners on the reference (:func:`fair_skin`): the
+    vertices within ``radius`` of either corner (``corners``, posed and placed), but those of
+    the inside of the mouth (``cavity``), with the rows of ``held_rows`` (the sealed edges of
+    both lips) held by ``hold``. Returns the rest-frame offsets and the count of vertices
+    faired. The rest of the mesh stays."""
+    n = len(parametric)
+    every = np.arange(n)
+    posed = pose(parametric + offsets, every)
+    near = np.min(
+        np.linalg.norm(posed[:, None, :] - np.asarray(corners)[None, :, :], axis=2),
+        axis=1,
+    )
+    region = (near < radius) & ~np.asarray(cavity, bool)
+    if not region.any():
+        return offsets, 0
+    anchor = np.zeros(n)
+    for rows in held_rows:
+        anchor[np.asarray(rows, np.int64)] = hold
+    faired = fair_skin(
+        posed,
+        triangles,
+        target,
+        region,
+        fairness,
+        iterations,
+        max_distance,
+        anchor=anchor,
+    )
+    rows = np.nonzero(region)[0]
+    out = np.asarray(offsets, dtype=np.float64).copy()
+    out[rows] = unpose(faired[rows], rows) - parametric[rows]
+    return out, int(region.sum())
 
 
 def lid_blend(
@@ -3139,6 +3198,34 @@ def fit_levels(
                     options.mouth_repair_rings,
                 )
                 _log(options, f"level {subdiv}: {tears} mouth tear vertices repaired")
+            corner_fairness = _per_level(
+                _as_levels(options.lip_corner_fairness), subdiv
+            )
+            if corner_fairness > 0 and lip_line_ is not None and seal is not None:
+                offsets[subdiv], faired = _fair_corners(
+                    offsets[subdiv],
+                    parametric,
+                    topology.triangles,
+                    target,
+                    np.stack([lip_box.left, lip_box.right]),
+                    np.asarray(topology.apply(cavity0)) > 0.5,
+                    (seal.upper, seal.lower),
+                    lambda p, r: R_.pose_vertices(
+                        p, w[r], i[r], transforms, rotation, translation
+                    ),
+                    lambda p, r: R_.unpose(
+                        p, w[r], i[r], transforms, rotation, translation
+                    ),
+                    corner_fairness,
+                    options.lip_corner_radius,
+                    options.lip_corner_hold,
+                    options.skin_fair_iterations,
+                    options.skin_fair_distance,
+                )
+                _log(
+                    options,
+                    f"level {subdiv}: {faired} vertices at the lips' corners faired",
+                )
             level_lining = level_lining | (
                 np.abs(offsets[subdiv] - before_repair).max(1) > 0
             )
