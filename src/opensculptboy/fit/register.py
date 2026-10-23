@@ -226,7 +226,7 @@ class FitOptions:
     # mouth showed as short lines at its corners
     lip_corner_fairness: float | tuple = (0.0, 4.0, 160.0)
     lip_corner_radius: float = 0.004
-    lip_corner_hold: float = 10.0
+    lip_corner_hold: float = 1000.0
     # which family fits the MakeHuman targets that local changes and face shapes share:
     # "face_shapes" (the local changes on them stay at 0), "local_changes" or "both"
     shared_targets: str = "face_shapes"

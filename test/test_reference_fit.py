@@ -585,6 +585,55 @@ class TestSkinFairing(unittest.TestCase):
         np.testing.assert_allclose(blended[cap], X[cap])
         self.assertLess(reference.closest(blended[band])[2].mean(), 1e-4)
 
+    def test_corners_faired_around_held_rows(self):
+        # the mouth's corners: a crumpled disc around each of two points of a faceted sphere,
+        # with a row of held vertices through it (the sealed lips) and a part left out (the
+        # inside of the mouth); the disc lies smooth on the reference again, the held row and
+        # the left-out part stay near where they were, and the skin outside the discs stays
+        from opensculptboy.fit.metrics import ripple
+        from opensculptboy.fit.register import _fair_corners
+
+        RV, RT, X, T = faceted_sphere()
+        reference = Reference(RV, RT)
+        front = X[np.argmax(X[:, 2])]
+        corners = np.stack([front + [0.006, 0.0, 0.0], front - [0.006, 0.0, 0.0]])
+        near = np.min(np.linalg.norm(X[:, None] - corners[None], axis=2), axis=1)
+        disc = near < 0.008
+        rng = np.random.default_rng(7)
+        crumpled = X.copy()
+        crumpled[disc] += rng.normal(scale=2e-4, size=(int(disc.sum()), 3))
+        held = np.nonzero(disc & (np.abs(X[:, 1] - front[1]) < 5e-4))[0]
+        cavity = disc & (X[:, 1] < front[1] - 0.002)
+        offsets, count = _fair_corners(
+            crumpled - X,
+            X,
+            T,
+            reference,
+            corners,
+            cavity,
+            (held,),
+            lambda p, r: p,
+            lambda p, r: p,
+            160.0,
+            0.008,
+            1000.0,
+            2,
+            0.01,
+        )
+        Y = X + offsets
+        near = np.min(np.linalg.norm(crumpled[:, None] - corners[None], axis=2), axis=1)
+        faired = (near < 0.008) & ~cavity
+        self.assertEqual(count, int(faired.sum()))
+        # measured: the ripple falls to about a third, the held row moves 15 micrometres; the faired disc stays within the noise
+        # of the reference (off it by 117 micrometres on average, the faceted sphere's own
+        # skin lying under the smooth surface the fairing gives)
+        self.assertLess(ripple(Y, T, faired), 0.4 * ripple(crumpled, T, faired))
+        self.assertLess(reference.closest(Y[faired])[2].mean(), 2e-4)
+        np.testing.assert_array_equal(Y[~faired], crumpled[~faired])
+        np.testing.assert_array_equal(Y[cavity], crumpled[cavity])
+        moved = np.linalg.norm(Y[held] - crumpled[held], axis=1)
+        self.assertLess(moved.mean(), 5e-5)
+
 
 class TestHandoff(unittest.TestCase):
     def test_round_trip_in_anny_frame(self):
