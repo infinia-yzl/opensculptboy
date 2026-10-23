@@ -147,4 +147,6 @@ A fitted character with a reference's inner mouth takes its reference's own mout
 
 ## Next steps
 
+The mouth's corners still differ from the reference's, and they need one fix for the whole corner region: there both lips, their lining and the cheek meet, and the fit and the poses each treat that region with their own rules. On the first real replica, level 2, three gaps remain there. Each closed corner ends in a small tuck. The rounded poses (O, U and their variants) open a little wider than the reference toward the corners. In the open poses a milder crease along the lips remains within `LEVEL_CORNER_FAR` of the corners, and the upper lip keeps a small ledge at its inner rim in the widest pose.
+
 The mouth expressions come from the reference's poses as whole targets; the ARKit mixes of anny's facial actions stay for the expressions that have no pose. Whether `anny-mouth` should become the default rig is open: it changes every file's joints and the VRM skin weights near the mouth, and the visemes would need a corrective each.
