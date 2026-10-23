@@ -5,7 +5,7 @@ Anny's mouth holds a cavity and a tongue but no teeth, so an open mouth shows an
 - a fitted card takes the teeth of its reference: `opensculptboy fit --textures` and `opensculptboy bake` find them among the reference's mouth parts and write them next to the card (`<card>.teeth.safetensors`), in the card's rest frame, with the colour and roughness of their material;
 - any other card takes generic teeth: two arches of seven teeth a side behind the lips, with gums along their roots.
 
-Cards without the section export exactly as before (`TestGltfReference` in `test/test_gltf_export.py` holds the files to their recorded fingerprints).
+Cards without the section export exactly as before.
 
 ```bash
 opensculptboy export character.glb --character character.json --teeth               # the card's teeth, else generic teeth
@@ -36,7 +36,7 @@ Every key of `material.teeth` is optional; colours are linear RGB. A `material` 
 
 ## How the teeth move
 
-The upper teeth move rigidly with the head, and the lower teeth move rigidly with the jaw. Anny's rig has no jaw bone: its jaw actions (`jawOpen`, `jawLeft`, `jawRight`, `jawForward`) are morph targets, and they turn the tongue with the jaw. So the exports carry the file's rest mesh, bind mesh, morph targets, normals and skin weights over to the teeth (`opensculptboy.teeth.mesh.ToothedMesh`) by these rules:
+The upper teeth move rigidly with the head, and the lower teeth move rigidly with the jaw. The `anny` rig has no jaw bone (the `anny-mouth` rig adds one, [Mouth](mouth.md)): its jaw actions (`jawOpen`, `jawLeft`, `jawRight`, `jawForward`) are morph targets, and they turn the tongue with the jaw. So the exports carry the file's rest mesh, bind mesh, morph targets, normals and skin weights over to the teeth (`opensculptboy.teeth.mesh.ToothedMesh`) by these rules:
 
 - every tooth follows the rigid motion (Kabsch) of the head, the vertices that the `head` bone skins alone, which keeps the teeth in place in the T-pose of a VRM file;
 - in each morph target, the upper teeth take the rigid motion of the head's vertices that no target of the file moves (none for the facial actions, so they stay still), and the lower teeth take the rigid motion of the tongue when the target moves the tongue rigidly (its fit leaves under 10 % of its motion: `jawOpen` leaves 4 %), else the head's (`tongueOut` bends the tongue and leaves 23 %);
@@ -44,11 +44,11 @@ The upper teeth move rigidly with the head, and the lower teeth move rigidly wit
 
 The teeth share the body's vertices, morph targets and skin, as the eyes do, and draw with materials of their own: in glTF `teeth` (the enamel with a clear coat for the wet surface) and `gums` (pink, wet), whose extras hold `opensculptboy_teeth` (`opensculptboy/teeth@1`, with the role and the settings); in VRM files MToon materials of the same names. The scene extras record the teeth (`teeth`: the source, the colour, the counts).
 
-A card with `material.mouth` (a reference's whole inner mouth, [mouth.md](mouth.md)) takes the reference's own teeth with its gums, palate, tongue and throat, and no teeth of this section.
+A card with `material.mouth` (a reference's whole inner mouth, [Mouth](mouth.md)) takes the reference's own teeth with its gums, palate, tongue and throat, and no teeth of this section.
 
 ## The teeth of a reference
 
-An appearance handoff gives the inside of the mouth as parts with the role `mouth` (their material or part names name teeth, a tooth, the tongue, the gums or the mouth's lining; see [reference-fit.md](reference-fit.md)). The fit leaves them out, and the bake (`opensculptboy.teeth.reference.reference_teeth`) keeps every connected piece of those parts that is no larger than 15 mm across, as a game draws one tooth (a crown, or a crown and its root). The larger pieces (the gums, the tongue, the lining) stay out, since anny's own mouth holds a cavity and a tongue. The pieces fall into the upper and the lower arch by their heights (two clusters), and move from the reference's frame into the card's rest frame by the rigid motion that takes the fitted head, as the fit placed and posed it, back to its rest pose. The file `<card>.teeth.safetensors` (`opensculptboy/teeth@1`) holds their points, normals, UVs and triangles, the arch of each point and the part of each triangle.
+An appearance handoff gives the inside of the mouth as parts with the role `mouth` (their material or part names name teeth, a tooth, the tongue, the gums or the mouth's lining; see [Fit to a reference](reference-fit.md)). The fit leaves them out, and the bake (`opensculptboy.teeth.reference.reference_teeth`) keeps every connected piece of those parts that is no larger than 15 mm across, as a game draws one tooth (a crown, or a crown and its root). The larger pieces (the gums, the tongue, the lining) stay out, since anny's own mouth holds a cavity and a tongue. The pieces fall into the upper and the lower arch by their heights (two clusters), and move from the reference's frame into the card's rest frame by the rigid motion that takes the fitted head, as the fit placed and posed it, back to its rest pose. The file `<card>.teeth.safetensors` (`opensculptboy/teeth@1`) holds their points, normals, UVs and triangles, the arch of each point and the part of each triangle.
 
 ## Generic teeth
 
