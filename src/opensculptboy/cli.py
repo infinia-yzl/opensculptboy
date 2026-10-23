@@ -12,6 +12,9 @@ The ``opensculptboy`` command.
     opensculptboy pose photo.jpg --card pose.json --glb pose.glb --svg pose.svg --png pose.png
     opensculptboy fit handoff/ --out me.json --detail 1    # fit anny to a reference mesh
     opensculptboy export me.glb --character me.json --detail 1   # with the detail layer
+    opensculptboy bake-tiers me.json                 # the normal maps of the cheaper tiers
+    opensculptboy export me_low.vrm --character me.json --tier low --author "Me"
+    opensculptboy portraits --character me.json --out avatars/   # a portrait, five expressions
     opensculptboy viewer build                       # the web viewer (python -m anny.viewer build)
 """
 
@@ -116,6 +119,8 @@ def _with_teeth(character, value, parser):
 
 
 def _export(args, parser) -> int:
+    if args.tier:
+        return _export_tier(args, parser)
     is_vrm = pathlib.Path(args.output).suffix.lower() == ".vrm"
     wrong = _GLB_ONLY if is_vrm else _VRM_ONLY
     given = [_flag(d) for d in wrong if getattr(args, d) not in (None, False)]
@@ -215,6 +220,139 @@ def _export_vrm(args, parser) -> int:
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _export_tier(args, parser) -> int:
+    """``export --tier``: the tier's mesh, textures and defaults (opensculptboy.tiers)."""
+    from opensculptboy.export.budget import BudgetError
+    from opensculptboy.tiers import export_tier, get_tier
+
+    tier = get_tier(args.tier)
+    output = pathlib.Path(args.output)
+    is_vrm = output.suffix.lower() == ".vrm" or (
+        not output.suffix and tier.format == "vrm"
+    )
+    if args.detail is not None:
+        parser.error(
+            "--detail: the tier sets the detail level; leave out one of the two."
+        )
+    wrong = _GLB_ONLY if is_vrm else _VRM_ONLY
+    given = [_flag(d) for d in wrong if getattr(args, d) not in (None, False)]
+    if given:
+        kind = ".vrm" if is_vrm else ".glb"
+        parser.error(
+            f"{', '.join(given)}: not for the {kind} file of the {tier.name} tier."
+        )
+    character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
+    character = _with_teeth(character, args.teeth, parser)
+    kwargs = {}
+    if is_vrm:
+        from opensculptboy.export.vrm import VrmMeta
+
+        meta = None
+        if args.meta:
+            try:
+                meta = VrmMeta.from_dict(
+                    json.loads(pathlib.Path(args.meta).read_text())
+                )
+            except (OSError, ValueError, TypeError) as error:
+                parser.error(f"--meta {args.meta}: {_one_line(error)}")
+        if not args.author and not (meta and meta.authors):
+            parser.error(
+                "a VRM file needs an author: pass --author NAME, or --meta FILE with "
+                '"authors": ["NAME"].'
+            )
+        kwargs = dict(
+            meta=meta,
+            author=args.author,
+            name=args.name,
+            thumbnail=args.thumbnail,
+            bare=args.bare,
+            twist=args.twist,
+            keep_leg_spread=args.keep_leg_spread,
+            budget=args.budget or "warn",
+            keep_anny_vertex=args.anny_vertex,
+            refine_weights=args.refine_weights is not False,
+        )
+        if args.bind:
+            kwargs["bind"] = args.bind
+        if args.vrm_version:
+            kwargs["version"] = {"1": "1.0", "0": "0.x"}[args.vrm_version]
+    else:
+        kwargs = dict(animations=args.animation or (), ground=not args.no_ground)
+        if args.influences:
+            kwargs["max_influences"] = args.influences
+        if args.morph_targets == "none":
+            kwargs["morph_targets"] = []
+        elif args.morph_targets == "all":
+            model = character.build_model(face_shapes=True)
+            kwargs["model"] = model
+            kwargs["morph_targets"] = list(model.facial_action_labels) + list(
+                model.face_shape_labels
+            )
+        elif args.morph_targets not in (None, "facial"):
+            kwargs["morph_targets"] = [
+                n.strip() for n in args.morph_targets.split(",") if n.strip()
+            ]
+    failure = None
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            summary = export_tier(
+                output,
+                character,
+                tier,
+                detail_dir=_detail_dir(args.character),
+                format="vrm" if is_vrm else "glb",
+                **kwargs,
+            )
+        except BudgetError as error:
+            failure = (1, _one_line(error))
+        except (OSError, ValueError, TypeError) as error:
+            failure = (2, _one_line(error))
+        finally:
+            for warning in caught:
+                print(f"warning: {warning.message}", file=sys.stderr)
+    if failure is not None:
+        code, message = failure
+        if code == 2:
+            parser.error(message)
+        print(f"opensculptboy export: {message}", file=sys.stderr)
+        return code
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _bake_tiers(args, parser) -> int:
+    from opensculptboy.tiers import TIERS, bake_tiers
+
+    names = [n.strip() for n in (args.tiers or "high,medium,low").split(",") if n]
+    unknown = [n for n in names if n not in TIERS]
+    if unknown:
+        parser.error(f"--tiers: unknown tiers {unknown}; the tiers are {list(TIERS)}.")
+    try:
+        _, report = bake_tiers(
+            args.card,
+            names,
+            out=args.out,
+            rays=args.rays,
+            progress=None if args.quiet else lambda m: print(m, file=sys.stderr),
+        )
+    except (OSError, ValueError) as error:
+        parser.error(_one_line(error))
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def _portraits(args, parser) -> int:
+    from opensculptboy.render.sheet import write_portraits
+
+    character = _load_character(args.character, parser)
+    written = write_portraits(
+        args.out, character, args.size, detail_dir=_detail_dir(args.character)
+    )
+    print(json.dumps(written, indent=2))
     return 0
 
 
@@ -544,6 +682,13 @@ def main(argv=None) -> int:
         "bake, else generic teeth); FILE, a JSON object of teeth values (docs/teeth.md), is "
         "laid over them, and 'off' leaves the teeth out",
     )
+    e.add_argument(
+        "--tier",
+        choices=("master", "high", "medium", "low"),
+        help="a rendering-budget tier (docs/budget-tiers.md): it sets the detail level, the "
+        "texture sizes and maps, the morph targets and the skin weights per vertex, and an "
+        "output without a suffix takes the tier's format (.glb, or .vrm for low)",
+    )
     g = e.add_argument_group("glTF (.glb) options")
     g.add_argument(
         "--animation",
@@ -783,6 +928,43 @@ def main(argv=None) -> int:
         help="transfer the detail on anny's default body (default: the card's own body)",
     )
 
+    t = sub.add_parser(
+        "bake-tiers",
+        help="bake the normal maps of the cheaper tiers from a card's master",
+        description="Bake the master's surface (the finest level of the card's detail layer "
+        "and its normal maps) into normal maps for the meshes of the cheaper tiers, and the "
+        "occlusion, thickness and curvature maps that the tiers keep and the card lacks; "
+        "write them next to the card and record them in its skin material. Needs SciPy and "
+        "embreex (the viewer extra).",
+    )
+    t.add_argument("card", help="the character card (JSON) with its detail layer")
+    t.add_argument(
+        "--tiers", help="comma-separated tiers to bake (default: high,medium,low)"
+    )
+    t.add_argument(
+        "--out", help="the card to write, in the same folder (default: the card itself)"
+    )
+    t.add_argument(
+        "--rays",
+        type=int,
+        default=32,
+        help="occlusion rays per vertex (default 32)",
+    )
+    t.add_argument("--quiet", action="store_true", help="no progress lines")
+
+    q = sub.add_parser(
+        "portraits",
+        help="render a portrait and an expression sheet for chat avatars",
+        description="Render the character's head and shoulders in flat toon shading: "
+        "portrait.png, one picture per expression (neutral, smile, surprised, sad, angry) "
+        "and expressions.png, the sheet of all five.",
+    )
+    q.add_argument("--character", help="a character card (JSON); the default character")
+    q.add_argument("--out", required=True, help="the folder to write the pictures into")
+    q.add_argument(
+        "--size", type=int, default=512, help="side of each expression (default 512)"
+    )
+
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
         "kind",
@@ -816,6 +998,10 @@ def main(argv=None) -> int:
         return _bake(args, b)
     if args.command == "convert":
         return _convert(args, c)
+    if args.command == "bake-tiers":
+        return _bake_tiers(args, t)
+    if args.command == "portraits":
+        return _portraits(args, q)
     if args.command == "viewer":
         from anny.viewer.__main__ import main as viewer_main
 

@@ -35,6 +35,7 @@ Every key is optional::
         "thickness_mm": 30.0,
         "curvature": "card.curvature.png",            # grey: 0.5 + 0.5 * k / curvature_per_m,
         "curvature_per_m": 100.0,                     #   k the mean curvature (1 / radius)
+        "occlusion": "card.occlusion.png",            # grey: ambient occlusion (1 open, 0 shut)
         "head": {                                     # the head tile: textures of the head's
             "base_color": "card.head_base_color.png", #   UV island alone, at a finer texel
             "normal": "card.head_normal.png",         #   (opensculptboy.texture.tiles)
@@ -51,16 +52,26 @@ Every key is optional::
         "eyes": {                                     # the eyes of opensculptboy.eyes (see
             "iris_color": [0.2, 0.1, 0.04],           #   EyeMaterial): the eyeball, the cornea,
             "pupil_mm": 3.5                           #   the caruncle and their materials
+        },
+        "tiers": {                                    # the normal maps of the cheaper tiers,
+            "low": {                                  #   baked from the master onto the mesh
+                "subdiv": 0, "region": "full",        #   of each tier (opensculptboy.tiers)
+                "normal": "card.low.normal.png"
+            }
         }
     }
 
 Texture values are paths relative to the card, as the detail layer's files are. The thickness
 and curvature maps are baked from the fitted mesh (:mod:`opensculptboy.texture.bake`) for cheap
 real-time subsurface scattering: the thickness drives translucency through thin parts such as
-the ears, and the curvature picks the row of a pre-integrated skin lookup (Penner 2011). A card
-without the section keeps the material it had before (the detail layer's textures, else a
-plain skin colour). A section that holds nothing but ``eyes`` keeps the exporters' own skin
-as well, and changes the eyes alone; ``teeth`` (:data:`TEETH_DEFAULTS`) likewise adds teeth.
+the ears, and the curvature picks the row of a pre-integrated skin lookup (Penner 2011). The
+occlusion map is baked from the master mesh (:mod:`opensculptboy.texture.transfer`) for the toon
+tier. ``tiers`` holds, per rendering-budget tier of :mod:`opensculptboy.tiers`, the normal maps
+baked from the master's surface onto that tier's coarser mesh (its ``subdiv`` and ``region``),
+which take the place of the master's maps when the tier is exported. A card without the section
+keeps the material it had before (the detail layer's textures, else a plain skin colour). A
+section that holds nothing but ``eyes`` keeps the exporters' own skin as well, and changes the
+eyes alone; ``teeth`` (:data:`TEETH_DEFAULTS`) likewise adds teeth.
 """
 
 from __future__ import annotations
@@ -69,9 +80,19 @@ import dataclasses
 from typing import Any
 
 SUBSURFACE_METHODS = ("random_walk_skin", "random_walk", "burley")
-TEXTURE_KEYS = ("base_color", "normal", "roughness", "thickness", "curvature")
+TEXTURE_KEYS = (
+    "base_color",
+    "normal",
+    "roughness",
+    "thickness",
+    "curvature",
+    "occlusion",
+)
 HEAD_TEXTURE_KEYS = ("base_color", "normal", "roughness")
 EAR_TEXTURE_KEYS = ("base_color", "normal", "roughness", "thickness", "curvature")
+# the tiers of opensculptboy.tiers, and the maps that a tier's entry may hold
+TIER_NAMES = ("master", "high", "medium", "low")
+TIER_TEXTURE_KEYS = ("normal", "head_normal", "ears_normal")
 DEFAULTS = {
     "base_color_factor": [1.0, 1.0, 1.0, 1.0],
     "normal_scale": 1.0,
@@ -91,7 +112,16 @@ SUBSURFACE_DEFAULTS = {
     "method": "random_walk_skin",
 }
 _KEYS = set(TEXTURE_KEYS) | set(DEFAULTS)
-_KEYS |= {"subsurface", "head", "ears", "eyes", "reference_eyes", "teeth", "mouth"}
+_KEYS |= {
+    "subsurface",
+    "head",
+    "ears",
+    "eyes",
+    "reference_eyes",
+    "teeth",
+    "mouth",
+    "tiers",
+}
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
 
@@ -132,11 +162,14 @@ class SkinMaterial:
     thickness_mm: float = 30.0
     curvature: str | None = None
     curvature_per_m: float = 100.0
+    occlusion: str | None = None
     # the head tile: slot -> path; the ear tile: "uvs" and slot -> path
     head: dict = dataclasses.field(default_factory=dict)
     ears: dict = dataclasses.field(default_factory=dict)
     # the eyes (EyeMaterial), or None for anny's own eyeballs
     eyes: "EyeMaterial | None" = None
+    # tier name -> {"subdiv", "region", and some of TIER_TEXTURE_KEYS -> path}
+    tiers: dict = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "SkinMaterial":
@@ -244,6 +277,7 @@ def check_material(data: dict) -> dict:
         check_teeth(data["teeth"])
     if "mouth" in data:
         check_mouth(data["mouth"])
+    _check_tiers(data.get("tiers", {}))
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
         raise ValueError("material subsurface must be a JSON object.")
@@ -689,3 +723,29 @@ def check_mouth(data: dict) -> dict:
     if "clearcoat" in data:
         _number(data["clearcoat"], "mouth clearcoat", 0.0, 1.0)
     return data
+
+
+def _check_tiers(tiers) -> None:
+    if not isinstance(tiers, dict):
+        raise ValueError("material tiers must be a JSON object keyed by tier name.")
+    unknown = sorted(set(tiers) - set(TIER_NAMES))
+    if unknown:
+        raise ValueError(f"Unknown tiers {unknown}; the tiers are {list(TIER_NAMES)}.")
+    for name, entry in tiers.items():
+        if not isinstance(entry, dict):
+            raise ValueError(f"material tiers {name} must be a JSON object.")
+        extra = sorted(set(entry) - set(TIER_TEXTURE_KEYS) - {"subdiv", "region"})
+        if extra:
+            raise ValueError(
+                f"Unknown keys {extra} in material tiers {name}; the keys are "
+                f"subdiv, region and {list(TIER_TEXTURE_KEYS)}."
+            )
+        if entry.get("subdiv") not in (0, 1, 2) or isinstance(
+            entry.get("subdiv"), bool
+        ):
+            raise ValueError(f"material tiers {name} needs subdiv 0, 1 or 2.")
+        if entry.get("region", "full") not in ("full", "head"):
+            raise ValueError(f"material tiers {name} region must be 'full' or 'head'.")
+        for key in TIER_TEXTURE_KEYS:
+            if key in entry and not isinstance(entry[key], str):
+                raise ValueError(f"material tiers {name} {key} must be a path.")
