@@ -44,6 +44,13 @@ ON_REFERENCE = 0.003
 NEAR_BORDER = 0.0015
 # the reference's skin that follows the jaw by this share or more counts to the lower lip
 LOWER_SHARE = 0.35
+# the poses are carried to the card's level FINE_LEVEL as well (when it has it) and level 0
+# takes the offsets whose subdivision follows that level's motion best (:func:`_through_fine`),
+# each row held to its own carried offset with the weight FINE_HOLD: level 0 has too few
+# rows across the lips to follow the reference's roll of them, and the rounded mouth (the
+# vowels O and U) opened too wide toward the corners
+FINE_LEVEL = 1
+FINE_HOLD = 1.0
 # the lips' carried motion is smoothed over the lips and this many rings of faces around
 # them, by this many Jacobi steps (:func:`smooth_lip_motion`)
 LIP_SMOOTH_RINGS = 2
@@ -567,6 +574,76 @@ def carry_field(
     return filled, known
 
 
+def _operator_matrix(topology):
+    """The subdivision operators of a detail topology as one sparse matrix (N, V0)."""
+    from scipy.sparse import csr_matrix
+
+    M = None
+    for op in topology.operators:
+        S = csr_matrix((op.values, (op.rows, op.cols)), shape=op.shape)
+        M = S if M is None else S @ M
+    return M
+
+
+def _fine_setup(fine, on_skin, sides, jaw):
+    """The finer level's data for :func:`_through_fine`: (fitted, triangles, matrix, its
+    skin mask, lip sides, jaw share)."""
+    topology, fitted = fine
+    S = _operator_matrix(topology)
+    fitted_side, ref_side = sides
+    up = S @ (np.asarray(fitted_side) == 1).astype(np.float64)
+    lo = S @ (np.asarray(fitted_side) == 2).astype(np.float64)
+    side = np.where(up > 0.5, 1, np.where(lo > 0.5, 2, 0)).astype(np.int8)
+    skin = (S @ np.asarray(on_skin, np.float64)) > 0.5
+    share = None if jaw is None else S @ np.asarray(jaw, np.float64)
+    return (
+        np.asarray(fitted),
+        np.asarray(topology.triangles),
+        S,
+        skin,
+        (side, ref_side),
+        share,
+    )
+
+
+def _through_fine(values0, data, reference, field, transforms) -> np.ndarray:
+    """A pose's offsets of level 0 whose subdivision best reproduces the reference's motion
+    carried to a finer level (:func:`carry_field` on its vertices): least squares over the
+    level-0 rows that the mouth's motion reaches, held to their own carried offsets by
+    :data:`FINE_HOLD`. Level 0 alone has too few rows across the lips to follow the
+    reference's roll of them."""
+    from scipy.sparse import diags
+    from scipy.sparse.linalg import spsolve
+
+    fitted, triangles, S, skin, sides, share = data
+    values1, _ = carry_field(
+        fitted,
+        triangles,
+        reference,
+        field,
+        skin,
+        sides,
+        share,
+        transforms,
+        lining=LINING_RINGS * 2,
+    )
+    moving = np.abs(values1).max(1) > 1e-6
+    rows0 = np.unique(S[moving].indices)
+    if len(rows0) == 0:
+        return values0
+    Sc = S.tocsc()
+    keep = np.ones(S.shape[1], bool)
+    keep[rows0] = False
+    A = Sc[:, rows0]
+    rhs = values1 - Sc[:, keep] @ values0[keep]
+    lam = FINE_HOLD
+    N = (A.T @ A + lam * diags(np.ones(len(rows0)))).tocsc()
+    b = A.T @ rhs + lam * values0[rows0]
+    out = np.asarray(values0, np.float64).copy()
+    out[rows0] = np.asarray(spsolve(N, b)).reshape(len(rows0), -1)
+    return out
+
+
 def _transformed(points, reference, transforms, tri, bary) -> np.ndarray:
     """The offsets (N, 3) of ``points`` under the reference's skin transforms blended at
     their closest points (triangles ``tri`` with barycentric ``bary``)."""
@@ -589,6 +666,7 @@ def mouth_poses(
     poses: dict | None = None,
     sides=None,
     jaw: np.ndarray | None = None,
+    fine=None,
 ) -> MouthPoses | None:
     """
     The :class:`MouthPoses` of a fitted level 0 (``fitted`` as the fit placed it on the
@@ -626,6 +704,9 @@ def mouth_poses(
             and piece_part(p.mouth_role) is not None
         ]
     M = 0 if mouth is None else len(mouth.points)
+    fine_data = None
+    if fine is not None and sides is not None:
+        fine_data = _fine_setup(fine, on_skin, sides, jaw)
     names, skin, inner, stats = [], [], [], {}
     for name, (field, moved) in fields.items():
         values, known = carry_field(
@@ -638,6 +719,10 @@ def mouth_poses(
             jaw,
             transforms.get(name),
         )
+        if fine_data is not None:
+            values = _through_fine(
+                values, fine_data, reference, field, transforms.get(name)
+            )
         offsets = values @ R.T
         piece = np.zeros((M, 3))
         if M:
@@ -705,6 +790,12 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
     mouth = MouthData.load(card_path.parent / material["mouth"]["mesh"])
     with torch.no_grad():
         on_skin = ~excluded_vertices(model)
+    fine = None
+    if FINE_LEVEL and FINE_LEVEL in character.detail_levels():
+        _, fine_topology, fine_fitted, _ = fitted_meshes(
+            card_path, reference, FINE_LEVEL
+        )
+        fine = (fine_topology, fine_fitted)
     result = mouth_poses(
         handoff,
         reference,
@@ -723,6 +814,7 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
             _share(handoff, reference),
         ),
         jaw=np.asarray(jaw_share(model)),
+        fine=fine,
     )
     if result is None:
         return None
