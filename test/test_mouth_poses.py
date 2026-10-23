@@ -529,6 +529,148 @@ class TestFineCarry(unittest.TestCase):
         self.assertLess(after.mean(), 0.8 * before.mean())
 
 
+class TestLevelCarry(unittest.TestCase):
+    """Each detail level's own carry of a pose (:func:`opensculptboy.mouth.poses.level_corrections`):
+    the reference's rig turns the level's own vertices, its rest detail included, where level
+    0's pose subdivided leaves that detail fixed in the rest frame and folds it into a crease
+    along the rolled lip."""
+
+    def test_level_carry_turns_the_detail(self):
+        from types import SimpleNamespace
+
+        from opensculptboy.export.mesh_checks import adjacent_triangles, bends
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
+        size = 0.06
+        Vf, Tf, jaw_f = _grid(n=41, size=size)
+        Vc, Tc, _ = _grid(n=21, size=size)
+        # the reference: the lower half turns with the jaw, fully below the lips' line
+        weight = np.clip(-Vf[:, 1] / 0.004, 0.0, 1.0)
+        soup = Vf[Tf.ravel()]
+        J = np.zeros((len(soup), 4), int)
+        J[:, 1] = 1
+        W = np.zeros((len(soup), 4))
+        W[:, 1] = weight[Tf.ravel()]
+        W[:, 0] = 1.0 - W[:, 1]
+        turn = [np.sin(np.radians(15)), 0.0, 0.0, np.cos(np.radians(15))]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            _write_rig_glb(folder / "replica.glb", soup, J, W, [0.0, -0.01, 0.0])
+            appearance = {
+                "parts": [{"name": "head", "role": "skin"}],
+                "mouth": {
+                    "rig": {"jaw": "lower_jaw"},
+                    "poses": {
+                        "open": {
+                            "known": True,
+                            "joints": {"lower_jaw": {"rotation": turn}},
+                        },
+                    },
+                },
+            }
+            (folder / "appearance.json").write_text(json.dumps(appearance))
+            handoff = load_handoff(folder)
+            reference = Reference.from_handoff(handoff)
+            field = P.reference_pose_fields(handoff, reference)["open"][0]
+            transforms = P.reference_pose_transforms(handoff, reference)["open"]
+        coarse = Vc @ GLTF_TO_ANNY.T
+        # the finer level carries rest detail the coarse level lacks: a ridge 0.8 mm high
+        # across the lower lip, 11 mm below the lips' line
+        ridge = 0.0008 * np.exp(-(((Vf[:, 1] + 0.011) / 0.0012) ** 2))
+        fine_rest = Vf.copy()
+        fine_rest[:, 2] += ridge
+        fine = fine_rest @ GLTF_TO_ANNY.T
+        ref_side = np.where(np.asarray(reference.vertices)[:, 2] < 0, 2, 1).astype(
+            np.int8
+        )
+        side_c = np.where(Vc[:, 1] < 0, 2, 1).astype(np.int8)
+        on_skin = np.ones(len(coarse), bool)
+        values0, _ = P.carry_field(
+            coarse,
+            Tc,
+            reference,
+            field,
+            on_skin,
+            (side_c, ref_side),
+            transforms=transforms,
+        )
+        op = _bilinear(21)
+        topology = SimpleNamespace(
+            operators=[op], triangles=Tf, subdiv=1, rows=np.arange(len(Vf))
+        )
+        topology.apply = op.apply
+        data = P._fine_setup((topology, fine), on_skin, (side_c, ref_side), None)
+        corr = P.level_corrections(
+            {1: (data, np.ones(len(fine)))},
+            reference,
+            field,
+            transforms,
+            np.eye(3),
+            values0,
+        )
+        poses = P.MouthPoses(
+            ("open",),
+            values0[None],
+            np.zeros((1, 0, 3)),
+            {},
+            {1: (corr[1][0], corr[1][1][None])},
+        )
+        subdivided = fine + op.apply(values0)
+        own = fine + poses.on_level(0, topology)
+        # the ridge's cross-section in the middle of the lip keeps its bends with the level's
+        # own carry, and loses them with level 0's pose subdivided
+        pairs = adjacent_triangles(Tf)
+        centre = fine_rest[Tf].mean(1)
+        mid = centre[pairs[:, 0]]
+        sel = (np.abs(mid[:, 0]) < 0.012) & (np.abs(mid[:, 1] + 0.011) < 0.003)
+        rest_bends = bends(fine, Tf, pairs[sel])
+        err_own = np.abs(bends(own, Tf, pairs[sel]) - rest_bends).max()
+        err_sub = np.abs(bends(subdivided, Tf, pairs[sel]) - rest_bends).max()
+        self.assertLess(err_own, 0.5)
+        self.assertGreater(err_sub, 2.0 * err_own + 0.5)
+
+    def test_corner_weight(self):
+        corners = np.array([[-0.022, -0.15, 0.64], [0.022, -0.15, 0.64]])
+        x = np.linspace(-0.03, 0.03, 61)
+        points = np.c_[x, np.full_like(x, -0.15), np.full_like(x, 0.64)]
+        w = P.corner_weight(points, corners)
+        near = np.min(np.abs(np.abs(x)[:, None] - 0.022), 1) < P.LEVEL_CORNER_NEAR
+        far = np.min(np.abs(np.abs(x)[:, None] - 0.022), 1) > P.LEVEL_CORNER_FAR
+        self.assertTrue(np.all(w[near] == 0.0))
+        self.assertTrue(np.all(w[far] == 1.0))
+        self.assertAlmostEqual(float(w[30]), 1.0)  # the middle of the mouth
+        middle = (x > -0.022) & (x < 0.0)
+        self.assertTrue(np.all(np.diff(w[middle]) >= -1e-12))
+
+    def test_corrections_reach_the_targets(self):
+        """The exports add a level's correction to the pose's target and to its jaw
+        corrective, and nothing on another level."""
+        from types import SimpleNamespace
+
+        rows = np.array([1, 3])
+        values = np.array([[[1.0, 0, 0], [0, 2.0, 0]], [[0, 0, 3.0], [4.0, 0, 0]]])
+        poses = P.MouthPoses(
+            ("a", "b"),
+            np.zeros((2, 2, 3)),
+            np.zeros((2, 0, 3)),
+            {},
+            {2: (rows, values)},
+        )
+        topology = SimpleNamespace(subdiv=2, rows=np.array([3, 0, 1]))
+        offsets = np.zeros((4, 3, 3))
+        added = {1: 0, 2: 1}
+        overrides = {3: ("corrective", 1), 0: np.zeros(3)}
+        out = P.add_level_corrections(offsets, topology, poses, added, overrides)
+        np.testing.assert_allclose(out[1], [[0, 2.0, 0], [0, 0, 0], [1.0, 0, 0]])
+        np.testing.assert_allclose(out[2], [[4.0, 0, 0], [0, 0, 0], [0, 0, 3.0]])
+        np.testing.assert_allclose(out[3], out[2])
+        np.testing.assert_allclose(out[0], 0.0)
+        other = SimpleNamespace(subdiv=1, rows=np.arange(3))
+        self.assertIs(
+            P.add_level_corrections(offsets, other, poses, added, overrides), offsets
+        )
+
+
 class TestFile(unittest.TestCase):
     def test_round_trip(self):
         rng = np.random.default_rng(1)
@@ -537,6 +679,7 @@ class TestFile(unittest.TestCase):
             rng.normal(size=(2, 7, 3)) * 1e-3,
             rng.normal(size=(2, 4, 3)) * 1e-3,
             {"viseme_a": {"max_mm": 1.0}},
+            {2: (np.array([0, 5]), rng.normal(size=(2, 2, 3)) * 1e-3)},
         )
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "p.safetensors"
@@ -545,9 +688,14 @@ class TestFile(unittest.TestCase):
         self.assertEqual(back.names, poses.names)
         np.testing.assert_allclose(back.skin, poses.skin, atol=1e-9)
         np.testing.assert_allclose(back.inner, poses.inner, atol=1e-9)
+        np.testing.assert_array_equal(back.levels[2][0], poses.levels[2][0])
+        np.testing.assert_allclose(back.levels[2][1], poses.levels[2][1], atol=1e-9)
         sub = back.subset(["open_wide", "nothing"])
         self.assertEqual(sub.names, ("open_wide",))
         np.testing.assert_allclose(sub.skin[0], poses.skin[1], atol=1e-9)
+        np.testing.assert_allclose(
+            sub.levels[2][1][0], poses.levels[2][1][1], atol=1e-9
+        )
 
 
 class TestExports(unittest.TestCase):

@@ -65,6 +65,17 @@ LIP_ROUGH = 0.0008
 LIP_SMOOTH_WEIGHT_RIG = 1.0
 # the lining off the skin within this many faces of a lip moves with that lip's transforms
 LINING_RINGS = 3
+# the detail levels from 1 up to this one take their own carry of each pose (the reference's
+# skin transforms applied to that level's own vertices, its detail included), stored as the
+# difference to level 0's pose subdivided (:func:`level_corrections`): the detail offsets
+# lie in the rest frame and do not turn with level 0's pose, so the rolled lips showed the
+# rest's detail as a crease along them
+LEVEL_CARRY = 2
+# ... away from the mouth's corners: within LEVEL_CORNER_NEAR (metres, across the face) of a
+# cheilion the level keeps level 0's pose subdivided, beyond LEVEL_CORNER_FAR its own carry,
+# blended smoothly between (each level's own carry stretched the corner into a sheet)
+LEVEL_CORNER_NEAR = 0.008
+LEVEL_CORNER_FAR = 0.015
 
 
 def target_name(pose: str) -> str:
@@ -79,15 +90,22 @@ class MouthPoses:
     skin: np.ndarray  # (P, V0, 3) offsets of the vertices of anny's level 0
     inner: np.ndarray  # (P, M, 3) offsets of the points of the inner mouth (M may be 0)
     stats: dict = dataclasses.field(default_factory=dict)  # per pose: sizes, coverage
+    # per detail level: (rows (n,) of the full level, (P, n, 3) offsets to add to level 0's
+    # pose subdivided on those rows; :func:`level_corrections`)
+    levels: dict = dataclasses.field(default_factory=dict)
 
     def save(self, path) -> None:
         from safetensors.numpy import save_file
 
+        tensors = {
+            "skin": np.ascontiguousarray(self.skin, np.float32),
+            "inner": np.ascontiguousarray(self.inner, np.float32),
+        }
+        for level, (rows, values) in sorted(self.levels.items()):
+            tensors[f"level{level}_rows"] = np.ascontiguousarray(rows, np.int64)
+            tensors[f"level{level}_offsets"] = np.ascontiguousarray(values, np.float32)
         save_file(
-            {
-                "skin": np.ascontiguousarray(self.skin, np.float32),
-                "inner": np.ascontiguousarray(self.inner, np.float32),
-            },
+            tensors,
             str(path),
             metadata={
                 "format": POSES_FORMAT,
@@ -104,11 +122,20 @@ class MouthPoses:
             meta = f.metadata() or {}
             if meta.get("format") != POSES_FORMAT:
                 raise ValueError(f"{path} is not a {POSES_FORMAT} file.")
+            levels = {}
+            for key in f.keys():
+                if key.startswith("level") and key.endswith("_rows"):
+                    level = int(key[len("level") : -len("_rows")])
+                    levels[level] = (
+                        f.get_tensor(key).astype(np.int64),
+                        f.get_tensor(f"level{level}_offsets").astype(np.float64),
+                    )
             return cls(
                 names=tuple(json.loads(meta["names"])),
                 skin=f.get_tensor("skin").astype(np.float64),
                 inner=f.get_tensor("inner").astype(np.float64),
                 stats=json.loads(meta.get("stats", "{}")),
+                levels=levels,
             )
 
     def subset(self, names) -> "MouthPoses":
@@ -118,7 +145,28 @@ class MouthPoses:
             self.skin[keep],
             self.inner[keep],
             {self.names[k]: self.stats.get(self.names[k], {}) for k in keep},
+            {lv: (rows, values[keep]) for lv, (rows, values) in self.levels.items()},
         )
+
+    def level_correction(self, k: int, topology) -> np.ndarray | None:
+        """The offsets (N, 3) that pose ``k`` adds on the vertices of a detail mesh
+        (``topology``, a :class:`~opensculptboy.detail.subdivision.DetailTopology`) to level
+        0's pose subdivided, or None when the poses hold none for its level."""
+        entry = self.levels.get(int(getattr(topology, "subdiv", 0)))
+        if entry is None:
+            return None
+        rows, values = entry
+        full = np.zeros((int(np.max(topology.rows)) + 1, 3))
+        keep = rows < len(full)
+        full[rows[keep]] = values[k][keep]
+        return full[np.asarray(topology.rows)]
+
+    def on_level(self, k: int, topology) -> np.ndarray:
+        """Pose ``k``'s offsets on the vertices of a detail mesh: level 0's subdivided, and
+        the level's own correction when the poses hold one."""
+        out = np.asarray(topology.apply(self.skin[k]), np.float64)
+        extra = self.level_correction(k, topology)
+        return out if extra is None else out + extra
 
 
 def reference_pose_fields(handoff, reference, poses: dict | None = None):
@@ -654,6 +702,52 @@ def _transformed(points, reference, transforms, tri, bary) -> np.ndarray:
     return np.einsum("nij,nj->ni", Rb, points) + tb - points
 
 
+def corner_weight(rest_points: np.ndarray, corners: np.ndarray) -> np.ndarray:
+    """The weight (N,) of a detail level's own carry of a pose on its vertices (rest frame):
+    0 within :data:`LEVEL_CORNER_NEAR` of a mouth corner (``corners``, (2, 3) rest-frame
+    cheilia), measured across the face (x and z), 1 beyond :data:`LEVEL_CORNER_FAR`, and a
+    smooth step between."""
+    xz = [0, 2]
+    p = np.asarray(rest_points, np.float64)[:, xz]
+    d = np.min(
+        [np.linalg.norm(p - np.asarray(c, np.float64)[xz], axis=1) for c in corners], 0
+    )
+    t = np.clip(
+        (d - LEVEL_CORNER_NEAR) / max(LEVEL_CORNER_FAR - LEVEL_CORNER_NEAR, 1e-9), 0, 1
+    )
+    return t * t * (3.0 - 2.0 * t)
+
+
+def level_corrections(
+    level_data, reference, field, transforms, R, offsets0, tol: float = 1e-6
+) -> dict:
+    """
+    Per detail level, what a pose adds to level 0's pose subdivided (``offsets0``, rest
+    frame): the level's own carry of the pose (:func:`carry_field` on its vertices, the
+    reference's skin transforms applied to the level's own vertices, its detail included)
+    minus level 0's subdivided, weighted by :func:`corner_weight`; as (rows, (n, 3)) of the
+    rows it moves. ``level_data`` maps a level to (its :func:`_fine_setup` data, its weights).
+    """
+    out = {}
+    for level, (data, weight) in level_data.items():
+        fitted, triangles, S, skin, sides, share = data
+        values, _ = carry_field(
+            fitted,
+            triangles,
+            reference,
+            field,
+            skin,
+            sides,
+            share,
+            transforms,
+            lining=LINING_RINGS * 2**level,
+        )
+        corr = (values @ R.T - S @ offsets0) * weight[:, None]
+        rows = np.nonzero(np.abs(corr).max(1) > tol)[0]
+        out[level] = (rows, corr[rows])
+    return out
+
+
 def mouth_poses(
     handoff,
     reference,
@@ -667,6 +761,8 @@ def mouth_poses(
     sides=None,
     jaw: np.ndarray | None = None,
     fine=None,
+    levels=None,
+    corners: np.ndarray | None = None,
 ) -> MouthPoses | None:
     """
     The :class:`MouthPoses` of a fitted level 0 (``fitted`` as the fit placed it on the
@@ -707,6 +803,15 @@ def mouth_poses(
     fine_data = None
     if fine is not None and sides is not None:
         fine_data = _fine_setup(fine, on_skin, sides, jaw)
+    # each detail level's own carry, away from the corners (:func:`level_corrections`)
+    level_data = {}
+    if levels and sides is not None and corners is not None:
+        for level, topology_l, fitted_l, rest_l in levels:
+            level_data[level] = (
+                _fine_setup((topology_l, fitted_l), on_skin, sides, jaw),
+                corner_weight(rest_l, corners),
+            )
+    level_values = {lv: [] for lv in level_data}
     names, skin, inner, stats = [], [], [], {}
     for name, (field, moved) in fields.items():
         values, known = carry_field(
@@ -724,6 +829,11 @@ def mouth_poses(
                 values, fine_data, reference, field, transforms.get(name)
             )
         offsets = values @ R.T
+        if level_data:
+            for lv, (rows, corr) in level_corrections(
+                level_data, reference, field, transforms.get(name), R, offsets
+            ).items():
+                level_values[lv].append((rows, corr))
         piece = np.zeros((M, 3))
         if M:
             parts = [moved.get(k) for k in pieces]
@@ -749,11 +859,19 @@ def mouth_poses(
                 float(np.linalg.norm(piece, axis=1).max() * 1000) if M else 0.0, 3
             ),
         }
+    stored = {}
+    for lv, entries in level_values.items():
+        rows = np.unique(np.concatenate([r for r, _ in entries]))
+        values = np.zeros((len(entries), len(rows), 3))
+        for k, (r, corr) in enumerate(entries):
+            values[k, np.searchsorted(rows, r)] = corr
+        stored[lv] = (rows, values)
     return MouthPoses(
         tuple(names),
         np.stack(skin),
         np.stack(inner) if M else np.zeros((len(names), 0, 3)),
         stats,
+        stored,
     )
 
 
@@ -790,12 +908,17 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
     mouth = MouthData.load(card_path.parent / material["mouth"]["mesh"])
     with torch.no_grad():
         on_skin = ~excluded_vertices(model)
-    fine = None
-    if FINE_LEVEL and FINE_LEVEL in character.detail_levels():
-        _, fine_topology, fine_fitted, _ = fitted_meshes(
-            card_path, reference, FINE_LEVEL
+    fine, levels = None, []
+    for level in sorted(character.detail_levels()):
+        if level < 1 or level > max(LEVEL_CARRY, FINE_LEVEL or 0):
+            continue
+        _, level_topology, level_fitted, level_rest = fitted_meshes(
+            card_path, reference, level
         )
-        fine = (fine_topology, fine_fitted)
+        if level == FINE_LEVEL:
+            fine = (level_topology, level_fitted)
+        if level <= LEVEL_CARRY:
+            levels.append((level, level_topology, level_fitted, level_rest))
     result = mouth_poses(
         handoff,
         reference,
@@ -815,6 +938,8 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
         ),
         jaw=np.asarray(jaw_share(model)),
         fine=fine,
+        levels=levels,
+        corners=mouth_corners(model, rest),
     )
     if result is None:
         return None
@@ -827,6 +952,19 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
     character.material = material
     card_path.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
     return path
+
+
+def mouth_corners(model, rest: np.ndarray) -> np.ndarray | None:
+    """The cheilia (2, 3) of a level 0 (``rest``, its rest vertices) by anny's craniofacial
+    landmarks, or None when the model lacks them."""
+    from opensculptboy.fit.register import _Craniofacial
+
+    cranio = _Craniofacial(model)
+    points = cranio.weights_matrix.detach().double().cpu().numpy() @ np.asarray(rest)
+    named = dict(zip(cranio.labels, points))
+    if "ch.L" not in named or "ch.R" not in named:
+        return None
+    return np.stack([named["ch.L"], named["ch.R"]])
 
 
 def _share(handoff, reference) -> np.ndarray | None:
@@ -867,6 +1005,28 @@ def append_pose_rows(targets, rest_vertices, poses: MouthPoses, names=None):
         targets.append(MorphTarget(target_name(name), "mouth_pose", k, 1.0, 0.0))
         rows.append((base + poses.skin[k])[None])
     return targets, np.concatenate(rows), added, poses
+
+
+def add_level_corrections(offsets, topology, poses: MouthPoses, added, overrides):
+    """
+    The morph-target offsets (T, N, 3) of a detail mesh (``topology``) with each pose's own
+    correction on its level (:meth:`MouthPoses.level_correction`) added to the pose's target
+    (``added``: target index to pose, from :func:`append_pose_rows`) and to its jaw
+    corrective (``overrides``: target index to ``("corrective", pose)``), whose jaw turn stays
+    the same. Unchanged when the poses hold no correction for the mesh's level.
+    """
+    rows = {t: k for t, k in added.items()}
+    for t, entry in (overrides or {}).items():
+        if isinstance(entry, tuple) and entry[0] == "corrective":
+            rows[t] = entry[1]
+    if not rows or int(getattr(topology, "subdiv", 0)) not in poses.levels:
+        return offsets
+    out = np.array(offsets, dtype=np.float64, copy=True)
+    for t, k in rows.items():
+        extra = poses.level_correction(k, topology)
+        if extra is not None:
+            out[t] += extra
+    return out
 
 
 def pose_turns(model, base, poses: MouthPoses, bone_pose, max_influences=4):

@@ -248,6 +248,10 @@ def export_glb(
         if detail is not None:
             weights, indices = detail.skin_weights(weights, indices)
             vertices, offsets = detail.vertices(base), detail.targets(offsets)
+            if mouth_poses is not None:
+                offsets = mouth_pose_data.add_level_corrections(
+                    offsets, detail.topology, mouth_poses, added, inner_overrides
+                )
         vertices, offsets, _ = clear_mouth(vertices, offsets, interior)
         normals = None
         rows_mesh = mesh  # the file's mesh before the eyes and the teeth

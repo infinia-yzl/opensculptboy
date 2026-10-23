@@ -587,10 +587,12 @@ def vrm_spec(
         from opensculptboy.mouth import poses as mouth_pose_data
 
         mouth_poses = mouth_pose_data.card_poses(character, detail_dir)
+    pose_rows = {}  # target index -> pose
     if mouth_poses is not None:
         mouth_poses = mouth_poses.subset(mouth_pose_data.VRM_VISEMES.values())
         for k, name in enumerate(mouth_poses.names):
             inner_overrides[len(actions)] = mouth_poses.inner[k]
+            pose_rows[len(actions)] = k
             actions.append(mouth_pose_data.target_name(name))
         offsets = np.concatenate([offsets, mouth_poses.skin])
 
@@ -738,9 +740,14 @@ def vrm_spec(
             model.vertex_bone_weights.detach().cpu().double().numpy(),
             model.vertex_bone_indices.cpu().numpy(),
         )
+        level_targets = detail.targets(rest_targets)
+        if pose_rows:  # each pose's own carry on the level (mouth.poses)
+            level_targets = mouth_pose_data.add_level_corrections(
+                level_targets, detail.topology, mouth_poses, pose_rows, None
+            )
         fine, fine_targets, _ = clear_mouth(
             detail.vertices(base),
-            detail.targets(rest_targets),
+            level_targets,
             None if replica_mouth else mouth_interior(model, detail.topology),
         )
         rb = tpose.rebind(
