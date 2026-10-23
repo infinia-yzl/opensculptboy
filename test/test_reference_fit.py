@@ -624,8 +624,8 @@ class TestSkinFairing(unittest.TestCase):
         near = np.min(np.linalg.norm(crumpled[:, None] - corners[None], axis=2), axis=1)
         faired = (near < 0.008) & ~cavity
         self.assertEqual(count, int(faired.sum()))
-        # measured: the ripple falls to about a third, the held row moves 15 micrometres; the faired disc stays within the noise
-        # of the reference (off it by 117 micrometres on average, the faceted sphere's own
+        # measured: the ripple falls to about a third, the held row moves 15 micrometres; the faired disc
+        # stays within the noise of the reference (off it by 117 micrometres on average, the faceted sphere's own
         # skin lying under the smooth surface the fairing gives)
         self.assertLess(ripple(Y, T, faired), 0.4 * ripple(crumpled, T, faired))
         self.assertLess(reference.closest(Y[faired])[2].mean(), 2e-4)
