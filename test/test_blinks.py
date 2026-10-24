@@ -748,6 +748,36 @@ class TestReferenceClosedEye(unittest.TestCase):
             want = 0.5 * lash_closed[p.points]
             np.testing.assert_allclose(half - half[base], want - want[base], atol=1e-12)
 
+    def test_poses_of_another_mesh(self):
+        # eye poses of another topology (a card converted after its bake) raise a clear
+        # error
+        from opensculptboy.eyes.poses import BlinkPose
+
+        rest, eyed, targets = anny_blinks()
+        offsets = np.stack([targets["L"], targets["R"]])
+        names = [B.BLINK_TARGETS["L"], B.BLINK_TARGETS["R"]]
+        pose = BlinkPose(np.zeros((len(rest) + 66, 3)))
+        with self.assertRaisesRegex(ValueError, "another topology"):
+            B.blink_offsets(eyed, rest, offsets, names, {"L": pose})
+        # and on a detail level, before the poses go to the level's mesh (a stand-in level
+        # whose first operator takes the rows of anny's level 0)
+        from types import SimpleNamespace
+
+        operator = SimpleNamespace(shape=(2 * len(rest), len(rest)))
+        detail = SimpleNamespace(topology=SimpleNamespace(operators=[operator]))
+        with tempfile.TemporaryDirectory() as tmp:
+            EyePoses(("close_l",), pose.closed[None]).save(
+                pathlib.Path(tmp) / "c.eye_poses.safetensors"
+            )
+            card = Character(
+                material={
+                    "eyes": {},
+                    "reference_eyes": {"poses": "c.eye_poses.safetensors"},
+                }
+            )
+            with self.assertRaisesRegex(ValueError, "another topology"):
+                card_blink_poses(card, detail, tmp)
+
     def test_card_section(self):
         check_material(
             {"eyes": {}, "reference_eyes": {"poses": "c.eye_poses.safetensors"}}

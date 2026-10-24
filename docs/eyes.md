@@ -151,3 +151,4 @@ A reference's own closed eye need not be clean: a game-ready upper lid passes it
 - The clearance of a blink holds for the eye at rest; an eye turned by the look-at while it blinks can come closer to the lids.
 - Without the in-between, a closed lid sits higher over the cornea than the path of a GLB blink needs; a GLB blink target played alone cuts the corner of the path around the eye by up to about 0.3 mm.
 - The lashes of other targets than the blinks (a squint, for one) still turn with the margin's frame and the extra turn of a closing lid (see "Lashes").
+- `opensculptboy convert` leaves a card's eye poses on the mesh of its bake: the export of a converted card raises an error until `opensculptboy bake` writes them again on the new topology.

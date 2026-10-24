@@ -1028,11 +1028,16 @@ def blink_offsets(eyed, rest, offsets, names, poses=None, inbetween: bool = True
     :func:`rig_blink`. With ``inbetween``, one more row per eye, the in-between corrective,
     is appended; without it (VRM files) the closed pose keeps the straight line outside the
     eye (:func:`clear_line`). Returns (offsets, :class:`EyeBlinks`), or (offsets unchanged,
-    None) when the file has no blink target or no lid margins.
+    None) when the file has no blink target or no lid margins. Raises ValueError for poses
+    of another mesh than ``rest``'s.
     """
     rest = np.asarray(rest, dtype=np.float64)
     offsets = np.asarray(offsets, dtype=np.float64)
     names = list(names)
+    if poses:
+        from opensculptboy.eyes.poses import check_rows
+
+        check_rows(poses, len(rest))
     lids = eyed_lids(eyed, rest)
     surfaces = eye_surfaces(eyed)
     triangles = eyed.triangles[: int(eyed.kept.sum())]
