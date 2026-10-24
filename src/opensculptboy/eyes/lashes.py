@@ -19,9 +19,9 @@ A card with the eyes of :mod:`opensculptboy.eyes` also gets lashes along its lid
 on the lid margin in the frame of the margin's tangent and the lid's direction away from the
 margin there (:class:`PatchFollow`), so the lashes keep their shape and turn with the edge of
 the lid in the blinks of the morph targets, the T-pose of a VRM file and every other target of
-the file. As the upper lid closes, its lashes also turn down about the margin by twice the
+the file. As the upper lid closes, its lashes also turn down about the margin by 1.5 times the
 angle that the opening between the lids closes (:data:`CLOSE_TURN`): the edge of a closing lid
-rolls, and the lashes of a closed eye point down and out along the lid line. They also stay
+rolls, and the lashes of a closed eye point forward and down along the lid line. They also stay
 :data:`CLEARANCE` outside the outward-facing skin around the eye, so a closed lid lays them on
 its skin. The lashes take the skin weights of their roots on the margin.
 
