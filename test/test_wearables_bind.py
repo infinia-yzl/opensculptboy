@@ -5,8 +5,8 @@ Checks of ``opensculptboy wearables bind`` (``opensculptboy.wearables.make``,
 docs/wearables.md, "Make a wearable") with synthetic garment files written by the test: a
 tube around the torso in two materials and a ring around the head, in the frame of an export
 of the default card. The checks cover the package's fields, the round trip on the template,
-a dressed export on two random bodies, the licence refusal, the far-from-body warning and
-refusal, own skin weights, and the command end to end.
+a dressed export on two random bodies, the licence block as given, the far-from-body warning
+and refusal, own skin weights, and the command end to end.
 """
 
 import contextlib

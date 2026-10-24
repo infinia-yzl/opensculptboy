@@ -45,7 +45,7 @@ SCHEMA_PATH = (
 class WearableError(ValueError):
     """
     A wearable that cannot be made, read or listed as asked. ``code`` is a stable word for
-    programs (for example ``licence_refused``, ``too_far_from_skin``, ``unknown_slot``) and
+    programs (for example ``too_far_from_skin``, ``unknown_slot``, ``malformed_obj``) and
     ``hint`` says what to change.
     """
 
