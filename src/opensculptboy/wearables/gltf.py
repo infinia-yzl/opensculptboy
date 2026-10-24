@@ -211,12 +211,18 @@ def add_pieces(
                     garment_tangents(positions, piece.normals @ frame.T, garment),
                     ARRAY_BUFFER,
                 )
-        attributes["JOINTS_0"] = doc.accessor(
-            piece.joints.astype(joint_type), ARRAY_BUFFER
-        )
-        attributes["WEIGHTS_0"] = doc.accessor(
-            piece.weights.astype(np.float32), ARRAY_BUFFER
-        )
+        # four bones per set (JOINTS_0, JOINTS_1, ...), as glTF's VEC4 attributes hold
+        pad = -piece.joints.shape[1] % 4
+        joints = np.pad(piece.joints, ((0, 0), (0, pad)))
+        weights = np.pad(piece.weights, ((0, 0), (0, pad)))
+        for s in range(joints.shape[1] // 4):
+            cols = slice(4 * s, 4 * s + 4)
+            attributes[f"JOINTS_{s}"] = doc.accessor(
+                joints[:, cols].astype(joint_type), ARRAY_BUFFER
+            )
+            attributes[f"WEIGHTS_{s}"] = doc.accessor(
+                weights[:, cols].astype(np.float32), ARRAY_BUFFER
+            )
         materials = add_materials(doc, garment.materials, cache)
 
         def mesh_of(group_rows, name):

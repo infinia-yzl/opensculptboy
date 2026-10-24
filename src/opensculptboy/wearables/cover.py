@@ -55,8 +55,9 @@ def piece_cover(body, piece) -> np.ndarray:
     normal ray meets its visible triangles."""
     wearable = piece.wearable
     if wearable.covers is None:
-        return ray_cover(body, piece)
-    mask = np.asarray(wearable.covers, bool)[: len(body.vertices)].copy()
+        mask = ray_cover(body, piece)
+    else:
+        mask = np.asarray(wearable.covers, bool)[: len(body.vertices)].copy()
     for group, extra in wearable.group_covers.items():
         if group not in piece.hidden_groups:
             mask |= np.asarray(extra, bool)[: len(body.vertices)]
