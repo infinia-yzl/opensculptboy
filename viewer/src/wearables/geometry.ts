@@ -140,43 +140,42 @@ export class PointGrid {
   axis(x: number, k: number) { return Math.min(this.dims[k] - 1, Math.max(0, Math.floor((x - this.lo[k]) / this.h))); }
   cellOf(x: number, y: number, z: number) { return (this.axis(x, 0) * this.dims[1] + this.axis(y, 1)) * this.dims[2] + this.axis(z, 2); }
 
-  // the k nearest points of q (sorted by distance, ties by index): their count; ids and squared distances in the arrays
-  knn(qx: number, qy: number, qz: number, k: number, ids: I32, d2: F64): number {
-    const P = this.P, [nx, ny, nz] = this.dims, c = [this.axis(qx, 0), this.axis(qy, 1), this.axis(qz, 2)], q = [qx, qy, qz];
-    let m = 0;
-    const take = (i: number) => {
-      const dx = P[i * 3] - qx, dy = P[i * 3 + 1] - qy, dz = P[i * 3 + 2] - qz, d = dx * dx + dy * dy + dz * dz;
-      if (m === k && (d > d2[m - 1] || (d === d2[m - 1] && i > ids[m - 1]))) return;
-      let j = m < k ? m++ : m - 1;
-      while (j > 0 && (d2[j - 1] > d || (d2[j - 1] === d && ids[j - 1] > i))) { d2[j] = d2[j - 1]; ids[j] = ids[j - 1]; j--; }
-      d2[j] = d; ids[j] = i;
-    };
-    const visit = (x: number, y: number, z: number) => {
-      const cell = (x * ny + y) * nz + z;
-      for (let s = this.start[cell]; s < this.start[cell + 1]; s++) take(this.items[s]);
-    };
-    const dims = [nx, ny, nz], gl = this.lo, gh = dims.map((d, a) => gl[a] + d * this.h);
+  // the k nearest points of q (sorted by distance, ties by index): their count; ids and squared distances in the arrays.
+  // With `limit`, a point that has no point within that distance gets none.
+  knn(qx: number, qy: number, qz: number, k: number, ids: I32, d2: F64, limit = Infinity): number {
+    const P = this.P, nx = this.dims[0], ny = this.dims[1], nz = this.dims[2], h = this.h, start = this.start, items = this.items;
+    const cx = this.axis(qx, 0), cy = this.axis(qy, 1), cz = this.axis(qz, 2), lx = this.lo[0], ly = this.lo[1], lz = this.lo[2];
     // how far q lies outside the grid along each axis
-    const out = [0, 1, 2].map((a) => Math.max(0, gl[a] - q[a], q[a] - gh[a]));
-    const outSq = out[0] * out[0] + out[1] * out[1] + out[2] * out[2];
+    const ox = Math.max(0, lx - qx, qx - (lx + nx * h)), oy = Math.max(0, ly - qy, qy - (ly + ny * h)), oz = Math.max(0, lz - qz, qz - (lz + nz * h));
+    const lim2 = limit * limit;
+    let m = 0;
     for (let r = 0; ; r++) {
-      const x0 = c[0] - r, x1 = c[0] + r, y0 = c[1] - r, y1 = c[1] + r, z0 = c[2] - r, z1 = c[2] + r;
-      const za = Math.max(z0, 0), zb = Math.min(z1, nz - 1);
-      for (let x = Math.max(x0, 0); x <= Math.min(x1, nx - 1); x++)
-        for (let y = Math.max(y0, 0); y <= Math.min(y1, ny - 1); y++) {
-          if (x === x0 || x === x1 || y === y0 || y === y1) { for (let z = za; z <= zb; z++) visit(x, y, z); }
-          else { if (z0 >= 0) visit(x, y, z0); if (z1 <= nz - 1 && z1 !== z0) visit(x, y, z1); }
+      const x0 = cx - r, x1 = cx + r, y0 = cy - r, y1 = cy + r, z0 = cz - r, z1 = cz + r;
+      const xa = Math.max(x0, 0), xb = Math.min(x1, nx - 1), ya = Math.max(y0, 0), yb = Math.min(y1, ny - 1), za = Math.max(z0, 0), zb = Math.min(z1, nz - 1);
+      for (let x = xa; x <= xb; x++) for (let y = ya; y <= yb; y++) {
+        const shell = x === x0 || x === x1 || y === y0 || y === y1, base = (x * ny + y) * nz;
+        for (let z = za; z <= zb; z++) {
+          if (!shell && z !== z0 && z !== z1) { z = z1 - 1; continue; }
+          for (let s = start[base + z], e = start[base + z + 1]; s < e; s++) {
+            const i = items[s], dx = P[i * 3] - qx, dy = P[i * 3 + 1] - qy, dz = P[i * 3 + 2] - qz, d = dx * dx + dy * dy + dz * dz;
+            if (m === k && (d > d2[m - 1] || (d === d2[m - 1] && i > ids[m - 1]))) continue;
+            let j = m < k ? m++ : m - 1;
+            while (j > 0 && (d2[j - 1] > d || (d2[j - 1] === d && ids[j - 1] > i))) { d2[j] = d2[j - 1]; ids[j] = ids[j - 1]; j--; }
+            d2[j] = d; ids[j] = i;
+          }
         }
+      }
       // the nearest point that the cells beyond ring r can hold: the distance to the part of the grid past each face
       let bound2 = Infinity, more = false;
-      const lo = [x0, y0, z0], hi = [x1, y1, z1];
-      for (let a = 0; a < 3; a++) {
-        const rest = outSq - out[a] * out[a];
-        if (lo[a] > 0) { more = true; const d = Math.max(0, q[a] - (gl[a] + lo[a] * this.h)); bound2 = Math.min(bound2, d * d + rest); }
-        if (hi[a] < dims[a] - 1) { more = true; const d = Math.max(0, gl[a] + (hi[a] + 1) * this.h - q[a]); bound2 = Math.min(bound2, d * d + rest); }
-      }
+      if (x0 > 0) { more = true; const d = Math.max(0, qx - (lx + x0 * h)); bound2 = Math.min(bound2, d * d + oy * oy + oz * oz); }
+      if (x1 < nx - 1) { more = true; const d = Math.max(0, lx + (x1 + 1) * h - qx); bound2 = Math.min(bound2, d * d + oy * oy + oz * oz); }
+      if (y0 > 0) { more = true; const d = Math.max(0, qy - (ly + y0 * h)); bound2 = Math.min(bound2, d * d + ox * ox + oz * oz); }
+      if (y1 < ny - 1) { more = true; const d = Math.max(0, ly + (y1 + 1) * h - qy); bound2 = Math.min(bound2, d * d + ox * ox + oz * oz); }
+      if (z0 > 0) { more = true; const d = Math.max(0, qz - (lz + z0 * h)); bound2 = Math.min(bound2, d * d + ox * ox + oy * oy); }
+      if (z1 < nz - 1) { more = true; const d = Math.max(0, lz + (z1 + 1) * h - qz); bound2 = Math.min(bound2, d * d + ox * ox + oy * oy); }
       if (!more) return m;
       if (m === k && d2[m - 1] < bound2) return m;
+      if (bound2 > lim2 && (m === 0 || d2[0] > lim2)) return 0;
     }
   }
 
@@ -201,6 +200,7 @@ export interface Closest { triangle: I32; bary: F64; point: F64; distance: F64 }
 // a triangle mesh with its vertex normals and scales, for closest-point queries (opensculptboy.wearables.geometry.Surface)
 export class Surface {
   V: F64; T: I32; N: F64; nv: number;
+  radius = 0;   // the largest distance of a corner from its triangle's centroid
   private _scales: F64 | null = null; private _grid: PointGrid | null = null;
   constructor(V: F64, T: I32, normals?: F64) {
     this.V = V; this.T = T; this.nv = V.length / 3;
@@ -215,15 +215,19 @@ export class Surface {
       const a = T[t * 3] * 3, b = T[t * 3 + 1] * 3, c = T[t * 3 + 2] * 3;
       for (let k = 0; k < 3; k++) C[t * 3 + k] = (V[a + k] + V[b + k] + V[c + k]) / 3;
       edge += norm3(V[a] - V[b], V[a + 1] - V[b + 1], V[a + 2] - V[b + 2]);
+      for (const p of [a, b, c]) this.radius = Math.max(this.radius, norm3(V[p] - C[t * 3], V[p + 1] - C[t * 3 + 1], V[p + 2] - C[t * 3 + 2]));
     }
-    return (this._grid = new PointGrid(C, 1.5 * (m ? edge / m : 1)));
+    return (this._grid = new PointGrid(C, 2.5 * (m ? edge / m : 1)));
   }
-  closest(points: F64, candidates = CANDIDATES): Closest {
+  // the closest point of the surface to each point; with `limit`, a point farther than `limit` from every triangle may
+  // get no triangle (distance Infinity)
+  closest(points: F64, candidates = CANDIDATES, limit = Infinity): Closest {
     const n = points.length / 3, m = this.T.length / 3, k = Math.min(candidates, m), grid = this.grid, T = this.T, V = this.V;
     const triangle = new Int32Array(n), bary = new Float64Array(n * 3), point = new Float64Array(n * 3), distance = new Float64Array(n);
-    const ids = new Int32Array(k), d2 = new Float64Array(k), b = new Float64Array(3);
+    const ids = new Int32Array(k), d2 = new Float64Array(k), b = new Float64Array(3), reach = limit + this.radius;
     for (let i = 0; i < n; i++) {
-      const o = i * 3, got = grid.knn(points[o], points[o + 1], points[o + 2], k, ids, d2);
+      const o = i * 3, got = grid.knn(points[o], points[o + 1], points[o + 2], k, ids, d2, reach);
+      if (!got) { distance[i] = Infinity; continue; }
       let best = -1, bestR = Infinity, bd = Infinity, b0 = 0, b1 = 0, b2 = 0;
       for (let j = 0; j < got; j++) {
         const t = ids[j], a = T[t * 3] * 3, bb = T[t * 3 + 1] * 3, c = T[t * 3 + 2] * 3;
@@ -239,13 +243,14 @@ export class Surface {
     return { triangle, bary, point, distance };
   }
   // the distance along the surface normal at the closest point, the closest points and those normals
-  signedDistance(points: F64): { signed: F64; found: Closest; normal: F64 } {
-    const found = this.closest(points), n = points.length / 3, T = this.T, N = this.N;
+  signedDistance(points: F64, limit = Infinity): { signed: F64; found: Closest; normal: F64 } {
+    const found = this.closest(points, CANDIDATES, limit), n = points.length / 3, T = this.T, N = this.N;
     const corners = new Int32Array(n * 3);
     for (let i = 0; i < n; i++) for (let q = 0; q < 3; q++) corners[i * 3 + q] = T[found.triangle[i] * 3 + q];
     const normal = unitRows(interpolate(N, corners, found.bary)), signed = new Float64Array(n);
     for (let i = 0, o = 0; i < n; i++, o += 3)
-      signed[i] = (points[o] - found.point[o]) * normal[o] + (points[o + 1] - found.point[o + 1]) * normal[o + 1] + (points[o + 2] - found.point[o + 2]) * normal[o + 2];
+      if (found.distance[i] === Infinity) signed[i] = Infinity;
+      else signed[i] = (points[o] - found.point[o]) * normal[o] + (points[o + 1] - found.point[o + 1]) * normal[o + 1] + (points[o + 2] - found.point[o + 2]) * normal[o + 2];
     return { signed, found, normal };
   }
 }

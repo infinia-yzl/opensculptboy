@@ -186,9 +186,13 @@ export function estimatedPose(w: Wearable, body: BodySurface, head: ArrayLike<nu
 }
 
 // ------------------------------------------------------------------ the push-out
+// the adjacency of each garment, built once
+const ADJACENCY = new WeakMap<I32, ReturnType<typeof adjacency>>();
 function fade(D: F64, moved: Uint8Array, T: I32): F64 {
   if (!moved.some((x) => x)) return D;
-  const n = moved.length, A = adjacency(n, T);
+  const n = moved.length;
+  let A = ADJACENCY.get(T);
+  if (!A || A.degree.length !== n) { A = adjacency(n, T); ADJACENCY.set(T, A); }
   let region = moved.slice();
   for (let r = 0; r < FADE_RINGS; r++) {
     const next = region.slice();
@@ -214,7 +218,8 @@ function pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], u
   const start = V.slice(), n = V.length / 3, moved = new Uint8Array(n);
   for (let round = 0; round <= PUSH_ROUNDS; round++) {
     colliders.forEach((surface, c) => {
-      const { signed, found, normal } = surface.signedDistance(V), target = targets[c];
+      // a vertex farther than DEPTH from every triangle never moves, so its query may stop early
+      const { signed, found, normal } = surface.signedDistance(V, DEPTH * unit), target = targets[c];
       for (let i = 0; i < n; i++) {
         if (signed[i] < target[i] - 1e-7 * unit && found.distance[i] < DEPTH * unit) {
           const d = target[i] - signed[i];
