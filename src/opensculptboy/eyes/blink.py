@@ -66,7 +66,7 @@ MAX_RIM_TURN = 20.0
 # at each corner of the eye
 MEET_TAPER = 0.1
 # the lashes turn about the eye's horizontal axis by this share of their lid's turn: the
-# reference's upper lashes turn 15 degrees while the upper rim turns about 41
+# upper lashes of a reference character turn 15 degrees while the upper rim turns about 41
 LASH_TURN = 0.37
 # a lash point may lie this far (metres) inside the lids beyond its depth at rest before it
 # counts in the measures

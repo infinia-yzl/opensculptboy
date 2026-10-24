@@ -7,7 +7,7 @@ A handoff may carry its reference's eye poses under ``eyes.poses`` of appearance
 form of the mouth's poses (docs/mouth.md, "Mouth expressions from the reference"): per pose, a
 ``joints`` object of joint deltas of the GLB file's skins, and ``known: false`` for a guess.
 The poses ``close_l`` and ``close_r`` close the figure's left eye (+X) and right eye, and
-``half_l`` and ``half_r`` hold them half closed (the game's blink half way).
+``half_l`` and ``half_r`` hold them half closed (the reference's blink half way).
 
 :func:`eye_poses` poses the reference with each of them and carries the motion to level 0 of
 the fitted card: each vertex near an eye moves by the reference's own blended skin transform

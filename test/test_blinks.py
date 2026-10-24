@@ -37,8 +37,9 @@ from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 STAGES = B.STAGES
 # the closed upper lid passes the lower rim by at most this much (mm), and at most this many
 # pairs of triangles of the two lids cut through each other under it: a game character's
-# upper lid closes over its lower lid (2.0 to 2.5 mm at the reference's joints, with 13 to 41
-# such pairs), and the turn that brings the rims together fades out toward the corners
+# upper lid closes over its lower lid (2.0 to 2.5 mm at a reference character's joints,
+# with 13 to 41 such pairs), and the turn that brings the rims together fades out toward
+# the corners
 CROSSING_MM = 2.5
 CLIPPING_PAIRS = 20
 # the files' tolerances (mm): float32 positions and the welds of the files' split vertices
@@ -47,7 +48,7 @@ EYE_MM = 0.02
 # corners where the turn that brings the rims together fades out
 CLOSED_OPENING_MM = 0.5
 # lash points may lie this deep (mm) inside the lids in a blink, as the roots of the lashes
-# that a closing lid covers (a reference's own lashes reach 0.95 mm)
+# that a closing lid covers (the lashes of a reference character reach 0.95 mm)
 LASH_DEPTH_MM = 1.5
 # a lash root that slides over the eye on the way may dip this far (mm) into the cornea's
 # shell, out of sight under the rim of the lid
