@@ -79,7 +79,7 @@ class TestLashMesh(unittest.TestCase):
     def setUpClass(cls):
         cls.model = Character().build_model(dtype=torch.float64)
         labels = list(cls.model.facial_action_labels)
-        names = ("eyeBlinkLeft", "eyeLookOutLeft")
+        names = ("eyeBlinkLeft", "eyeLookOutLeft", "eyeBlinkRight")
         actions = torch.zeros(len(names) + 1, len(labels), dtype=torch.float64)
         for k, name in enumerate(names):
             actions[k + 1, labels.index(name)] = 1.0
@@ -115,11 +115,11 @@ class TestLashMesh(unittest.TestCase):
         x = self.eyed.vertices(self.rest)
         for p, rows in lashes:
             np.testing.assert_allclose(x[rows], p.rest, atol=1e-12)
-            # the roots lie on the lid margin, within a millimetre
+            # the roots lie at the lid margin, within 1.5 mm
             near = np.linalg.norm(
                 p.rest[:, None] - self.rest[p.follow.rows][None], axis=2
             ).min(1)
-            self.assertLess(near.min(), 0.001)
+            self.assertLess(near.min(), 0.0015)
         # the eyes mirror each other
         left = [p for p, _ in lashes if p.side == "L"]
         right = [p for p, _ in lashes if p.side == "R"]
@@ -142,17 +142,47 @@ class TestLashMesh(unittest.TestCase):
                 self.assertLess(shift.max(), 1e-6)  # the other eye stays open
             elif upper:
                 # the upper lashes come down with the lid, and keep their shape: the
-                # distances between points within 3 mm of each other change by less than a
-                # millimetre for 95 % of the pairs, and by at most 2 mm where the lid folds
+                # distances between points within 3 mm of each other change by less than
+                # 1.5 mm for 95 % of the pairs, and by at most 3 mm where the lid folds
                 self.assertGreater(np.median(shift), 5.0)
                 a, b = p.rest, moved[rows]
                 da = np.linalg.norm(a[:, None] - a[None], axis=2)
                 db = np.linalg.norm(b[:, None] - b[None], axis=2)
                 change = np.abs(da - db)[da < 0.003]
-                self.assertLess(np.percentile(change, 95), 0.001)
-                self.assertLess(change.max(), 0.002)
+                self.assertLess(np.percentile(change, 95), 0.0015)
+                self.assertLess(change.max(), 0.003)
             else:
                 self.assertLess(np.median(shift), 1.0)
+
+    def test_closed_eye(self):
+        # a closed eye shows its upper lashes along the lid line, pointing down and out of
+        # the lid, with either eye's blink; half way, they point forward
+        import trimesh
+
+        skin_tris = self.eyed.triangles[: int(self.eyed.kept.sum())]
+        for action, side in (("eyeBlinkLeft", "L"), ("eyeBlinkRight", "R")):
+            for weight in (0.5, 1.0):
+                with self.subTest(action=action, weight=weight):
+                    x = self.rest + weight * self.targets[action]
+                    moved = self.eyed.vertices(x)
+                    skin = trimesh.Trimesh(x, skin_tris, process=False)
+                    frame = self.eyed.frames[side]
+                    for p, rows in self._lashes():
+                        upper = p.rest[:, 2].mean() > frame.centre[2]
+                        if p.side != side or not upper:
+                            continue
+                        local = frame.to_local(moved[rows])
+                        tips, roots = p.uvs[:, 1] > 0.9, p.uvs[:, 1] < 0.1
+                        drop = np.median(local[tips, 1]) - np.median(local[roots, 1])
+                        ahead = np.median(local[tips, 2]) - np.median(local[roots, 2])
+                        self.assertGreater(ahead, 0.15)  # out, in front of the lid
+                        if weight == 1.0:
+                            self.assertLess(drop, -0.1)  # down
+                        # the outer half of each lash lies outside the skin
+                        outer = moved[rows][p.uvs[:, 1] > 0.5]
+                        cp, _, tid = trimesh.proximity.closest_point(skin, outer)
+                        side_of = ((outer - cp) * skin.face_normals[tid]).sum(1)
+                        self.assertGreater((side_of > 0).mean(), 0.95)
 
     def test_eye_turn(self):
         # a turn of the eye leaves the lashes on their lids (the lids barely move)

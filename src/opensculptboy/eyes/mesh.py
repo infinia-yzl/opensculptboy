@@ -547,7 +547,7 @@ def eyed_mesh(
         from opensculptboy.eyes.lashes import lash_parts
 
         lash_list, lash_data = lash_parts(
-            lashes, frames, rest, normals, skin, skin_tris
+            lashes, frames, rest, normals, skin, skin_tris, rows
         )
         parts += lash_list
     socket = (
