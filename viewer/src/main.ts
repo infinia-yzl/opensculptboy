@@ -828,14 +828,16 @@ function initBody(meta: any, B: any, geo: any) {
     face = { tables: sm.face, lmTemplate: f32('face_lm_template'), lmBlend: f32('face_lm_blend'), ids: u32('face_ids'), offsets,
       boneDeltas: f32('face_bones'), prior: B.face_prior ? f32('face_prior') : undefined };
   }
-  const body = new AnnyBody(meta, {
+  const bufs = {
     template: f32('coarse_template'), components,
     projection: f32('shape_projection').subarray(0, sm.components * sm.blend_shapes),
     jointTemplate: f32('joint_template'), jointBlend: f32('joint_blend'),
     quads: u32('coarse_quads'), rows, detail: detailRaw, relief,
     index: geo.index.array, rest: at.rest.array, nsmooth: at.nsmooth.array.slice(), coarseSkin: B.coarse_skin.data, face,
-  }, at.position.array, at.normal.array, at.nsmooth.array);
+  };
+  const body = new AnnyBody(meta, bufs, at.position.array, at.normal.array, at.nsmooth.array);
   body.detailStep = B.head_detail.info.step || 1e-5;
+  startBodyWorker(meta, bufs, body);
   BODY.anny = body; BODY.geo = geo;
   BODY.sliders = sm.sliders.map((name: string) => ({ name, label: SLIDER_LABELS[name] || name.charAt(0).toUpperCase() + name.slice(1),
     race: RACES.includes(name), ends: RACES.includes(name) ? [] : SLIDER_ENDS[name] || sliderEnds(sm.tables, name) }));
@@ -885,13 +887,22 @@ function applyBodyShape(values: any, face: any = {}) {
   for (const s of BODY.sliders) v[s.name] = typeof values?.[s.name] === 'number' ? values[s.name] : 0.5;
   for (const s of BODY.faceSliders) if (typeof face?.[s.name] === 'number' && face[s.name] !== 0) f[s.name] = face[s.name];
   if (sameValues(v, BODY.values) && sameFace(f, BODY.faceValues)) return false;
-  const t0 = performance.now(), steps: any = {};
-  let last = t0;
-  const mark = (name: string) => { const t = performance.now(); steps[name] = Math.round((t - last) * 10) / 10; last = t; };
   BODY.values = v; BODY.faceValues = f;
+  // an interactive edit goes to the worker, which builds the newest values once the build in flight returns
+  if (BW.ready && !BW.sync) { BW.want = { v, f, t: performance.now() }; pumpBody(); return true; }
+  BW.gen++; BW.want = null;   // a build on the page supersedes the builds of the worker in flight
+  const t0 = performance.now();
   clearCorrectives();
   const r = BODY.anny.update(v, f);
-  last = performance.now();
+  finishBodyShape(t0, r.ms);
+  return true;
+}
+// the steps that follow a new body on the page: the uploads, the bounds, the hair ribbons, the eyes, the correctives
+// and the rig
+function finishBodyShape(t0: number, bodyMs: number) {
+  const steps: any = {};
+  let last = performance.now();
+  const mark = (name: string) => { const t = performance.now(); steps[name] = Math.round((t - last) * 10) / 10; last = t; };
   const at = BODY.geo.attributes;
   markFull(at.position); markFull(at.normal); markFull(at.nsmooth);
   // the bounds from the coarse body (the fine surface lies within a few millimetres of it)
@@ -905,12 +916,81 @@ function applyBodyShape(values: any, face: any = {}) {
   rigForBody();
   mark('rig');
   shadowsDirty = true; resetAccum();
-  // the time of the last update: the body alone (with its steps) and everything that follows it
-  BODY.lastMs = r.ms; BODY.lastTotalMs = performance.now() - t0;
+  // the time of the last update: the body alone (with its steps) and everything that follows it on the page (with a
+  // build in the worker, the body's time passes in the worker and the page spends the rest)
+  BODY.lastMs = bodyMs; BODY.lastTotalMs = performance.now() - t0;
   BODY.lastTiming = Object.assign({}, BODY.anny.timing, steps);
   WEAR?.bodyChanged();
-  return true;
 }
+
+// ------------------------------------------------------------------ the body build in a worker
+// A slider edit builds the body in a worker (body_worker.ts), so the page keeps drawing frames during a drag. The
+// worker builds one set of values at a time, and the newest values wait for the build in flight. The shot mode, the
+// test hooks (window.setLook, window.setSliders, window.setFace) and '?bodyworker=off' build the body on the page.
+declare const __BODY_WORKER__: string;
+const BW: any = { worker: null, ready: false, busy: false, want: null, flight: null, spare: null, gen: 0, id: 0, sync: 0, latency: 0 };
+// copies of the buffers for the worker: a view of the model data would carry the whole decoded model with it
+function ownCopy(x: any): any {
+  if (ArrayBuffer.isView(x)) return (x as any).slice();
+  if (Array.isArray(x)) return x.map(ownCopy);
+  if (x && typeof x === 'object') return Object.fromEntries(Object.entries(x).map(([k, y]) => [k, ownCopy(y)]));
+  return x;
+}
+function startBodyWorker(meta: any, bufs: any, body: any) {
+  if (SHOT || qs.get('bodyworker') === 'off' || typeof __BODY_WORKER__ === 'undefined' || typeof Worker === 'undefined') return;
+  let url = '';
+  try {
+    url = URL.createObjectURL(new Blob([__BODY_WORKER__], { type: 'text/javascript' }));
+    BW.worker = new Worker(url);
+  } catch (e) { console.warn('The body worker is not available; the page builds the body itself.', e); return; }
+  const out = () => ({ pos: new Float32Array(body.pos.length), nrm: new Float32Array(body.nrm.length), ns: new Float32Array(body.ns.length),
+    coarse: new Float32Array(body.coarse.length), joints: new Float32Array(body.joints.length) });
+  BW.spare = out();
+  BW.worker.onmessage = (e: MessageEvent) => {
+    const m = e.data;
+    if (m.type === 'ready') { BW.ready = true; URL.revokeObjectURL(url); return; }
+    if (m.type === 'error') { console.warn('The body worker failed; the page builds the body itself.', m.message); workerFailed(); return; }
+    if (m.type !== 'done') return;
+    BW.busy = false; BW.spare = m.out; BW.flight = null;
+    if (m.gen === BW.gen) receiveBody(m);
+    pumpBody();
+  };
+  BW.worker.onerror = (e: any) => { console.warn('The body worker failed; the page builds the body itself.', e.message); workerFailed(); };
+  const copy = ownCopy(bufs);
+  BW.worker.postMessage({ type: 'init', meta, bufs: copy, detailStep: body.detailStep });
+}
+// after a failure the page builds every body itself, starting with the values that waited for the worker, or else
+// the values of the build in flight (unless a build on the page replaced them)
+function workerFailed() {
+  BW.ready = false; BW.busy = false;
+  try { BW.worker?.terminate(); } catch (e) { /* gone already */ }
+  BW.worker = null;
+  const w = BW.want || (BW.flight && BW.flight.gen === BW.gen ? BW.flight : null);
+  BW.want = null; BW.flight = null;
+  if (w) { BODY.values = null; applyBodyShape(w.v, w.f); }
+}
+function pumpBody() {
+  if (BW.busy || !BW.want || !BW.spare) return;
+  const w = BW.want, o = BW.spare;
+  BW.want = null; BW.spare = null; BW.busy = true; BW.flight = { v: w.v, f: w.f, gen: BW.gen };
+  BW.worker.postMessage({ type: 'update', id: ++BW.id, gen: BW.gen, t: w.t, values: w.v, face: w.f, out: o },
+    [o.pos.buffer, o.nrm.buffer, o.ns.buffer, o.coarse.buffer, o.joints.buffer]);
+}
+// the worker's body into the page's body, then the same steps as a build on the page
+function receiveBody(m: any) {
+  const t0 = performance.now(), A = BODY.anny, o = m.out;
+  clearCorrectives();
+  A.pos.set(o.pos); A.nrm.set(o.nrm); A.ns.set(o.ns); A.coarse.set(o.coarse); A.joints.set(o.joints);
+  A.eyes = m.eyes; A.values = m.values; A.faceValues = m.face;
+  const t1 = performance.now();
+  A.followStrands();
+  A.timing = Object.assign({}, m.timing, { 'copy to the page': Math.round((t1 - t0) * 10) / 10, strands: Math.round((performance.now() - t1) * 10) / 10 });
+  finishBodyShape(t0, m.ms);
+  BW.latency = performance.now() - m.t;
+  HOOKS.look();
+}
+// a build on the page, for the test hooks: they read the new body and its times right after the call
+function syncBody<T>(fn: () => T): T { BW.sync++; try { return fn(); } finally { BW.sync--; } }
 function bodySphere(sphere: any, V: Float32Array, n: number) {
   const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
   for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { const x = V[i * 3 + k]; if (x < lo[k]) lo[k] = x; if (x > hi[k]) hi[k] = x; }
@@ -941,15 +1021,18 @@ function initWardrobe() {
     body: () => ({ coarse: BODY.anny.coarse, joints: BODY.anny.joints, nBody: BODY.anny.nBody, quads: BODY.anny.quads, coarseSkin: BODY.anny.coarseSkin,
       bones: RIG.bones.map((b: any) => b.name), frame: { scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset },
       fine: (mask: Float32Array) => BODY.anny.sub.apply(mask, 1), geometry: BODY.geo }),
+    // a card's offsets and sliders build the body on the page, so that the dress that follows sees the card's body;
+    // the worker keeps the offsets for the slider edits after it
     setBodyOffsets: (o: Float32Array | null) => {
       if (!o && !BODY.anny.coarseOffsets) return;
       BODY.anny.coarseOffsets = o; BODY.values = null;
-      applyBodyShape(currentLook.phenotype, currentLook.face);
+      BW.worker?.postMessage({ type: 'offsets', offsets: o ? o.slice() : null });
+      syncBody(() => applyBodyShape(currentLook.phenotype, currentLook.face));
       HOOKS.look();
     },
     applyCard: (card: any) => {
       const phenotype = Object.assign(baselinePhenotype(), card.phenotype || {});
-      applyLook(Object.assign({}, currentLook, { name: card.name || currentLook.name, phenotype, face: Object.assign({}, card.face_shapes || {}) }), false);
+      syncBody(() => applyLook(Object.assign({}, currentLook, { name: card.name || currentLook.name, phenotype, face: Object.assign({}, card.face_shapes || {}) }), false));
     },
     changed: () => { shadowsDirty = true; resetAccum(); },
   });
@@ -2595,7 +2678,7 @@ const APP: any = {
   facePrior: () => !!BODY.face?.prior,
   sampleFace: (ph: any, spread: number) => drawFace(ph, spread),
   raceShare, stature,
-  bodyTiming: () => ({ ms: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming }),
+  bodyTiming: () => ({ ms: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming, worker: BW.ready, latency: BW.latency }),
   wardrobe: () => WEAR,
   hairSpecs,
   hairDefaults: (name: string) => HAIR ? HAIR.defaults(name) : null,
@@ -2710,16 +2793,16 @@ window.weightStats = weightStats;
 window.setFpsCap = (cap) => { setFpsCap(cap); return FPS.cap; };
 window.__CORR = CORR;
 window.__U = U;
-window.setLook = (look) => { applyLook(look, false); return true; };
+window.setLook = (look) => syncBody(() => { applyLook(look, false); return true; });
 window.setMotion = (name, t = 0, paused = true) => { MOTION.playing = !paused; return setMotion(name, { instant: true, t, remember: false }); };
 window.__MOTION = MOTION; window.__RIG = RIG;
 // the camera and the navigation state, for tests of the interface
 window.__view = { camera, controls, VIEW, FIG, ground: () => GROUND_Y, frame: () => DYN.frame, tweening: () => !!tween };
 window.__BODY = BODY;
 // anny's sliders from a test: returns the times of the update (ms)
-window.setSliders = (v) => { applyLook(Object.assign({}, currentLook, { phenotype: Object.assign({}, currentLook.phenotype, v) }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming }; };
+window.setSliders = (v) => syncBody(() => { applyLook(Object.assign({}, currentLook, { phenotype: Object.assign({}, currentLook.phenotype, v) }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming }; });
 window.__look = () => currentLook;
 // anny's face-shape values from a test (missing names take 0), and a face drawn from the distribution
-window.setFace = (v) => { applyLook(Object.assign({}, currentLook, { face: v }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs }; };
+window.setFace = (v) => syncBody(() => { applyLook(Object.assign({}, currentLook, { face: v }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs }; });
 window.randomFace = () => { randomFace(); return currentLook.face; };
 init().catch(e => { console.error(e); showError('The model could not be loaded: ' + e.message); });
