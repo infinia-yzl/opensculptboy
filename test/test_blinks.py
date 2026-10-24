@@ -53,6 +53,9 @@ LASH_DEPTH_MM = 1.5
 # a lash root that slides over the eye on the way may dip this far (mm) into the cornea's
 # shell, out of sight under the rim of the lid
 LASH_EYE_MM = 0.2
+# the upper lashes stay out of the lids: LASH_DEPTH_MM covers the lower lashes that the
+# closed upper lid hides, and the upper lashes reach 0.09 mm on anny's default character
+UPPER_LASH_DEPTH_MM = 0.2
 CASES = {"left": ("L",), "right": ("R",), "both": ("L", "R")}
 
 _TMP = tempfile.TemporaryDirectory()
@@ -384,6 +387,12 @@ class TestAnnyBlink(unittest.TestCase):
                         x = x + tent * full[blinks.inbetween_rows[side], rows]
                         over = float((surface.depth(x) - floor).max()) * 1000.0
                         self.assertLessEqual(over, LASH_EYE_MM, (t, over))
+                        if p.lid == UPPER:  # and no upper lash goes into the lids
+                            skin = rest + t * shape.closed + tent * shape.inbetween
+                            depth, _ = B.lash_penetration(
+                                blinks.lids[side], skin, rest, x, p.rest
+                            )
+                            self.assertLessEqual(depth, UPPER_LASH_DEPTH_MM, (t, depth))
             upper = [p for p, _ in parts if p.lid == UPPER][0]
             self.assertLess(
                 np.degrees(np.mean(upper.follow.root @ shape.turn[upper.follow.rows])),
@@ -714,6 +723,69 @@ class TestReferenceClosedEye(unittest.TestCase):
             self.assertFalse(
                 np.allclose(full[blinks.rows["R"], rows], lash_closed[p.points])
             )
+
+    def test_reference_lashes_without_half(self):
+        # a reference's blink without a half-closed pose: the lids take the path around the
+        # eye half way, and the lashes' bases still ride the lid margin there, each lash
+        # with half the reference's turn about its base
+        from opensculptboy.eyes.poses import BlinkPose
+        from opensculptboy.material import LashMaterial
+
+        rest, eyed, targets = anny_blinks()
+        data = eyed.lashes
+        model = Character().build_model(dtype=torch.float64)
+        ref = eyed_mesh(
+            model, None, rest, EyeMaterial(), "gltf", lashes=(LashMaterial(), data)
+        )
+        rng = np.random.default_rng(5)
+        lash_closed = rng.normal(0.0, 0.001, (len(data.points), 3))
+        pose = BlinkPose(targets["L"], None, lash_closed, None)
+        offsets = np.stack([targets["L"], targets["R"]])
+        names = [B.BLINK_TARGETS["L"], B.BLINK_TARGETS["R"]]
+        shaped, blinks = B.blink_offsets(ref, rest, offsets, names, {"L": pose})
+        full = B.blink_lash_offsets(ref, blinks, rest, ref.targets(shaped))
+        shape = blinks.shapes["L"]
+        now = 0.5 * shape.closed + shape.inbetween
+        self.assertGreater(np.abs(shape.inbetween).max(), 1e-4)  # off the straight line
+        for p, rows in B.lash_rows(ref, "L"):
+            base = B.lash_bases(p)
+            closed = full[blinks.rows["L"], rows]
+            half = full[blinks.inbetween_rows["L"], rows] + 0.5 * closed
+            np.testing.assert_allclose(
+                half[base], (p.follow.root @ now[p.follow.rows])[base], atol=1e-12
+            )
+            want = 0.5 * lash_closed[p.points]
+            np.testing.assert_allclose(half - half[base], want - want[base], atol=1e-12)
+
+    def test_poses_of_another_mesh(self):
+        # eye poses of another topology (a card converted after its bake) raise a clear
+        # error
+        from opensculptboy.eyes.poses import BlinkPose
+
+        rest, eyed, targets = anny_blinks()
+        offsets = np.stack([targets["L"], targets["R"]])
+        names = [B.BLINK_TARGETS["L"], B.BLINK_TARGETS["R"]]
+        pose = BlinkPose(np.zeros((len(rest) + 66, 3)))
+        with self.assertRaisesRegex(ValueError, "another topology"):
+            B.blink_offsets(eyed, rest, offsets, names, {"L": pose})
+        # and on a detail level, before the poses go to the level's mesh (a stand-in level
+        # whose first operator takes the rows of anny's level 0)
+        from types import SimpleNamespace
+
+        operator = SimpleNamespace(shape=(2 * len(rest), len(rest)))
+        detail = SimpleNamespace(topology=SimpleNamespace(operators=[operator]))
+        with tempfile.TemporaryDirectory() as tmp:
+            EyePoses(("close_l",), pose.closed[None]).save(
+                pathlib.Path(tmp) / "c.eye_poses.safetensors"
+            )
+            card = Character(
+                material={
+                    "eyes": {},
+                    "reference_eyes": {"poses": "c.eye_poses.safetensors"},
+                }
+            )
+            with self.assertRaisesRegex(ValueError, "another topology"):
+                card_blink_poses(card, detail, tmp)
 
     def test_card_section(self):
         check_material(

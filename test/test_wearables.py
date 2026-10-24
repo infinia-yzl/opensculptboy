@@ -22,6 +22,7 @@ import numpy as np
 from opensculptboy import Character, export_glb
 from opensculptboy.wearables import (
     PRIVATE,
+    Garment,
     ProvenanceError,
     WornPiece,
     card_body,
@@ -95,6 +96,14 @@ class TestFormat(unittest.TestCase):
         w.licence = {}
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
             write_wearable(pathlib.Path(tmp) / "circlet", w)
+
+    def test_garment_without_triangles(self):
+        w = circlet()
+        w.garment = Garment(w.garment.vertices, np.zeros((0, 3)))
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "at least one triangle"):
+                write_wearable(pathlib.Path(tmp) / "circlet", w)
+            self.assertFalse((pathlib.Path(tmp) / "circlet.glb").exists())
 
     def test_private_package_never_lands_in_the_repository(self):
         w = circlet()
@@ -176,6 +185,42 @@ class TestBinding(unittest.TestCase):
         self.assertGreater(float(np.percentile(after[0][near], 1)), 0.0008)
         self.assertGreater(float(after[0][near].min()), 0.0)
 
+    def test_push_out_over_a_rigid_piece_on_other_bodies(self):
+        """On a taller and on a shorter body the chest bone moves, and the rigid plate with
+        it: the coat keeps the relation it had with the plate on the binding body (outside
+        by the 1 mm gap, or by as little as it lay outside there)."""
+        import dataclasses
+
+        from opensculptboy.wearables import bind_rigid
+        from opensculptboy.wearables.geometry import Surface
+
+        body = template_body()
+        plate = tunic(offset=0.008)
+        plate = dataclasses.replace(
+            plate,
+            name="plate",
+            layer=40,
+            weights="rigid",
+            binding=bind_rigid(plate.garment, body, "spine03"),
+        )
+        coat = tunic(offset=0.012)
+        home = Surface(plate.garment.vertices, plate.garment.triangles)
+        target = np.minimum(home.signed_distance(coat.garment.vertices)[0], 0.001)
+        worn = [WornPiece(w.name, w.name, None, "", w, True) for w in (plate, coat)]
+        for height in (0.0, 1.0):
+            with self.subTest(height=height):
+                other = card_body(
+                    Character(phenotype={"height": height}), template_model()
+                )
+                pushed = dress(other, worn)
+                under = Surface(
+                    pushed[0].vertices, plate.garment.triangles, pushed[0].normals
+                )
+                signed, found, _ = under.signed_distance(pushed[1].vertices)
+                near = found.distance < 0.01
+                self.assertGreater(int(near.sum()), 50)
+                self.assertGreater(float((signed - target)[near].min()), -1e-4)
+
     def test_weights(self):
         body = template_body()
         dressed = dress(body, _worn(tunic(), circlet()))
@@ -193,6 +238,23 @@ class TestBinding(unittest.TestCase):
         self.assertGreater(int(ray_cover(body, piece).sum()), 300)
         piece.garment.materials[0].alpha_mode = "MASK"  # lace: the skin may show
         self.assertEqual(int(ray_cover(body, piece).sum()), 0)
+
+    def test_group_masks_without_a_mask_of_the_fixed_groups(self):
+        """A package with group masks and no ``covers`` mask: the ray test covers the skin
+        of its fixed groups, and each shown group adds its mask."""
+        from opensculptboy.wearables.cover import piece_cover, ray_cover
+
+        body = template_body()
+        w = tunic()
+        w.covers = None
+        shins = body.vertices[:, 2] < body.vertices[:, 2].min() + 0.3
+        w.group_covers["front"] = w.group_covers["front"] | shins
+        piece = dress(body, _worn(w))[0]
+        mask = piece_cover(body, piece)
+        self.assertTrue(mask[shins].all())
+        self.assertTrue(mask[ray_cover(body, piece)].all())
+        piece.hidden_groups = ["front"]
+        self.assertFalse(piece_cover(body, piece)[shins].any())
 
     def test_smoothed_weights(self):
         """Diffused weights keep their sums, join vertices at one position and blend
@@ -282,7 +344,20 @@ class TestWardrobe(unittest.TestCase):
         )
         names = [p.ref for p in worn_pieces(card, self.folder)]
         self.assertNotIn("test_outfit/circlet", names)
+        # a piece of another outfit that an override shows takes its slot as well
+        card = Character.from_dict(
+            dict(
+                self.card.to_dict(),
+                wearable_overrides={"spare/vest": {"enabled": True}},
+            )
+        )
+        names = [p.ref for p in worn_pieces(card, self.folder)]
+        self.assertIn("spare/vest", names)
+        self.assertNotIn("test_outfit/tunic", names)
         self.assertEqual(worn_pieces(self.card, self.folder, outfit="none"), [])
+        # a card with loose pieces alone, and no active outfit
+        loose = Character(wearables=[{"id": "vest", "file": "vest.wearable.json"}])
+        self.assertEqual([p.ref for p in worn_pieces(loose, self.folder)], ["vest"])
         with self.assertRaisesRegex(ValueError, "Did you mean"):
             worn_pieces(self.card, self.folder, hide=["capes"])
         every = worn_pieces(self.card, self.folder, every_outfit=True)
@@ -370,6 +445,60 @@ class TestDressedFiles(unittest.TestCase):
             body_triangles(dressed),
             body_triangles(whole) - every["removed_body_triangles"],
         )
+
+    def test_dressed_glb_with_eight_influences(self):
+        """Eight bones per vertex: the pieces hold them in two sets of four, as the body."""
+        path = self.folder / "eight.glb"
+        export_glb(
+            path, self.card, self.model, detail_dir=self.folder, max_influences=8
+        )
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        mesh = glb.json["meshes"][
+            glb.json["nodes"][names_index(glb, "test_outfit/tunic")]["mesh"]
+        ]
+        attributes = mesh["primitives"][0]["attributes"]
+        self.assertIn("JOINTS_1", attributes)
+        weights = sum(glb.accessor(attributes[f"WEIGHTS_{s}"]).sum(1) for s in (0, 1))
+        np.testing.assert_allclose(weights, 1.0, atol=1e-6)
+
+    def test_skin_covered_whole(self):
+        """A suit whose mask covers every skin vertex: the body's skin primitive leaves the
+        GLB and VRM files (a glTF accessor holds at least one element), the eyeballs stay,
+        and with nothing left of the body the export fails with a clear message."""
+        from opensculptboy.export.document import png_bytes
+        from opensculptboy.export.vrm import export_vrm
+
+        suit = tunic()
+        suit.name = "suit"
+        suit.covers = np.ones(len(suit.covers), bool)
+        write_wearable(self.folder / "suit.wearable.json", suit)
+        card = Character(
+            name="suited", wearables=[{"id": "suit", "file": "suit.wearable.json"}]
+        )
+        eyes = {"eyes": png_bytes(np.full((4, 8, 3), 40, np.uint8))}
+        files = [self.folder / "suited.glb"]
+        export_glb(files[0], card, self.model, textures=eyes, detail_dir=self.folder)
+        for version in ("1.0", "0.x"):
+            files.append(self.folder / f"suited_{version}.vrm")
+            export_vrm(
+                files[-1],
+                card,
+                author="test",
+                version=version,
+                textures=eyes,
+                detail_dir=self.folder,
+            )
+        for path in files:
+            with self.subTest(path.name):
+                glb = GLB(path)
+                self.assertEqual(structure_errors(glb), [])
+                counts = [a["count"] for a in glb.json["accessors"]]
+                self.assertGreater(min(counts), 0)
+        with self.assertRaisesRegex(ValueError, "cover every triangle"):
+            export_glb(
+                self.folder / "bare.glb", card, self.model, detail_dir=self.folder
+            )
 
     def test_piece_with_every_group_hidden_leaves_the_file(self):
         from opensculptboy.export.document import GltfDocument
@@ -460,6 +589,24 @@ class TestDressedFiles(unittest.TestCase):
         )
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["export", str(out), "--character", str(card), "--hide", "hat"])
+        # a tier export takes the same choices
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            command = ["export", str(out), "--character", str(card), "--tier", "high"]
+            self.assertEqual(main(command + ["--hide", "cape"]), 0)
+        summary = _last_json(printed.getvalue())
+        self.assertEqual(
+            summary["wearables"], ["test_outfit/tunic", "test_outfit/circlet"]
+        )
+        # a package file that is missing is a usage error of one line
+        lost = self.folder / "lost.json"
+        data = self.card.to_dict()
+        data["wearables"] = [{"id": "ring", "file": "ring.wearable.json"}]
+        lost.write_text(json.dumps(data))
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as exit:
+            main(["export", str(out), "--character", str(lost)])
+        self.assertEqual(exit.exception.code, 2)
+        self.assertIn("ring.wearable.json", errors.getvalue())
         with contextlib.redirect_stdout(io.StringIO()) as printed:
             self.assertEqual(main(["wearables", "list", "--character", str(card)]), 0)
         listing = _last_json(printed.getvalue())
