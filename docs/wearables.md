@@ -11,6 +11,8 @@ opensculptboy export ada_wardrobe.glb --character ada.json --wardrobe     # ever
 opensculptboy export ada.vrm --character ada.json --author "Your name"    # the outfit in a VRM avatar
 opensculptboy wearables list --character ada.json                         # the outfits, pieces and groups
 opensculptboy wearables bind tunic.glb --out wear/tunic --slot torso --licence CC0-1.0 --design-source "own design"
+opensculptboy wearables import-mhclo shirt/shirt.mhclo --out wear/shirt     # a MakeHuman clothes asset as a package
+opensculptboy wearables add ada.json wear/shirt.wearable.json --outfit casual --activate
 ```
 
 ## The package
@@ -27,16 +29,21 @@ A package is three files with one name:
 |---|---|
 | `format` | `opensculptboy.wearable/1` |
 | `name`, `label` | the package's name and the name to show |
+| `description`, `tags` | one line about the piece, and free words for it ("shirt", "long sleeves", "linen") |
 | `slot` | `head`, `face`, `neck`, `torso`, `arms`, `hands`, `legs`, `feet`, `cloak`, `under` or `accessory` |
 | `layer` | 0 (skin) to 100 (outermost), as in MakeHuman's z-depth: underwear 10, legs 30, torso 50, headgear 60, cloaks 80 |
 | `provenance` | `public` or `private` (see "Provenance") |
-| `licence` | `{spdx, author, source, design_source, attribution}`; `spdx` and `design_source` are required for a public package |
+| `licence` | `{spdx, declared, author, source, design_source, attribution}`, as the tools found or were given it; `spdx` is null when no licence is known, and the exports carry each `attribution` line as a credit |
 | `binding` | `{body, method, data, bone?}`: `body` is `anny-template` (the default card), `card` (the card of `wearables bind --body`) or `reference`, `method` is `surface` or `rigid` |
 | `weights` | `body` (the body's skin weights at the bound points), `rigid` (the one bone) or `own` (weights in the binding file, by bone name in `binding.joints`) |
 | `covers`, `group_covers`, `cover_ray` | whether the binding file holds a cover mask, the groups that hold their own masks, and whether a ray test confirms the masks |
 | `groups` | the named groups of the garment |
 | `hides` | rules toward other pieces: `{"piece": id, "groups": [name, ...]}` |
 | `springs`, `constraints` | spring chains and constraints for the VRM export; packages keep them, and a later version writes them |
+
+The JSON Schema of the description is `src/opensculptboy/data/wearables/wearable-1.schema.json` (`opensculptboy.wearables.format.SCHEMA_PATH`). A package's GLB file embeds its textures and holds MikkTSpace tangents when a material has a normal map.
+
+The tools record the licence they find or are given; choosing assets and following their licences is the user's responsibility.
 
 ### Binding
 
@@ -107,18 +114,80 @@ The frame of the file is the frame of the export: metres, glTF axes (Y up, the f
 | `--groups-from materials\|nodes\|extras` | how the triangles form groups (default `materials`) |
 | `--covers auto\|none` | `auto` (default): each group's mask holds the skin vertices whose normal ray meets the group's opaque triangles within 3 cm on the binding body, and the package sets `cover_ray`; `none`: the piece covers no skin |
 | `--hides PIECE:GROUP,...` | hides rules toward other pieces; repeatable |
-| `--licence SPDX`, `--author`, `--source URL`, `--design-source TEXT` | the licence; a public package needs `--licence` and `--design-source` |
+| `--licence SPDX`, `--author`, `--source URL`, `--design-source TEXT` | the licence block, recorded as given (each optional) |
+| `--tag WORDS`, `--description TEXT` | the package's tags (repeatable, or comma-separated) and its one-line description |
+| `--accept-quality`, `--texture-limit PIXELS`, `--normal-green auto\|keep\|flip` | the quality checks (see "Quality") |
 | `--provenance public\|private` | `public` by default; a private package never goes into a checkout of this repository (see "Provenance") |
 | `--body CARD` | bind to the body of a card at rest, its detail level 0 included; the default card by default |
 | `--frame auto\|floor\|centred` | the frame of the garment file (default `auto`) |
 | `--max-distance MM` | the limit of the refusal below (default 100) |
 
-The command prints a JSON report: the vertices, triangles, materials and groups, the largest and the 95th-percentile distance of the garment's vertices from the skin (`bind_distance_mm_max`, `bind_distance_mm_p95`), the vertices further than 50 mm from the skin (`far_vertices`), the covered skin vertices, the frame and its lift, the round trip (`round_trip_mm_max`: the written package read back and evaluated on the binding body, against the garment's vertices) and the warnings, which also go to the error stream.
+The command prints a JSON report: the quality items (`quality`, see "Quality"), the vertices, triangles, materials and groups, the largest and the 95th-percentile distance of the garment's vertices from the skin (`bind_distance_mm_max`, `bind_distance_mm_p95`), the vertices further than 50 mm from the skin (`far_vertices`), the covered skin vertices, the frame and its lift, the round trip (`round_trip_mm_max`: the written package read back and evaluated on the binding body, against the garment's vertices) and the warnings, which also go to the error stream.
 
 - A surface garment whose median distance from the skin exceeds `--max-distance` (for `--rigid`, its nearest vertex) is refused: it was modelled on another body, at another scale or in another frame. The message gives the distance in each frame it tried.
 - Vertices further than 50 mm from the skin bind with a warning: they follow the skin at their bound points and may stretch on other bodies.
 - A mesh without normals takes normals computed from its triangles, with a warning.
 - An unknown slot, an unknown bone for `--rigid`, own weights without a skin or with joints that the rig lacks, and a malformed `--hides` item are errors.
+- A textured material on a mesh without UVs is a quality error (`missing_uvs`); with `--accept-quality` the package keeps the material without its textures.
+
+## Free outfits
+
+MakeHuman's community shares clothes as asset packs: <https://static.makehumancommunity.org/assets/assetpacks/index.html> lists them (shirts, pants, skirts, suits, dresses, shoes, gloves, underwear), each pack under CC0 or CC-BY. A clothes asset is a folder with a `.mhclo` file, its `.obj` mesh, its `.mhmat` material and the textures. CC0 assets need no credit. A CC-BY asset needs a credit to its author ([MakeHuman's FAQ](https://static.makehumancommunity.org/oldsite/faq/what_do_i_need_to_do_when_i_use_a_ccby_asset.html) reads it as CC BY 4.0): the import writes an `attribution` line for it, the GLB export lists those lines in `extras.opensculptboy.wearables.credits` and the VRM export adds them to the file's credits. MakeHuman's own source and some assets are under AGPL; the tools record whatever licence the header names, and the choice is the user's.
+
+Two commands put a free outfit on a character:
+
+```bash
+opensculptboy wearables import-mhclo packs/shirts01/toigo_fisherman_sweater/toigo_fisherman_sweater.mhclo --out wear/sweater
+opensculptboy wearables import-mhclo packs/pants01/some_jeans/some_jeans.mhclo --out wear/jeans --tag denim
+opensculptboy wearables add ada.json wear/sweater.wearable.json wear/jeans.wearable.json --outfit casual --label "Casual" --activate
+opensculptboy export ada.glb --character ada.json
+```
+
+### Import a MakeHuman asset
+
+`opensculptboy wearables import-mhclo FILE.mhclo [--out STEM]` reads the asset and writes a package bound to the default body (`binding.body` is `anny-template`).
+
+- **Header.** `name`, `uuid`, `description`, `tag` lines, `z_depth`, `obj_file`, `material`, `basemesh` (only `hm08`, MakeHuman's default base mesh) and the licence keys `author`, `license`, `homepage` and `copyright`, as keys or in comment lines (`# license CC0`). The package takes the name, the label, the description and the tags from them (`--name`, `--label`, `--description` and `--tag` add or replace them), the layer from `z_depth` (50 without one, as MakeHuman uses), and the slot from the words of the name and the tags (`--slot` sets it).
+- **Binding.** After `verts`, one line per `.obj` vertex: three base-mesh vertex indices, three weights and an offset, or one index alone. On a body `h` in MakeHuman's frame (decimetres, Y up) a vertex lies at `w1 h[v1] + w2 h[v2] + w3 h[v3] + S d`. `S` is diagonal: for each axis n of `x_scale`, `y_scale` and `z_scale` (`v1 v2 length`), `|h[v1][n] - h[v2][n]| / length`, so that the offset stretches with the body; without scale lines it is the identity, and `shear_x`, `shear_y` and `shear_z` (`v1 v2 x1 x2`) give `(h[v2][n] - h[v1][n]) / (x2 - x1)`. The import evaluates the binding on the default body, then binds the garment to the nearest triangles of the skin with the code of `wearables bind`. The report's `source_fit_mm_max` compares the binding evaluated on `base.obj` with the `.obj` vertices: a large value means a file that does not follow the format.
+- **Base mesh.** Anny's template is MakeHuman's `base.obj` (19,158 vertices) in Anny's frame. Anny's default topology keeps the 13,718 vertices that its faces use (body, eyes and tongue); it leaves out the helper geometry (`helper-tights`, `helper-skirt`, `helper-hair` and the others) and the vertices of its nudity edits. Many assets bind to the helpers. The MPFB2 targets that Anny bundles move the helper vertices as they move the skin around them, so the import takes the vertices that Anny lacks from those targets with the card's blend-shape coefficients. On other bodies the package follows the skin triangles under it: on three random bodies a patch bound to `helper-tights` stays within 5 mm (median) and 12 mm (largest) of the helper that the targets give (`test_helper_geometry_follows_the_targets`).
+- **Covered skin.** `delete_verts` (numbers and ranges `a - b`) becomes the package's `covers` mask on Anny's rows; deleted vertices outside Anny's rows are counted in the report. Without `delete_verts` the import uses the ray test of `wearables bind`. `--covers ray` always uses the ray test and `--covers none` covers no skin.
+- **Material.** The `.mhmat` file becomes one glTF PBR material and one group named by it: `diffuseColor` (sRGB, made linear) times `diffuseIntensity` and `diffuseTexture` give the base colour and `opacity` its alpha; `roughnessFactor` is `clamp(1 - shininess, 0.04, 1)`, 1 when `specularIntensity` or `specularColor` is 0, and a `roughness` key wins; `metallic` gives the metallic factor; `transparencymapTexture` becomes the alpha of the base colour texture; `transparent` gives BLEND, and `alphaToCoverage`, or an alpha map on an opaque material, gives MASK with cutoff 0.5; `backfaceCull False` gives a double-sided material; `normalmapTexture` with `normalmapIntensity`, `aomapTexture` and `emissiveColor` give the normal map, the occlusion and the emission. Specular, bump and displacement maps have no glTF PBR slot: the report lists each one it drops. Textures in other formats than PNG and JPEG are converted to PNG.
+
+The command prints one JSON result on stdout (`"ok": true`, the package, the report of `wearables bind`, `licence`, `slot_from`, `mhclo` and `quality`); warnings go to the error stream and stay in the result. A failure prints `{"ok": false, "error": {"code", "message", "hint"}}` and exits with status 1; the codes include `file_not_found`, `malformed_binding`, `binding_mismatch`, `unknown_basemesh`, `unknown_slot`, `too_far_from_skin`, `missing_uvs`, `private_in_repository` and `usage` (status 2).
+
+Sources of the format: MakeHuman 1.x `shared/proxy.py` (the binding, the scale and shear references, `delete_verts`) and `makehuman.py` (`LicenseInfo`, the licence keys) at <https://github.com/makehumancommunity/makehuman>, and MPFB2 `src/mpfb/entities/clothes/mhclo.py` (the header keys, the single-index bindings) at <https://github.com/makehumancommunity/mpfb2>.
+
+### Put pieces on a card
+
+```bash
+opensculptboy wearables add ada.json wear/sweater.wearable.json wear/jeans.wearable.json --outfit casual --label "Casual" --activate
+opensculptboy wearables add ada.json wear/ring.wearable.json --loose
+opensculptboy wearables add ada.json wear/coat.wearable.json --outfit casual --replace --dry-run
+opensculptboy wearables remove ada.json casual/jeans ring
+opensculptboy wearables remove ada.json --outfit casual
+opensculptboy wearables outfit ada.json --activate none
+```
+
+- `add` puts packages into an outfit (`--outfit NAME`, created when missing, with `--label`) or as loose pieces (no `--outfit`, or `--loose`). A piece takes the package's name as its id, and its file is written relative to the card. `--activate` makes the outfit the worn one. A piece of the same id with another file is an error (`piece_exists`) unless `--replace`, which also takes out the pieces of the same slot in the same place (an `accessory` piece only by id). Each package is read and checked first.
+- `remove` takes pieces off by reference (`<outfit>/<piece>`, a loose piece's id, or a bare id of a piece of the worn outfit) with their overrides, or a whole outfit with `--outfit`. A reference that the card lacks is reported in `missing` and changes nothing.
+- `outfit --activate NAME` sets `active_outfit` (`none` for no outfit).
+- Each command keeps the card's other fields as they are, raises an older card to schema 4 when it adds wardrobe fields, and checks the result as a card. `--dry-run` prints the change without writing it. A second run with the same arguments changes nothing (`"changed": false`).
+- A private package never goes on a card stored inside a checkout of this repository (`private_in_repository`).
+- Each command prints one JSON result (`ok`, `changed`, `written`, `schema` before and after, `added`, `updated`, `removed`, `unchanged` or `missing`, `warnings` and the new `wardrobe` fields); errors are JSON as for `import-mhclo` (`card_not_found`, `invalid_card`, `package_not_found`, `invalid_package`, `piece_exists`, `ambiguous_piece`, `unknown_outfit`, `bad_option`, `bad_outfit`).
+
+## Quality
+
+`wearables bind` and `wearables import-mhclo` check each garment before they bind it (`opensculptboy.wearables.quality`) and report under `quality`: `errors`, `warnings`, `infos`, the codes of the `fixes`, and the `items`, each with a stable `code`, a `severity` (`error`, `warning` or `info`), a `message` and a `hint`. An error-severity item fails the command with its code unless `--accept-quality` is passed.
+
+| Area | Codes |
+|---|---|
+| Geometry | `degenerate_triangles_removed`, `unused_vertices_removed` and `duplicate_vertices_merged` (fixes), `non_manifold_edges`, `parts`, `loose_fragments`, `counts`, `triangle_budget` (with the default body's 27,420 triangles against the VRM 1.0 budget of 70,000, a warning, and the VRM 0.x budget of 32,000, an info), `no_triangles` (error) |
+| Normals | `winding_fixed` (triangles wound against their neighbours turned over), `normals_computed` (angle-weighted, welded by position, so that UV seams and material borders stay smooth), `hard_edges` (split vertices whose file normals differ, kept), `normals_against_winding`, `part_faces_inward` (a part that faces into the body; an inner lining may do so on purpose) |
+| UVs | `missing_uvs` (error), `uv_outside_unit_square`, `uv_degenerate`, `uv_flipped` (triangles mirrored against the rest of their UV island), `uv_overlap` (a UV area covered twice in the same direction), `uv_mirrored_overlap` (an info: symmetric halves that share a texture), `texel_density` or `texel_density_spread` (the 95th over the 5th percentile above 4) |
+| Materials | `roughness_mapped` (with the formula), `alpha_mode`, `double_sided`, `alpha_map_merged`, `alpha_map_on_opaque`, `map_dropped`, `material_missing` |
+| Textures | `texture_missing`, `texture_unreadable`, `texture_converted`, `texture_not_power_of_two`, `texture_too_large` (above `--texture-limit`, 4096 by default), `linear_texture_tagged_srgb` (a normal, roughness or occlusion map tagged as sRGB; glTF reads it as linear), `base_colour_tagged_linear`, `alpha_unused` (a base colour texture with alpha on an opaque material), `alpha_missing` (a transparent material without alpha), `normal_map_not_tangent_space`, `normal_map_convention`, `normal_map_directx` or `normal_green_flipped`, `textures_embedded`, `tangents_mikktspace`, `tangents_degenerate` |
+
+The green channel of a normal map follows the OpenGL convention in MakeHuman and in glTF (green points up the image). The check measures the correlation between the change of red up the image and the change of green to the right, which a relief gives alike: positive for OpenGL, negative for DirectX. `--normal-green auto` (the default) flips a map that reads DirectX with a correlation below -0.25, `keep` leaves it with a warning, and `flip` always flips.
 
 ## Reference wearables
 
@@ -139,8 +208,8 @@ The packages go into `<out>/wearables/` with `provenance` private, next to a cop
 
 ## Provenance
 
-A package records where it comes from. Public packages carry a licence and may live in this repository. Private packages are made from a reference character's own files, and they, the cards that list them and every export of those cards stay with their owner: `write_wearable` and the reference builder refuse to write a private package anywhere inside a checkout of this repository, and `test.test_wearables.TestNoPrivatePackages` fails when a file under `src/` or `test/data/` declares the private provenance.
+A package records where it comes from. Public packages may live in this repository. Private packages are made from a reference character's own files, and they, the cards that list them and every export of those cards stay with their owner: `write_wearable` and the reference builder refuse to write a private package anywhere inside a checkout of this repository, `wearables add` refuses to put one on a card inside a checkout, and `test.test_wearables.TestNoPrivatePackages` fails when a file under `src/` or `test/data/` declares the private provenance.
 
 ## Checks
 
-`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `test.test_wearables_bind` writes garment files in the test (a tube around the torso in two materials and a ring around the head) and checks `wearables bind`: the package's fields, the round trip on the template, the frame of the default export, a dressed export on two random bodies, the licence refusal, the far-from-body warning and refusal, both frames, own weights and the command. `TestGltfReference` holds a dressed case.
+`test.test_wearables_import` writes synthetic MakeHuman assets in the test (`test/mhclo_fixtures.py`: a tube around the torso bound to base-mesh triangles with scale references and `delete_verts`, and a patch of `helper-tights` bound vertex by vertex) and checks the header and binding formats, the binding on `base.obj` and on the default body, the helper geometry against the targets on random bodies, the recorded licences and the credits in a dressed export, one asset per quality defect (a flipped triangle, missing UVs on a textured material, a DirectX normal map, a missing texture, an alpha map on an opaque material, an oversized and an odd-sized texture), the JSON results and errors, the card commands with dry runs, repeated runs and the provenance guard, and the packages against the JSON Schema. `test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `test.test_wearables_bind` writes garment files in the test (a tube around the torso in two materials and a ring around the head) and checks `wearables bind`: the package's fields, the round trip on the template, the frame of the default export, a dressed export on two random bodies, the far-from-body warning and refusal, both frames, own weights and the command. `TestGltfReference` holds a dressed case.
