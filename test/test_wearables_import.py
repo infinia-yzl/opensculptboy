@@ -116,6 +116,18 @@ class TestFormat(unittest.TestCase):
         np.testing.assert_array_equal(asset.offsets[1], [0, 0, 0])
         self.assertEqual(asset.delete_verts.tolist(), [5, 6, 7, 8, 12, 20, 21, 22])
 
+    def test_description_in_a_comment_line(self):
+        """MPFB2 writes '# author:', '# license:' and '# description:' comment lines."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "coat.mhclo"
+            path.write_text(
+                "# author: Some One\n# license: CC0\n# description: A long coat\n"
+                "basemesh hm08\nname coat\nverts 0\n10\n"
+            )
+            self.assertEqual(read_mhclo(path).description, "A long coat")
+            path.write_text(path.read_text() + "description The key's text\n")
+            self.assertEqual(read_mhclo(path).description, "The key's text")
+
     def test_malformed_binding(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "bad.mhclo"

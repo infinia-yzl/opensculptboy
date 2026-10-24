@@ -11,7 +11,9 @@ write them:
 
 - **Header.** ``name``, ``uuid``, ``description``, ``tag`` (one per line), ``z_depth``,
   ``obj_file``, ``material``, ``basemesh``, and the licence keys ``author``, ``license``,
-  ``homepage`` and ``copyright``, either as keys or in comment lines (``# license CC0``).
+  ``homepage`` and ``copyright``, either as keys or in comment lines (``# license CC0``);
+  MPFB2 writes the description in a comment line too (``# description: ...``), which a
+  ``description`` key replaces.
 - **Binding.** After ``verts``, one line per garment vertex in the order of the ``.obj``
   vertices: three base-mesh vertex indices, three weights and an offset (``v1 v2 v3 w1 w2 w3
   dx dy dz``), or one index alone (the vertex sits on that base-mesh vertex). On a body ``h``
@@ -162,6 +164,8 @@ def read_mhclo(path) -> MhcloAsset:
                     key = words[0].rstrip(":").lower()
                     if key in LICENCE_KEYS and len(words) > 1:
                         _set_licence(asset, key, " ".join(words[1:]))
+                    elif key == "description" and asset.description is None:
+                        asset.description = " ".join(words[1:]) or None  # MPFB2
                 continue
             words = line.split()
             key = words[0].rstrip(":")
