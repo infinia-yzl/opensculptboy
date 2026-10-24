@@ -10,6 +10,7 @@ opensculptboy export ada.glb --character ada.json --covered keep          # keep
 opensculptboy export ada_wardrobe.glb --character ada.json --wardrobe     # every piece as its own node
 opensculptboy export ada.vrm --character ada.json --author "Your name"    # the outfit in a VRM avatar
 opensculptboy wearables list --character ada.json                         # the outfits, pieces and groups
+opensculptboy wearables bind tunic.glb --out wear/tunic --slot torso --licence CC0-1.0 --design-source "own design"
 ```
 
 ## The package
@@ -30,7 +31,7 @@ A package is three files with one name:
 | `layer` | 0 (skin) to 100 (outermost), as in MakeHuman's z-depth: underwear 10, legs 30, torso 50, headgear 60, cloaks 80 |
 | `provenance` | `public` or `private` (see "Provenance") |
 | `licence` | `{spdx, author, source, design_source, attribution}`; `spdx` and `design_source` are required for a public package |
-| `binding` | `{body, method, data, bone?}`: `body` is `anny-template` or `reference`, `method` is `surface` or `rigid` |
+| `binding` | `{body, method, data, bone?}`: `body` is `anny-template` (the default card), `card` (the card of `wearables bind --body`) or `reference`, `method` is `surface` or `rigid` |
 | `weights` | `body` (the body's skin weights at the bound points), `rigid` (the one bone) or `own` (weights in the binding file, by bone name in `binding.joints`) |
 | `covers`, `group_covers`, `cover_ray` | whether the binding file holds a cover mask, the groups that hold their own masks, and whether a ray test confirms the masks |
 | `groups` | the named groups of the garment |
@@ -77,6 +78,48 @@ A piece is named by its reference: `<outfit>/<piece>` for a piece of an outfit, 
 - **Wardrobe GLB** (`--wardrobe`). Every piece of every outfit is a node, and every group that a rule can hide is a node of its own (`<piece>.<group>`), all at the root, with the body whole. The default scene holds the body and what the worn outfit shows, so Blender and other importers open the character as it is dressed; a second scene holds every piece, for tools that switch scenes or let the user show nodes one by one. `--node-visibility` writes one scene with every piece instead and marks the pieces and groups that the worn outfit does not show with `KHR_node_visibility` (`visible: false`). The Khronos validator reports that extension as unknown (an info). The glTF importer of Blender 5.2 reads every node of every scene and ignores the extension; `blender --python src/opensculptboy/export/blender_skin.py -- wardrobe.glb` imports a wardrobe file and hides the pieces and groups that its extras mark as not shown (`opensculptboy_wearable.shown`, `opensculptboy_wearable_group.shown`).
 - **VRM.** Each shown piece is a mesh bound into the T-pose with the file's skin weights at its bound points (the inverse bind, so that the avatar posed at Anny's rest pose shows the piece's rest vertices exactly) and an MToon material per garment material. Pieces count against the budgets of [VRM avatars](vrm.md). Spring bones and constraints come later.
 
+## Make a wearable
+
+`opensculptboy wearables bind` turns a garment modelled in Blender (or any tool that writes GLB files) on the body of a card into a package.
+
+1. Export the body to model on: `opensculptboy export base.glb` gives the default card. For another card, export it with `--character card.json --bare` and bind with `--body card.json`.
+2. Import `base.glb` into Blender (File > Import > glTF 2.0) and model the garment on the body at rest. Keep the scene in metres and leave the body where the import puts it.
+3. Name the groups. By default each material is a group, named by the material. `--groups-from nodes` names a group by its mesh object, and `--groups-from extras` reads a custom property `group` of the mesh data or the object (export with Include > Custom Properties). Hides rules of other pieces and the cover masks work per group.
+4. Unwrap UVs for textured materials. A textured material on a mesh without UVs is an error; a garment without any UVs binds with a warning.
+5. Export the garment objects alone: File > Export > glTF 2.0, format glTF Binary, Include > Selected Objects, Transform > +Y Up. For `--weights own`, parent the meshes to the imported armature, paint their weights and select the armature too.
+6. Bind the file and list the package on a card (see "Outfits on the card").
+
+```bash
+opensculptboy export base.glb
+opensculptboy wearables bind tunic.glb --out wear/tunic --slot torso --layer 50 --label "Linen tunic" \
+  --licence CC-BY-4.0 --author "Your name" --source https://example.org/tunic --design-source "own design" --hides cape:hood
+opensculptboy wearables bind circlet.glb --out wear/circlet --slot head --layer 60 --rigid head --licence CC0-1.0 --design-source "own design"
+```
+
+The frame of the file is the frame of the export: metres, glTF axes (Y up, the figure facing +Z). The export stands the body on the floor at its default pose (its lowest vertex at y = 0, a lift of 0.819 m for the default card), and its bind pose keeps the body centred as Anny's template. `--frame auto` (the default) takes the frame in which the garment lies nearer the skin, so a garment modelled on either pose binds; `--frame floor` and `--frame centred` choose one. The reader applies the node transforms and the skins of the file at its default pose, as an importer shows them, and skips a mesh that lies on the skin (the body itself, exported by mistake).
+
+| Option | Effect |
+|---|---|
+| `--out STEM` | the package's three files `STEM.wearable.json`, `STEM.glb` and `STEM.binding.safetensors`; `--name` defaults to the stem, `--label` to the name |
+| `--slot`, `--layer` | the slot (one of the slots above) and the layer (default 50) |
+| `--rigid BONE` | bind every vertex to one bone, for pieces that keep their shape; surface binding by default |
+| `--weights body\|own` | the body's skin weights at the bound points (default), or the file's `JOINTS_0` and `WEIGHTS_0` by joint name, which must name bones of the body's rig |
+| `--groups-from materials\|nodes\|extras` | how the triangles form groups (default `materials`) |
+| `--covers auto\|none` | `auto` (default): each group's mask holds the skin vertices whose normal ray meets the group's opaque triangles within 3 cm on the binding body, and the package sets `cover_ray`; `none`: the piece covers no skin |
+| `--hides PIECE:GROUP,...` | hides rules toward other pieces; repeatable |
+| `--licence SPDX`, `--author`, `--source URL`, `--design-source TEXT` | the licence; a public package needs `--licence` and `--design-source` |
+| `--provenance public\|private` | `public` by default; a private package never goes into a checkout of this repository (see "Provenance") |
+| `--body CARD` | bind to the body of a card at rest, its detail level 0 included; the default card by default |
+| `--frame auto\|floor\|centred` | the frame of the garment file (default `auto`) |
+| `--max-distance MM` | the limit of the refusal below (default 100) |
+
+The command prints a JSON report: the vertices, triangles, materials and groups, the largest and the 95th-percentile distance of the garment's vertices from the skin (`bind_distance_mm_max`, `bind_distance_mm_p95`), the vertices further than 50 mm from the skin (`far_vertices`), the covered skin vertices, the frame and its lift, the round trip (`round_trip_mm_max`: the written package read back and evaluated on the binding body, against the garment's vertices) and the warnings, which also go to the error stream.
+
+- A surface garment whose median distance from the skin exceeds `--max-distance` (for `--rigid`, its nearest vertex) is refused: it was modelled on another body, at another scale or in another frame. The message gives the distance in each frame it tried.
+- Vertices further than 50 mm from the skin bind with a warning: they follow the skin at their bound points and may stretch on other bodies.
+- A mesh without normals takes normals computed from its triangles, with a warning.
+- An unknown slot, an unknown bone for `--rigid`, own weights without a skin or with joints that the rig lacks, and a malformed `--hides` item are errors.
+
 ## Reference wearables
 
 An appearance handoff ([Fit to a reference](reference-fit.md)) may describe what the reference character wears in an `equipment` section. `opensculptboy wearables reference` builds one package per piece for a card fitted to that handoff:
@@ -100,4 +143,4 @@ A package records where it comes from. Public packages carry a licence and may l
 
 ## Checks
 
-`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `TestGltfReference` holds a dressed case.
+`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `test.test_wearables_bind` writes garment files in the test (a tube around the torso in two materials and a ring around the head) and checks `wearables bind`: the package's fields, the round trip on the template, the frame of the default export, a dressed export on two random bodies, the licence refusal, the far-from-body warning and refusal, both frames, own weights and the command. `TestGltfReference` holds a dressed case.

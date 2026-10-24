@@ -16,6 +16,8 @@ Wearables: clothes, footwear, headgear, capes and accessories that fit any Anny 
 - :mod:`~opensculptboy.wearables.wardrobe`: the card's outfits, loose pieces and overrides,
   slot replacement and the ``hides`` rules between pieces;
 - :mod:`~opensculptboy.wearables.gltf`: materials and pieces in glTF files;
+- :mod:`~opensculptboy.wearables.make`: a package from a garment modelled on a body
+  (``opensculptboy wearables bind``);
 - :mod:`~opensculptboy.wearables.reference`: reference wearables, built from the
   ``equipment`` section of an appearance handoff and carried onto a fitted card.
 """
