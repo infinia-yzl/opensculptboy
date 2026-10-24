@@ -53,6 +53,9 @@ LASH_DEPTH_MM = 1.5
 # a lash root that slides over the eye on the way may dip this far (mm) into the cornea's
 # shell, out of sight under the rim of the lid
 LASH_EYE_MM = 0.2
+# the upper lashes stay out of the lids: LASH_DEPTH_MM covers the lower lashes that the
+# closed upper lid hides, and the upper lashes reach 0.09 mm on anny's default character
+UPPER_LASH_DEPTH_MM = 0.2
 CASES = {"left": ("L",), "right": ("R",), "both": ("L", "R")}
 
 _TMP = tempfile.TemporaryDirectory()
@@ -384,6 +387,12 @@ class TestAnnyBlink(unittest.TestCase):
                         x = x + tent * full[blinks.inbetween_rows[side], rows]
                         over = float((surface.depth(x) - floor).max()) * 1000.0
                         self.assertLessEqual(over, LASH_EYE_MM, (t, over))
+                        if p.lid == UPPER:  # and no upper lash goes into the lids
+                            skin = rest + t * shape.closed + tent * shape.inbetween
+                            depth, _ = B.lash_penetration(
+                                blinks.lids[side], skin, rest, x, p.rest
+                            )
+                            self.assertLessEqual(depth, UPPER_LASH_DEPTH_MM, (t, depth))
             upper = [p for p, _ in parts if p.lid == UPPER][0]
             self.assertLess(
                 np.degrees(np.mean(upper.follow.root @ shape.turn[upper.follow.rows])),
