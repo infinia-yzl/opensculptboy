@@ -476,6 +476,16 @@ class TestDressedFiles(unittest.TestCase):
         )
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["export", str(out), "--character", str(card), "--hide", "hat"])
+        # a package file that is missing is a usage error of one line
+        lost = self.folder / "lost.json"
+        data = self.card.to_dict()
+        data["wearables"] = [{"id": "ring", "file": "ring.wearable.json"}]
+        lost.write_text(json.dumps(data))
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as exit:
+            main(["export", str(out), "--character", str(lost)])
+        self.assertEqual(exit.exception.code, 2)
+        self.assertIn("ring.wearable.json", errors.getvalue())
         with contextlib.redirect_stdout(io.StringIO()) as printed:
             self.assertEqual(main(["wearables", "list", "--character", str(card)]), 0)
         listing = _last_json(printed.getvalue())

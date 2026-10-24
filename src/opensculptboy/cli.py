@@ -199,7 +199,7 @@ def _export(args, parser) -> int:
             detail_dir=_detail_dir(args.character),
             dressing=dressing,
         )
-    except ValueError as error:
+    except (OSError, ValueError) as error:  # a missing package or a wrong piece name
         if dressing is None:
             raise
         parser.error(_one_line(error))
