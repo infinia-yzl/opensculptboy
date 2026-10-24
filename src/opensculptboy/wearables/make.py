@@ -25,7 +25,7 @@ import numpy as np
 
 from opensculptboy.wearables.bind import BodySurface, bind_rigid, bind_surface, evaluate
 from opensculptboy.wearables.cover import RAY_REACH
-from opensculptboy.wearables.format import Garment, Wearable
+from opensculptboy.wearables.format import Garment, Wearable, WearableError
 from opensculptboy.wearables.geometry import ray_hits, unit_rows, vertex_normals
 
 GROUPS_FROM = ("materials", "nodes", "extras")
@@ -39,8 +39,10 @@ BODY_DISTANCE = 0.0005  # metres: a mesh this close to the skin is the body itse
 BODY_VERTICES = 2000
 
 
-class GarmentError(ValueError):
+class GarmentError(WearableError):
     """A garment file that cannot become a package as it stands."""
+
+    code = "invalid_garment"
 
 
 @dataclasses.dataclass
@@ -55,6 +57,7 @@ class GarmentFile:
     node_names: list
     triangle_node: np.ndarray
     notes: list
+    normals_missing: bool = False  # no mesh of the file has normals
 
 
 def _normal_matrix(m: np.ndarray) -> np.ndarray:
@@ -98,6 +101,7 @@ def read_garment(path, groups_from: str = "materials") -> GarmentFile:
     entries = gltf.get("materials", [])
     notes: list[str] = []
     parts = []
+    with_normals = 0
     for n in _scene_nodes(gltf):
         node = nodes[n]
         if "mesh" not in node:
@@ -177,6 +181,7 @@ def read_garment(path, groups_from: str = "materials") -> GarmentFile:
             if len(triangles) and flip[triangles].all(axis=1).any():
                 rows = flip[triangles].all(axis=1)
                 triangles[rows] = triangles[rows][:, ::-1]
+            with_normals += normals is not None
             if normals is None:
                 normals = vertex_normals(positions, triangles)
                 notes.append(f"{label}: no normals; computed from the triangles")
@@ -214,7 +219,11 @@ def read_garment(path, groups_from: str = "materials") -> GarmentFile:
                 )
             )
     if not parts:
-        raise GarmentError(f"{path}: no triangle meshes in the default scene.")
+        raise GarmentError(
+            f"{path}: no triangle meshes in the default scene.",
+            "no_meshes",
+            "Export the garment objects as triangle meshes into the default scene.",
+        )
     used = sorted({p["material"] for p in parts if p["material"] is not None})
     materials, index = read_materials(gltf, binary, which=used)
     if any(p["material"] is None for p in parts):
@@ -223,15 +232,6 @@ def read_garment(path, groups_from: str = "materials") -> GarmentFile:
         index[None] = len(materials)
         materials.append(Material("garment"))
     with_uvs = [p["uvs"] is not None for p in parts]
-    for p in parts:
-        textured = (
-            p["material"] is not None and materials[index[p["material"]]].textures
-        )
-        if p["uvs"] is None and textured:
-            raise GarmentError(
-                f"{p['label']}: its material has textures and the mesh has no UVs; "
-                "unwrap the mesh or export it with UVs."
-            )
     if any(with_uvs) and not all(with_uvs):
         missing = [p["label"] for p in parts if p["uvs"] is None]
         notes.append(f"no UVs on {missing}; their UVs are 0")
@@ -293,6 +293,7 @@ def read_garment(path, groups_from: str = "materials") -> GarmentFile:
         node_names,
         np.concatenate(tnode),
         notes,
+        normals_missing=with_normals == 0,
     )
 
 
@@ -346,7 +347,9 @@ def parse_hides(values) -> list[dict]:
             if not sep or not piece or not group:
                 raise GarmentError(
                     f"--hides takes PIECE:GROUP items (for example tunic:sleeves); "
-                    f"got {item!r}."
+                    f"got {item!r}.",
+                    "bad_hides",
+                    "Write each --hides item as PIECE:GROUP.",
                 )
             rules.setdefault(piece, [])
             if group not in rules[piece]:
@@ -373,6 +376,11 @@ def make_wearable(
     frame: str = "auto",
     max_distance: float = MAX_DISTANCE,
     extras: dict | None = None,
+    tags=(),
+    description: str = "",
+    texture_limit: int | None = None,
+    normal_green: str = "auto",
+    accept_quality: bool = False,
 ) -> tuple[Wearable, dict]:
     """
     Bind the garment of a GLB file to ``body`` (see the module documentation).
@@ -393,7 +401,9 @@ def make_wearable(
     if rigid is not None and rigid not in body.bone_labels:
         raise GarmentError(
             f"Unknown bone {rigid!r} for --rigid; the rig's bones include "
-            f"{body.bone_labels[:8]} (opensculptboy export writes them as the joint nodes)."
+            f"{body.bone_labels[:8]} (opensculptboy export writes them as the joint nodes).",
+            "unknown_bone",
+            "Name a bone of the body's rig (the joint nodes of an export).",
         )
     read = read_garment(path, groups_from)
     warnings = list(read.notes)
@@ -428,21 +438,122 @@ def make_wearable(
                 f"{path}: every mesh lies on the skin; export the garment objects alone."
             )
         garment, keep_rows = _without(garment, keep)
+    from opensculptboy.wearables.quality import (
+        TEXTURE_LIMIT,
+        check_garment,
+        require,
+        strip_textures_without_uvs,
+    )
+
+    garment, rows, quality = check_garment(
+        garment,
+        body=body,
+        normals_from_file=not read.normals_missing,
+        texture_limit=TEXTURE_LIMIT if texture_limit is None else texture_limit,
+        normal_green=normal_green,
+    )
+    require(quality, accept_quality)
+    strip_textures_without_uvs(garment, quality)
+    keep_rows = keep_rows[rows]
+    found = body.surface.closest(garment.vertices)
+    own = None
+    if weights == "own":
+        if read.skin_weights is None:
+            raise GarmentError(
+                "--weights own needs every garment mesh skinned to the body's bones "
+                "(JOINTS_0 and WEIGHTS_0); parent the meshes to the armature of the "
+                "exported body and paint their weights.",
+                "missing_weights",
+                "Parent the meshes to the exported armature and paint their weights.",
+            )
+        own = (
+            read.skin_weights[keep_rows],
+            read.skin_joints[keep_rows],
+            list(read.joint_names),
+        )
+    wearable, report = bind_garment(
+        garment,
+        body,
+        name,
+        slot,
+        layer,
+        label=label,
+        rigid=rigid,
+        own_weights=own,
+        covers=covers,
+        hides=hides,
+        licence=licence,
+        provenance=provenance,
+        body_kind=body_kind,
+        max_distance=max_distance,
+        extras=extras,
+        tags=tags,
+        description=description,
+        found=found,
+        warnings=warnings,
+        source=str(path),
+        tried=tried,
+        file_size=float(np.ptp(file_vertices, axis=0).max()),
+    )
+    report["frame"] = frame
+    report["ground_lift_m"] = round(lift, 6)
+    report["quality"] = quality.to_dict()
+    return wearable, report
+
+
+def bind_garment(
+    garment: Garment,
+    body: BodySurface,
+    name: str,
+    slot: str,
+    layer: int,
+    *,
+    label: str | None = None,
+    rigid: str | None = None,
+    own_weights=None,
+    covers: str = "auto",
+    fixed_covers: np.ndarray | None = None,
+    hides=(),
+    licence: dict | None = None,
+    provenance: str = "public",
+    body_kind: str = "anny-template",
+    max_distance: float = MAX_DISTANCE,
+    extras: dict | None = None,
+    tags=(),
+    description: str = "",
+    found=None,
+    warnings: list | None = None,
+    source: str = "the garment",
+    tried: dict | None = None,
+    file_size: float | None = None,
+) -> tuple[Wearable, dict]:
+    """
+    Bind a garment that lies on ``body`` at rest (Anny's frame) and return the checked
+    package with a report (see :func:`make_wearable`). ``own_weights`` is (weights, joints,
+    joint names) of the garment's own skin, ``fixed_covers`` a mask over the body's vertices
+    that the piece always covers (for example MakeHuman's ``delete_verts``; ``covers="auto"``
+    then adds no ray masks), ``tried`` the median distances of the frames tried, for the
+    message of a refusal.
+    """
+    warnings = [] if warnings is None else warnings
+    if found is None:
         found = body.surface.closest(garment.vertices)
     distance = found.distance
     measure = float(distance.min() if rigid else np.median(distance))
     if measure > max_distance:
         what = "nearest" if rigid else "median"
-        seen = ", ".join(f"{k} {v * 1000:.0f} mm" for k, v in tried.items())
+        tried = tried or {"": measure}
+        seen = ", ".join(f"{k} {v * 1000:.0f} mm".strip() for k, v in tried.items())
         hint = ""
-        size = float(np.ptp(file_vertices, axis=0).max())
-        if size > 10.0:
-            hint = f" The garment spans {size:.0f} units: export it in metres."
+        if file_size is not None and file_size > 10.0:
+            hint = f" The garment spans {file_size:.0f} units: export it in metres."
         raise GarmentError(
-            f"{path}: the garment lies too far from the skin ({what} distance: {seen}; "
+            f"{source}: the garment lies too far from the skin ({what} distance: {seen}; "
             f"the limit is {max_distance * 1000:.0f} mm). Model it on the body of "
             "'opensculptboy export base.glb' (the default card, or the card of --body), "
-            f"in metres with Y up, and keep the body where the file puts it.{hint}"
+            f"in metres with Y up, and keep the body where the file puts it.{hint}",
+            "too_far_from_skin",
+            "Model the garment on the binding body in metres, or raise --max-distance.",
         )
     far = distance > WARN_DISTANCE
     if rigid is None and far.any():
@@ -461,25 +572,22 @@ def make_wearable(
         )
     else:
         binding = bind_rigid(garment, body, rigid, body_kind)
-    weights_kind = "rigid" if rigid else weights
-    if weights == "own":
-        if read.skin_weights is None:
-            raise GarmentError(
-                "--weights own needs every garment mesh skinned to the body's bones "
-                "(JOINTS_0 and WEIGHTS_0); parent the meshes to the armature of the "
-                "exported body and paint their weights."
-            )
-        used = np.unique(read.skin_joints[keep_rows][read.skin_weights[keep_rows] > 0])
-        missing = sorted({read.joint_names[j] for j in used} - set(body.bone_labels))
+    weights_kind = "rigid" if rigid else ("own" if own_weights is not None else "body")
+    if own_weights is not None:
+        skin_weights, skin_joints, joint_names = own_weights
+        used = np.unique(skin_joints[skin_weights > 0])
+        missing = sorted({joint_names[j] for j in used} - set(body.bone_labels))
         if missing:
             raise GarmentError(
-                f"The garment's skin names joints the body's rig lacks: {missing}."
+                f"The garment's skin names joints the body's rig lacks: {missing}.",
+                "unknown_joints",
+                "Skin the garment to the bones of the exported armature.",
             )
-        binding.skin_weights = read.skin_weights[keep_rows]
-        binding.skin_joints = read.skin_joints[keep_rows]
-        binding.joint_names = list(read.joint_names)
+        binding.skin_weights = skin_weights
+        binding.skin_joints = skin_joints
+        binding.joint_names = list(joint_names)
     group_covers: dict[str, np.ndarray] = {}
-    if covers == "auto":
+    if covers == "auto" and fixed_covers is None:
         for g, group in enumerate(garment.groups):
             opaque = garment.triangle_group == g
             for m, material in enumerate(garment.materials):
@@ -496,7 +604,10 @@ def make_wearable(
             )
             if hit.any():
                 group_covers[group] = hit
-    covered = np.zeros(len(body.vertices), bool)
+    always = np.zeros(len(body.vertices), bool)
+    if fixed_covers is not None:
+        always = np.asarray(fixed_covers, bool).copy()
+    covered = always.copy()
     for mask in group_covers.values():
         covered |= mask
     wearable = Wearable(
@@ -507,12 +618,14 @@ def make_wearable(
         garment=garment,
         binding=binding,
         provenance=provenance,
-        licence={k: v for k, v in (licence or {}).items() if v},
+        licence={k: v for k, v in (licence or {}).items() if v or k == "spdx"},
         weights=weights_kind,
-        covers=np.zeros(len(body.vertices), bool),
+        covers=always,
         group_covers=group_covers,
-        cover_ray=covers == "auto",
+        cover_ray=covers == "auto" and fixed_covers is None,
         hides=parse_hides(hides),
+        tags=clean_tags(tags),
+        description=" ".join(str(description or "").split()),
         extras=dict(extras or {}),
     )
     wearable.check()
@@ -528,6 +641,8 @@ def make_wearable(
         "vertices": int(len(garment.vertices)),
         "triangles": int(len(garment.triangles)),
         "materials": len(garment.materials),
+        "tags": list(wearable.tags),
+        "description": wearable.description,
         "bind_distance_mm_max": round(float(distance.max()) * 1000, 2),
         "bind_distance_mm_p95": round(float(np.percentile(distance, 95)) * 1000, 2),
         "far_vertices": int(far.sum()),
@@ -536,11 +651,21 @@ def make_wearable(
         "round_trip_mm_max": float(
             np.linalg.norm(back - garment.vertices, axis=1).max() * 1000
         ),
-        "frame": frame,
-        "ground_lift_m": round(lift, 6),
         "warnings": warnings,
     }
     return wearable, report
+
+
+def clean_tags(values) -> list[str]:
+    """Tags from ``--tag`` values and header words: comma-separated items, lower case, single
+    spaces, each once, in their first order."""
+    out: list[str] = []
+    for value in values or ():
+        for item in str(value).split(","):
+            tag = " ".join(item.split()).lower()
+            if tag and tag not in out:
+                out.append(tag)
+    return out
 
 
 def round_trip(path, body: BodySurface, vertices: np.ndarray) -> float:
