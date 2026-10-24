@@ -702,6 +702,7 @@ def lash_parts(lashes, frames, rest, normals, skin, skin_triangles, eyeballs=Non
                     blend=blend,
                     source=source,
                     follow=follow,
+                    lid=lid,
                 )
             )
     return parts, data
