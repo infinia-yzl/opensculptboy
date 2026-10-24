@@ -372,6 +372,12 @@ class TestDressedFiles(unittest.TestCase):
         self.assertFalse(hidden(nodes["test_outfit/tunic"]))
         scene = glb.json["scenes"][0]["nodes"]
         self.assertIn(names_index(glb, "test_outfit/circlet"), scene)
+        from opensculptboy.export.blender_skin import read_wearable_visibility
+
+        shown = read_wearable_visibility(path)
+        self.assertFalse(shown["test_outfit/circlet"])
+        self.assertFalse(shown["test_outfit/tunic.back"])
+        self.assertTrue(shown["test_outfit/cape"])
         path, _ = self.export(
             "plain.glb", wardrobe=True, visibility=False, hide=("circlet",)
         )

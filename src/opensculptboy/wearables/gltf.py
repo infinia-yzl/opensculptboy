@@ -253,10 +253,14 @@ def add_pieces(
             if mesh is None:
                 continue
             node = {"name": f"{piece.ref}.{group}", "mesh": mesh, "skin": skin}
-            node["extras"] = {
-                "opensculptboy_wearable_group": {"piece": piece.ref, "group": group}
-            }
             visible = piece.shown and group not in hidden
+            node["extras"] = {
+                "opensculptboy_wearable_group": {
+                    "piece": piece.ref,
+                    "group": group,
+                    "shown": bool(visible),
+                }
+            }
             if visibility and not visible:
                 node["extensions"] = {VISIBILITY: {"visible": False}}
             children.append((doc.add_node(node), visible))
