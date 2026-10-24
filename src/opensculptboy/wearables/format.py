@@ -175,7 +175,9 @@ class Wearable:
     those named groups of that piece while this one is shown. ``covers`` is a mask over the
     vertices of Anny's template (``True`` where the garment covers the skin), or None; the
     masks of ``group_covers`` (by group name) add the skin under a group while that group
-    shows.
+    shows. With ``cover_ray`` a vertex of a mask counts as covered only where its normal ray
+    also meets the dressed piece (for masks made on another body, and for open pieces such as
+    laced boots whose mask spans the gaps).
     ``springs`` and ``constraints`` are kept for the VRM export (none are written yet).
     """
 
@@ -189,6 +191,7 @@ class Wearable:
     weights: str = "body"
     covers: np.ndarray | None = None
     group_covers: dict = dataclasses.field(default_factory=dict)
+    cover_ray: bool = False
     hides: list = dataclasses.field(default_factory=list)
     springs: list = dataclasses.field(default_factory=list)
     constraints: list = dataclasses.field(default_factory=list)
@@ -263,6 +266,7 @@ class Wearable:
             "weights": self.weights,
             "covers": "mask" if self.covers is not None else None,
             "group_covers": sorted(self.group_covers),
+            "cover_ray": bool(self.cover_ray),
             "groups": list(self.garment.groups),
             "hides": [dict(r) for r in self.hides],
             "springs": list(self.springs),
@@ -387,6 +391,7 @@ def read_wearable(path: str | pathlib.Path) -> Wearable:
             for k, v in arrays.items()
             if k.startswith("covers:")
         },
+        cover_ray=bool(data.get("cover_ray", False)),
         hides=list(data.get("hides") or []),
         springs=list(data.get("springs") or []),
         constraints=list(data.get("constraints") or []),

@@ -634,6 +634,7 @@ class TestReferenceWearables(unittest.TestCase):
                 self.assertEqual(hidden[0].hidden_groups, [])
                 shirt_package = by_ref["travel/shirt"].wearable
                 self.assertEqual(shirt_package.weights, "own")
+                self.assertTrue(shirt_package.cover_ray)
                 np.testing.assert_allclose(
                     shirt_package.binding.skin_weights.sum(1), 1.0, atol=1e-9
                 )

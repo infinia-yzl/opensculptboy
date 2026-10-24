@@ -36,9 +36,9 @@ def ray_cover(body, piece, reach: float = RAY_REACH) -> np.ndarray:
 
 def piece_cover(body, piece) -> np.ndarray:
     """The cover mask of a dressed piece on Anny's rows: its package's mask, else the ray
-    test. The masks of the piece's groups that show add to it; when groups without masks of
-    their own are hidden, the piece keeps only the vertices that its visible triangles still
-    cover."""
+    test. The masks of the piece's groups that show add to it. With ``cover_ray``, and when
+    groups without masks of their own are hidden, the piece keeps only the vertices whose
+    normal ray meets its visible triangles."""
     wearable = piece.wearable
     if wearable.covers is None:
         return ray_cover(body, piece)
@@ -47,7 +47,9 @@ def piece_cover(body, piece) -> np.ndarray:
         if group not in piece.hidden_groups:
             mask |= np.asarray(extra, bool)[: len(body.vertices)]
     hidden = set(piece.hidden_groups) - set(wearable.group_covers)
-    if hidden:  # groups without masks of their own: keep what the rest still covers
+    if wearable.cover_ray:  # the mask holds where the piece itself is in the way
+        mask &= ray_cover(body, piece, RAY_REACH)
+    elif hidden:  # groups without masks of their own: keep what the rest still covers
         mask &= ray_cover(body, piece, 2 * RAY_REACH)
     return mask
 

@@ -22,7 +22,9 @@ underwear).
    of the skinning with them, and binds to the same point of the card's rest skin (a surface
    binding on the reference body);
 3. the covered skin becomes a mask over the card's vertices: a card vertex is covered when its
-   closest triangle of the reference's skin is covered.
+   closest triangle of the reference's skin is covered, and an export keeps it covered only
+   where its normal ray also meets the piece within 3 cm (``cover_ray``), which keeps the skin
+   between the laces of open pieces.
 
 The packages carry ``provenance`` private: they are made from a reference character's own
 files, and :func:`~opensculptboy.wearables.format.check_destination` keeps them out of the
@@ -539,6 +541,7 @@ def build_reference_wearables(
                 provenance=PRIVATE,
                 weights="own",
                 covers=covers,
+                cover_ray=True,
                 group_covers=group_covers,
                 hides=piece.hides,
                 extras=extras,
