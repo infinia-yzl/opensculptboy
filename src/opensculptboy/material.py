@@ -634,7 +634,7 @@ LASH_DEFAULTS = {
     "lower_length_mm": 3.5,
     "curl": 0.45,  # how far the generic lashes curl away from the eye, a share of their length
     "density": 1.0,  # the share of the generic texture's strands
-    "roughness": 0.6,
+    "roughness": 1.0,  # a matt strand: a shiny card reads grey at a grazing angle
     "seed": 0,  # of the generic strands
 }
 LASH_SOURCES = ("auto", "reference", "generic")
@@ -656,7 +656,7 @@ class LashMaterial:
     lower_length_mm: float = 3.5
     curl: float = 0.45
     density: float = 1.0
-    roughness: float = 0.6
+    roughness: float = 1.0
     seed: int = 0
 
     @classmethod

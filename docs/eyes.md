@@ -104,7 +104,7 @@ The lashes (`opensculptboy.eyes.lashes`) come with the eyes, and `material.lashe
 | `lower` | true | generic lashes on the lower lids |
 | `curl` | 0.45 | how far the generic lashes curl away from the eye, a share of their length |
 | `density` | 1 | the share of the generic texture's strands |
-| `roughness` | 0.6 | the lashes' roughness; the bake writes the reference's |
+| `roughness` | 1 | the lashes' roughness; the bake writes the reference's |
 | `seed` | 0 | the generic strands |
 
 - **The lid margins.** On the mesh of each file, the margin of each lid is the line where the lid's skin turns from facing out to facing the eyeball (the skin of the socket), split into the upper and the lower lid at the corners of the eye.
