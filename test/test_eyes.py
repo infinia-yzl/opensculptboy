@@ -1014,10 +1014,6 @@ class TestExports(unittest.TestCase):
         self.assertEqual(card["material"]["eyes"]["iris_color"], [0.1, 0.2, 0.1])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 def _has_embree() -> bool:
     try:
         import trimesh.ray.ray_pyembree  # noqa: F401
@@ -1110,3 +1106,7 @@ class TestEyeLayoutBake(unittest.TestCase):
         colour, _, _ = bake_eye_layout(target, frames, gaze=False)
         ring = left & (s > np.sin(np.radians(45))) & (s < np.sin(np.radians(55)))
         self.assertGreater(float(colour[ring].min()), 200)
+
+
+if __name__ == "__main__":
+    unittest.main()
