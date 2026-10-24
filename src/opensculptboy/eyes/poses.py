@@ -6,15 +6,19 @@ A reference's closed eyes carried to a fitted card (docs/eyes.md, "Blinks").
 A handoff may carry its reference's eye poses under ``eyes.poses`` of appearance.json, in the
 form of the mouth's poses (docs/mouth.md, "Mouth expressions from the reference"): per pose, a
 ``joints`` object of joint deltas of the GLB file's skins, and ``known: false`` for a guess.
-The poses ``close_l`` and ``close_r`` close the figure's left eye (+X) and right eye.
+The poses ``close_l`` and ``close_r`` close the figure's left eye (+X) and right eye, and
+``half_l`` and ``half_r`` hold them half closed (the game's blink half way).
 
 :func:`eye_poses` poses the reference with each of them and carries the motion to level 0 of
 the fitted card: each vertex near an eye moves by the reference's own blended skin transform
 at its closest point on the reference, applied to its own position, so the lid's rows that lie
 off the reference's surface turn with the lid as the reference's do. The motion fades out
 between :data:`FADE_IN` and :data:`FADE_OUT` eyeball radii from the eye's centre and is turned
-into the card's rest frame by the rigid motion of the fitted head. The exports take the closed
-poses as the start of their blink targets (:func:`opensculptboy.eyes.blink.blink_offsets`).
+into the card's rest frame by the rigid motion of the fitted head. The reference's lashes
+(the parts with the role ``lashes``, in the order of
+:func:`opensculptboy.eyes.lashes.reference_lashes`) take the same poses with their own skin,
+so the lids and the lashes close as one piece. The exports take these poses as the blink
+targets (:func:`opensculptboy.eyes.blink.blink_offsets`).
 """
 
 from __future__ import annotations
@@ -26,8 +30,9 @@ import pathlib
 import numpy as np
 
 FORMAT = "opensculptboy/eye-poses@1"
-# the reference's poses that close each eye
+# the reference's poses that close each eye, and that hold it half closed
 CLOSED = {"L": "close_l", "R": "close_r"}
+HALF = {"L": "half_l", "R": "half_r"}
 # the reference's motion reaches the card's vertices within FADE_IN eyeball radii of an eye's
 # centre in full, and fades out to none at FADE_OUT
 FADE_IN = 1.8
@@ -50,19 +55,36 @@ CANDIDATES = 24
 
 
 @dataclasses.dataclass
+class BlinkPose:
+    """One eye's blink from a reference: the rest-frame offsets of the closed pose (N, 3) and
+    of the half-closed pose (or None) of a mesh, and those of the reference's lashes (M, 3),
+    rows of the card's lashes, or None."""
+
+    closed: np.ndarray
+    half: np.ndarray | None = None
+    lash_closed: np.ndarray | None = None
+    lash_half: np.ndarray | None = None
+
+
+@dataclasses.dataclass
 class EyePoses:
     """The rest-frame offsets (P, V0, 3) of a fitted card's level 0 under the reference's eye
-    poses (``names``), with what the carry measured (``stats``)."""
+    poses (``names``), the offsets (P, M, 3) of the reference's lashes under them or None,
+    and what the carry measured (``stats``)."""
 
     names: tuple
     offsets: np.ndarray
     stats: dict = dataclasses.field(default_factory=dict)
+    lashes: np.ndarray | None = None
 
     def save(self, path) -> None:
         from safetensors.numpy import save_file
 
+        tensors = {"offsets": np.ascontiguousarray(self.offsets, np.float32)}
+        if self.lashes is not None:
+            tensors["lashes"] = np.ascontiguousarray(self.lashes, np.float32)
         save_file(
-            {"offsets": np.ascontiguousarray(self.offsets, np.float32)},
+            tensors,
             str(path),
             metadata={
                 "format": FORMAT,
@@ -79,10 +101,12 @@ class EyePoses:
             meta = f.metadata() or {}
             if meta.get("format") != FORMAT:
                 raise ValueError(f"{path} is not a {FORMAT} file.")
+            lashes = f.get_tensor("lashes") if "lashes" in f.keys() else None
             return cls(
                 tuple(json.loads(meta["names"])),
                 f.get_tensor("offsets").astype(np.float64),
                 json.loads(meta.get("stats", "{}")),
+                None if lashes is None else lashes.astype(np.float64),
             )
 
     def closed(self) -> dict:
@@ -92,6 +116,23 @@ class EyePoses:
             for side, name in CLOSED.items()
             if name in self.names
         }
+
+    def blink_poses(self) -> dict:
+        """The :class:`BlinkPose` of each side whose closed pose it holds."""
+        out = {}
+        for side, name in CLOSED.items():
+            if name not in self.names:
+                continue
+            k = self.names.index(name)
+            h = self.names.index(HALF[side]) if HALF[side] in self.names else None
+            lashes = self.lashes
+            out[side] = BlinkPose(
+                self.offsets[k],
+                None if h is None else self.offsets[h],
+                None if lashes is None else lashes[k],
+                None if lashes is None or h is None else lashes[h],
+            )
+        return out
 
 
 def known_eye_poses(appearance: dict) -> dict:
@@ -121,8 +162,9 @@ def eye_poses(
     The :class:`EyePoses` of a fitted level 0 (``fitted`` as the fit placed it on the
     reference, ``rest`` its rest vertices, ``head`` the rows that turn the reference's frame
     into the rest frame, ``eyes`` the rows of each eyeball by side, ``triangles`` its
-    triangles) from the reference's closed eyes (``poses``: name to joint deltas, the
-    handoff's known ``close_l`` and ``close_r`` by default). None when the handoff has none.
+    triangles) from the reference's eye poses (``poses``: name to joint deltas, the handoff's
+    known ``close_l``, ``close_r``, ``half_l`` and ``half_r`` by default), with the
+    reference's lashes under each pose. None when the handoff has no closed eye.
     """
     from opensculptboy.eyes.geometry import fit_sphere
     from opensculptboy.mouth.poses import _transformed, reference_pose_transforms
@@ -130,8 +172,9 @@ def eye_poses(
 
     if poses is None:
         known = known_eye_poses(handoff.appearance)
-        poses = {n: known[n] for n in CLOSED.values() if n in known}
-    if not poses:
+        wanted = list(CLOSED.values()) + list(HALF.values())
+        poses = {n: known[n] for n in wanted if n in known}
+    if not any(n in poses for n in CLOSED.values()):
         return None
     transforms = reference_pose_transforms(handoff, reference, poses)
     if not transforms:
@@ -154,10 +197,16 @@ def eye_poses(
     tri, bary = closest_facing(
         fitted[near], normals[near], reference.vertices, reference.triangles
     )
-    names, offsets, stats = [], [], {}
+    names, offsets, stats, lashes = [], [], {}, []
+    lash_parts = [
+        k
+        for k, p in enumerate(handoff.parts)
+        if p.role == "lashes" and len(p.triangles) and p.uvs is not None
+    ]
     for name in poses:
         if name not in transforms:
             continue
+        lashes.append(_lash_offsets(handoff, lash_parts, poses[name], R))
         motion = np.zeros_like(fitted)
         motion[near] = _transformed(
             fitted[near], reference, transforms[name], tri, bary
@@ -175,7 +224,30 @@ def eye_poses(
         }
     if not names:
         return None
-    return EyePoses(tuple(names), np.stack(offsets), stats)
+    with_lashes = all(m is not None for m in lashes) and bool(lash_parts)
+    return EyePoses(
+        tuple(names),
+        np.stack(offsets),
+        stats,
+        np.stack(lashes) if with_lashes else None,
+    )
+
+
+def _lash_offsets(handoff, rows, deltas, R) -> np.ndarray | None:
+    """The rest-frame offsets (M, 3) of the reference's lash parts (``rows``, indices into
+    ``handoff.parts``) under a pose's joint deltas, from their own skin; None when a part has
+    no skin in the file."""
+    from opensculptboy.fit.poses import posed_parts
+
+    if not rows:
+        return None
+    posed = posed_parts(handoff, deltas)
+    out = []
+    for k in rows:
+        if posed[k] is None:
+            return None
+        out.append((np.asarray(posed[k]) - handoff.parts[k].vertices) @ R.T)
+    return np.concatenate(out)
 
 
 def closest_facing(points, normals, vertices, triangles):
@@ -317,20 +389,21 @@ def card_eye_poses(character, detail_dir=None) -> EyePoses | None:
     return EyePoses.load(pathlib.Path(detail_dir or ".") / name)
 
 
-def card_closed_offsets(character, detail=None, detail_dir=None) -> dict | None:
+def card_blink_poses(character, detail=None, detail_dir=None) -> dict | None:
     """
-    The reference's closed eyes of a card on the mesh of a file: side to offsets (N, 3) of
-    the file's base mesh (``detail``, a resolved detail level, carries level 0's offsets to
-    its own vertices), or None for a card without them.
+    The reference's blinks of a card on the mesh of a file: side to :class:`BlinkPose`, with
+    offsets of the file's base mesh (``detail``, a resolved detail level, carries level 0's
+    offsets to its own vertices), or None for a card without them.
     """
     poses = card_eye_poses(character, detail_dir)
     if poses is None:
         return None
-    closed = poses.closed()
-    if not closed:
+    blinks = poses.blink_poses()
+    if not blinks:
         return None
     if detail is not None:
-        sides = list(closed)
-        moved = detail.targets(np.stack([closed[s] for s in sides]))
-        closed = {s: moved[k] for k, s in enumerate(sides)}
-    return closed
+        for pose in blinks.values():
+            pose.closed = detail.targets(pose.closed[None])[0]
+            if pose.half is not None:
+                pose.half = detail.targets(pose.half[None])[0]
+    return blinks

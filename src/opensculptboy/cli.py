@@ -582,8 +582,8 @@ def _write_mouth_poses(card: pathlib.Path, handoff, reference=None) -> None:
 
 
 def _write_eye_poses(card: pathlib.Path, handoff, reference=None) -> None:
-    """Write a fitted card's closed eyes from its handoff (``opensculptboy.eyes.poses``)
-    when the handoff has its reference's closed eyes."""
+    """Write a fitted card's blinks from its handoff (``opensculptboy.eyes.poses``) when
+    the handoff has its reference's closed eyes."""
     from opensculptboy.eyes.poses import write_card_eye_poses
 
     path = write_card_eye_poses(card, handoff, reference)

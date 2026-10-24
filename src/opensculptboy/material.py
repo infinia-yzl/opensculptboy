@@ -582,7 +582,7 @@ def check_reference_eyes(data: dict) -> dict:
     (:meth:`opensculptboy.fit.reference.Reference.eye_values`): some of ``cornea_radius_mm``,
     ``cornea_roughness`` and ``cornea_ior``, as numbers, and ``gaze``, the direction in which
     each eye (``"L"``, ``"R"``) looks at rest (:func:`opensculptboy.texture.eyes.
-    bake_eye_layout`), and ``poses``, the file of the reference's closed eyes
+    bake_eye_layout`), and ``poses``, the file of the reference's blinks
     (:mod:`opensculptboy.eyes.poses`). The eyes' ``"auto"`` values take
     them, and the section turns the eyes on for a card without ``material.eyes``
     (:func:`eyes_section`).

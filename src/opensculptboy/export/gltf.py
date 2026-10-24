@@ -287,17 +287,17 @@ def export_glb(
                 layout=layout,
             )
             # the blinks closed around the eyes (opensculptboy.eyes.blink), from the
-            # reference's closed eyes when the card has them, with an in-between corrective
+            # reference's blinks when the card has them, with an in-between corrective
             # each, played by the animation "<target>.close"
             from opensculptboy.eyes.blink import blink_offsets, blink_targets
-            from opensculptboy.eyes.poses import card_closed_offsets
+            from opensculptboy.eyes.poses import card_blink_poses
 
             offsets, blinks = blink_offsets(
                 eyed,
                 vertices,
                 offsets,
                 [t.name for t in targets],
-                card_closed_offsets(character, detail, detail_dir),
+                card_blink_poses(character, detail, detail_dir),
             )
             if blinks is not None:
                 targets = targets + blink_targets(blinks)

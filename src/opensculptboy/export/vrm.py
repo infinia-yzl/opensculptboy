@@ -1375,7 +1375,7 @@ def _vrm_blinks(
 ):
     """
     The file's targets with each eye's blink target closed around the eye
-    (:func:`opensculptboy.eyes.blink.blink_offsets`, from the card's reference's closed eyes
+    (:func:`opensculptboy.eyes.blink.blink_offsets`, from the card's reference's blinks
     when it has them): shaped on the rest mesh (``rest``, the rest-frame ``rest_offsets`` of
     the targets named ``actions``) and carried into the T-pose by the map of the rebind
     ``rb``. VRM expressions play morph targets alone, so the file takes no in-between: the
@@ -1383,14 +1383,14 @@ def _vrm_blinks(
     :class:`~opensculptboy.eyes.blink.EyeBlinks` or None).
     """
     from opensculptboy.eyes.blink import blink_offsets
-    from opensculptboy.eyes.poses import card_closed_offsets
+    from opensculptboy.eyes.poses import card_blink_poses
 
     shaped, blinks = blink_offsets(
         eyed,
         rest,
         rest_offsets,
         actions,
-        card_closed_offsets(character, detail, detail_dir),
+        card_blink_poses(character, detail, detail_dir),
         inbetween=False,
     )
     if blinks is None:
