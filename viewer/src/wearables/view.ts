@@ -104,7 +104,7 @@ export class Wardrobe {
     let offsets: Float32Array | null = null;
     const level0 = (card.detail?.levels || []).find((l: any) => Number(l.subdiv) === 0);
     if (level0) {
-      try { offsets = this.pageOffsets(readSafetensors(await files.bytes(level0.offsets, folder)).tensors.offsets.values); }
+      try { offsets = this.pageOffsets(readSafetensors(await files.bytes(level0.offsets, folder)).tensors.offsets?.values); }
       catch (err: any) { notes.push(`detail level 0: ${err.message || err}`); }
     }
     if ((card.detail?.levels || []).some((l: any) => Number(l.subdiv) > 0)) notes.push('the page shows level 0 of the card\'s detail layer');
@@ -124,8 +124,9 @@ export class Wardrobe {
       ...(card.wearables || []).map((w: any) => w.id || String(w.file).split('/').pop()!.split('.')[0])];
   }
   // Anny's frame (metres, Z up) to the page's, for offsets (vectors): scale and turn, no move
-  private pageOffsets(values: ArrayLike<number>): Float32Array {
+  private pageOffsets(values: ArrayLike<number> | undefined): Float32Array {
     const b = this.host.body(), R = b.frame.rotation, s = b.frame.scale, n = b.nBody, out = new Float32Array(n * 3);
+    if (!values || values.length < n * 3) throw new Error(`the offsets hold ${values ? values.length / 3 : 0} rows; the body has ${n}`);
     for (let i = 0; i < n; i++) {
       const x = values[i * 3], y = values[i * 3 + 1], z = values[i * 3 + 2];
       for (let r = 0; r < 3; r++) out[i * 3 + r] = s * (R[r * 3] * x + R[r * 3 + 1] * y + R[r * 3 + 2] * z);
