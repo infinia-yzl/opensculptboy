@@ -387,6 +387,22 @@ class TestDressedFiles(unittest.TestCase):
         _, bare = self.export("bare.glb", outfit="none")
         self.assertEqual(bare["wearables"], [])
 
+    def test_dressed_glb_with_eight_influences(self):
+        """Eight bones per vertex: the pieces hold them in two sets of four, as the body."""
+        path = self.folder / "eight.glb"
+        export_glb(
+            path, self.card, self.model, detail_dir=self.folder, max_influences=8
+        )
+        glb = GLB(path)
+        self.assertEqual(structure_errors(glb), [])
+        mesh = glb.json["meshes"][
+            glb.json["nodes"][names_index(glb, "test_outfit/tunic")]["mesh"]
+        ]
+        attributes = mesh["primitives"][0]["attributes"]
+        self.assertIn("JOINTS_1", attributes)
+        weights = sum(glb.accessor(attributes[f"WEIGHTS_{s}"]).sum(1) for s in (0, 1))
+        np.testing.assert_allclose(weights, 1.0, atol=1e-6)
+
     def test_piece_with_every_group_hidden_leaves_the_file(self):
         from opensculptboy.export.document import GltfDocument
         from opensculptboy.wearables.export import vrm_piece_meshes
