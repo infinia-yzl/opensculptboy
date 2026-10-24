@@ -150,92 +150,105 @@ def read_mhclo(path) -> MhcloAsset:
     shear: list = [None, None, None]
     section = None
     ignored = set()
-    for number, raw in enumerate(text.splitlines(), 1):
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("#") or line.startswith("//"):
-            words = line.lstrip("#/").split()
-            if words:
-                key = words[0].rstrip(":").lower()
-                if key in LICENCE_KEYS and len(words) > 1:
-                    _set_licence(asset, key, " ".join(words[1:]))
-            continue
-        words = line.split()
-        key = words[0].rstrip(":")
-        if section == "verts" and _number(key):
-            if len(words) == 1:
-                v = int(words[0])
-                refs.append((v, v, v))
-                weights.append((1.0, 0.0, 0.0))
-                offsets.append((0.0, 0.0, 0.0))
-                single.append(True)
-            elif len(words) in (6, 9):
-                refs.append(tuple(int(w) for w in words[:3]))
-                weights.append(tuple(float(w) for w in words[3:6]))
-                d = words[6:9] if len(words) == 9 else (0, 0, 0)
-                offsets.append(tuple(float(w) for w in d))
-                single.append(False)
-            else:
-                raise MhcloError(
-                    f"{path}, line {number}: a vertex binding holds one index, or three "
-                    f"indices, three weights and an optional offset; got {len(words)} "
-                    "numbers.",
-                    "malformed_binding",
-                    "Export the asset again with MakeClothes or MPFB2.",
+    number, line = 0, ""
+    try:
+        for number, raw in enumerate(text.splitlines(), 1):
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("#") or line.startswith("//"):
+                words = line.lstrip("#/").split()
+                if words:
+                    key = words[0].rstrip(":").lower()
+                    if key in LICENCE_KEYS and len(words) > 1:
+                        _set_licence(asset, key, " ".join(words[1:]))
+                continue
+            words = line.split()
+            key = words[0].rstrip(":")
+            if section == "verts" and _number(key):
+                if len(words) == 1:
+                    v = int(words[0])
+                    refs.append((v, v, v))
+                    weights.append((1.0, 0.0, 0.0))
+                    offsets.append((0.0, 0.0, 0.0))
+                    single.append(True)
+                elif len(words) in (6, 9):
+                    refs.append(tuple(int(w) for w in words[:3]))
+                    weights.append(tuple(float(w) for w in words[3:6]))
+                    d = words[6:9] if len(words) == 9 else (0, 0, 0)
+                    offsets.append(tuple(float(w) for w in d))
+                    single.append(False)
+                else:
+                    raise MhcloError(
+                        f"{path}, line {number}: a vertex binding holds one index, or three "
+                        f"indices, three weights and an optional offset; got {len(words)} "
+                        "numbers.",
+                        "malformed_binding",
+                        "Export the asset again with MakeClothes or MPFB2.",
+                    )
+                continue
+            if section == "delete" and (_number(key) or key == "-" or "-" in key):
+                _delete_words(words, deleted, path, number)
+                continue
+            if section == "weights" and _number(key):
+                continue
+            section = None
+            lower = key.lower()
+            value = " ".join(words[1:])
+            if lower in LICENCE_KEYS:
+                _set_licence(asset, lower, value)
+            elif lower == "name":
+                asset.name = value
+            elif lower == "uuid":
+                asset.uuid = value
+            elif lower == "description":
+                asset.description = value
+            elif lower == "tag":
+                if value:
+                    asset.tags.append(value.lower())
+            elif lower == "z_depth":
+                asset.z_depth = int(float(words[1]))
+            elif lower == "obj_file":
+                asset.obj_file = _file(folder, value, ".obj")
+            elif lower == "material":
+                asset.material = _file(folder, value, ".mhmat")
+            elif lower == "basemesh":
+                asset.basemesh = value
+            elif lower in ("x_scale", "y_scale", "z_scale"):
+                scale["xyz".index(lower[0])] = (
+                    int(words[1]),
+                    int(words[2]),
+                    float(words[3]),
                 )
-            continue
-        if section == "delete" and (_number(key) or key == "-" or "-" in key):
-            _delete_words(words, deleted, path, number)
-            continue
-        if section == "weights" and _number(key):
-            continue
-        section = None
-        lower = key.lower()
-        value = " ".join(words[1:])
-        if lower in LICENCE_KEYS:
-            _set_licence(asset, lower, value)
-        elif lower == "name":
-            asset.name = value
-        elif lower == "uuid":
-            asset.uuid = value
-        elif lower == "description":
-            asset.description = value
-        elif lower == "tag":
-            if value:
-                asset.tags.append(value.lower())
-        elif lower == "z_depth":
-            asset.z_depth = int(float(words[1]))
-        elif lower == "obj_file":
-            asset.obj_file = _file(folder, value, ".obj")
-        elif lower == "material":
-            asset.material = _file(folder, value, ".mhmat")
-        elif lower == "basemesh":
-            asset.basemesh = value
-        elif lower in ("x_scale", "y_scale", "z_scale"):
-            scale["xyz".index(lower[0])] = (
-                int(words[1]),
-                int(words[2]),
-                float(words[3]),
-            )
-        elif lower in ("shear_x", "shear_y", "shear_z"):
-            shear["xyz".index(lower[-1])] = (
-                int(words[1]),
-                int(words[2]),
-                float(words[3]),
-                float(words[4]),
-            )
-        elif lower == "verts":
-            section = "verts"
-        elif lower == "delete_verts":
-            section = "delete"
-            if len(words) > 1:
-                _delete_words(words[1:], deleted, path, number)
-        elif lower == "weights":
-            section = "weights"
-            ignored.add("weights")
-        else:
-            ignored.add(lower)
+            elif lower in ("shear_x", "shear_y", "shear_z"):
+                shear["xyz".index(lower[-1])] = (
+                    int(words[1]),
+                    int(words[2]),
+                    float(words[3]),
+                    float(words[4]),
+                )
+            elif lower == "verts":
+                section = "verts"
+            elif lower == "delete_verts":
+                section = "delete"
+                if len(words) > 1:
+                    _delete_words(words[1:], deleted, path, number)
+            elif lower == "weights":
+                section = "weights"
+                ignored.add("weights")
+            else:
+                ignored.add(lower)
+    except (ValueError, IndexError) as error:
+        if isinstance(error, MhcloError):
+            raise
+        what = "a vertex binding" if section == "verts" else f"the line {line!r}"
+        raise MhcloError(
+            f"{path}, line {number}: {what} has a missing or malformed value "
+            f"({error}).",
+            "malformed_binding" if section == "verts" else "malformed_header",
+            "Correct the line as MakeHuman writes it, or export the asset again with "
+            "MakeClothes or MPFB2.",
+        ) from error
     if not refs:
         raise MhcloError(
             f"{path}: no vertex bindings (a 'verts' section).",
@@ -387,27 +400,39 @@ def read_obj(path) -> ObjMesh:
         ) from error
     vertices, uvs, corners = [], [], []
     notes: list[str] = []
-    for line in text.splitlines():
-        words = line.split()
-        if not words:
-            continue
-        if words[0] == "v":
-            vertices.append([float(w) for w in words[1:4]])
-        elif words[0] == "vt":
-            uvs.append([float(w) for w in words[1:3]])
-        elif words[0] == "f":
-            face = []
-            for token in words[1:]:
-                parts = token.split("/")
-                v = int(parts[0])
-                v = v - 1 if v > 0 else len(vertices) + v
-                t = -1
-                if len(parts) > 1 and parts[1]:
-                    t = int(parts[1])
-                    t = t - 1 if t > 0 else len(uvs) + t
-                face.append((v, t))
-            for k in range(1, len(face) - 1):
-                corners.append([face[0], face[k], face[k + 1]])
+    number = 0
+    try:
+        for number, line in enumerate(text.splitlines(), 1):
+            words = line.split()
+            if not words:
+                continue
+            if words[0] == "v":
+                vertices.append([float(w) for w in words[1:4]])
+                if len(vertices[-1]) != 3:
+                    raise ValueError("a vertex needs three coordinates")
+            elif words[0] == "vt":
+                uvs.append([float(w) for w in words[1:3]])
+                if len(uvs[-1]) != 2:
+                    raise ValueError("a UV needs two coordinates")
+            elif words[0] == "f":
+                face = []
+                for token in words[1:]:
+                    parts = token.split("/")
+                    v = int(parts[0])
+                    v = v - 1 if v > 0 else len(vertices) + v
+                    t = -1
+                    if len(parts) > 1 and parts[1]:
+                        t = int(parts[1])
+                        t = t - 1 if t > 0 else len(uvs) + t
+                    face.append((v, t))
+                for k in range(1, len(face) - 1):
+                    corners.append([face[0], face[k], face[k + 1]])
+    except (ValueError, IndexError) as error:
+        raise MhcloError(
+            f"{path}, line {number}: a malformed value ({error}).",
+            "malformed_obj",
+            "Export the mesh again as OBJ with vertices, UVs and faces.",
+        ) from error
     if not corners:
         raise MhcloError(
             f"{path}: no faces.", "no_meshes", "Name the asset's mesh in obj_file."
@@ -529,9 +554,10 @@ def read_mhmat(path, fallback_name: str, quality) -> Material:
 
     def colour(key, default):
         try:
-            return [float(w) for w in values[key].split()[:3]]
+            rgb = [float(w) for w in values[key].split()[:3]]
         except (KeyError, ValueError):
             return default
+        return rgb if len(rgb) == 3 else default
 
     name = values.get("name") or fallback_name
     material = Material(name)
@@ -802,11 +828,19 @@ def import_mhclo(
         )
     count = 19158
     bad = (asset.refs < 0) | (asset.refs >= count)
-    if bad.any():
+    references = [e[:2] for e in (asset.scale or []) + (asset.shear or [])]
+    if bad.any() or any(not 0 <= v < count for e in references for v in e):
         raise MhcloError(
             f"{path}: the binding names base-mesh vertices outside 0..{count - 1}.",
             "unknown_basemesh",
             "Choose an asset made for MakeHuman's default base mesh (hm08).",
+        )
+    spans = [e[2] for e in asset.scale or []] + [e[3] - e[2] for e in asset.shear or []]
+    if any(not np.isfinite(s) or s == 0 for s in spans):
+        raise MhcloError(
+            f"{path}: a scale or shear reference has a length of 0.",
+            "malformed_header",
+            "Export the asset again with MakeClothes or MPFB2.",
         )
     if slot is None:
         slot, reason = infer_slot(asset.name or stem, asset.tags)
@@ -841,9 +875,15 @@ def import_mhclo(
             "binding_mismatch",
             "Keep the .obj file that the .mhclo file was made with.",
         )
-    if (mesh.corners[..., 0] >= len(mesh.vertices)).any():
+    v, t = mesh.corners[..., 0], mesh.corners[..., 1]
+    if (
+        (v < 0).any()
+        or (v >= len(mesh.vertices)).any()
+        or (t < -1).any()
+        or (t >= len(mesh.uvs)).any()
+    ):
         raise MhcloError(
-            f"{asset.obj_file}: a face names a vertex that does not exist.",
+            f"{asset.obj_file}: a face names a vertex or a UV that does not exist.",
             "binding_mismatch",
             "Export the mesh again.",
         )

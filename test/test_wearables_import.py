@@ -124,6 +124,49 @@ class TestFormat(unittest.TestCase):
                 read_mhclo(path)
         self.assertEqual(caught.exception.code, "malformed_binding")
 
+    def test_malformed_files_give_coded_errors(self):
+        """A header line with a missing value, a scale reference outside the base mesh, a
+        zero scale length and an OBJ face on a missing UV are coded errors (JSON results of
+        the command), never tracebacks."""
+        import re
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_asset(tmp, "shirt")
+            text = path.read_text()
+            no_value = text.replace("z_depth 50", "z_depth")
+            cases = [
+                ("malformed_header", no_value),
+                ("malformed_header", re.sub(r"(x_scale \d+ \d+) [\d.]+", r"\1", text)),
+                ("unknown_basemesh", re.sub(r"x_scale \d+ ", "x_scale 99999 ", text)),
+                (
+                    "malformed_header",
+                    re.sub(r"(x_scale \d+ \d+) [\d.]+", r"\1 0", text),
+                ),
+            ]
+            for k, (code, body) in enumerate(cases):
+                with self.subTest(case=k):
+                    path.write_text(body)
+                    with self.assertRaises(WearableError) as caught:
+                        import_mhclo(
+                            path, template_body(), Character(), template_model()
+                        )
+                    self.assertEqual(caught.exception.code, code)
+            path.write_text(text)
+            obj = path.with_suffix(".obj")
+            obj.write_text(obj.read_text() + "f 1/1 2/2 3/999\n")
+            with self.assertRaises(WearableError) as caught:
+                import_mhclo(path, template_body(), Character(), template_model())
+            self.assertEqual(caught.exception.code, "binding_mismatch")
+            obj.write_text(obj.read_text() + "v 1.0 2.0\n")
+            with self.assertRaises(WearableError) as caught:
+                import_mhclo(path, template_body(), Character(), template_model())
+            self.assertEqual(caught.exception.code, "malformed_obj")
+            path.write_text(no_value)
+            status, result, _ = run(["wearables", "import-mhclo", str(path)])
+            self.assertEqual((status, result["error"]["code"]), (1, "malformed_header"))
+            self.assertIn("line", result["error"]["message"])
+            self.assertTrue(result["error"]["hint"])
+
     def test_licence_names_and_slots(self):
         self.assertEqual(spdx_of("CC0"), "CC0-1.0")
         self.assertEqual(spdx_of("cc0 1.0"), "CC0-1.0")
