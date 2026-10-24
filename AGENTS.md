@@ -70,6 +70,7 @@ blender --python src/opensculptboy/export/blender_skin.py -- out.glb            
 uv run opensculptboy export out.glb --character card.json --eyes eyes.json      # the eyes of opensculptboy.eyes (docs/eyes.md): eyeball, cornea, caruncle, iris texture
 uv run python -m unittest test.test_eyes                                        # the eyes: card, geometry, texture, eyed mesh, caruncle, GLB, VRM
 uv run python -m unittest test.test_lashes                                      # the lashes: card, generic texture, lid margins, blinks, reference lashes, GLB, VRM
+uv run python -m unittest test.test_blinks                                      # the blinks: rims that meet, eye clearance, in-between, lashes, files at 0 to 100 %, a reference's blink
 uv run python -m unittest test.test_texture_levels                              # normal maps re-encoded for a coarser level than the bake's
 uv run python -m unittest test.test_mouth_rig                                   # the anny-mouth rig: jaw and tongue bones, jawOpen as a jaw turn and a corrective, GLB and VRM
 uv run python -m unittest test.test_mouth_lips                                  # the sealed lips (lip line, edges, seal) and the jaw's weights from a reference's mouth poses
@@ -173,7 +174,7 @@ uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and 
 | Detail layer and textures | `opensculptboy/detail/`, `export/detail.py`, `texture/` | Subdivision levels 1 and 2 with offsets, the texture bake, head and ear tiles, MikkTSpace tangents and level-matched normal maps ([docs/reference-fit.md](docs/reference-fit.md)) |
 | Skin material | `opensculptboy/material.py`, `export/skin_ramp.py`, `export/blender_skin.py` | `Character.material`: PBR skin with subsurface settings in the extras, an MToon skin ramp for VRM, and the Blender helper ([docs/character-card.md](docs/character-card.md)) |
 | Budget tiers | `opensculptboy/tiers.py`, `texture/transfer.py`, `render/sheet.py` | Master, high, medium and low tiers cut down from the master, with baked normal maps and portraits; `test_budget_tiers` holds `MEASURED_LOW_ERROR`, so measure again when a change moves it ([docs/budget-tiers.md](docs/budget-tiers.md)) |
-| Eyes | `opensculptboy/eyes/` | Eyeball, cornea, caruncle, iris texture and lashes that replace Anny's eyeballs in the exports; a fitted card has them by default ([docs/eyes.md](docs/eyes.md)) |
+| Eyes | `opensculptboy/eyes/` | Eyeball, cornea, caruncle, iris texture and lashes that replace Anny's eyeballs in the exports, and blinks from a reference's lid joints, its lashes included, or from Anny's own; a fitted card has them by default ([docs/eyes.md](docs/eyes.md)) |
 | Teeth | `opensculptboy/teeth/` | The reference's teeth or a generic set, appended after the body mesh ([docs/teeth.md](docs/teeth.md)) |
 | Mouth | `opensculptboy/mouth/`, `fit/lips.py` | The `anny-mouth` rig, `jawOpen` as a jaw turn and corrective, a reference's inner mouth, sealed lips, the jaw's weights and mouth poses as targets; `test_mouth_rig` holds `MEASURED_ANGLE` and `MEASURED_EXPLAINED` ([docs/mouth.md](docs/mouth.md)) |
 | Sculpt topology | `opensculptboy/topology/` | Anny's mesh with append-only patches (the eye corner on; the ear root off), built into `data/topology/sculpt.safetensors`, and the card converter ([docs/sculpt-topology.md](docs/sculpt-topology.md)) |

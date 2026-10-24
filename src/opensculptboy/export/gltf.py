@@ -238,7 +238,7 @@ def export_glb(
         images = level_normals(
             model, character, images, detail, mesh, ears, base, detail_dir
         )
-    eyed, lash_png = None, None
+    eyed, lash_png, blinks = None, None, None
     teeth = character.teeth_material()
     mouth = character.mouth_material()
     if mouth is not None:  # the reference's inner mouth holds its own teeth
@@ -286,9 +286,29 @@ def export_glb(
                 lashes=lashes,
                 layout=layout,
             )
+            # the blinks closed around the eyes (opensculptboy.eyes.blink), from the
+            # reference's blinks when the card has them, with an in-between corrective
+            # each, played by the animation "<target>.close"
+            from opensculptboy.eyes.blink import blink_offsets, blink_targets
+            from opensculptboy.eyes.poses import card_blink_poses
+
+            offsets, blinks = blink_offsets(
+                eyed,
+                vertices,
+                offsets,
+                [t.name for t in targets],
+                card_blink_poses(character, detail, detail_dir),
+            )
+            if blinks is not None:
+                targets = targets + blink_targets(blinks)
             normals = eyed.normals(vertices)
             weights, indices = eyed.skin_weights(weights, indices)
+            blink_rest = vertices
             vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
+            if blinks is not None:
+                from opensculptboy.eyes.blink import blink_lash_offsets
+
+                offsets = blink_lash_offsets(eyed, blinks, blink_rest, offsets)
             ears = eyed.extend_mask(ears)
             mesh = eyed
         if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
@@ -514,6 +534,11 @@ def export_glb(
                 doc, jaw_open, labels, default_local, mesh_node, targets
             )
         )
+    if blinks is not None:
+        from opensculptboy.eyes.blink import blink_animations
+
+        for name, keys in blink_animations(blinks, targets):
+            doc.add_animation(_weights_animation(doc, name, keys, mesh_node))
     for k, turn in enumerate(pose_turns):
         name = mouth_pose_data.target_name(mouth_poses.names[k])
         doc.add_animation(
@@ -564,6 +589,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["ear_tile"] = True
     if eyed is not None:
         doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
+        if blinks is not None:
+            eyed.extras["blinks"] = blinks.extras
     if jaw_open is not None:
         doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
     if mouth_poses is not None:
@@ -1091,6 +1118,19 @@ def _animation(
         parents,
         default_local,
     )
+
+
+def _weights_animation(doc, name: str, keys, mesh_node) -> dict:
+    """An animation of the body's morph-target weights: ``keys`` is (times (K,), weights
+    (K, T)), linear between them."""
+    times, weights = keys
+    sampler = {
+        "input": doc.accessor(np.asarray(times, np.float32), minmax=True),
+        "output": doc.accessor(np.asarray(weights, np.float32).reshape(-1)),
+        "interpolation": "LINEAR",
+    }
+    channel = {"sampler": 0, "target": {"node": mesh_node, "path": "weights"}}
+    return {"name": name, "samplers": [sampler], "channels": [channel]}
 
 
 def _jaw_open_animation(

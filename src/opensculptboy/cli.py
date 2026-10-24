@@ -518,6 +518,7 @@ def _fit(args, parser) -> int:
         _mouth_rig(result.character)
     result.write(out, textures=textures)
     _write_mouth_poses(out, handoff, reference)
+    _write_eye_poses(out, handoff, reference)
     summary = {
         "card": str(out),
         "levels": sorted(int(k) for k in result.offsets),
@@ -585,6 +586,16 @@ def _write_mouth_poses(card: pathlib.Path, handoff, reference=None) -> None:
         print(f"mouth poses: {path.name}", file=sys.stderr)
 
 
+def _write_eye_poses(card: pathlib.Path, handoff, reference=None) -> None:
+    """Write a fitted card's blinks from its handoff (``opensculptboy.eyes.poses``) when
+    the handoff has its reference's closed eyes."""
+    from opensculptboy.eyes.poses import write_card_eye_poses
+
+    path = write_card_eye_poses(card, handoff, reference)
+    if path is not None:
+        print(f"eye poses: {path.name}", file=sys.stderr)
+
+
 def _mouth_rig(character) -> None:
     """Give a card with a reference's inner mouth (``material.mouth``) the ``anny-mouth``
     rig, whose jaw and tongue bones move it."""
@@ -650,10 +661,12 @@ def _bake(args, parser) -> int:
         ]
     character.detail = detail
     out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
-    if "mouth" in (character.material or {}):
-        from opensculptboy.fit.handoff import load_handoff
+    from opensculptboy.fit.handoff import load_handoff
 
-        _write_mouth_poses(out, load_handoff(args.handoff))
+    handoff = load_handoff(args.handoff)
+    if "mouth" in (character.material or {}):
+        _write_mouth_poses(out, handoff)
+    _write_eye_poses(out, handoff)
     print(
         json.dumps(
             {"card": str(out), "covered": round(baked.covered_share, 4), **textures},

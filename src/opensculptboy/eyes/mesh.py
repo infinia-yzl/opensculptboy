@@ -61,6 +61,10 @@ class EyePart:
     # the lashes (opensculptboy.eyes.lashes.PatchFollow): the points follow the rigid
     # motions of patches of the mesh's vertices in place of the linear ``operator``
     follow: object = None
+    # the lid of the lashes (opensculptboy.eyes.lashes.UPPER or LOWER)
+    lid: int | None = None
+    # the lashes' rows in the card's lashes (opensculptboy.eyes.lashes.LashData), by point
+    points: np.ndarray | None = None
 
     def positions(self, x: np.ndarray) -> np.ndarray:
         """The part's points for positions ``x`` (N, 3) of the mesh."""

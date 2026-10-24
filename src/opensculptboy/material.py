@@ -582,13 +582,14 @@ def check_reference_eyes(data: dict) -> dict:
     (:meth:`opensculptboy.fit.reference.Reference.eye_values`): some of ``cornea_radius_mm``,
     ``cornea_roughness`` and ``cornea_ior``, as numbers, and ``gaze``, the direction in which
     each eye (``"L"``, ``"R"``) looks at rest (:func:`opensculptboy.texture.eyes.
-    bake_eye_layout`). The eyes' ``"auto"`` values take
+    bake_eye_layout`), and ``poses``, the file of the reference's blinks
+    (:mod:`opensculptboy.eyes.poses`). The eyes' ``"auto"`` values take
     them, and the section turns the eyes on for a card without ``material.eyes``
     (:func:`eyes_section`).
     """
     if not isinstance(data, dict):
         raise ValueError("material reference_eyes must be a JSON object.")
-    keys = set(_CORNEA_RANGES) | {"gaze"}
+    keys = set(_CORNEA_RANGES) | {"gaze", "poses"}
     unknown = sorted(set(data) - keys)
     if unknown:
         raise ValueError(
@@ -610,8 +611,11 @@ def check_reference_eyes(data: dict) -> dict:
                 f"reference_eyes gaze {side} must be a direction of 3 numbers within "
                 "about 37 degrees of -Y."
             )
+    poses = data.get("poses")
+    if poses is not None and (not isinstance(poses, str) or not poses):
+        raise ValueError("reference_eyes poses must name a file (a string).")
     for key, value in data.items():
-        if key == "gaze":
+        if key in ("gaze", "poses"):
             continue
         if isinstance(value, (str, bool)):
             raise ValueError(f"reference_eyes {key} must be a number (got {value!r}).")
