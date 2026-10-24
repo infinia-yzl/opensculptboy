@@ -5,7 +5,7 @@ The skin that wearables cover.
 
 A wearable declares the skin it covers as a mask over the vertices of Anny's template
 (``Wearable.covers``), or leaves it to :func:`ray_cover`: a body vertex is covered when the
-ray along its normal meets the dressed piece within :data:`RAY_REACH`. An export removes a
+ray along its normal meets an opaque triangle of the dressed piece within :data:`RAY_REACH`. An export removes a
 body triangle when all three of its corners are covered by a shown piece
 (:func:`covered_triangles`), or keeps every triangle on request.
 
@@ -22,14 +22,28 @@ from opensculptboy.wearables.geometry import Surface, ray_hits
 RAY_REACH = 0.03  # metres
 
 
+def opaque_triangles(piece) -> np.ndarray:
+    """The visible triangles of a dressed piece whose material is opaque: a masked or blended
+    material (lace, mesh, a sheer stocking) may let the skin show through."""
+    garment = piece.garment
+    keep = np.ones(len(garment.triangles), bool)
+    for g, group in enumerate(garment.groups):
+        if group in piece.hidden_groups:
+            keep &= garment.triangle_group != g
+    for m, material in enumerate(garment.materials):
+        if material.alpha_mode != "OPAQUE":
+            keep &= garment.triangle_material != m
+    return garment.triangles[keep]
+
+
 def ray_cover(body, piece, reach: float = RAY_REACH) -> np.ndarray:
-    """(N,) the body vertices whose normal ray meets the visible triangles of a dressed
-    piece within ``reach``."""
+    """(N,) the body vertices whose normal ray meets the visible, opaque triangles of a
+    dressed piece within ``reach``."""
     return ray_hits(
         body.vertices,
         body.normals,
         piece.vertices,
-        piece.visible_triangles(),
+        opaque_triangles(piece),
         reach,
     )
 

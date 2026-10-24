@@ -185,6 +185,15 @@ class TestBinding(unittest.TestCase):
         self.assertTrue((dressed[1].joints[:, 0] == head).all())
         self.assertTrue((dressed[1].weights[:, 0] == 1.0).all())
 
+    def test_see_through_materials_cover_no_skin(self):
+        from opensculptboy.wearables.cover import ray_cover
+
+        body = template_body()
+        piece = dress(body, _worn(tunic()))[0]
+        self.assertGreater(int(ray_cover(body, piece).sum()), 300)
+        piece.garment.materials[0].alpha_mode = "MASK"  # lace: the skin may show
+        self.assertEqual(int(ray_cover(body, piece).sum()), 0)
+
     def test_smoothed_weights(self):
         """Diffused weights keep their sums, join vertices at one position and blend
         neighbours alike."""
