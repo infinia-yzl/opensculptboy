@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/infinia-yzl/opensculptboy/blob/main/src/opensculptboy/data/wearables/wearable-1.schema.json",
+  "title": "OpenSculptBoy wearable package (opensculptboy.wearable/1)",
+  "description": "The .wearable.json description of a wearable package (docs/wearables.md). The package's other two files are named by 'geometry' and 'binding.data'.",
+  "type": "object",
+  "required": ["format", "name", "slot", "layer", "provenance", "geometry", "binding"],
+  "properties": {
+    "format": {"const": "opensculptboy.wearable/1"},
+    "name": {"type": "string", "minLength": 1, "pattern": "^[^/]+$"},
+    "label": {"type": "string"},
+    "description": {"type": "string", "pattern": "^[^\\n]*$", "description": "one line about the piece"},
+    "tags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "slot": {"enum": ["head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloak", "under", "accessory"]},
+    "layer": {"type": "integer", "minimum": 0, "maximum": 100},
+    "provenance": {"enum": ["public", "private"]},
+    "licence": {
+      "type": "object",
+      "description": "The licence as the tools found or were given it; choosing assets and following their licences is the user's responsibility.",
+      "properties": {
+        "spdx": {"type": ["string", "null"]},
+        "declared": {"type": "string"},
+        "author": {"type": "string"},
+        "source": {"type": "string"},
+        "design_source": {"type": "string"},
+        "attribution": {"type": "string"}
+      }
+    },
+    "geometry": {"type": "string", "pattern": "\\.glb$"},
+    "binding": {
+      "type": "object",
+      "required": ["body", "method", "data"],
+      "properties": {
+        "body": {"enum": ["anny-template", "card", "reference"]},
+        "method": {"enum": ["surface", "rigid"]},
+        "data": {"type": "string", "pattern": "\\.safetensors$"},
+        "bone": {"type": "string"},
+        "joints": {"type": "array", "items": {"type": "string"}}
+      },
+      "if": {"properties": {"method": {"const": "rigid"}}},
+      "then": {"required": ["bone"]}
+    },
+    "weights": {"enum": ["body", "rigid", "own"]},
+    "covers": {"enum": ["mask", null]},
+    "group_covers": {"type": "array", "items": {"type": "string"}},
+    "cover_ray": {"type": "boolean"},
+    "groups": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "hides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["piece", "groups"],
+        "properties": {
+          "piece": {"type": "string", "minLength": 1},
+          "groups": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "springs": {"type": "array"},
+    "constraints": {"type": "array"},
+    "extras": {"type": "object"}
+  },
+  "additionalProperties": false
+}

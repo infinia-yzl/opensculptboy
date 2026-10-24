@@ -90,11 +90,12 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(back.licence["spdx"], "CC0-1.0")
         self.assertEqual(back.provenance, "public")
 
-    def test_public_package_needs_a_licence(self):
+    def test_package_without_a_licence(self):
         w = circlet()
         w.licence = {}
-        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
-            write_wearable(pathlib.Path(tmp) / "circlet", w)
+        with tempfile.TemporaryDirectory() as tmp:
+            back = read_wearable(write_wearable(pathlib.Path(tmp) / "circlet", w))
+        self.assertEqual(back.licence, {})
 
     def test_private_package_never_lands_in_the_repository(self):
         w = circlet()
