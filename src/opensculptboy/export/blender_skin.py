@@ -316,7 +316,10 @@ def apply_wearable_visibility(path: str) -> list[str]:
         name = obj.name if obj.name in shown else obj.name.rsplit(".", 1)[0]
         if shown.get(name) is False:
             obj.hide_viewport = obj.hide_render = True
-            obj.hide_set(True)
+            try:
+                obj.hide_set(True)
+            except RuntimeError:  # an object outside the view layer: hidden above
+                pass
             hidden.append(obj.name)
     return hidden
 
