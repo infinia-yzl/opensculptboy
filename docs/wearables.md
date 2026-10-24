@@ -168,12 +168,12 @@ opensculptboy wearables remove ada.json --outfit casual
 opensculptboy wearables outfit ada.json --activate none
 ```
 
-- `add` puts packages into an outfit (`--outfit NAME`, created when missing, with `--label`) or as loose pieces (no `--outfit`, or `--loose`). A piece takes the package's name as its id, and its file is written relative to the card. `--activate` makes the outfit the worn one. A piece of the same id with another file is an error (`piece_exists`) unless `--replace`, which also takes out the pieces of the same slot in the same place (an `accessory` piece only by id). Each package is read and checked first.
+- `add` puts packages into an outfit (`--outfit NAME`, created when missing, with `--label`) or as loose pieces (no `--outfit`, or `--loose`). A piece takes the package's name as its id, and its file is written relative to the card. `--activate` makes the outfit the worn one. A piece of the same id with another file is an error (`piece_exists`) unless `--replace`, which also takes out the pieces of the same slot in the same place (an `accessory` piece only by id) with their overrides. Each package is read and checked first.
 - `remove` takes pieces off by reference (`<outfit>/<piece>`, a loose piece's id, or a bare id of a piece of the worn outfit) with their overrides, or a whole outfit with `--outfit`. A reference that the card lacks is reported in `missing` and changes nothing.
 - `outfit --activate NAME` sets `active_outfit` (`none` for no outfit).
 - Each command keeps the card's other fields as they are, raises an older card to schema 4 when it adds wardrobe fields, and checks the result as a card. `--dry-run` prints the change without writing it. A second run with the same arguments changes nothing (`"changed": false`).
 - A private package never goes on a card stored inside a checkout of this repository (`private_in_repository`).
-- Each command prints one JSON result (`ok`, `changed`, `written`, `schema` before and after, `added`, `updated`, `removed`, `unchanged` or `missing`, `warnings` and the new `wardrobe` fields); errors are JSON as for `import-mhclo` (`card_not_found`, `invalid_card`, `package_not_found`, `invalid_package`, `piece_exists`, `ambiguous_piece`, `unknown_outfit`, `bad_option`, `bad_outfit`).
+- Each command prints one JSON result (`ok`, `changed`, `written`, `schema` before and after, `added`, `updated`, `removed`, `unchanged` or `missing`, `removed_overrides` (the overrides of the pieces taken off), `warnings` and the new `wardrobe` fields); errors are JSON as for `import-mhclo` (`card_not_found`, `invalid_card`, `package_not_found`, `invalid_package`, `piece_exists`, `ambiguous_piece`, `unknown_outfit`, `bad_option`, `bad_outfit`).
 
 ## Quality
 

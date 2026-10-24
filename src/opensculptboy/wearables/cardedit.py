@@ -30,7 +30,7 @@ from opensculptboy.wearables.format import (
     read_wearable,
     repository_root,
 )
-from opensculptboy.wearables.wardrobe import NO_OUTFIT
+from opensculptboy.wearables.wardrobe import NO_OUTFIT, resolve_ref
 
 WARDROBE = ("outfits", "active_outfit", "wearables", "wearable_overrides")
 
@@ -104,6 +104,39 @@ def _upgrade(raw: dict) -> None:
         raw["schema"] = 4
 
 
+def _refs(raw: dict) -> list[str]:
+    """The references of every piece of a card (as JSON)."""
+    refs = [
+        f"{o['id']}/{p['piece']}"
+        for o in raw.get("outfits", [])
+        for p in o.get("pieces", [])
+    ]
+    refs += [
+        e.get("id") or pathlib.Path(e["file"]).name.split(".")[0]
+        for e in raw.get("wearables", [])
+    ]
+    return refs
+
+
+def _named(key: str, raw: dict) -> str | None:
+    """The piece that an override key names on a card, or None."""
+    active = raw.get("active_outfit") or None
+    try:
+        return resolve_ref(key, _refs(raw), None if active == NO_OUTFIT else active)
+    except ValueError:
+        return None
+
+
+def _drop_overrides(before: dict, after: dict, result: dict) -> None:
+    """Take out the overrides whose pieces the change took off, so that no override names
+    a missing piece (an export would refuse the card)."""
+    overrides = after.get("wearable_overrides") or {}
+    for key in list(overrides):
+        if _named(key, before) is not None and _named(key, after) is None:
+            del overrides[key]
+            result.setdefault("removed_overrides", []).append(key)
+
+
 def _relative(package: pathlib.Path, card: pathlib.Path) -> str:
     return pathlib.Path(
         os.path.relpath(package.resolve(), card.resolve().parent)
@@ -156,7 +189,7 @@ def add_pieces(
     loose pieces (without ``outfit``, or with ``loose``). A piece takes the package's name as
     its id. A piece of that id with another file is an error unless ``replace``; ``replace``
     also takes out the pieces of the same slot in the same place (``accessory`` pieces only
-    by id). ``activate`` makes ``outfit`` the worn outfit.
+    by id) with their overrides. ``activate`` makes ``outfit`` the worn outfit.
     """
     path, before = _read_card(card)
     after = copy.deepcopy(before)
@@ -259,6 +292,7 @@ def add_pieces(
             )
     if activate:
         after["active_outfit"] = outfit
+    _drop_overrides(before, after, result)
     _upgrade(after)
     if after.get("wearables") == [] and "wearables" not in before:
         del after["wearables"]
@@ -337,6 +371,7 @@ def remove_pieces(card, refs=(), *, outfit: str | None = None, dry_run: bool = F
         result["removed"].append(found)
         for key in (found, ref):
             overrides.pop(key, None)
+    _drop_overrides(before, after, result)
     if result["missing"]:
         result["warnings"].append(
             f"not on the card (nothing to remove): {result['missing']}"

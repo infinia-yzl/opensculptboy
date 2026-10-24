@@ -589,6 +589,27 @@ class TestCardCommands(unittest.TestCase):
         self.assertNotIn("active_outfit", result["wardrobe"])
         Character.from_dict(json.loads(card.read_text()))
 
+    def test_overrides_of_removed_pieces_go_with_them(self):
+        """An override that names a piece by its bare id goes when the piece goes, so that
+        the card still exports."""
+        from opensculptboy.wearables.wardrobe import worn_pieces
+
+        card = self.card("overrides.json")
+        wear = [
+            str(self.folder / "wear" / f"{n}.wearable.json") for n in ("tunic", "cape")
+        ]
+        run(["wearables", "add", str(card), *wear, "--outfit", "travel", "--activate"])
+        data = json.loads(card.read_text())
+        data["wearable_overrides"] = {"cape": {"enabled": False}}
+        card.write_text(json.dumps(data))
+        status, result, _ = run(["wearables", "remove", str(card), "travel/cape"])
+        self.assertEqual((status, result["removed_overrides"]), (0, ["cape"]))
+        after = Character.from_dict(json.loads(card.read_text()))
+        self.assertEqual(after.wearable_overrides, {})
+        self.assertEqual(
+            [p.ref for p in worn_pieces(after, self.folder)], ["travel/tunic"]
+        )
+
     def test_private_package_never_goes_on_a_card_in_the_repository(self):
         w = circlet()
         w.provenance = PRIVATE
