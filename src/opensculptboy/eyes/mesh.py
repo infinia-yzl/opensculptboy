@@ -66,8 +66,7 @@ class EyePart:
         """The part's points for positions ``x`` (N, 3) of the mesh."""
         if self.follow is None:
             return self.operator @ x[self.anchors]
-        rotations, centres = self.follow.motions(lambda rows: x[rows])
-        return self.follow.points(self.rest, rotations, centres)
+        return self.follow.place(self.rest, lambda rows: x[rows])
 
     def offsets(self, offsets: np.ndarray, rest: np.ndarray) -> np.ndarray:
         """The part's morph-target offsets (R, M, 3) for the mesh's offsets (R, N, 3) from
@@ -76,10 +75,10 @@ class EyePart:
             return np.einsum("mn,rnd->rmd", self.operator, offsets[:, self.anchors])
         out = np.empty((len(offsets), len(self.rest), 3))
         for r, d in enumerate(offsets):
-            rotations, centres = self.follow.motions(
-                lambda rows, d=d: rest[rows] + d[rows]
+            out[r] = (
+                self.follow.place(self.rest, lambda rows, d=d: rest[rows] + d[rows])
+                - self.rest
             )
-            out[r] = self.follow.points(self.rest, rotations, centres) - self.rest
         return out
 
 

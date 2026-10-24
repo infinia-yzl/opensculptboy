@@ -157,15 +157,20 @@ class TestLashMesh(unittest.TestCase):
     def test_closed_eye(self):
         # a closed eye shows its upper lashes along the lid line, pointing down and out of
         # the lid, with either eye's blink; half way, they point forward
-        import trimesh
+        from scipy.spatial import cKDTree
+
+        from opensculptboy.export.body import vertex_normals
 
         skin_tris = self.eyed.triangles[: int(self.eyed.kept.sum())]
+        skin_rows = np.unique(skin_tris)
+
         for action, side in (("eyeBlinkLeft", "L"), ("eyeBlinkRight", "R")):
             for weight in (0.5, 1.0):
                 with self.subTest(action=action, weight=weight):
                     x = self.rest + weight * self.targets[action]
                     moved = self.eyed.vertices(x)
-                    skin = trimesh.Trimesh(x, skin_tris, process=False)
+                    normals = vertex_normals(x, skin_tris)
+                    tree = cKDTree(x[skin_rows])
                     frame = self.eyed.frames[side]
                     for p, rows in self._lashes():
                         upper = p.rest[:, 2].mean() > frame.centre[2]
@@ -180,8 +185,9 @@ class TestLashMesh(unittest.TestCase):
                             self.assertLess(drop, -0.1)  # down
                         # the outer half of each lash lies outside the skin
                         outer = moved[rows][p.uvs[:, 1] > 0.5]
-                        cp, _, tid = trimesh.proximity.closest_point(skin, outer)
-                        side_of = ((outer - cp) * skin.face_normals[tid]).sum(1)
+                        _, near = tree.query(outer)
+                        near = skin_rows[near]
+                        side_of = ((outer - x[near]) * normals[near]).sum(1)
                         self.assertGreater((side_of > 0).mean(), 0.95)
 
     def test_eye_turn(self):

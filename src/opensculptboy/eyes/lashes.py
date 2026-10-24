@@ -21,8 +21,9 @@ margin there (:class:`PatchFollow`), so the lashes keep their shape and turn wit
 the lid in the blinks of the morph targets, the T-pose of a VRM file and every other target of
 the file. As the upper lid closes, its lashes also turn down about the margin by twice the
 angle that the opening between the lids closes (:data:`CLOSE_TURN`): the edge of a closing lid
-rolls, and the lashes of a closed eye point down and out along the lid line. The lashes take
-the skin weights of their roots on the margin.
+rolls, and the lashes of a closed eye point down and out along the lid line. They also stay
+:data:`CLEARANCE` outside the outward-facing skin around the eye, so a closed lid lays them on
+its skin. The lashes take the skin weights of their roots on the margin.
 
 The lid margin (:func:`lid_margins`) is the line where the lids' skin turns from facing out
 to facing the eyeball (the socket of :func:`opensculptboy.eyes.geometry.socket`), split into
@@ -182,6 +183,11 @@ CLOSE_TURN = 2.0
 # the opening of the lids is measured in degrees, and a closed eye turns its lashes by at most
 # this angle (degrees)
 MAX_CLOSE_TURN = 70.0
+# the lashes stay this far (metres) outside the outward-facing skin around the eye, or as far
+# as they lie at rest when that is less: a closed lid lays them on its skin
+CLEARANCE = 0.0003
+# the skin around the eye that the lashes stay outside: within this many eyeball radii
+SKIN_REACH = 1.8
 
 
 @dataclasses.dataclass
@@ -207,6 +213,39 @@ class PatchFollow:
     centre: np.ndarray | None = None
     opposite: np.ndarray | None = None
     turn: np.ndarray | None = None  # (M,)
+    # the outward-facing skin around the eye (rows of the mesh, and its triangles over them),
+    # and how far each point may come to it (CLEARANCE, or its distance at rest)
+    skin_rows: np.ndarray | None = None
+    skin_triangles: np.ndarray | None = None
+    floor: np.ndarray | None = None
+
+    def place(self, points, positions):
+        """``points`` (M, 3) at rest moved with the lid for ``positions`` (a function of
+        rows, returning their positions), and kept outside the skin."""
+        rotations, centres = self.motions(positions)
+        moved = self.points(points, rotations, centres)
+        if self.skin_rows is None:
+            return moved
+        depth, normals = self.skin_depth(moved, positions(self.skin_rows))
+        push = np.clip(self.floor - depth, 0.0, None)
+        return moved + push[:, None] * normals
+
+    def skin_depth(self, points, skin):
+        """The signed distance (M,) of ``points`` from the skin around the eye at ``skin``
+        (its rows' positions), along the skin's normal at the nearest skin vertices (the
+        mean of 4), and that normal (M, 3)."""
+        from scipy.spatial import cKDTree
+
+        from opensculptboy.export.body import vertex_normals
+
+        normals = vertex_normals(skin, self.skin_triangles)
+        dist, idx = cKDTree(skin).query(points, k=4)
+        w = 1.0 / np.maximum(dist, 1e-6)
+        w /= w.sum(1, keepdims=True)
+        n = np.einsum("mk,mkd->md", w, normals[idx])
+        n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+        base = np.einsum("mk,mkd->md", w, skin[idx])
+        return ((points - base) * n).sum(1), n
 
     @staticmethod
     def _frames(x, tangent, across):
@@ -468,7 +507,7 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
     w, h = size
     rng = np.random.default_rng(int(settings.seed))
     alpha = np.zeros((h, w))
-    count = int(round(settings.density * w / 4.0))
+    count = int(round(settings.density * w / 2.5))
     yy, xx = np.mgrid[0:h, 0:w]
     v = 1.0 - (yy + 0.5) / h  # 0 at the root (bottom), 1 at the tip
     for _ in range(count):
@@ -476,7 +515,7 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
         reach = rng.uniform(0.55, 1.0)
         slant = rng.normal(0.0, 0.08) * w / 10.0
         bend = rng.normal(0.0, 0.05) * w / 10.0
-        width = rng.uniform(1.8, 3.0)
+        width = rng.uniform(2.5, 4.0)
         along = np.clip(v / reach, 0.0, 1.0)
         centre = x0 + slant * along + bend * along**2
         dx = np.abs(((xx - centre + w / 2) % w) - w / 2)
@@ -623,6 +662,16 @@ def lash_parts(lashes, frames, rest, normals, skin, skin_triangles, eyeballs=Non
                 rest,
                 None if eyeballs is None else eyeballs.get(side),
             )
+            if eyeballs is not None:
+                _keep_outside(
+                    follow,
+                    data.points[rows],
+                    frames[side],
+                    rest,
+                    normals,
+                    skin,
+                    skin_triangles,
+                )
             parts.append(
                 EyePart(
                     name="lashes",
@@ -639,6 +688,28 @@ def lash_parts(lashes, frames, rest, normals, skin, skin_triangles, eyeballs=Non
                 )
             )
     return parts, data
+
+
+def _keep_outside(follow, points, frame, rest, normals, skin, skin_triangles) -> None:
+    """Give ``follow`` the outward-facing skin around the eye of ``frame`` (within
+    :data:`SKIN_REACH` eyeball radii, in front of the eye's centre, the socket left out) and
+    each point's floor: :data:`CLEARANCE`, or its distance from that skin at rest."""
+    from opensculptboy.eyes import geometry
+
+    local = frame.to_local(rest)
+    dist = np.linalg.norm(local, axis=1)
+    inner = geometry.socket(frame, rest, normals, skin)
+    outer = skin & ~inner & (dist < SKIN_REACH) & (local[:, 2] > -0.2)
+    tris = np.asarray(skin_triangles)[outer[np.asarray(skin_triangles)].all(1)]
+    if len(tris) < 4:
+        return
+    rows = np.unique(tris)
+    local_index = np.full(len(rest), -1)
+    local_index[rows] = np.arange(len(rows))
+    follow.skin_rows = rows
+    follow.skin_triangles = local_index[tris]
+    depth, _ = follow.skin_depth(points, rest[rows])
+    follow.floor = np.minimum(CLEARANCE, depth)
 
 
 # --------------------------------------------------------------------------------- the card
