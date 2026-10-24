@@ -22,6 +22,7 @@ import numpy as np
 from opensculptboy import Character, export_glb
 from opensculptboy.wearables import (
     PRIVATE,
+    Garment,
     ProvenanceError,
     WornPiece,
     card_body,
@@ -95,6 +96,14 @@ class TestFormat(unittest.TestCase):
         w.licence = {}
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ValueError):
             write_wearable(pathlib.Path(tmp) / "circlet", w)
+
+    def test_garment_without_triangles(self):
+        w = circlet()
+        w.garment = Garment(w.garment.vertices, np.zeros((0, 3)))
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "at least one triangle"):
+                write_wearable(pathlib.Path(tmp) / "circlet", w)
+            self.assertFalse((pathlib.Path(tmp) / "circlet.glb").exists())
 
     def test_private_package_never_lands_in_the_repository(self):
         w = circlet()
