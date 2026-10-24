@@ -428,59 +428,43 @@ def export_glb(
     if head_material is not None:
         head &= rest
         rest &= ~head
-    primitive = body_primitive(
-        doc,
-        body,
-        material,
-        triangles=None if rest.all() else body.triangles[rest],
-        joint_type=joint_type,
-        anny_vertex=detail is None or detail.subdiv == 0,
-    )
-    primitives = [primitive]
+    # the body's primitives: the skin, the ear tile, the head tile, the eyeballs, the eyes and
+    # the teeth; one that the wearables cover whole leaves the file, since a glTF accessor
+    # holds at least one element
+    parts = [(material, rest)]
     if ear_material is not None:  # the ear tile: the outer ears on UVs of their own
-        primitives.append(
-            body_primitive(
-                doc,
-                body,
-                ear_material,
-                triangles=body.triangles[ears],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
-            )
-        )
+        parts.append((ear_material, ears))
     if head_material is not None:  # the head tile: the same vertices, its own textures
-        primitives.append(
-            body_primitive(
-                doc,
-                body,
-                head_material,
-                triangles=body.triangles[head],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
-            )
-        )
+        parts.append((head_material, head))
     if eye_material is not None:  # the eyeballs: the same vertices, their own texture
-        primitives.append(
-            body_primitive(
+        parts.append((eye_material, eyes))
+    parts += eye_parts + teeth_parts  # the eyes and the teeth
+    parts = [(m, mask) for m, mask in parts if mask.any()] if dressed else parts
+    if not parts:
+        raise ValueError(
+            "The shown wearables cover every triangle of the body; use --covered keep."
+        )
+    primitives = []
+    for part_material, part in parts:
+        if not primitives:  # the first writes the attributes and the targets
+            primitive = body_primitive(
                 doc,
                 body,
-                eye_material,
-                triangles=body.triangles[eyes],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
+                part_material,
+                triangles=None if part.all() else body.triangles[part],
+                joint_type=joint_type,
+                anny_vertex=detail is None or detail.subdiv == 0,
             )
-        )
-    for part_material, part in eye_parts + teeth_parts:  # the eyes and the teeth
-        primitives.append(
-            body_primitive(
+        else:
+            primitive = body_primitive(
                 doc,
                 body,
                 part_material,
                 triangles=body.triangles[part],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
+                attributes=primitives[0]["attributes"],
+                targets=primitives[0].get("targets"),
             )
-        )
+        primitives.append(primitive)
     mesh = {"name": character.name, "primitives": primitives}
     if targets:
         mesh["weights"] = [t.weight for t in targets]
