@@ -1132,7 +1132,7 @@ def vrm_spec(
         look_at=look_at,
         head=head,
         meta=meta,
-        credits=list(BASE_CREDITS),
+        credits=list(BASE_CREDITS) + _wear_credits(dressed),
         thumbnail=png,
         extras=extras,
         sparse_targets=version == "1.0",
@@ -1754,6 +1754,15 @@ def _mesh_nodes(spec: VrmSpec) -> dict[int, list[int]]:
         if node.mesh is not None:
             nodes[node.mesh].append(i)
     return nodes
+
+
+def _wear_credits(dressed) -> list[str]:
+    """The attribution lines of the worn pieces (CC-BY wearables), after the base model's."""
+    if not dressed:
+        return []
+    from opensculptboy.wearables.export import credits
+
+    return [f"Wearable: {line}" for line in credits([p for p in dressed if p.shown])]
 
 
 def credits_text(spec: VrmSpec) -> str:

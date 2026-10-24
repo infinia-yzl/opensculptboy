@@ -93,8 +93,9 @@ def covered_body_triangles(body, pieces, mesh, rows: int, model_rows: int, detai
 
 
 def summary(pieces, removed: int, dressing: Dressing) -> dict:
-    """The ``wearables`` entry of a file's scene extras."""
-    return {
+    """The ``wearables`` entry of a file's scene extras, with the ``credits`` of the pieces
+    that carry an attribution."""
+    out = {
         "format": "opensculptboy.wearable/1",
         "outfit": dressing.outfit,
         "wardrobe": bool(dressing.wardrobe),
@@ -102,6 +103,21 @@ def summary(pieces, removed: int, dressing: Dressing) -> dict:
         "removed_body_triangles": int(removed),
         "pieces": [p.extras() for p in pieces],
     }
+    lines = credits(pieces)
+    if lines:
+        out["credits"] = lines
+    return out
+
+
+def credits(pieces) -> list[str]:
+    """The ``attribution`` lines of the pieces' licences (each once, in the pieces' order):
+    the credits that a CC-BY piece needs."""
+    out: list[str] = []
+    for piece in pieces:
+        line = (piece.wearable.licence or {}).get("attribution")
+        if line and line not in out:
+            out.append(str(line))
+    return out
 
 
 def lowest(pieces, frame: np.ndarray) -> float:
