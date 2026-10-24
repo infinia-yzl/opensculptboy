@@ -682,7 +682,7 @@ def vrm_spec(
         images = level_normals(
             model, character, images, detail, ear_topology, ears, base, detail_dir
         )
-    eyed = None
+    eyed, blinks = None, None
     teeth = character.teeth_material()
     mouth = character.mouth_material()
     if mouth is not None:  # the reference's inner mouth holds its own teeth
@@ -715,9 +715,16 @@ def vrm_spec(
                 lashes=lashes,
                 layout=layout,
             )
+            targets, blinks = _vrm_blinks(
+                eyed, base, offsets, actions, targets, rb, character, None, detail_dir
+            )
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
             targets = eyed.targets(np.stack(targets)) if len(targets) else targets
+            if blinks is not None:
+                from opensculptboy.eyes.blink import blink_lash_offsets
+
+                targets = blink_lash_offsets(eyed, blinks, base, targets)
             vertices = eyed.vertices(vertices)
             mesh, rest_now = eyed, eyed.vertices(base)
         if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
@@ -816,9 +823,24 @@ def vrm_spec(
                 lashes=lashes,
                 layout=layout,
             )
+            targets, blinks = _vrm_blinks(
+                eyed,
+                fine,
+                fine_targets,
+                actions,
+                targets,
+                rb,
+                character,
+                detail,
+                detail_dir,
+            )
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
             targets, vertices = eyed.targets(targets), eyed.vertices(vertices)
+            if blinks is not None:
+                from opensculptboy.eyes.blink import blink_lash_offsets
+
+                targets = blink_lash_offsets(eyed, blinks, fine, targets)
             ears = eyed.extend_mask(ears)
             mesh = eyed
         if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
@@ -1085,6 +1107,8 @@ def vrm_spec(
         extras["detail"] = detail.extras()
     if eyed is not None:
         extras["eyes"] = eyed.extras
+        if blinks is not None:
+            eyed.extras["blinks"] = blinks.extras
     if toothed is not None:
         extras["teeth" if mouth is None else "inner_mouth"] = toothed.extras
     if images:
@@ -1344,6 +1368,44 @@ def _mouth_toon_materials(toothed, mouth, images):
     )
     material.normal_texture = _texture_index(images, "mouth_normal")
     return [(material, toothed.part_mask(*PARTS))]
+
+
+def _vrm_blinks(
+    eyed, rest, rest_offsets, actions, targets, rb, character, detail, detail_dir
+):
+    """
+    The file's targets with each eye's blink target closed around the eye
+    (:func:`opensculptboy.eyes.blink.blink_offsets`, from the card's reference's closed eyes
+    when it has them): shaped on the rest mesh (``rest``, the rest-frame ``rest_offsets`` of
+    the targets named ``actions``) and carried into the T-pose by the map of the rebind
+    ``rb``. VRM expressions play morph targets alone, so the file takes no in-between: the
+    straight line of each blink target keeps the lids outside the eyes. Returns (targets, the
+    :class:`~opensculptboy.eyes.blink.EyeBlinks` or None).
+    """
+    from opensculptboy.eyes.blink import blink_offsets
+    from opensculptboy.eyes.poses import card_closed_offsets
+
+    shaped, blinks = blink_offsets(
+        eyed,
+        rest,
+        rest_offsets,
+        actions,
+        card_closed_offsets(character, detail, detail_dir),
+        inbetween=False,
+    )
+    if blinks is None:
+        return targets, None
+    out = (
+        [np.asarray(t) for t in targets]
+        if isinstance(targets, list)
+        else np.array(targets, dtype=np.float64, copy=True)
+    )
+    for row in blinks.rows.values():
+        value = shaped[row]
+        if rb.linear is not None:
+            value = np.einsum("vab,vb->va", rb.linear, value)
+        out[row] = value
+    return out, blinks
 
 
 def _toothed(model, character, rows_mesh, mesh, rest, base, detail_dir):

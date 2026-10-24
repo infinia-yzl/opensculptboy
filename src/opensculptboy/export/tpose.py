@@ -458,6 +458,8 @@ class Rebind:
     # vertices and the joints (mapped by its frame); ``vertices``, ``bone_poses`` and
     # ``joint_positions`` stay in Anny's frame without it.
     offset: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(3))
+    # (V, 3, 3) float64: the map A_i of each vertex's target offsets (delta' = A_i delta)
+    linear: np.ndarray | None = None
 
     @property
     def transforms(self) -> np.ndarray:
@@ -588,6 +590,7 @@ def rebind(
         joint_positions=joints,
         method=method,
         offset=centring_offset(bind, joints, model.bone_labels),
+        linear=linear,
     )
 
 
