@@ -37,6 +37,7 @@ from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 from test.wearable_fixtures import (
     cape,
     circlet,
+    cover_of,
     template_body,
     template_model,
     tunic,
@@ -84,6 +85,8 @@ class TestFormat(unittest.TestCase):
         np.testing.assert_array_equal(back.binding.corners, w.binding.corners)
         np.testing.assert_array_equal(back.binding.offset, w.binding.offset)
         np.testing.assert_array_equal(back.covers, w.covers)
+        self.assertEqual(sorted(back.group_covers), ["back", "front"])
+        np.testing.assert_array_equal(back.group_covers["back"], w.group_covers["back"])
         self.assertEqual(back.licence["spdx"], "CC0-1.0")
         self.assertEqual(back.provenance, "public")
 
@@ -132,7 +135,7 @@ class TestBinding(unittest.TestCase):
             with self.subTest(k=k, phenotype=phenotype):
                 body = card_body(Character(phenotype=phenotype), model)
                 piece = dress(body, _worn(w))[0]
-                gaps = coverage_gaps(body, piece, w.covers, tolerance=0.002)
+                gaps = coverage_gaps(body, piece, cover_of(w), tolerance=0.002)
                 self.assertGreater(gaps["covered"], 300)
                 self.assertEqual(gaps["outside"], 0, gaps)
 

@@ -34,6 +34,15 @@ def index_accessor(doc: GltfDocument, triangles: np.ndarray, vertex_count: int) 
     )
 
 
+def garment_tangents(positions, normals, garment) -> np.ndarray:
+    """MikkTSpace tangents (V, 4) float32 of a garment's vertices, for its normal maps."""
+    from opensculptboy.texture.tangents import mikktspace
+
+    uv = np.asarray(garment.uvs, dtype=np.float64)
+    uv = np.stack([uv[:, 0], 1.0 - uv[:, 1]], axis=1)  # OBJ: v = 0 at the bottom
+    return mikktspace(positions, normals, uv, garment.triangles).astype(np.float32)
+
+
 def _mime(data: bytes) -> str:
     return "image/jpeg" if data[:3] == b"\xff\xd8\xff" else "image/png"
 
@@ -195,6 +204,11 @@ def add_pieces(
             attributes["TEXCOORD_0"] = doc.accessor(
                 np.asarray(garment.uvs, dtype=np.float32), ARRAY_BUFFER
             )
+            if any("normal" in m.textures for m in garment.materials):
+                attributes["TANGENT"] = doc.accessor(
+                    garment_tangents(positions, piece.normals @ frame.T, garment),
+                    ARRAY_BUFFER,
+                )
         attributes["JOINTS_0"] = doc.accessor(
             piece.joints.astype(joint_type), ARRAY_BUFFER
         )

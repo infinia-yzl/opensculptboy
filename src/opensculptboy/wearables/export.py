@@ -141,23 +141,23 @@ def vrm_piece_meshes(pieces, rebind, frame: np.ndarray) -> list:
             if group in piece.hidden_groups:
                 keep &= garment.triangle_group != g
         count = len(bind)
-        out.append(
-            (
-                piece,
-                BodyMesh(
-                    positions=bind @ frame.T,
-                    normals=normals @ frame.T,
-                    uvs=None if garment.uvs is None else np.asarray(garment.uvs),
-                    source=np.arange(count),
-                    triangles=garment.triangles[keep],
-                    triangle_faces=garment.triangle_material[keep],
-                    joints=piece.joints.astype(np.int64),
-                    weights=piece.weights.astype(np.float32),
-                    targets=[],
-                    dropped_weight=0.0,
-                ),
-            )
+        mesh = BodyMesh(
+            positions=bind @ frame.T,
+            normals=normals @ frame.T,
+            uvs=None if garment.uvs is None else np.asarray(garment.uvs),
+            source=np.arange(count),
+            triangles=garment.triangles[keep],
+            triangle_faces=garment.triangle_material[keep],
+            joints=piece.joints.astype(np.int64),
+            weights=piece.weights.astype(np.float32),
+            targets=[],
+            dropped_weight=0.0,
         )
+        if garment.uvs is not None and any(
+            "normal" in m.textures for m in garment.materials
+        ):
+            mesh.add_tangents()
+        out.append((piece, mesh))
     return out
 
 

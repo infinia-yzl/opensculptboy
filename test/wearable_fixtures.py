@@ -62,7 +62,8 @@ def torso_mask(body) -> np.ndarray:
 
 def tunic(body=None, offset: float = 0.006) -> Wearable:
     """A tunic: anny's torso between the hips and the chest, 6 mm off the skin, with two
-    groups (the front ``front`` and the back ``back``) and the torso as its cover mask."""
+    groups (the front ``front`` and the back ``back``), each with the skin under it as its
+    cover mask (``group_covers``), so that a hidden group shows its skin again."""
     body = body or template_body()
     keep = torso_mask(body)
     vertices, triangles, rows = _region_shell(body, keep, offset)
@@ -92,8 +93,20 @@ def tunic(body=None, offset: float = 0.006) -> Wearable:
         garment=garment,
         binding=bind_surface(garment, body),
         licence=dict(LICENCE),
-        covers=covers,
+        covers=np.zeros(len(body.vertices), bool),
+        group_covers={
+            "front": covers & (body.vertices[:, 1] <= 0),
+            "back": covers & (body.vertices[:, 1] > 0),
+        },
     )
+
+
+def cover_of(wearable) -> np.ndarray:
+    """The skin that all the groups of a piece cover."""
+    mask = np.asarray(wearable.covers, bool).copy()
+    for extra in wearable.group_covers.values():
+        mask |= extra
+    return mask
 
 
 def circlet(body=None) -> Wearable:
@@ -143,6 +156,7 @@ def circlet(body=None) -> Wearable:
         binding=bind_rigid(garment, body, "head"),
         weights="rigid",
         licence=dict(LICENCE),
+        covers=np.zeros(len(body.vertices), bool),
     )
 
 
@@ -179,6 +193,7 @@ def cape(body=None) -> Wearable:
         garment=garment,
         binding=bind_surface(garment, body),
         licence=dict(LICENCE),
+        covers=np.zeros(len(body.vertices), bool),
         hides=[{"piece": "tunic", "groups": ["back"]}],
     )
 
