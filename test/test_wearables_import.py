@@ -346,6 +346,21 @@ class TestImport(unittest.TestCase):
             [f"Wearable: {self.tights.licence['attribution']}"],
         )
 
+    def test_dry_run_writes_no_files(self):
+        out = self.folder / "dry" / "shirt"
+        status, result, _ = run(
+            ["wearables", "import-mhclo", str(self.shirt_path), "--out", str(out)]
+            + ["--dry-run"]
+        )
+        self.assertEqual(
+            (status, result["dry_run"], result["written"]), (0, True, False)
+        )
+        self.assertEqual(result["slot"], "torso")
+        self.assertFalse(out.parent.exists())
+        self.assertEqual(
+            (self.report["dry_run"], self.report["written"]), (False, True)
+        )
+
     def test_command_errors_are_json(self):
         status, result, err = run(
             ["wearables", "import-mhclo", str(self.folder / "none.mhclo")]

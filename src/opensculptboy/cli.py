@@ -930,10 +930,17 @@ def _import_report(args) -> dict:
         normal_green=args.normal_green,
         accept_quality=args.accept_quality,
     )
+    if args.dry_run:  # the checks and the binding, without the files
+        return {
+            "package": str(paths["json"]),
+            "dry_run": True,
+            "written": False,
+            **report,
+        }
     vertices = wearable.garment.vertices.copy()
     path = write_wearable(paths["json"], wearable)
     report["round_trip_mm_max"] = round_trip(path, body, vertices)
-    return {"package": str(path), **report}
+    return {"package": str(path), "dry_run": False, "written": True, **report}
 
 
 def _wearables_card(args) -> int:
@@ -1558,6 +1565,11 @@ def main(argv=None) -> int:
         metavar="MM",
         help=f"refuse a garment whose median distance from the skin exceeds this "
         f"(default {MAX_DISTANCE * 1000:.0f})",
+    )
+    wi.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="check and bind the asset, print the result and write no files",
     )
     _package_options(wi)
     _quality_options(wi)
