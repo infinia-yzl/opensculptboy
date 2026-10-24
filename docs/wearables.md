@@ -9,6 +9,7 @@ opensculptboy export ada.glb --character ada.json --show work/apron       # a pi
 opensculptboy export ada.glb --character ada.json --covered keep          # keep the skin under the clothes
 opensculptboy export ada_wardrobe.glb --character ada.json --wardrobe     # every piece as its own node
 opensculptboy export ada.vrm --character ada.json --author "Your name"    # the outfit in a VRM avatar
+opensculptboy export ada.vrm --character ada.json --author "Your name" --springs off   # no spring chains
 opensculptboy wearables list --character ada.json                         # the outfits, pieces and groups
 ```
 
@@ -35,7 +36,8 @@ A package is three files with one name:
 | `covers`, `group_covers`, `cover_ray` | whether the binding file holds a cover mask, the groups that hold their own masks, and whether a ray test confirms the masks |
 | `groups` | the named groups of the garment |
 | `hides` | rules toward other pieces: `{"piece": id, "groups": [name, ...]}` |
-| `springs`, `constraints` | spring chains and constraints for the VRM export; packages keep them, and a later version writes them |
+| `springs` | the spring chains of the loose parts (see "Springs") |
+| `constraints` | constraints for the VRM export; packages keep them, and a later version writes them |
 
 ### Binding
 
@@ -73,9 +75,47 @@ A piece is named by its reference: `<outfit>/<piece>` for a piece of an outfit, 
 
 ## Files
 
-- **GLB.** Each shown piece is a mesh node of its own, named by its reference and skinned by the character's skin, with glTF PBR materials and MikkTSpace tangents for its normal maps. The node's `extras.opensculptboy_wearable` and the scene's `extras.opensculptboy.wearables` record the pieces, their hidden groups and the removed body triangles. The ground lift takes footwear into account.
+- **GLB.** Each shown piece is a mesh node of its own, named by its reference and skinned by the character's skin, with glTF PBR materials and MikkTSpace tangents for its normal maps. The node's `extras.opensculptboy_wearable` and the scene's `extras.opensculptboy.wearables` record the pieces, their hidden groups and the removed body triangles. The ground lift takes footwear into account. The joints of the spring chains follow the bones in the skin, and `extras.opensculptboy.wearables.springs` records each chain's nodes and settings and each collider in its node's frame.
 - **Wardrobe GLB** (`--wardrobe`). Every piece of every outfit is a node, and every group that a rule can hide is a node of its own (`<piece>.<group>`), all at the root, with the body whole. The default scene holds the body and what the worn outfit shows, so Blender and other importers open the character as it is dressed; a second scene holds every piece, for tools that switch scenes or let the user show nodes one by one. `--node-visibility` writes one scene with every piece instead and marks the pieces and groups that the worn outfit does not show with `KHR_node_visibility` (`visible: false`). The Khronos validator reports that extension as unknown (an info). The glTF importer of Blender 5.2 reads every node of every scene and ignores the extension; `blender --python src/opensculptboy/export/blender_skin.py -- wardrobe.glb` imports a wardrobe file and hides the pieces and groups that its extras mark as not shown (`opensculptboy_wearable.shown`, `opensculptboy_wearable_group.shown`).
-- **VRM.** Each shown piece is a mesh bound into the T-pose with the file's skin weights at its bound points (the inverse bind, so that the avatar posed at Anny's rest pose shows the piece's rest vertices exactly) and an MToon material per garment material. Pieces count against the budgets of [VRM avatars](vrm.md). Spring bones and constraints come later.
+- **VRM.** Each shown piece is a mesh bound into the T-pose with the file's skin weights at its bound points (the inverse bind, so that the avatar posed at Anny's rest pose shows the piece's rest vertices exactly) and an MToon material per garment material. Pieces count against the budgets of [VRM avatars](vrm.md). The spring chains become spring bones ([VRM avatars](vrm.md#spring-bones)); constraints come later.
+
+## Springs
+
+Loose parts of a piece (a cape, a skirt, a long hem) swing on chains of extra joints. A package lists them in `springs`, and `opensculptboy.wearables.springs` builds them on the body of each export:
+
+```json
+"springs": [
+  {"name": "back"},
+  {"name": "hem", "preset": "skirt", "columns": 8, "joints": 4, "settings": {"stiffness": 1.6}},
+  {"name": "tail", "points": [[0, 0.4, -0.1], [0, 0.0, -0.13], [0, -0.4, -0.15]], "parent": "spine03"}
+]
+```
+
+| Key | Meaning |
+|---|---|
+| `name` | the spring's name, distinct within the package |
+| `kind` | `auto` (the default) or `chain` (the default when `points` is given) |
+| `preset` | `cape`, `skirt` or `hem`; by default `cape` for the `cloak` slot, `skirt` for `legs` and `under`, `hem` for the others |
+| `settings` | `stiffness`, `gravity_power`, `gravity_dir` (glTF axes), `drag_force` and `hit_radius` (metres), in place of the preset's |
+| `groups` | the garment groups of the spring (every group by default) |
+| `columns`, `joints` | the chains of an `auto` spring and the joints of each, the tail included (cape 5, skirt 8, hem 3; 4 joints) |
+| `points` | a `chain` spring's joints, in metres and glTF axes, on the binding body at rest |
+| `parent` | the bone that the chains hang from; `root` for the skirt preset, else the strongest torso bone at each chain's first joint |
+| `colliders` | the collider groups that the chains hit: `head`, `torso`, `legs`, `arms` (all by default) |
+| `gap`, `hang`, `reach` | the loose test of an `auto` spring (2.5 cm from the skin, 3 cm below the closest skin point) and an authored chain's reach over the garment (15 cm) |
+
+| Preset | Stiffness | Gravity | Drag | Hit radius |
+|---|---|---|---|---|
+| `cape` | 0.8 | 0.3 | 0.45 | 4 cm |
+| `skirt` | 1.4 | 0.1 | 0.5 | 3 cm |
+| `hem` | 1.0 | 0.2 | 0.5 | 2 cm |
+
+- **Auto chains.** A vertex is loose when it lies more than `gap` from the skin or more than `hang` below its closest skin point. The columns share the loose vertices by their azimuth around the body's vertical axis: all around for a skirt, across the back for a cape. Each column runs from the top of its loose vertices (the median of three neighbouring columns' tops) to the lowest vertex of its band, its last joint the tail.
+- **Authored chains.** On another body each point moves with the six garment vertices nearest to it on the binding body.
+- **Hierarchy.** Each chain hangs from one bone, a node belongs to one chain only, and a branch is a chain of its own. The tail joints carry no weight.
+- **Weights.** A vertex takes the joints of its two nearest chains by its place along each, and its body weights fade into the chain weights over the first segment, so the top of the region stays on the body. An authored chain's share fades out over its reach.
+- **Colliders.** A sphere inside the head and capsules on the neck, the chest, the shoulders, the spine, the hips, the upper and lower legs and the upper arms, fitted inside the skin of each character. The neck, the chest and the shoulders take the ends, quantiles and spans of the viewer's hair colliders. Each joint's hit radius stays within its clearance from the colliders at rest, so a chain rests where the garment was made.
+- **Off.** `--springs off` (or `Dressing(springs=False)`) leaves every piece on the body's bones.
 
 ## Reference wearables
 
@@ -100,4 +140,4 @@ A package records where it comes from. Public packages carry a licence and may l
 
 ## Checks
 
-`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `TestGltfReference` holds a dressed case.
+`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `TestGltfReference` holds a dressed case. `test.test_wearable_springs` checks the springs of a synthetic long cape and skirt: the entries, the chain structure, the weights and the attachment at the top, the colliders, the GLB and VRM files of both versions within their budgets and schemas, and four seconds of the VRM spring update (`SpringSim`) in which the pieces swing and stay outside the body's capsules.
