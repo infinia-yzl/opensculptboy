@@ -318,6 +318,16 @@ class TestWardrobe(unittest.TestCase):
         )
         names = [p.ref for p in worn_pieces(card, self.folder)]
         self.assertNotIn("test_outfit/circlet", names)
+        # a piece of another outfit that an override shows takes its slot as well
+        card = Character.from_dict(
+            dict(
+                self.card.to_dict(),
+                wearable_overrides={"spare/vest": {"enabled": True}},
+            )
+        )
+        names = [p.ref for p in worn_pieces(card, self.folder)]
+        self.assertIn("spare/vest", names)
+        self.assertNotIn("test_outfit/tunic", names)
         self.assertEqual(worn_pieces(self.card, self.folder, outfit="none"), [])
         with self.assertRaisesRegex(ValueError, "Did you mean"):
             worn_pieces(self.card, self.folder, hide=["capes"])
