@@ -423,6 +423,44 @@ class TestDressedFiles(unittest.TestCase):
         weights = sum(glb.accessor(attributes[f"WEIGHTS_{s}"]).sum(1) for s in (0, 1))
         np.testing.assert_allclose(weights, 1.0, atol=1e-6)
 
+    def test_skin_covered_whole(self):
+        """A suit whose mask covers every skin vertex: the body's skin primitive leaves the
+        GLB and VRM files (a glTF accessor holds at least one element), the eyeballs stay,
+        and with nothing left of the body the export fails with a clear message."""
+        from opensculptboy.export.document import png_bytes
+        from opensculptboy.export.vrm import export_vrm
+
+        suit = tunic()
+        suit.name = "suit"
+        suit.covers = np.ones(len(suit.covers), bool)
+        write_wearable(self.folder / "suit.wearable.json", suit)
+        card = Character(
+            name="suited", wearables=[{"id": "suit", "file": "suit.wearable.json"}]
+        )
+        eyes = {"eyes": png_bytes(np.full((4, 8, 3), 40, np.uint8))}
+        files = [self.folder / "suited.glb"]
+        export_glb(files[0], card, self.model, textures=eyes, detail_dir=self.folder)
+        for version in ("1.0", "0.x"):
+            files.append(self.folder / f"suited_{version}.vrm")
+            export_vrm(
+                files[-1],
+                card,
+                author="test",
+                version=version,
+                textures=eyes,
+                detail_dir=self.folder,
+            )
+        for path in files:
+            with self.subTest(path.name):
+                glb = GLB(path)
+                self.assertEqual(structure_errors(glb), [])
+                counts = [a["count"] for a in glb.json["accessors"]]
+                self.assertGreater(min(counts), 0)
+        with self.assertRaisesRegex(ValueError, "cover every triangle"):
+            export_glb(
+                self.folder / "bare.glb", card, self.model, detail_dir=self.folder
+            )
+
     def test_piece_with_every_group_hidden_leaves_the_file(self):
         from opensculptboy.export.document import GltfDocument
         from opensculptboy.wearables.export import vrm_piece_meshes

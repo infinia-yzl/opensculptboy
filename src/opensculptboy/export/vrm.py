@@ -970,6 +970,13 @@ def vrm_spec(
             rest &= ~head
     if extra or not rest.all():
         primitives = [SpecPrimitive(material=0, triangles=body.triangles[rest])] + extra
+    if dressed:  # a primitive that the wearables cover whole leaves the file
+        primitives = [p for p in primitives if p.triangles is None or len(p.triangles)]
+        if not primitives:
+            raise ValueError(
+                "The shown wearables cover every triangle of the body; use --covered "
+                "keep."
+            )
     meshes = [
         SpecMesh(
             name="body",
