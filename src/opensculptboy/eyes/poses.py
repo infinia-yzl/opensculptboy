@@ -402,8 +402,24 @@ def card_blink_poses(character, detail=None, detail_dir=None) -> dict | None:
     if not blinks:
         return None
     if detail is not None:
+        operators = detail.topology.operators
+        if operators:  # the poses hold the rows of level 0
+            check_rows(blinks, operators[0].shape[1])
         for pose in blinks.values():
             pose.closed = detail.targets(pose.closed[None])[0]
             if pose.half is not None:
                 pose.half = detail.targets(pose.half[None])[0]
     return blinks
+
+
+def check_rows(blinks: dict, count: int) -> None:
+    """Raise ValueError when a blink (side to :class:`BlinkPose`) holds another number of
+    rows than ``count``, the rows of the mesh it applies to: the card's eye poses then belong
+    to another topology, as after ``opensculptboy convert``."""
+    for side, pose in blinks.items():
+        if pose is not None and len(pose.closed) != count:
+            raise ValueError(
+                f"The reference's blink of the {side} eye holds {len(pose.closed)} rows, "
+                f"and the mesh {count}: the card's eye poses belong to another topology "
+                "(bake the card again after a conversion)."
+            )

@@ -266,6 +266,25 @@ export function visibleTriangles(p: { wearable: Wearable; hiddenGroups: string[]
   return Int32Array.from(keep);
 }
 
+function sameRows(a: F64, b: F64): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// the rest vertices and normals of a lower piece on `home`, the binding body of an upper piece, or null where they are
+// unknown (opensculptboy.wearables.fit._rest_on). `home` carries the bones of `body`, the body being dressed, so a
+// rigid piece takes its own garment vertices on its own binding body, and has no known place on another binding body.
+function restOn(w: Wearable, home: BodySurface, body: BodySurface): { vertices: F64; normals: F64 } | null {
+  if (w.binding.method === 'surface' || sameRows(home.vertices, body.vertices)) return evaluate(w, home);
+  if (sameRows(fromAnny(home.frame, w.binding.bodyVertices, home.n), home.vertices)) {
+    const R = home.frame.rotation, Nn = w.garment.normals, normals = new Float64Array(Nn.length);
+    for (let i = 0; i < Nn.length; i += 3) for (let r = 0; r < 3; r++) normals[i + r] = R[r * 3] * Nn[i] + R[r * 3 + 1] * Nn[i + 1] + R[r * 3 + 2] * Nn[i + 2];
+    return { vertices: fromAnny(home.frame, w.garment.positions), normals: unitRows(normals) };
+  }
+  return null;
+}
+
 // what a dress keeps between calls: the binding bodies and the push targets that depend on them alone
 export class DressCache {
   homes = new Map<Wearable, { home: BodySurface; vertices: F64; target: F64; lower: Map<string, F64> }>();
@@ -306,11 +325,13 @@ export function dress(body: BodySurface, pieces: WornPiece[], opts: DressOptions
         if (!tris.length) continue;
         colliders.push(new Surface(lower.vertices, tris, lower.normals));
         const key = `${lower.ref}#${lower.hiddenGroups.slice().sort().join(',')}`;
-        let target = lower.wearable.binding.method === 'surface' ? h.lower.get(key) : undefined;
+        let target = h.lower.get(key);
         if (!target) {
-          const lh = evaluate(lower.wearable, h.home);
-          target = new Surface(lh.vertices, tris, lh.normals).signedDistance(h.vertices).signed.map((x) => Math.min(x, gap));
-          if (lower.wearable.binding.method === 'surface') h.lower.set(key, target);
+          const lh = restOn(lower.wearable, h.home, body);
+          target = lh
+            ? new Surface(lh.vertices, tris, lh.normals).signedDistance(h.vertices).signed.map((x) => Math.min(x, gap))
+            : new Float64Array(h.vertices.length / 3).fill(gap);   // the relation on the binding body is unknown
+          if (lower.wearable.binding.method === 'surface' || !sameRows(h.home.vertices, body.vertices)) h.lower.set(key, target);
         }
         targets.push(target);
       }

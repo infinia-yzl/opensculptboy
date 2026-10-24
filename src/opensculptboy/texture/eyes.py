@@ -142,12 +142,13 @@ def bake_eye_layout(target, frames: dict, size=None, gaze: bool = True):
     centre gives a point of the fitted eyeball's sphere, and a ray along that direction takes
     the nearest hit on the reference's eyes within :data:`LAYOUT_REACH` (both ways):
     its base colour, and its shading normal in the frame (E1, E2, N) of the sphere there
-    (:func:`opensculptboy.eyes.texture.carry_baked_normals`). With ``gaze``, each eye's gaze
+    (:func:`opensculptboy.eyes.texture.carry_baked_normals`). A texel whose hits give no
+    colour (a part without a texture) takes the colour of the texels around it. With ``gaze``, each eye's gaze
     first turns toward the centre of the reference's pupil (by at most
     :data:`MAX_GAZE_TURN` degrees), so that the iris lies on the gaze as the reference's
     does. Returns the colours (H, W, 3, 8-bit sRGB), the normals (H, W, 3, 8-bit, ``n * 0.5
     + 0.5``) and each eye's axes as baked (columns: +X, up, gaze), or None when no ray
-    reaches the reference's eyes.
+    takes a colour from the reference's eyes.
     """
     from opensculptboy.eyes import texture as tex
     from opensculptboy.texture.bake import (
@@ -172,6 +173,8 @@ def bake_eye_layout(target, frames: dict, size=None, gaze: bool = True):
         colour = np.zeros((h, w, 3))
         normal = np.zeros((h, w, 3))
         count = np.zeros((h, w))
+        # the hits with a colour: a part without a texture (a clear shell) gives none
+        seen = np.zeros((h, w))
         for d, phi, _ in samples:
             dirs = d[half] @ axes.T
             points = frame.centre + frame.radius * dirs
@@ -195,13 +198,15 @@ def bake_eye_layout(target, frames: dict, size=None, gaze: bool = True):
             rows, cols = np.nonzero(half)
             r, c = rows[ids], cols[ids]
             np.add.at(colour, (r[known], c[known]), values[known])
+            np.add.at(seen, (r[known], c[known]), 1.0)
             np.add.at(normal, (r, c), local)
             np.add.at(count, (r, c), 1.0)
-        return colour, normal, count
+        return colour, normal, count, seen
 
     colour = np.zeros((h, w, 3))
     normal = np.zeros((h, w, 3))
     count = np.zeros((h, w))
+    seen = np.zeros((h, w))
     out_axes = {}
     s, phi, _ = tex.texel_polar(size)
     for side, half in (("L", left), ("R", ~left)):
@@ -209,9 +214,9 @@ def bake_eye_layout(target, frames: dict, size=None, gaze: bool = True):
         if frame is None:
             continue
         axes = np.asarray(frame.axes, dtype=np.float64)
-        c, n, k_ = bake_side(frame, axes, half)
-        if gaze and (k_[half] > 0).any():
-            found = c[half] / np.maximum(k_[half], 1.0)[:, None]
+        c, n, k_, e = bake_side(frame, axes, half)
+        if gaze and (e[half] > 0).any():
+            found = c[half] / np.maximum(e[half], 1.0)[:, None]
             hit = tex.find_iris(tex.linear(found), s[half], phi[half])
             if hit is not None:
                 cx, cy = hit[0]
@@ -220,13 +225,14 @@ def bake_eye_layout(target, frames: dict, size=None, gaze: bool = True):
                 if 1e-6 < turn <= MAX_GAZE_TURN:
                     d = np.array([cx, cy, np.sqrt(max(1.0 - rho * rho, 0.0))])
                     axes = turned_axes(axes, axes @ d)
-                    c, n, k_ = bake_side(frame, axes, half)
+                    c, n, k_, e = bake_side(frame, axes, half)
         colour[half], normal[half], count[half] = c[half], n[half], k_[half]
+        seen[half] = e[half]
         out_axes[side] = axes
     known = count > 0
-    if not known.any():
+    if not (seen > 0).any():
         return None
-    colour = _fill(colour / np.maximum(count, 1.0)[..., None], known)
+    colour = _fill(colour / np.maximum(seen, 1.0)[..., None], seen > 0)
     normal = normal / np.maximum(np.linalg.norm(normal, axis=-1, keepdims=True), 1e-12)
     normal[~known] = (0.0, 0.0, 1.0)
     normal = _fill(normal, known)
