@@ -174,6 +174,20 @@ def _fade(displacement: np.ndarray, moved: np.ndarray, triangles: np.ndarray):
     return out
 
 
+def _rest_on(wearable: Wearable, home: BodySurface, body: BodySurface):
+    """
+    The rest vertices and normals of a lower piece on ``home``, the binding body of an upper
+    piece, or None where they are unknown. ``home`` carries the bones of ``body`` (the body
+    being dressed), so a rigid piece takes its own vertices on its own binding body, and has
+    no known place on another binding body.
+    """
+    if wearable.binding.method == "surface" or home is body:
+        return evaluate(wearable.binding, home)
+    if np.array_equal(wearable.binding.body_vertices, home.vertices):
+        return wearable.garment.vertices, wearable.garment.normals
+    return None
+
+
 def _push(
     vertices: np.ndarray,
     normals: np.ndarray,
@@ -270,10 +284,12 @@ def dress(
                 tris = lower.visible_triangles()
                 if len(tris) == 0:
                     continue
-                now = Surface(lower.vertices, tris, lower.normals)
-                lower_home = evaluate(lower.wearable.binding, home)
+                colliders.append(Surface(lower.vertices, tris, lower.normals))
+                lower_home = _rest_on(lower.wearable, home, body)
+                if lower_home is None:  # the relation on the binding body is unknown
+                    targets.append(np.full(len(home_vertices), gap))
+                    continue
                 then = Surface(lower_home[0], tris, lower_home[1])
-                colliders.append(now)
                 targets.append(np.minimum(then.signed_distance(home_vertices)[0], gap))
             vertices, normals, pushed, push_mm = _push(
                 vertices, normals, triangles, colliders, targets

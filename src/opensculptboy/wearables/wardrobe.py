@@ -150,7 +150,7 @@ def worn_pieces(
     refs = [e[0] for e in entries]
     outfit_ids = [o["id"] for o in character.outfits]
     active = character.active_outfit if outfit is None else outfit
-    if active == NO_OUTFIT:
+    if not active or active == NO_OUTFIT:  # a card of loose pieces names no outfit
         active = None
     if active is not None and active not in outfit_ids:
         close = difflib.get_close_matches(active, outfit_ids, n=3)
@@ -177,16 +177,14 @@ def worn_pieces(
 
     for name in hide:
         shown[resolve_ref(name, refs, active)] = False
-    shown_from_elsewhere = []
     for name in show:
-        ref = resolve_ref(name, refs, active)
-        shown[ref] = True
-        owner = entries[refs.index(ref)][2]
-        if owner != active:
-            shown_from_elsewhere.append(ref)
-    # slot replacement: a piece shown from another source replaces the pieces of its slot
-    replacers = shown_from_elsewhere + [
-        e[0] for e in entries if e[2] is None and shown[e[0]]
+        shown[resolve_ref(name, refs, active)] = True
+    # slot replacement: a piece shown from another outfit (by ``show`` or by an override)
+    # and a loose piece replace the pieces of their slot that come from elsewhere
+    replacers = [
+        ref
+        for ref, _, owner, _, _ in entries
+        if shown[ref] and (owner is None or owner != active)
     ]
     for ref in replacers:
         slot = load(ref).slot
