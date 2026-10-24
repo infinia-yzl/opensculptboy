@@ -298,7 +298,8 @@ export class Wardrobe {
     });
   }
   private texture(t: { bytes: Uint8Array; mime: string }, srgb: boolean): THREE_NS.Texture {
-    const T = this.host.THREE, key = `${srgb}:${t.bytes.byteLength}:${t.bytes[100]}:${t.bytes[t.bytes.length >> 1]}:${t.bytes[t.bytes.length - 9]}`;
+    // one texture per image content: a hash of every byte (a few sampled bytes match for images of one size)
+    const T = this.host.THREE, key = `${srgb}:${t.bytes.byteLength}:${contentHash(t.bytes)}`;
     let tex = this.textures.get(key);
     if (tex) return tex;
     tex = new T.Texture();
@@ -358,6 +359,13 @@ export class Wardrobe {
     return { card: this.cardName, pieces: this.pieces.map((p) => ({ ref: p.ref, vertices: p.wearable.garment.count, triangles: visibleTriangles(p).length / 3, pushed: p.pushed, push_mm: +p.pushMm.toFixed(2) })),
       body_triangles: all, hidden_triangles: Math.round(all - drawn), timing: this.timing, notes: this.notes };
   }
+}
+
+// FNV-1a of the bytes, as 8 hexadecimal digits
+export function contentHash(b: Uint8Array): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < b.length; i++) { h ^= b[i]; h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 // per-vertex tangents from the UVs (summed over the triangles, made orthogonal to the normal), for normal maps
