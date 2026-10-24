@@ -278,3 +278,57 @@ def add_pieces(
     if visibility:
         doc.use_extension(VISIBILITY)
     return nodes
+
+
+def add_spring_nodes(doc: GltfDocument, springs, labels, bind: np.ndarray, frame):
+    """
+    Write the nodes of a :class:`~opensculptboy.wearables.springs.SpringRig` after the bone
+    nodes (``bind``: the bones' rest world matrices in the file's frame, the bone nodes at
+    indices 0 to J - 1). Each joint keeps its chain's parent bone's rotation, so its node
+    turns by none. Returns the inverse bind matrices (S, 4, 4) of the chains' skin joints, in
+    the order of their joint indices, and the ``springs`` entry of the scene extras with the
+    node of every joint and every collider in its node's frame.
+    """
+    J = len(labels)
+    nodes = springs.nodes(labels)
+    world = list(bind)
+    first = len(doc.nodes)
+    if first != J:
+        raise ValueError("The spring nodes follow the bone nodes directly.")
+    for k, node in enumerate(nodes):
+        parent = world[node.parent]
+        matrix = np.eye(4)
+        matrix[:3, :3] = parent[:3, :3]
+        matrix[:3, 3] = frame @ node.position
+        local = np.linalg.inv(parent) @ matrix
+        entry = {"name": node.name, "translation": local[:3, 3].tolist()}
+        if node.joint == 0:
+            chain = springs.chains[node.chain]
+            entry["extras"] = {
+                "opensculptboy_spring": {
+                    "chain": chain.name,
+                    "piece": chain.piece,
+                    "spring": chain.spring,
+                    "settings": chain.settings.json(),
+                }
+            }
+        index = doc.add_node(entry)
+        assert index == J + k
+        doc.nodes[node.parent].setdefault("children", []).append(index)
+        world.append(matrix)
+    world = np.asarray(world)
+    skin = J + springs.skin_joint_count
+    extras = springs.extras()
+    for c, chain in enumerate(springs.chains):
+        extras["chains"][c]["nodes"] = [
+            springs.joint_index(c, k) for k in range(chain.count)
+        ]
+    for entry, collider in zip(extras["colliders"], springs.colliders):
+        bone = labels.index(collider.bone)
+        inverse = np.linalg.inv(world[bone])
+        entry["node"] = bone
+        for key, point in (("offset", collider.head), ("tail", collider.tail)):
+            local = inverse[:3, :3] @ (frame @ point) + inverse[:3, 3]
+            entry[key] = [round(float(x), 6) for x in local]
+    extras["frame"] = "each collider's offset and tail in its node's frame"
+    return np.linalg.inv(world[J:skin]), extras

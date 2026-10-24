@@ -39,6 +39,9 @@ class Dressing:
             default, since Blender's importer ignores the extension), the default scene holds
             what the worn outfit shows and a second scene holds every piece.
         push: run the push-out of :func:`opensculptboy.wearables.fit.dress`.
+        springs: write the spring chains of the pieces that have them
+            (:mod:`opensculptboy.wearables.springs`); False leaves every piece on the body's
+            bones.
     """
 
     outfit: str | None = None
@@ -48,6 +51,7 @@ class Dressing:
     wardrobe: bool = False
     visibility: bool = False
     push: bool = True
+    springs: bool = True
 
     def check(self) -> None:
         if self.covered not in COVERED_MODES:
@@ -92,9 +96,10 @@ def covered_body_triangles(body, pieces, mesh, rows: int, model_rows: int, detai
     return covered_triangles(mesh, row_cover(mask, rows, model_rows, detail))
 
 
-def summary(pieces, removed: int, dressing: Dressing) -> dict:
-    """The ``wearables`` entry of a file's scene extras."""
-    return {
+def summary(pieces, removed: int, dressing: Dressing, springs=None) -> dict:
+    """The ``wearables`` entry of a file's scene extras; ``springs`` is the file's
+    :class:`~opensculptboy.wearables.springs.SpringRig`, or None."""
+    out = {
         "format": "opensculptboy.wearable/1",
         "outfit": dressing.outfit,
         "wardrobe": bool(dressing.wardrobe),
@@ -102,6 +107,22 @@ def summary(pieces, removed: int, dressing: Dressing) -> dict:
         "removed_body_triangles": int(removed),
         "pieces": [p.extras() for p in pieces],
     }
+    if springs is not None:
+        out["springs"] = springs.extras()
+    return out
+
+
+def piece_springs(body, pieces, model, dressing: Dressing, max_skin_joints=None):
+    """The :class:`~opensculptboy.wearables.springs.SpringRig` of the pieces that a file
+    writes (the shown ones; every one in a wardrobe), with their skin weights blended into
+    the chains, or None (no springs, or ``dressing.springs`` off)."""
+    if not dressing.springs:
+        return None
+    from opensculptboy.wearables.springs import rig_springs
+
+    written = [p for p in pieces if p.shown or dressing.wardrobe]
+    parents = [int(p) for p in model.bone_parents]
+    return rig_springs(body, written, parents, max_skin_joints)
 
 
 def lowest(pieces, frame: np.ndarray) -> float:
@@ -113,20 +134,22 @@ def lowest(pieces, frame: np.ndarray) -> float:
     return low
 
 
-def vrm_piece_meshes(pieces, rebind, frame: np.ndarray) -> list:
+def vrm_piece_meshes(pieces, rebind, frame: np.ndarray, transforms=None) -> list:
     """
     (piece, :class:`~opensculptboy.export.body.BodyMesh`) of each shown piece in a VRM
     file's T-pose: each vertex turns by the inverse of the blend of the bones' inverse turns
     with its four skin weights, so that the file, posed back to Anny's rest pose, shows the
     piece's rest vertices exactly (the inverse bind of
     :func:`opensculptboy.export.tpose.rebind`). The mesh holds the visible triangles, and
-    ``triangle_faces`` holds each triangle's material.
+    ``triangle_faces`` holds each triangle's material. ``transforms`` (the bones' turns
+    followed by those of the spring joints, each its chain's parent bone's) replaces
+    ``rebind.transforms``.
     """
     from opensculptboy.export.body import BodyMesh
     from opensculptboy.export.tpose import blend, rigid_inverse
     from opensculptboy.wearables.geometry import unit_rows
 
-    X = rebind.transforms
+    X = rebind.transforms if transforms is None else transforms
     out = []
     for piece in pieces:
         if not piece.shown:

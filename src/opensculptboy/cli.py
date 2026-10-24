@@ -135,12 +135,13 @@ def _dressing(args, character, parser):
         or args.hide
         or args.wardrobe
         or args.covered is not None
+        or getattr(args, "springs", None) is not None
     )
     if not character.has_wardrobe():
         if wants:
             parser.error(
-                "--outfit, --show, --hide, --covered and --wardrobe need a card with "
-                "wearables or outfits (docs/wearables.md)."
+                "--outfit, --show, --hide, --covered, --springs and --wardrobe need a "
+                "card with wearables or outfits (docs/wearables.md)."
             )
         return None
     from opensculptboy.wearables.export import Dressing
@@ -155,6 +156,7 @@ def _dressing(args, character, parser):
         covered=args.covered or "remove",
         wardrobe=bool(args.wardrobe),
         visibility=bool(args.node_visibility),
+        springs=getattr(args, "springs", None) != "off",
     )
 
 
@@ -840,6 +842,12 @@ def main(argv=None) -> int:
         choices=("remove", "keep"),
         help="the body triangles that the shown pieces cover: 'remove' (the default) or "
         "'keep'",
+    )
+    w.add_argument(
+        "--springs",
+        choices=("on", "off"),
+        help="the spring chains of loose pieces (capes, skirts, long hems): 'on' (the "
+        "default) or 'off', which leaves every piece on the body's bones",
     )
     w.add_argument(
         "--wardrobe",
