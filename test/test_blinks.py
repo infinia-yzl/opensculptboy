@@ -715,6 +715,39 @@ class TestReferenceClosedEye(unittest.TestCase):
                 np.allclose(full[blinks.rows["R"], rows], lash_closed[p.points])
             )
 
+    def test_reference_lashes_without_half(self):
+        # a reference's blink without a half-closed pose: the lids take the path around the
+        # eye half way, and the lashes' bases still ride the lid margin there, each lash
+        # with half the reference's turn about its base
+        from opensculptboy.eyes.poses import BlinkPose
+        from opensculptboy.material import LashMaterial
+
+        rest, eyed, targets = anny_blinks()
+        data = eyed.lashes
+        model = Character().build_model(dtype=torch.float64)
+        ref = eyed_mesh(
+            model, None, rest, EyeMaterial(), "gltf", lashes=(LashMaterial(), data)
+        )
+        rng = np.random.default_rng(5)
+        lash_closed = rng.normal(0.0, 0.001, (len(data.points), 3))
+        pose = BlinkPose(targets["L"], None, lash_closed, None)
+        offsets = np.stack([targets["L"], targets["R"]])
+        names = [B.BLINK_TARGETS["L"], B.BLINK_TARGETS["R"]]
+        shaped, blinks = B.blink_offsets(ref, rest, offsets, names, {"L": pose})
+        full = B.blink_lash_offsets(ref, blinks, rest, ref.targets(shaped))
+        shape = blinks.shapes["L"]
+        now = 0.5 * shape.closed + shape.inbetween
+        self.assertGreater(np.abs(shape.inbetween).max(), 1e-4)  # off the straight line
+        for p, rows in B.lash_rows(ref, "L"):
+            base = B.lash_bases(p)
+            closed = full[blinks.rows["L"], rows]
+            half = full[blinks.inbetween_rows["L"], rows] + 0.5 * closed
+            np.testing.assert_allclose(
+                half[base], (p.follow.root @ now[p.follow.rows])[base], atol=1e-12
+            )
+            want = 0.5 * lash_closed[p.points]
+            np.testing.assert_allclose(half - half[base], want - want[base], atol=1e-12)
+
     def test_card_section(self):
         check_material(
             {"eyes": {}, "reference_eyes": {"poses": "c.eye_poses.safetensors"}}

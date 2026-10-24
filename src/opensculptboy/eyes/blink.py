@@ -1175,18 +1175,16 @@ def blink_lash_offsets(eyed, blinks: EyeBlinks, rest, targets):
                         base,
                         p.follow.root @ shape.closed[rows_f],
                     )
-                    half = None
-                    if pose.lash_half is not None:
-                        now = 0.5 * shape.closed + shape.inbetween
-                        half = on_margin(
-                            pose.lash_half[p.points],
-                            base,
-                            p.follow.root @ now[rows_f],
-                        )
-                    if half is not None:
-                        between = half - 0.5 * closed
-                    else:
-                        between = np.zeros_like(closed)
+                    # half way: the reference's half-closed lashes, else half its turn
+                    # about the base; the base rides the margin of the lid's in-between
+                    now = 0.5 * shape.closed + shape.inbetween
+                    lash_half = (
+                        pose.lash_half[p.points]
+                        if pose.lash_half is not None
+                        else 0.5 * pose.lash_closed[p.points]
+                    )
+                    half = on_margin(lash_half, base, p.follow.root @ now[rows_f])
+                    between = half - 0.5 * closed
                 else:
                     closed, between = rig_lashes(
                         p, frame, rest, shape.closed, shape.inbetween, shape.turn
