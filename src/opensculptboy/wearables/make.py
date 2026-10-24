@@ -475,9 +475,13 @@ def make_wearable(
             raise GarmentError(
                 f"The garment's skin names joints the body's rig lacks: {missing}."
             )
+        # the joints that weigh on the garment, so that the file's other joints (a
+        # control bone, a joint of the body's mesh) need no bone of the rig
+        remap = np.zeros(len(read.joint_names), np.int64)
+        remap[used] = np.arange(len(used))
         binding.skin_weights = read.skin_weights[keep_rows]
-        binding.skin_joints = read.skin_joints[keep_rows]
-        binding.joint_names = list(read.joint_names)
+        binding.skin_joints = remap[read.skin_joints[keep_rows]]
+        binding.joint_names = [read.joint_names[j] for j in used]
     group_covers: dict[str, np.ndarray] = {}
     if covers == "auto":
         for g, group in enumerate(garment.groups):
