@@ -53,10 +53,7 @@ for (const c of inp.cases) {
   for (const e of [...(card.outfits || []).flatMap((x) => (x.pieces || []).map((p) => ({ ref: `${x.id}/${p.piece}`, file: p.file }))),
     ...(card.wearables || []).map((w) => ({ ref: w.id, file: w.file }))]) info[e.ref] = await load(inp.folder, e.file);
   const worn = wornPieces(card, (ref) => info[ref], c.choices || {}).map((p) => ({ ...p, wearable: info[p.ref] }));
-  if (c.estimate) surface.pose = (bone, b) => {
-    const piece = worn.find((p) => p.wearable.binding.bone === b.bones[bone]);
-    return estimatedPose(piece.wearable, b, exact(bone).t);
-  };
+  if (c.estimate) surface.pose = (bone, b, wearable) => estimatedPose(wearable, b, exact(bone).t);
   const t0 = performance.now(), timing = {};
   const dressed = dress(surface, worn, { push: c.push !== false, timing });
   const ms = performance.now() - t0, t1 = performance.now();

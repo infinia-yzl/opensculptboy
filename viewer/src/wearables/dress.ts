@@ -35,9 +35,9 @@ export interface BonePose { R: F64; t: F64 }   // the bone's rest rotation (row-
 // the skin of a body on Anny's rows: rest vertices, the skin triangles, the skin weights (K per row) and the bones
 export class BodySurface {
   vertices: F64; n: number; triangles: I32; weights: F64; indices: I32; K: number; bones: string[]; frame: Frame;
-  pose: (bone: number, body: BodySurface) => BonePose;
+  pose: (bone: number, body: BodySurface, wearable: Wearable) => BonePose;
   private _surface: Surface | null = null;
-  constructor(o: { vertices: F64; triangles: I32; weights: F64; indices: I32; K: number; bones: string[]; frame: Frame; pose: (bone: number, body: BodySurface) => BonePose }) {
+  constructor(o: { vertices: F64; triangles: I32; weights: F64; indices: I32; K: number; bones: string[]; frame: Frame; pose: (bone: number, body: BodySurface, wearable: Wearable) => BonePose }) {
     this.vertices = o.vertices; this.n = o.vertices.length / 3; this.triangles = o.triangles; this.weights = o.weights; this.indices = o.indices;
     this.K = o.K; this.bones = o.bones; this.frame = o.frame; this.pose = o.pose;
   }
@@ -57,7 +57,7 @@ export function evaluate(w: Wearable, body: BodySurface): { vertices: F64; norma
   if (b.method === 'rigid') {
     const bone = body.bones.indexOf(b.bone!);
     if (bone < 0) throw new Error(`The body's rig lacks the bone ${b.bone}.`);
-    const { R, t } = body.pose(bone, body), L = b.local!, Nn = b.normal!, n = L.length / 3, s = body.unit;
+    const { R, t } = body.pose(bone, body, w), L = b.local!, Nn = b.normal!, n = L.length / 3, s = body.unit;
     const vertices = new Float64Array(n * 3), normals = new Float64Array(n * 3);
     for (let i = 0; i < n; i++) for (let r = 0; r < 3; r++) {
       const o = i * 3;

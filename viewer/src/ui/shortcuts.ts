@@ -29,7 +29,7 @@ export const SHORTCUTS: [string, [string, string][]][] = [
     ['Space', 'Play or pause the animation'],
   ]],
   ['Panels', [
-    ['C B F H E', 'Characters, Body, Face, Hair, Skin & eyes'],
+    ['C B F H E W', 'Characters, Body, Face, Hair, Skin & eyes, Wearables'],
     ['P R L', 'Pose, Rig, Scene'],
     ['`', 'Performance'],
     ['?', 'This sheet'],
