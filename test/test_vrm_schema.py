@@ -440,6 +440,55 @@ def _texture_refs(obj, path: str):
             yield from _texture_refs(value, f"{path}[{i}]")
 
 
+def _node_parents(nodes: list) -> dict[int, int]:
+    return {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+
+
+def _check_springs1(springs, nodes: list, problems: "_Problems") -> None:
+    """The ``VRMC_springBone`` rules that the schema cannot see: valid indices, one shape per
+    collider, joints that follow one parent line, and each node in one spring only."""
+    if springs.get("specVersion") != "1.0":
+        problems.add("VRMC_springBone.specVersion", "not '1.0'")
+    colliders = springs.get("colliders", [])
+    for c, collider in enumerate(colliders):
+        path = f"VRMC_springBone.colliders[{c}]"
+        problems.check_index(path + ".node", collider.get("node"), len(nodes), "nodes")
+        if len(collider.get("shape", {})) != 1:
+            problems.add(path + ".shape", "a collider has one sphere or one capsule")
+    groups = springs.get("colliderGroups", [])
+    for g, group in enumerate(groups):
+        for k, index in enumerate(group.get("colliders", [])):
+            problems.check_index(
+                f"VRMC_springBone.colliderGroups[{g}].colliders[{k}]",
+                index,
+                len(colliders),
+                "colliders",
+            )
+    parents = _node_parents(nodes)
+    owner: dict[int, str] = {}
+    for s, spring in enumerate(springs.get("springs", [])):
+        path = f"VRMC_springBone.springs[{s}]"
+        joints = [j.get("node") for j in spring.get("joints", [])]
+        if len(joints) < 2:
+            problems.add(path, "a spring has two joints or more")
+        for k, node in enumerate(joints):
+            if not problems.check_index(
+                f"{path}.joints[{k}]", node, len(nodes), "nodes"
+            ):
+                continue
+            if node in owner:
+                problems.add(f"{path}.joints[{k}]", f"node {node} is in {owner[node]}")
+            owner[node] = path
+            if k and parents.get(node) != joints[k - 1]:
+                problems.add(
+                    f"{path}.joints[{k}]", "not a child of the joint before it"
+                )
+        for k, index in enumerate(spring.get("colliderGroups", [])):
+            problems.check_index(
+                f"{path}.colliderGroups[{k}]", index, len(groups), "colliderGroups"
+            )
+
+
 def check_vrm1(doc: dict) -> list[str]:
     """The problems of a VRM 1.0 glTF JSON that the schemas cannot see (an empty list: none)."""
     problems = _Problems()
@@ -538,6 +587,9 @@ def check_vrm1(doc: dict) -> list[str]:
             if problems.check_index(path, body.get("source"), len(nodes), "nodes"):
                 if body["source"] == n:
                     problems.add(path, "a node constrained by itself")
+    springs = doc.get("extensions", {}).get("VRMC_springBone")
+    if springs is not None:
+        _check_springs1(springs, nodes, problems)
     return problems
 
 
@@ -733,12 +785,21 @@ def check_vrm0(doc: dict) -> list[str]:
                     where = f"{path}.colliders[{k}]"
                     if problems.check_keys(where, collider, "collider"):
                         vector(where + ".offset", collider.get("offset"))
+        parents = _node_parents(nodes)
+        roots: dict[int, str] = {}
         for s, spring in enumerate(secondary.get("boneGroups", [])):
             path = f"secondaryAnimation.boneGroups[{s}]"
             if not problems.check_keys(path, spring, "boneGroup"):
                 continue
             for i, bone in enumerate(spring.get("bones", [])):
-                problems.check_index(f"{path}.bones[{i}]", bone, len(nodes), "nodes")
+                if problems.check_index(
+                    f"{path}.bones[{i}]", bone, len(nodes), "nodes"
+                ):
+                    if bone in roots:
+                        problems.add(
+                            f"{path}.bones[{i}]", f"node {bone} is in two groups"
+                        )
+                    roots[bone] = path
             for i, group in enumerate(spring.get("colliderGroups", [])):
                 problems.check_index(
                     f"{path}.colliderGroups[{i}]", group, len(groups), "groups"
@@ -749,6 +810,15 @@ def check_vrm0(doc: dict) -> list[str]:
                 )
             if "gravityDir" in spring:
                 vector(path + ".gravityDir", spring["gravityDir"])
+        for (
+            bone,
+            path,
+        ) in roots.items():  # a root inside another root's chain moves twice
+            up = parents.get(bone)
+            while up is not None:
+                if up in roots:
+                    problems.add(path, f"node {bone} hangs below the root {up}")
+                up = parents.get(up)
 
     properties = vrm.get("materialProperties")
     if not isinstance(properties, list):
