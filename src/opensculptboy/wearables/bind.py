@@ -141,11 +141,28 @@ def body_weights(
     binding: Binding, body: BodySurface, max_influences: int = 4
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    The skin weights of the garment's vertices: the body's weights blended at the bound
-    points (surface), or the one bone (rigid); the strongest ``max_influences`` bones of each
-    vertex, renormalised. Returns (V, k) float weights and int bone indices.
+    The skin weights of the garment's vertices: the garment's own weights when the binding
+    holds them, else the body's weights blended at the bound points (surface), or the one
+    bone (rigid); the strongest ``max_influences`` bones of each vertex, renormalised.
+    Returns (V, k) float weights and int bone indices.
     """
     count = binding.vertex_count
+    if binding.skin_weights is not None:  # the garment's own weights, by bone name
+        missing = sorted(set(binding.joint_names) - set(body.bone_labels))
+        if missing:
+            raise ValueError(f"The body's rig lacks the garment's bones {missing}.")
+        index = np.array([body.bone_labels.index(n) for n in binding.joint_names])
+        weights = np.asarray(binding.skin_weights, dtype=np.float64)
+        joints = index[np.asarray(binding.skin_joints)]
+        order = np.argsort(-weights, axis=1, kind="stable")[:, :max_influences]
+        weights = np.take_along_axis(weights, order, axis=1)
+        joints = np.take_along_axis(joints, order, axis=1)
+        if weights.shape[1] < max_influences:
+            pad = max_influences - weights.shape[1]
+            weights = np.pad(weights, ((0, 0), (0, pad)))
+            joints = np.pad(joints, ((0, 0), (0, pad)))
+        weights = weights / np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
+        return weights, np.where(weights > 0, joints, 0)
     if binding.method == "rigid":
         bone = body.bone_labels.index(binding.bone)
         weights = np.zeros((count, max_influences))
@@ -165,3 +182,48 @@ def body_weights(
     weights = weights / np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
     indices = np.where(weights > 0, order, 0)
     return weights, indices
+
+
+def dense_body_weights(binding: Binding, body: BodySurface) -> np.ndarray:
+    """(V, J) the body's skin weights blended at the bound points of a surface binding."""
+    count = binding.vertex_count
+    dense = np.zeros((count, len(body.bone_labels)))
+    rows = np.arange(count)
+    for c in range(3):
+        w = body.weights[binding.corners[:, c]] * binding.barycentric[:, c, None]
+        for k in range(body.weights.shape[1]):
+            np.add.at(dense, (rows, body.indices[binding.corners[:, c], k]), w[:, k])
+    return dense
+
+
+def smooth_weights(
+    dense: np.ndarray,
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    iterations: int = 60,
+    weld: float = 1e-5,
+) -> np.ndarray:
+    """
+    Skin weights (V, J) diffused over a garment's surface: vertices at one position (within
+    ``weld`` metres) count as one, and each of ``iterations`` steps moves every vertex halfway
+    to the mean of its neighbours. Neighbouring vertices then blend the same bones, so that a
+    loose piece (a cloak, a skirt) moves as one sheet; rows still sum to 1.
+    """
+    from opensculptboy.wearables.geometry import adjacency
+
+    keys = np.round(np.asarray(vertices) / weld).astype(np.int64)
+    _, weld_id = np.unique(keys, axis=0, return_inverse=True)
+    weld_id = np.asarray(weld_id).reshape(-1)
+    n = int(weld_id.max(initial=-1)) + 1
+    A = adjacency(n, weld_id[np.asarray(triangles)])
+    degree = np.asarray(A.sum(axis=1)).reshape(-1)
+    counts = np.bincount(weld_id, minlength=n).astype(np.float64)
+    welded = np.zeros((n, dense.shape[1]))
+    np.add.at(welded, weld_id, dense)
+    welded /= np.maximum(counts, 1.0)[:, None]
+    lone = degree == 0
+    for _ in range(iterations):
+        mean = (A @ welded) / np.maximum(degree, 1.0)[:, None]
+        welded = np.where(lone[:, None], welded, 0.5 * welded + 0.5 * mean)
+    out = welded[weld_id]
+    return out / np.maximum(out.sum(axis=1, keepdims=True), 1e-12)

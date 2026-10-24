@@ -16,9 +16,11 @@ underwear).
 1. each clothing vertex finds its closest point on the reference's skin, and that point its
    closest point on the fitted card's skin, posed and placed as the fit left it on the
    reference (the fit's correspondence);
-2. the vertex goes back to the card's rest pose by the inverse of the skinning at that point
-   (the card's skin weights there, the four strongest), and binds to the same point of the
-   card's rest skin (a surface binding on the reference body);
+2. the card's skin weights at those points, smoothed over the piece (so that neighbouring
+   vertices blend the same bones and a cloak moves as one sheet), become the piece's own
+   weights (the four strongest); the vertex goes back to the card's rest pose by the inverse
+   of the skinning with them, and binds to the same point of the card's rest skin (a surface
+   binding on the reference body);
 3. the covered skin becomes a mask over the card's vertices: a card vertex is covered when its
    closest triangle of the reference's skin is covered.
 
@@ -42,6 +44,7 @@ from opensculptboy.wearables.geometry import Surface, unit_rows
 
 TOP_WEIGHTS = 4  # the skin weights that undo the pose, as the GLB files keep them
 COVER_REACH = 0.04  # metres: the ray test that splits one cover mask among the pieces
+SMOOTHING = 40  # steps of the weights' diffusion over a piece (about 6 edge lengths)
 
 
 @dataclasses.dataclass
@@ -330,6 +333,7 @@ def build_reference_wearables(
     outfit_id: str | None = None,
     outfit_label: str | None = None,
     log=print,
+    smoothing: int = SMOOTHING,
 ) -> dict:
     """
     Build the reference wearables of a handoff for a fitted card (see the module
@@ -343,9 +347,14 @@ def build_reference_wearables(
     from opensculptboy.character import Character
     from opensculptboy.detail import DetailModel
     from opensculptboy.detail.layer import bone_transforms, character_offsets
-    from opensculptboy.export.body import top_skin_weights
     from opensculptboy.fit.residual import blended_transforms
-    from opensculptboy.wearables.bind import BodySurface, bind_surface, evaluate
+    from opensculptboy.wearables.bind import (
+        BodySurface,
+        bind_surface,
+        dense_body_weights,
+        evaluate,
+        smooth_weights,
+    )
     from opensculptboy.wearables.cover import ray_hits
     from opensculptboy.wearables.fit import anny_count, card_body, skin_triangles
     from opensculptboy.wearables.format import Binding, check_destination
@@ -446,16 +455,26 @@ def build_reference_wearables(
             corners = posed_body.triangles[on_card.triangle]
             bary = on_card.barycentric
             probe = Binding("surface", "reference", rest_body.vertices, corners, bary)
-            from opensculptboy.wearables.bind import body_weights
-
-            w, j = body_weights(probe, rest_body, TOP_WEIGHTS)
-            w, j, _ = top_skin_weights(w, j, TOP_WEIGHTS)
-            M = blended_transforms(w.astype(np.float64), j, transforms)
+            # the body's weights at the bound points, smoothed over the piece so that its
+            # neighbouring vertices blend the same bones; the piece keeps them as its own
+            dense = smooth_weights(
+                dense_body_weights(probe, rest_body),
+                gear,
+                np.concatenate(tris),
+                smoothing,
+            )
+            order = np.argsort(-dense, axis=1, kind="stable")[:, :TOP_WEIGHTS]
+            w = np.take_along_axis(dense, order, axis=1)
+            w = w / np.maximum(w.sum(axis=1, keepdims=True), 1e-12)
+            j = np.where(w > 0, order, 0)
+            M = blended_transforms(w, j, transforms)
             local = (gear - t) @ R  # the placement undone
             L = M[:, :3, :3]
-            rest = np.einsum("nij,nj->ni", np.linalg.inv(L), local - M[:, :3, 3])
-            placed_normals = gear_normals @ R
-            rest_normals = unit_rows(np.einsum("nji,nj->ni", L, placed_normals))
+            inverse = np.linalg.inv(L)
+            rest = np.einsum("nij,nj->ni", inverse, local - M[:, :3, 3])
+            # skinning turns a normal by L, as it turns the vertex: L^-1 gives it back
+            rest_normals = unit_rows(np.einsum("nij,nj->ni", inverse, gear_normals @ R))
+            used = np.unique(j[w > 0])
             garment = Garment(
                 rest,
                 np.concatenate(tris),
@@ -467,6 +486,11 @@ def build_reference_wearables(
                 groups=groups,
             )
             binding = bind_surface(garment, rest_body, "reference", corners, bary)
+            remap = np.zeros(len(rest_body.bone_labels), np.int64)
+            remap[used] = np.arange(len(used))
+            binding.skin_weights = w
+            binding.skin_joints = remap[j]
+            binding.joint_names = [rest_body.bone_labels[b] for b in used]
             # round trip: evaluate at rest, pose with the same weights, place
             back, _ = evaluate(binding, rest_body)
             again = np.einsum("nij,nj->ni", L, back) + M[:, :3, 3]
@@ -513,6 +537,7 @@ def build_reference_wearables(
                 garment=garment,
                 binding=binding,
                 provenance=PRIVATE,
+                weights="own",
                 covers=covers,
                 group_covers=group_covers,
                 hides=piece.hides,

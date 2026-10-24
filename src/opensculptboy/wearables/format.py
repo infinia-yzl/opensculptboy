@@ -125,6 +125,9 @@ class Binding:
     vertices and normals in that bone's rest frame.
     ``body_vertices`` (N, 3) holds the rest vertices of the body that the garment was bound
     on (Anny's rows), so that the fitting can compare a body with the binding body.
+    ``skin_weights`` and ``skin_joints`` (V, K), with the bone names ``joint_names``, are the
+    garment's own skin weights (``Wearable.weights == "own"``), for example the body's weights
+    smoothed over the garment so that neighbouring vertices move alike.
     """
 
     method: str
@@ -136,13 +139,24 @@ class Binding:
     normal: np.ndarray | None = None
     bone: str | None = None
     local: np.ndarray | None = None
+    skin_weights: np.ndarray | None = None
+    skin_joints: np.ndarray | None = None
+    joint_names: list | None = None
 
     def arrays(self) -> dict[str, np.ndarray]:
         out = {"body_vertices": np.asarray(self.body_vertices, dtype=np.float64)}
-        for key in ("corners", "barycentric", "offset", "normal", "local"):
+        for key in (
+            "corners",
+            "barycentric",
+            "offset",
+            "normal",
+            "local",
+            "skin_weights",
+            "skin_joints",
+        ):
             value = getattr(self, key)
             if value is not None:
-                dtype = np.int32 if key == "corners" else np.float64
+                dtype = np.int32 if key in ("corners", "skin_joints") else np.float64
                 out[key] = np.ascontiguousarray(np.asarray(value, dtype=dtype))
         return out
 
@@ -206,10 +220,16 @@ class Wearable:
                 f"The binding holds {self.binding.vertex_count} vertices and the garment "
                 f"{len(self.garment.vertices)}."
             )
-        if self.weights not in ("body", "rigid"):
+        if self.weights not in ("body", "rigid", "own"):
             raise ValueError(
-                f"Unknown weights {self.weights!r}; use 'body' or 'rigid'."
+                f"Unknown weights {self.weights!r}; use 'body', 'rigid' or 'own'."
             )
+        if self.weights == "own" and (
+            self.binding.skin_weights is None
+            or self.binding.skin_joints is None
+            or not self.binding.joint_names
+        ):
+            raise ValueError("Own weights need skin_weights, skin_joints and joints.")
         unknown = sorted(set(self.group_covers) - set(self.garment.groups))
         if unknown:
             raise ValueError(f"group_covers names groups the garment lacks: {unknown}.")
@@ -228,6 +248,8 @@ class Wearable:
         }
         if self.binding.bone is not None:
             binding["bone"] = self.binding.bone
+        if self.binding.joint_names is not None:
+            binding["joints"] = list(self.binding.joint_names)
         out = {
             "format": FORMAT,
             "name": self.name,
@@ -336,6 +358,9 @@ def read_wearable(path: str | pathlib.Path) -> Wearable:
         normal=_get(arrays, "normal"),
         bone=binding_info.get("bone"),
         local=_get(arrays, "local"),
+        skin_weights=_get(arrays, "skin_weights"),
+        skin_joints=_get(arrays, "skin_joints", np.int64),
+        joint_names=binding_info.get("joints"),
     )
     garment = _read_geometry(folder / data.get("geometry", paths["glb"].name))
     groups = data.get("groups")

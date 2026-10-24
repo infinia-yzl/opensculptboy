@@ -185,6 +185,22 @@ class TestBinding(unittest.TestCase):
         self.assertTrue((dressed[1].joints[:, 0] == head).all())
         self.assertTrue((dressed[1].weights[:, 0] == 1.0).all())
 
+    def test_smoothed_weights(self):
+        """Diffused weights keep their sums, join vertices at one position and blend
+        neighbours alike."""
+        from opensculptboy.wearables.bind import dense_body_weights, smooth_weights
+
+        w = tunic()
+        dense = dense_body_weights(w.binding, template_body())
+        smooth = smooth_weights(dense, w.garment.vertices, w.garment.triangles, 40)
+        np.testing.assert_allclose(smooth.sum(1), 1.0, atol=1e-9)
+        t = w.garment.triangles
+
+        def jump(x):
+            return float(np.abs(x[t[:, 0]] - x[t[:, 1]]).sum(1).mean())
+
+        self.assertLess(jump(smooth), 0.5 * jump(dense))
+
     def test_rigid_piece_follows_its_bone(self):
         model = template_model()
         w = circlet()
@@ -617,6 +633,10 @@ class TestReferenceWearables(unittest.TestCase):
                 hidden = worn_pieces(card, out, hide=["cloak"])
                 self.assertEqual(hidden[0].hidden_groups, [])
                 shirt_package = by_ref["travel/shirt"].wearable
+                self.assertEqual(shirt_package.weights, "own")
+                np.testing.assert_allclose(
+                    shirt_package.binding.skin_weights.sum(1), 1.0, atol=1e-9
+                )
                 covers = shirt_package.covers
                 self.assertGreater(int(covers.sum()), 300)
                 # at rest, the shirt lies about 8 mm off the card's rest skin

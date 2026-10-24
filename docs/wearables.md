@@ -31,7 +31,7 @@ A package is three files with one name:
 | `provenance` | `public` or `private` (see "Provenance") |
 | `licence` | `{spdx, author, source, design_source, attribution}`; `spdx` and `design_source` are required for a public package |
 | `binding` | `{body, method, data, bone?}`: `body` is `anny-template` or `reference`, `method` is `surface` or `rigid` |
-| `weights` | `body` (the body's skin weights at the bound points) or `rigid` (the one bone) |
+| `weights` | `body` (the body's skin weights at the bound points), `rigid` (the one bone) or `own` (weights in the binding file, by bone name in `binding.joints`) |
 | `covers`, `group_covers` | whether the binding file holds a cover mask, and the groups that hold their own masks |
 | `groups` | the named groups of the garment |
 | `hides` | rules toward other pieces: `{"piece": id, "groups": [name, ...]}` |
@@ -89,7 +89,7 @@ opensculptboy export dressed.glb --character dressed/fitted.json
 The section lists one set of `objects` (the clothing objects of one look, gathered into pieces by the first word of their names), or several `outfits`, each with `pieces` of one or more objects. An object names a node of `replica.glb` (skinned in the same bind pose as the skin) and its primitives, one per mesh group with the group in the primitive's `extras`. A piece may carry `hides` rules toward the groups of other pieces and `covered` masks: triangles of the reference's skin, for the piece's fixed groups and for each hideable group.
 
 1. Each clothing vertex finds its closest point on the reference's skin, and that point its closest point on the fitted card's skin, posed and placed as the fit left it (the fit's correspondence).
-2. The vertex goes back to the card's rest pose by the inverse of the skinning at that point (the four strongest weights) and binds to the same point of the card's rest skin.
+2. The card's skin weights at those points, diffused over the piece (40 steps, each halfway to the mean of the neighbours, with vertices at one position joined), become the piece's own weights, the four strongest. Neighbouring vertices then blend the same bones, so that a cloak whose edge lies near a hand moves as one sheet. The vertex goes back to the card's rest pose by the inverse of the skinning with these weights, and its normal by the inverse of the same matrix, and binds to the same point of the card's rest skin.
 3. A card vertex is covered where its closest triangle of the reference's skin is covered.
 
 The packages go into `<out>/wearables/` with `provenance` private, next to a copy of the card that lists the outfits and names the default outfit as `active_outfit`. `<out>/wearables/report.json` gives per piece the vertex count, the distances of the correspondence and the round trip (the piece bound, evaluated at rest, posed and placed back onto the reference).
