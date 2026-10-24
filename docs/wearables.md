@@ -118,7 +118,7 @@ The command prints a JSON report: the vertices, triangles, materials and groups,
 - A surface garment whose median distance from the skin exceeds `--max-distance` (for `--rigid`, its nearest vertex) is refused: it was modelled on another body, at another scale or in another frame. The message gives the distance in each frame it tried.
 - Vertices further than 50 mm from the skin bind with a warning: they follow the skin at their bound points and may stretch on other bodies.
 - A mesh without normals takes normals computed from its triangles, with a warning.
-- An unknown slot, an unknown bone for `--rigid`, own weights without a skin or with joints that the rig lacks, and a malformed `--hides` item are errors.
+- An unknown slot, an unknown bone for `--rigid`, own weights without a skin, with joints that the rig lacks or with vertices that carry no weight, and a malformed `--hides` item are errors.
 
 ## Reference wearables
 

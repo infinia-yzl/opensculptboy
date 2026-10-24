@@ -475,6 +475,12 @@ def make_wearable(
             raise GarmentError(
                 f"The garment's skin names joints the body's rig lacks: {missing}."
             )
+        empty = read.skin_weights[keep_rows].sum(axis=1) <= 0
+        if empty.any():
+            raise GarmentError(
+                f"{int(empty.sum())} garment vertices carry no skin weight; paint their "
+                "weights, or leave out --weights own."
+            )
         # the joints that weigh on the garment, so that the file's other joints (a
         # control bone, a joint of the body's mesh) need no bone of the rig
         remap = np.zeros(len(read.joint_names), np.int64)
