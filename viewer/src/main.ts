@@ -2698,6 +2698,8 @@ window.frameStats = frameStats;
 // the wardrobe for tests: its counts and times (the files load through the Wearables section's file input)
 window.wearStats = () => WEAR ? WEAR.stats() : null;
 window.__WEAR = () => WEAR;
+// the rest vertices of the dressed pieces (the page's frame) and the page's frame, for the page test
+window.wearPieces = () => WEAR ? WEAR.pieces.map((p) => ({ ref: p.ref, shown: p.shown, hidden: p.hiddenGroups, vertices: Array.from(p.vertices) })) : [];
 window.stepHair = (dt = 1 / 60) => { hairClock = true; if (HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); } return HAIR.stats(); };
 window.setHairPhysics = (on) => { HAIR.setPhysics(!!on); HOOKS.hair(); return HAIR.physics; };
 window.setPreset = (n) => { applyPreset(n); return true; };
