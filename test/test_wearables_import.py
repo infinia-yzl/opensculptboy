@@ -433,6 +433,44 @@ class TestQuality(unittest.TestCase):
             self.item(odd, "texture_not_power_of_two")["slot"], "base_color"
         )
 
+    def test_uv_overlap(self):
+        """No overlap for a grid that fills the UV square up to 1.0, nor for 100 small
+        islands; the overlap of 5 islands laid twice (4.8 % of the area) is found."""
+        from opensculptboy.wearables.format import Garment
+        from opensculptboy.wearables.quality import Quality, check_uvs, weld_ids
+
+        def grid(n, u0, u1, v0, v1):
+            u, v = np.meshgrid(np.linspace(u0, u1, n + 1), np.linspace(v0, v1, n + 1))
+            uv = np.column_stack([u.ravel(), v.ravel()])
+            a = (np.arange(n)[None, :] + (n + 1) * np.arange(n)[:, None]).ravel()
+            t = np.concatenate(
+                [np.c_[a, a + 1, a + n + 2], np.c_[a, a + n + 2, a + n + 1]]
+            )
+            return uv, t
+
+        def overlap(islands):
+            uvs, tris, offset = [], [], 0
+            for uv, t in islands:
+                uvs.append(uv)
+                tris.append(t + offset)
+                offset += len(uv)
+            uv = np.concatenate(uvs)
+            vertices = np.column_stack([uv, np.arange(len(uv)) * 1e-3]) * 0.3
+            garment = Garment(vertices, np.concatenate(tris), uvs=uv)
+            quality = Quality()
+            check_uvs(garment, quality, weld_ids(garment.vertices))
+            found = [i for i in quality.items if i.code == "uv_overlap"]
+            return found[0].value if found else 0.0
+
+        self.assertEqual(overlap([grid(8, 0, 1, 0, 1)]), 0.0)
+        small = [
+            grid(2, x / 10, x / 10 + 0.09, y / 10, y / 10 + 0.09)
+            for x in range(10)
+            for y in range(10)
+        ]
+        self.assertEqual(overlap(small), 0.0)
+        self.assertAlmostEqual(overlap(small + small[:5]), 5 / 105, delta=0.01)
+
     def test_geometry_fixes(self):
         from opensculptboy.wearables.format import Garment
         from opensculptboy.wearables.quality import check_garment

@@ -511,13 +511,14 @@ def _uv_overlap(garment, signed, zero, quality) -> None:
             image = Image.new("1", (size, size), 0)
             draw = ImageDraw.Draw(image)
             for tri in uv[t[rows & which]]:
-                p = np.mod(tri, 1.0) if np.ptp(tri) < 1 else tri
+                p = tri - np.floor(tri.mean(axis=0))  # the tile of the triangle
                 draw.polygon([(float(x * size), float(y * size)) for x, y in p], fill=1)
             masks[name] = np.asarray(image, bool)
             area = float(np.abs(signed[rows & which]).sum()) * size * size
             union = float(masks[name].sum())
+            # the raster also fills the pixels that the outer edges touch
             overlap += max(
-                area - union - 0.5 * _perimeter(uv, t[rows & which], size), 0.0
+                area - union + 0.5 * _perimeter(uv, t[rows & which], size), 0.0
             )
             total += area
         mirrored += float((masks["pos"] & masks["neg"]).sum())
@@ -543,7 +544,8 @@ def _uv_overlap(garment, signed, zero, quality) -> None:
 
 
 def _perimeter(uv, triangles, size) -> float:
-    """The length (pixels) of the outer UV edges, which the raster counts twice."""
+    """The length (pixels) of the outer UV edges; the raster fills about half a pixel
+    beyond them."""
     if not len(triangles):
         return 0.0
     _, _, key = _edges(triangles)
