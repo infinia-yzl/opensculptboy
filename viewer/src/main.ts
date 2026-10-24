@@ -926,7 +926,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
 // worker builds one set of values at a time, and the newest values wait for the build in flight. The shot mode, the
 // test hooks (window.setSliders, window.setFace) and '?bodyworker=off' build the body on the page.
 declare const __BODY_WORKER__: string;
-const BW: any = { worker: null, ready: false, busy: false, want: null, spare: null, gen: 0, id: 0, sync: 0, latency: 0 };
+const BW: any = { worker: null, ready: false, busy: false, want: null, flight: null, spare: null, gen: 0, id: 0, sync: 0, latency: 0 };
 // copies of the buffers for the worker: a view of the model data would carry the whole decoded model with it
 function ownCopy(x: any): any {
   if (ArrayBuffer.isView(x)) return (x as any).slice();
@@ -949,7 +949,7 @@ function startBodyWorker(meta: any, bufs: any, body: any) {
     if (m.type === 'ready') { BW.ready = true; URL.revokeObjectURL(url); return; }
     if (m.type === 'error') { console.warn('The body worker failed; the page builds the body itself.', m.message); workerFailed(); return; }
     if (m.type !== 'done') return;
-    BW.busy = false; BW.spare = m.out;
+    BW.busy = false; BW.spare = m.out; BW.flight = null;
     if (m.gen === BW.gen) receiveBody(m);
     pumpBody();
   };
@@ -957,16 +957,20 @@ function startBodyWorker(meta: any, bufs: any, body: any) {
   const copy = ownCopy(bufs);
   BW.worker.postMessage({ type: 'init', meta, bufs: copy, detailStep: body.detailStep });
 }
-// after a failure the page builds every body itself, starting with the values that waited for the worker
+// after a failure the page builds every body itself, starting with the values that waited for the worker, or else
+// the values of the build in flight (unless a build on the page replaced them)
 function workerFailed() {
   BW.ready = false; BW.busy = false;
-  const w = BW.want; BW.want = null;
+  try { BW.worker?.terminate(); } catch (e) { /* gone already */ }
+  BW.worker = null;
+  const w = BW.want || (BW.flight && BW.flight.gen === BW.gen ? BW.flight : null);
+  BW.want = null; BW.flight = null;
   if (w) { BODY.values = null; applyBodyShape(w.v, w.f); }
 }
 function pumpBody() {
   if (BW.busy || !BW.want || !BW.spare) return;
   const w = BW.want, o = BW.spare;
-  BW.want = null; BW.spare = null; BW.busy = true;
+  BW.want = null; BW.spare = null; BW.busy = true; BW.flight = { v: w.v, f: w.f, gen: BW.gen };
   BW.worker.postMessage({ type: 'update', id: ++BW.id, gen: BW.gen, t: w.t, values: w.v, face: w.f, out: o },
     [o.pos.buffer, o.nrm.buffer, o.ns.buffer, o.coarse.buffer, o.joints.buffer]);
 }
