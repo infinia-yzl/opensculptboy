@@ -177,11 +177,19 @@ def body_weights(
         w = body.weights[binding.corners[:, c]] * binding.barycentric[:, c, None]
         for k in range(body.weights.shape[1]):
             np.add.at(dense, (rows, body.indices[binding.corners[:, c], k]), w[:, k])
-    order = np.argsort(-dense, axis=1, kind="stable")[:, :max_influences]
+    order = strongest(dense, max_influences)
     weights = np.take_along_axis(dense, order, axis=1)
     weights = weights / np.maximum(weights.sum(axis=1, keepdims=True), 1e-12)
     indices = np.where(weights > 0, order, 0)
     return weights, indices
+
+
+def strongest(dense: np.ndarray, count: int) -> np.ndarray:
+    """The columns of the ``count`` largest values of each row, largest first. The values are
+    compared at 1e-9, and equal ones keep their column order, so that the rounding of other
+    CPUs leaves the order the same."""
+    rounded = np.round(np.asarray(dense, dtype=np.float64), 9)
+    return np.argsort(-rounded, axis=1, kind="stable")[:, :count]
 
 
 def dense_body_weights(binding: Binding, body: BodySurface) -> np.ndarray:

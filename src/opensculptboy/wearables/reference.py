@@ -356,6 +356,7 @@ def build_reference_wearables(
         dense_body_weights,
         evaluate,
         smooth_weights,
+        strongest,
     )
     from opensculptboy.wearables.cover import ray_hits
     from opensculptboy.wearables.fit import anny_count, card_body, skin_triangles
@@ -465,7 +466,7 @@ def build_reference_wearables(
                 np.concatenate(tris),
                 smoothing,
             )
-            order = np.argsort(-dense, axis=1, kind="stable")[:, :TOP_WEIGHTS]
+            order = strongest(dense, TOP_WEIGHTS)
             w = np.take_along_axis(dense, order, axis=1)
             w = w / np.maximum(w.sum(axis=1, keepdims=True), 1e-12)
             j = np.where(w > 0, order, 0)
