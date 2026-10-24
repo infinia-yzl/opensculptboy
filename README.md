@@ -63,6 +63,7 @@ export_glb("ada.glb", Character(name="ada", phenotype={"muscle": 0.7}), animatio
 | [Budget tiers](docs/budget-tiers.md) | exporting one character at several levels of detail |
 | [Body model](docs/body-model.md) | the Python API: shapes, poses, rigs, topologies, hair and caching |
 | [Character card](docs/character-card.md) | the card format |
+| [Wearables](docs/wearables.md) | dressing a character: wearable packages, outfits, and the clothing of a reference character |
 | [Eyes](docs/eyes.md), [Teeth](docs/teeth.md), [Mouth](docs/mouth.md), [Sculpt topology](docs/sculpt-topology.md) | how each part is built |
 | [CHANGELOG](CHANGELOG.md) | what changed, Anny's releases included |
 

@@ -16,6 +16,10 @@ The ``opensculptboy`` command.
     opensculptboy export me_low.vrm --character me.json --tier low --author "Me"
     opensculptboy portraits --character me.json --out avatars/   # a portrait, five expressions
     opensculptboy viewer build                       # the web viewer (python -m anny.viewer build)
+    opensculptboy export me.glb --character me.json --outfit travel --hide cape   # an outfit
+    opensculptboy export me_wardrobe.glb --character me.json --wardrobe   # every piece a node
+    opensculptboy wearables list --character me.json # the card's outfits and pieces
+    opensculptboy wearables reference handoff/ --card me.json --out dressed/   # reference wear
 """
 
 from __future__ import annotations
@@ -118,6 +122,38 @@ def _with_teeth(character, value, parser):
     return dataclasses.replace(character, material={**material, "teeth": teeth})
 
 
+def _dressing(args, character, parser):
+    """The wearables of an export (opensculptboy.wearables.export.Dressing), or None for a
+    card without wardrobe fields and no wearable options."""
+    wants = (
+        args.outfit is not None
+        or args.show
+        or args.hide
+        or args.wardrobe
+        or args.covered is not None
+    )
+    if not character.has_wardrobe():
+        if wants:
+            parser.error(
+                "--outfit, --show, --hide, --covered and --wardrobe need a card with "
+                "wearables or outfits (docs/wearables.md)."
+            )
+        return None
+    from opensculptboy.wearables.export import Dressing
+
+    outfit = args.outfit
+    if getattr(args, "bare", False):
+        outfit = "none"
+    return Dressing(
+        outfit=outfit,
+        show=tuple(args.show or ()),
+        hide=tuple(args.hide or ()),
+        covered=args.covered or "remove",
+        wardrobe=bool(args.wardrobe),
+        visibility=bool(args.node_visibility),
+    )
+
+
 def _export(args, parser) -> int:
     if args.tier:
         return _export_tier(args, parser)
@@ -149,17 +185,24 @@ def _export(args, parser) -> int:
             f"--detail {args.detail}: the character has no detail level {args.detail} "
             f"(its levels: {character.detail_levels() or 'none'})."
         )
-    summary = export_glb(
-        args.output,
-        character,
-        model,
-        animations=args.animation or (),
-        morph_targets=morph_targets,
-        max_influences=args.influences or 4,
-        ground=not args.no_ground,
-        detail_level=args.detail or 0,
-        detail_dir=_detail_dir(args.character),
-    )
+    dressing = _dressing(args, character, parser)
+    try:
+        summary = export_glb(
+            args.output,
+            character,
+            model,
+            animations=args.animation or (),
+            morph_targets=morph_targets,
+            max_influences=args.influences or 4,
+            ground=not args.no_ground,
+            detail_level=args.detail or 0,
+            detail_dir=_detail_dir(args.character),
+            dressing=dressing,
+        )
+    except (OSError, ValueError) as error:  # a missing package or a wrong piece name
+        if dressing is None:
+            raise
+        parser.error(_one_line(error))
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -181,6 +224,9 @@ def _export_vrm(args, parser) -> int:
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    dressing = _dressing(args, character, parser)
+    if dressing is not None and dressing.wardrobe:
+        parser.error("--wardrobe writes .glb files; a VRM file wears one outfit.")
     # A file over a strict budget fails (exit 1); a character, an option or a thumbnail
     # that a VRM file cannot carry is a usage error (exit 2). Each prints one line, after
     # the warnings of the export.
@@ -205,6 +251,7 @@ def _export_vrm(args, parser) -> int:
                 refine_weights=args.refine_weights is not False,
                 detail_level=args.detail or 0,
                 detail_dir=_detail_dir(args.character),
+                dressing=dressing,
             )
         except BudgetError as error:
             failure = (1, _one_line(error))
@@ -295,6 +342,11 @@ def _export_tier(args, parser) -> int:
             kwargs["morph_targets"] = [
                 n.strip() for n in args.morph_targets.split(",") if n.strip()
             ]
+    dressing = _dressing(args, character, parser)
+    if dressing is not None:
+        if is_vrm and dressing.wardrobe:
+            parser.error("--wardrobe writes .glb files; a VRM file wears one outfit.")
+        kwargs["dressing"] = dressing
     failure = None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -611,6 +663,58 @@ def _convert(args, parser) -> int:
     return 0
 
 
+def _wearables(args, parser) -> int:
+    if args.wearables_command == "list":
+        character = _load_character(args.character, parser)
+        from opensculptboy.wearables.wardrobe import worn_pieces
+
+        try:
+            pieces = worn_pieces(
+                character, _detail_dir(args.character), every_outfit=True
+            )
+        except (OSError, ValueError) as error:
+            parser.error(_one_line(error))
+        listing = {
+            "active_outfit": character.active_outfit or None,
+            "outfits": [
+                {"id": o["id"], "label": o.get("label", o["id"])}
+                for o in character.outfits
+            ],
+            "pieces": [
+                {
+                    "ref": p.ref,
+                    "label": p.wearable.label or p.wearable.name,
+                    "slot": p.wearable.slot,
+                    "layer": p.wearable.layer,
+                    "provenance": p.wearable.provenance,
+                    "shown": p.shown,
+                    "groups": list(p.wearable.garment.groups),
+                    "hidden_groups": p.hidden_groups,
+                    "hides": p.wearable.hides,
+                }
+                for p in pieces
+            ],
+        }
+        print(json.dumps(listing, indent=2))
+        return 0
+    from opensculptboy.wearables.format import ProvenanceError
+    from opensculptboy.wearables.reference import build_reference_wearables
+
+    try:
+        report = build_reference_wearables(
+            args.handoff,
+            args.card,
+            args.out,
+            args.outfit_id,
+            args.outfit_label,
+            log=lambda m: print(m, file=sys.stderr),
+        )
+    except (OSError, ValueError, ProvenanceError) as error:
+        parser.error(_one_line(error))
+    print(json.dumps(report, indent=2))
+    return 0
+
+
 def _names(args) -> int:
     import anny
 
@@ -688,6 +792,43 @@ def main(argv=None) -> int:
         help="a rendering-budget tier (docs/budget-tiers.md): it sets the detail level, the "
         "texture sizes and maps, the morph targets and the skin weights per vertex, and an "
         "output without a suffix takes the tier's format (.glb, or .vrm for low)",
+    )
+    w = e.add_argument_group("wearables (docs/wearables.md)")
+    w.add_argument(
+        "--outfit",
+        metavar="ID",
+        help="the outfit to wear (default: the card's active_outfit; 'none' for none)",
+    )
+    w.add_argument(
+        "--show",
+        action="append",
+        metavar="PIECE",
+        help="show a piece: a piece of the outfit, a loose piece, or OUTFIT/PIECE of another "
+        "outfit, which replaces the pieces of its slot; repeat for more",
+    )
+    w.add_argument(
+        "--hide",
+        action="append",
+        metavar="PIECE",
+        help="hide a piece; the groups it hides on other pieces come back; repeat for more",
+    )
+    w.add_argument(
+        "--covered",
+        choices=("remove", "keep"),
+        help="the body triangles that the shown pieces cover: 'remove' (the default) or "
+        "'keep'",
+    )
+    w.add_argument(
+        "--wardrobe",
+        action="store_true",
+        help="a .glb file with every piece of every outfit as its own node and the body "
+        "whole: the default scene shows the worn outfit, a second scene holds every piece",
+    )
+    w.add_argument(
+        "--node-visibility",
+        action="store_true",
+        help="with --wardrobe: one scene with every piece, the pieces that do not show "
+        "marked hidden with KHR_node_visibility",
     )
     g = e.add_argument_group("glTF (.glb) options")
     g.add_argument(
@@ -965,6 +1106,29 @@ def main(argv=None) -> int:
         "--size", type=int, default=512, help="side of each expression (default 512)"
     )
 
+    wear = sub.add_parser(
+        "wearables",
+        help="list a card's outfits, or build reference wearables from a handoff",
+    )
+    wear_sub = wear.add_subparsers(dest="wearables_command", required=True)
+    wl = wear_sub.add_parser("list", help="print a card's outfits and pieces")
+    wl.add_argument("--character", required=True, help="a character card (JSON)")
+    wr = wear_sub.add_parser(
+        "reference",
+        help="build wearable packages from a handoff's equipment for a fitted card",
+        description="Build the reference wearables of an appearance handoff's equipment "
+        "section for a card fitted to that handoff: one package per piece in "
+        "OUT/wearables/, marked private, and a copy of the card in OUT that lists the "
+        "outfits. OUT must lie outside the repository.",
+    )
+    wr.add_argument("handoff", help="the handoff folder (replica.glb, appearance.json)")
+    wr.add_argument("--card", required=True, help="the card fitted to that handoff")
+    wr.add_argument("--out", required=True, help="the folder to write into")
+    wr.add_argument(
+        "--outfit-id", help="the id of the outfit of a section without outfits"
+    )
+    wr.add_argument("--outfit-label", help="its label")
+
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
         "kind",
@@ -990,6 +1154,8 @@ def main(argv=None) -> int:
         return _export(args, e)
     if args.command == "names":
         return _names(args)
+    if args.command == "wearables":
+        return _wearables(args, wear)
     if args.command == "pose":
         return _pose(args)
     if args.command == "fit":

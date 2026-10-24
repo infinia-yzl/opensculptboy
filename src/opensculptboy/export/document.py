@@ -158,6 +158,8 @@ class GltfDocument:
         self.scene_nodes: list[int] = []
         self.scene_name: str | None = None
         self.scene_extras: dict[str, Any] = {}
+        # further scenes after the default one: {"name", "nodes", "extras"?} each
+        self.extra_scenes: list[dict] = []
         self.extensions: dict[str, Any] = {}
         self.extensions_used: list[str] = []
         self.extensions_required: list[str] = []
@@ -231,7 +233,7 @@ class GltfDocument:
         if self.asset_extras:
             asset["extras"] = self.asset_extras
         gltf: dict[str, Any] = {"asset": asset}
-        gltf.update(scene=0, scenes=[scene], nodes=self.nodes)
+        gltf.update(scene=0, scenes=[scene] + list(self.extra_scenes), nodes=self.nodes)
         for key, items in (
             ("meshes", self.meshes),
             ("skins", self.skins),
