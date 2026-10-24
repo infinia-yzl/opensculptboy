@@ -316,6 +316,23 @@ class TestDressedFiles(unittest.TestCase):
         _, bare = self.export("bare.glb", outfit="none")
         self.assertEqual(bare["wearables"], [])
 
+    def test_piece_with_every_group_hidden_leaves_the_file(self):
+        from opensculptboy.export.document import GltfDocument
+        from opensculptboy.wearables.export import vrm_piece_meshes
+        from opensculptboy.wearables.gltf import add_pieces
+
+        piece = dress(template_body(), _worn(tunic()))[0]
+        piece.hidden_groups = ["front", "back"]
+        doc = GltfDocument("test")
+        C = np.array([[1.0, 0, 0], [0, 0, 1], [0, -1, 0]])
+        self.assertEqual(add_pieces(doc, [piece], 0, C), [])
+        self.assertEqual(len(doc.buffers.accessors), 0)
+
+        class Rebind:
+            transforms = np.tile(np.eye(4), (len(template_body().bone_labels), 1, 1))
+
+        self.assertEqual(vrm_piece_meshes([piece], Rebind(), C), [])
+
     def test_wardrobe_glb(self):
         path, _ = self.export("wardrobe.glb", wardrobe=True, hide=("circlet",))
         glb = GLB(path)

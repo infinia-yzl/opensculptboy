@@ -140,6 +140,8 @@ def vrm_piece_meshes(pieces, rebind, frame: np.ndarray) -> list:
         for g, group in enumerate(garment.groups):
             if group in piece.hidden_groups:
                 keep &= garment.triangle_group != g
+        if not keep.any():  # other pieces hide every group of this one
+            continue
         count = len(bind)
         mesh = BodyMesh(
             positions=bind @ frame.T,

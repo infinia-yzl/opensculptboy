@@ -189,6 +189,8 @@ def add_pieces(
         if not piece.shown and not all_groups:
             continue
         garment = piece.garment
+        if not all_groups and not len(piece.visible_triangles()):
+            continue  # other pieces hide every group of this one
         positions = piece.vertices @ frame.T
         if translation is not None:
             positions = positions + translation
