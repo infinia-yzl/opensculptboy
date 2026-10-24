@@ -346,6 +346,9 @@ class TestWardrobe(unittest.TestCase):
         self.assertIn("spare/vest", names)
         self.assertNotIn("test_outfit/tunic", names)
         self.assertEqual(worn_pieces(self.card, self.folder, outfit="none"), [])
+        # a card with loose pieces alone, and no active outfit
+        loose = Character(wearables=[{"id": "vest", "file": "vest.wearable.json"}])
+        self.assertEqual([p.ref for p in worn_pieces(loose, self.folder)], ["vest"])
         with self.assertRaisesRegex(ValueError, "Did you mean"):
             worn_pieces(self.card, self.folder, hide=["capes"])
         every = worn_pieces(self.card, self.folder, every_outfit=True)
