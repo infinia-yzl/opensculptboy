@@ -664,7 +664,7 @@ class TestReferenceClosedEye(unittest.TestCase):
 
     def test_reference_lashes(self):
         # the lashes of a reference take the reference's own lash poses, rows of the card's
-        # lashes (here the generic lashes, stood in as a reference's)
+        # lashes (here the generic lashes, stood in as a reference's), on the card's lids
         from opensculptboy.eyes.poses import BlinkPose
         from opensculptboy.material import LashMaterial
 
@@ -687,17 +687,27 @@ class TestReferenceClosedEye(unittest.TestCase):
         shape = blinks.shapes["L"]
         now = 0.5 * shape.closed + shape.inbetween
         for p, rows in parts:
-            # the reference's own lash poses, their roots moved with the lid where the
-            # rims were brought together
+            # each lash keeps the reference's own turn about its base, and the base moves
+            # with the lid margin under it
             r = p.follow.rows
-            closed = (
-                lash_closed[p.points] + p.follow.root @ (shape.closed - pose.closed)[r]
-            )
-            half = lash_half[p.points] + p.follow.root @ (now - pose.half)[r]
-            np.testing.assert_allclose(full[blinks.rows["L"], rows], closed, atol=1e-12)
-            np.testing.assert_allclose(
-                full[blinks.inbetween_rows["L"], rows], half - 0.5 * closed, atol=1e-12
-            )
+            base = B.lash_bases(p)
+            closed = full[blinks.rows["L"], rows]
+            half = full[blinks.inbetween_rows["L"], rows] + 0.5 * closed
+            for got, want, lid in (
+                (closed, lash_closed[p.points], shape.closed),
+                (half, lash_half[p.points], now),
+            ):
+                np.testing.assert_allclose(
+                    got - got[base], want - want[base], atol=1e-12
+                )
+                np.testing.assert_allclose(
+                    got[base], (p.follow.root @ lid[r])[base], atol=1e-12
+                )
+            # each base is a point of its own lash near the point's root, and its own base
+            np.testing.assert_array_equal(base[base], base)
+            roots = p.follow.root @ p.follow.rest
+            gap = np.linalg.norm(p.rest[base] - roots, axis=1)
+            self.assertLess(float(np.median(gap)), 0.002)
         # the other eye has no reference: its lashes follow the rig
         for p, rows in B.lash_rows(ref, "R"):
             self.assertFalse(

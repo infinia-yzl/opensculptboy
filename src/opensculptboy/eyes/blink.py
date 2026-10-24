@@ -13,7 +13,8 @@ joints, so that the lids and the lashes move as one piece around the eye.
 
 - a card with a reference's blink (:mod:`opensculptboy.eyes.poses`) takes the reference's
   closed pose and half-closed pose as they come, the lids carried from the reference's lid
-  joints and the reference's lashes posed by those joints (:func:`reference_blink`);
+  joints (:func:`reference_blink`), and the reference's lashes keep the turn of those joints
+  about their bases while each base goes with the card's lid margin (:func:`on_margin`);
 - both are brought to meet: where the closed upper rim stays above the closed lower rim, or
   passes it, the upper lid turns about the eye's horizontal axis until its rim lies just past
   the lower rim (:func:`meet_rims`);
@@ -1094,12 +1095,56 @@ def lash_rows(eyed, side):
     return out
 
 
+def lash_bases(part) -> np.ndarray:
+    """The base (M,) of each lash point of a part: the point of its own lash (a connected
+    piece of the part) that lies nearest the point's root on the lid margin at rest, or that
+    point's own base, so that every base is its own base."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    points = np.asarray(part.rest, dtype=np.float64)
+    tris = np.asarray(part.triangles, dtype=np.int64)
+    edges = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]]])
+    graph = coo_matrix(
+        (np.ones(len(edges)), (edges[:, 0], edges[:, 1])),
+        shape=(len(points), len(points)),
+    )
+    label = connected_components(graph, directed=False)[1]
+    roots = part.follow.root @ part.follow.rest
+    out = np.arange(len(points))
+    for piece in np.unique(label):
+        mine = np.flatnonzero(label == piece)
+        _, near = cKDTree(points[mine]).query(roots[mine])
+        out[mine] = mine[near]
+    for _ in range(16):
+        step = out[out]
+        if (step == out).all():
+            break
+        out = step
+    loose = np.flatnonzero(out[out] != out)
+    out[loose] = loose
+    return out
+
+
+def on_margin(offsets, base, margin) -> np.ndarray:
+    """Lash offsets (M, 3) of a reference's pose moved so that each lash's base (``base``,
+    :func:`lash_bases`) moves as the lid margin under it (``margin``, (M, 3), the offset of
+    each point's root): each lash keeps the reference's turn about its base. A fitted lid
+    lies a little off its reference's, and its closed pose is brought to meet
+    (:func:`meet_rims`), so the reference's own lash roots leave the lid."""
+    offsets = np.asarray(offsets, dtype=np.float64)
+    return offsets - offsets[base] + np.asarray(margin)[base]
+
+
 def blink_lash_offsets(eyed, blinks: EyeBlinks, rest, targets):
     """
     The eyed mesh's targets (T, N + M, 3) with the lashes of each blink target and of its
     in-between corrective set: the reference's lashes under the reference's own blink when
-    its :class:`~opensculptboy.eyes.poses.BlinkPose` holds them (the lids and the lashes
-    close as one piece), else :func:`rig_lashes`. The other rows stay as
+    its :class:`~opensculptboy.eyes.poses.BlinkPose` holds them, each lash turned about its
+    base as the reference's and its base moved with the card's lid margin
+    (:func:`on_margin`), so the lids and the lashes close as one piece; else
+    :func:`rig_lashes`. The other rows stay as
     :meth:`~opensculptboy.eyes.mesh.EyedMesh.targets` gave them. Records the measures of each
     eye's blink in ``blinks.extras``.
     """
@@ -1121,19 +1166,23 @@ def blink_lash_offsets(eyed, blinks: EyeBlinks, rest, targets):
                     and len(pose.lash_closed) > int(p.points.max())
                 )
                 if own:
-                    closed = pose.lash_closed[p.points]
+                    # each lash keeps the reference's own turn about its base, and the
+                    # base goes with the lid margin under it
+                    base = lash_bases(p)
+                    rows_f = p.follow.rows
+                    closed = on_margin(
+                        pose.lash_closed[p.points],
+                        base,
+                        p.follow.root @ shape.closed[rows_f],
+                    )
                     half = None
                     if pose.lash_half is not None:
-                        half = pose.lash_half[p.points]
-                    # the turn that brought the rims together moves the lashes' roots
-                    # with their lid; the lashes keep the reference's own direction
-                    rows_f = p.follow.rows
-                    closed = (
-                        closed + p.follow.root @ (shape.closed - pose.closed)[rows_f]
-                    )
-                    if half is not None and pose.half is not None:
                         now = 0.5 * shape.closed + shape.inbetween
-                        half = half + p.follow.root @ (now - pose.half)[rows_f]
+                        half = on_margin(
+                            pose.lash_half[p.points],
+                            base,
+                            p.follow.root @ now[rows_f],
+                        )
                     if half is not None:
                         between = half - 0.5 * closed
                     else:
