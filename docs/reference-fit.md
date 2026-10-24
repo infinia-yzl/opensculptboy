@@ -5,7 +5,7 @@
 ```bash
 uv sync --extra viewer                                          # SciPy for the fit, embreex for the texture bake
 opensculptboy fit handoff/ --out character.json --detail 1      # the card, character.detail0.safetensors and character.detail1.safetensors
-opensculptboy fit handoff/ --out character.json --textures      # also the baked textures, eyes, teeth and inner mouth
+opensculptboy fit handoff/ --out character.json --textures      # also the baked textures, eyes, lashes, teeth and inner mouth
 opensculptboy export character.glb --character character.json --detail 1
 opensculptboy export character.vrm --character character.json --detail 1 --author "Your name"
 ```
@@ -120,7 +120,7 @@ Three tiles give parts of the body textures of their own, each drawn as a primit
 | head | 2048 by 4096 | the head's UV island, through a texture transform |
 | ears | 2048 by 1024 | the outer ears on levels 1 and 2, with UVs of their own unwrapped from the fitted ears |
 
-The texture transforms use `KHR_texture_transform` in glTF and VRM 1.0, and the ST vector of `_MainTex` in VRM 0.x. A card with the eyes of `--eyes` carries the baked eye texture over to its own eyes ([Eyes](eyes.md)), and the bake also takes the target's teeth and inner mouth ([Teeth](teeth.md), [Mouth](mouth.md)).
+The texture transforms use `KHR_texture_transform` in glTF and VRM 1.0, and the ST vector of `_MainTex` in VRM 0.x. The bake also writes the target's eyes straight onto the layout of the exported eyes (`eye_layout`, 1024 by 512, with their normals), with each eye's gaze, and the fitted card's exports show them without `--eyes` ([Eyes](eyes.md)). It takes the target's lashes ([Eyes](eyes.md#lashes)), teeth and inner mouth ([Teeth](teeth.md), [Mouth](mouth.md)) as well.
 
 ## The skin material in the exports
 
@@ -146,7 +146,7 @@ The last stage moves the vertices onto the target, so the reverse errors carry t
 
 ## Limits
 
-- Hair, eyelashes, brows and clothing are left out of the fit.
+- Hair, eyelashes, brows and clothing are left out of the fit; the bake takes the eyelashes for the exports.
 - The inside of the mouth and the eye sockets follow the skin around them. A handoff that describes its inner mouth gives the exports the target's own gums, palate, tongue, throat and teeth ([Mouth](mouth.md)).
 - An ear far from Anny's shape needs the ear outline landmarks, and an ear that stands off from the head needs `masks.ear`.
 - The body landmarks are joint centres of another rig, so they guide the pose and the proportions loosely; the face landmarks carry most of the placement. A target in a pose far from Anny's (arms raised high, crouching) needs landmarks on the elbows, the wrists and the knees.

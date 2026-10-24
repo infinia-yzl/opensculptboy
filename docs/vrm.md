@@ -24,7 +24,7 @@ The avatar rests in the VRM T-pose: the arms, hands and fingers point straight o
 - the licence metadata with the credits, and an optional thumbnail;
 - the [character card](character-card.md) in the scene extras, so that `read_character("ada.vrm")` reads it back.
 
-The face shapes are baked into the mesh, because a VRM skeleton is fixed, and the facial actions become the expressions. The eyes of `--eyes`, the teeth of `--teeth` and a fitted card's inner mouth go into the file as they do for [glTF](export.md).
+The face shapes are baked into the mesh, because a VRM skeleton is fixed, and the facial actions become the expressions. The eyes of `--eyes` with their lashes, the teeth of `--teeth` and a fitted card's inner mouth go into the file as they do for [glTF](export.md).
 
 ## Metadata and licence
 
@@ -52,4 +52,4 @@ The files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`). three-vr
 
 ## Not in the file yet
 
-Hair, eyelashes, outfits and spring bones. Painted textures come only from a reference bake; other characters get a plain skin colour.
+Hair and spring bones; outfits and lashes come with [Wearables](wearables.md) and [Eyes](eyes.md#lashes). Painted textures come only from a reference bake; other characters get a plain skin colour.

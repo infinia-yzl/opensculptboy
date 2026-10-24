@@ -59,6 +59,10 @@ class BakedTextures:
     eyes: np.ndarray | None = None  # (S_eye / 2, S_eye, 3) uint8
     # the eyeballs' tangent-space normals on the eye texture, in the frames of the atlas
     eyes_normal: np.ndarray | None = None  # (S_eye / 2, S_eye, 3) uint8
+    # the reference's eyes baked straight onto the layout of opensculptboy.eyes.texture
+    # (texture.eyes.bake_eye_layout): colours and normals in the frames of the sphere
+    eye_layout: np.ndarray | None = None
+    eye_layout_normal: np.ndarray | None = None
     roughness: np.ndarray | None = None  # (S, S) uint8, roughness * 255
     thickness: np.ndarray | None = None  # (S, S) uint8, thickness / thickness_mm * 255
     curvature: np.ndarray | None = None  # (S, S) uint8, (0.5 + 0.5 k / k_max) * 255
@@ -81,6 +85,12 @@ class BakedTextures:
     # material.mouth; None without a described mouth
     mouth: object = None
     mouth_textures: dict = dataclasses.field(default_factory=dict)
+    # the reference's lashes in the card's rest frame (opensculptboy.eyes.lashes.LashData),
+    # their texture (H, W, 4) uint8 and the values they give, for material.lashes; None
+    # without lashes
+    lashes: object = None
+    lash_texture: np.ndarray | None = None
+    lash_values: dict = dataclasses.field(default_factory=dict)
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
@@ -92,6 +102,8 @@ class BakedTextures:
             "base_color",
             "eyes",
             "eyes_normal",
+            "eye_layout",
+            "eye_layout_normal",
             "roughness",
             "thickness",
             "curvature",
@@ -108,9 +120,10 @@ class BakedTextures:
     def material(self, names: dict[str, str]) -> dict:
         """The ``material`` section of a card for the files ``names`` (slot -> path, as
         :meth:`png_files` names the slots, ``"ear_uvs"`` the ear tile's UV file and
-        ``"teeth"`` the teeth's file), without the eye texture, which the detail layer names,
-        and with the values measured on the reference's eyes (``reference_eyes``) and its
-        teeth (``teeth``)."""
+        ``"teeth"`` the teeth's file, ``"lashes"`` and ``"lashes_base_color"`` the lashes' file
+        and texture), without the eye texture, which the detail layer names, and with the
+        values measured on the reference's eyes (``reference_eyes``), its teeth (``teeth``)
+        and its lashes (``lashes``)."""
         material = {}
         for slot in ("base_color", "normal", "roughness", "thickness", "curvature"):
             if slot in names:
@@ -135,6 +148,17 @@ class BakedTextures:
             material["ears"] = {"uvs": names["ear_uvs"], **ears}
         if self.reference_eyes:
             material["reference_eyes"] = dict(self.reference_eyes)
+        if "lashes" in names:
+            material["lashes"] = {
+                "source": "reference",
+                "mesh": names["lashes"],
+                **(
+                    {"base_color": names["lashes_base_color"]}
+                    if "lashes_base_color" in names
+                    else {}
+                ),
+                **self.lash_values,
+            }
         if "mouth" in names:
             material["mouth"] = {"mesh": names["mouth"]}
             for slot in ("base_color", "normal", "roughness"):
@@ -926,6 +950,43 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
     )
     if baked.ears:
         baked.ear_uvs = ear_uvs
+    eye_target = getattr(result.reference, "eye_reference", None)
+    if eye_target is not None and kwargs.get("eye_size", 2048) > 0:
+        from opensculptboy.eyes import geometry
+        from opensculptboy.eyes.mesh import eyeball_rows
+        from opensculptboy.teeth.mesh import mouth_rows, rigid
+        from opensculptboy.texture.eyes import bake_eye_layout
+
+        rest = out["rest_vertices"][0].numpy()
+        head, _ = mouth_rows(model, topology)
+        turn, _ = rigid(rest[head], vertices[head])
+        frames = {}
+        for side, rows in eyeball_rows(model, topology).items():
+            centre, radius = geometry.fit_sphere(vertices[rows])
+            rest_axes = geometry.eye_frame(side, rest[rows]).axes
+            frames[side] = geometry.EyeFrame(side, centre, radius, turn @ rest_axes)
+        layout = bake_eye_layout(eye_target, frames)
+        if layout is not None:
+            baked.eye_layout, baked.eye_layout_normal, axes = layout
+            # the gaze of each eye in the card's rest frame
+            baked.reference_eyes = dict(
+                baked.reference_eyes,
+                gaze={
+                    side: [round(float(g), 6) for g in turn.T @ a[:, 2]]
+                    for side, a in axes.items()
+                },
+            )
+    lashes = getattr(result.reference, "lash_parts", None)
+    if lashes:
+        from opensculptboy.eyes.lashes import reference_lashes
+        from opensculptboy.teeth.mesh import mouth_rows
+
+        head, _ = mouth_rows(model, topology)
+        found = reference_lashes(
+            lashes, vertices, out["rest_vertices"][0].numpy(), head
+        )
+        if found is not None:
+            baked.lashes, baked.lash_texture, baked.lash_values = found
     mouth = getattr(result.reference, "mouth_parts", None)
     if mouth:
         from opensculptboy.teeth.mesh import mouth_rows

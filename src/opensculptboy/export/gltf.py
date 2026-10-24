@@ -238,7 +238,7 @@ def export_glb(
         images = level_normals(
             model, character, images, detail, mesh, ears, base, detail_dir
         )
-    eyed = None
+    eyed, lash_png = None, None
     teeth = character.teeth_material()
     mouth = character.mouth_material()
     if mouth is not None:  # the reference's inner mouth holds its own teeth
@@ -267,11 +267,24 @@ def export_glb(
         normals = None
         rows_mesh = mesh  # the file's mesh before the eyes and the teeth
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.lashes import eyed_lashes
             from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
+            layout = None
+            if "eye_layout" in images and "eye_base_color" not in images:
+                layout = (images["eye_layout"], images.get("eye_layout_normal"))
+            lashes, lash_png = eyed_lashes(character, detail_dir)
             eyed = eyed_mesh(
-                model, mesh, vertices, eye, "gltf", baked, skin_baked=baked_skin(images)
+                model,
+                mesh,
+                vertices,
+                eye,
+                "gltf",
+                baked,
+                skin_baked=baked_skin(images),
+                lashes=lashes,
+                layout=layout,
             )
             normals = eyed.normals(vertices)
             weights, indices = eyed.skin_weights(weights, indices)
@@ -359,7 +372,9 @@ def export_glb(
     eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
     if eyed is not None:
         eye_material, eyes = None, None
-        eye_parts = _eye_part_materials(doc, model, body, eyed, eye, images)
+        eye_parts = _eye_part_materials(
+            doc, model, body, eyed, eye, images, lash_png, character.lash_material()
+        )
     else:
         eye_material, eyes = _eye_material(
             doc, model, body, images, None if detail is None else detail.topology
@@ -622,13 +637,22 @@ def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
 
 
 # the texture slots of the eyes alone, which leave the skin's material as it is
-EYE_SLOTS = {"eyes", "eyes_normal", "eye_base_color"}
+EYE_SLOTS = {"eyes", "eyes_normal", "eye_base_color", "eye_layout", "eye_layout_normal"}
 # the key of the eye materials' settings in their extras
 EYE_EXTRAS = "opensculptboy_eye"
 EYE_EXTRAS_FORMAT = "opensculptboy/eye@1"
 
 
-def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict):
+def _eye_part_materials(
+    doc: GltfDocument,
+    model,
+    body,
+    eyed,
+    eye,
+    images: dict,
+    lash_png: bytes | None = None,
+    lashes=None,
+):
     """
     The materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (an
     :class:`~opensculptboy.eyes.mesh.EyedMesh` behind ``body``):
@@ -643,7 +667,10 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
       ``KHR_materials_volume`` with the depth of the anterior chamber as its thickness,
       ``KHR_materials_ior``). As the transmission extension asks, it is OPAQUE: readers
       without the extension draw it white, so ``eye.cornea`` false suits them better;
-    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat).
+    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat);
+    - ``lashes``: the lashes of :mod:`opensculptboy.eyes.lashes` (``lashes``, a
+      :class:`~opensculptboy.material.LashMaterial`, with their texture ``lash_png``),
+      double-sided and blended by the texture's alpha.
 
     The extras of each hold :data:`EYE_EXTRAS` (``opensculptboy/eye@1``) with its ``role``
     and the eye's settings, which :mod:`opensculptboy.export.blender_skin` reads.
@@ -734,6 +761,33 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
         }
         pink["extras"] = extras("conjunctiva")
         out.append((doc.add_material(pink), pink_mask))
+    lash_mask = eyed.part_mask("lashes")
+    if lashes is not None and lash_png is not None and lash_mask.any():
+        texture = doc.add_texture(
+            doc.add_image(lash_png, mime_type(lash_png), "lashes")
+        )
+        lash = pbr_material(
+            "lashes",
+            (1.0, 1.0, 1.0, 1.0),
+            0.0,
+            float(lashes.roughness),
+            texture=texture,
+            alpha_mode="BLEND",
+            double_sided=True,
+        )
+        lash["extras"] = {
+            EYE_EXTRAS: {
+                "format": EYE_EXTRAS_FORMAT,
+                "role": "lashes",
+                **lashes.extras(),
+            }
+        }
+        out.append((doc.add_material(lash), lash_mask))
+        eyed.extras["lashes"] = dict(
+            lashes.extras(),
+            points=int(len(eyed.lashes.points)),
+            triangles=int(len(eyed.lashes.triangles)),
+        )
     return out
 
 

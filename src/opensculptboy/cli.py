@@ -80,15 +80,19 @@ def _detail_dir(path: str | None) -> pathlib.Path | None:
 
 def _with_eyes(character, value, parser):
     """The character with the eyes of ``--eyes``: None keeps the card as it is; "" turns on
-    the eyes of opensculptboy.eyes (the card's, else the defaults); a file's values are laid
-    over the card's eyes."""
+    the eyes of opensculptboy.eyes (the card's, else the defaults); "off" keeps anny's own
+    eyeballs; a file's values are laid over the card's eyes."""
     if value is None:
         return character
     import dataclasses
 
     from opensculptboy.material import check_eyes
 
-    eyes = dict(character.material.get("eyes", {}))
+    if value == "off":
+        material = {**character.material, "eyes": False}
+        return dataclasses.replace(character, material=material)
+    eyes = character.material.get("eyes")
+    eyes = dict(eyes) if isinstance(eyes, dict) else {}
     if value:
         try:
             eyes.update(json.loads(pathlib.Path(value).read_text()))
@@ -546,6 +550,16 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
         path = card.parent / f"{stem}.teeth.safetensors"
         baked.teeth.save(path)
         names["teeth"] = path.name
+    if getattr(baked, "lashes", None) is not None:  # the reference's lashes
+        from opensculptboy.export.document import png_bytes
+
+        path = card.parent / f"{stem}.lashes.safetensors"
+        baked.lashes.save(path)
+        names["lashes"] = path.name
+        if baked.lash_texture is not None:
+            path = card.parent / f"{stem}.lashes.png"
+            path.write_bytes(png_bytes(baked.lash_texture))
+            names["lashes_base_color"] = path.name
     if getattr(baked, "mouth", None) is not None:  # the reference's inner mouth
         path = card.parent / f"{stem}.mouth.safetensors"
         baked.mouth.save(path)
@@ -555,7 +569,7 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
             path.write_bytes(pathlib.Path(source).read_bytes())
             names[f"mouth_{slot}"] = path.name
     textures = {"subdiv": subdiv}
-    for slot in ("eyes", "eyes_normal"):
+    for slot in ("eyes", "eyes_normal", "eye_layout", "eye_layout_normal"):
         if slot in names:
             textures[slot] = names[slot]
     return textures, baked.material(names)
@@ -774,8 +788,9 @@ def main(argv=None) -> int:
         const="",
         metavar="FILE",
         help="smooth eyes with an iris, a cornea and a caruncle in place of anny's eyeballs "
-        "(the card's material.eyes, else the defaults); FILE, a JSON object of eye values "
-        "(docs/eyes.md), is laid over them",
+        "(the card's material.eyes, else the defaults; a fitted card has them without the "
+        "option); FILE, a JSON object of eye values (docs/eyes.md), is laid over them, and "
+        "'off' keeps anny's eyeballs",
     )
     e.add_argument(
         "--teeth",

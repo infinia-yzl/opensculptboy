@@ -85,6 +85,7 @@ class Character:
             "reference_eyes",
             "teeth",
             "mouth",
+            "lashes",
         }:
             return None
         from opensculptboy.material import SkinMaterial
@@ -92,15 +93,30 @@ class Character:
         return SkinMaterial.from_dict(self.material)
 
     def eye_material(self):
-        """The :class:`~opensculptboy.material.EyeMaterial` of ``material.eyes``, or None for
-        anny's own eyeballs."""
-        if "eyes" not in self.material:
-            return None
-        from opensculptboy.material import EyeMaterial
+        """
+        The :class:`~opensculptboy.material.EyeMaterial` of ``material.eyes``, or None for
+        anny's own eyeballs. A fitted card turns the eyes on without the section: a card whose
+        bake measured the reference's eyes (``material.reference_eyes``) or baked its eye
+        texture (``detail.textures.eyes``) takes the eyes' defaults. ``"eyes": false`` keeps
+        anny's own eyeballs.
+        """
+        from opensculptboy.material import EyeMaterial, eyes_section
 
-        return EyeMaterial.from_dict(
-            self.material["eyes"], self.material.get("reference_eyes")
-        )
+        eyes = eyes_section(self.material, self.detail)
+        if eyes is None:
+            return None
+        return EyeMaterial.from_dict(eyes, self.material.get("reference_eyes"))
+
+    def lash_material(self):
+        """The :class:`~opensculptboy.material.LashMaterial` of ``material.lashes``, or None
+        for no lashes: the lashes come with the eyes of :meth:`eye_material` unless the
+        section is ``false``."""
+        lashes = self.material.get("lashes", {})
+        if lashes is False or self.eye_material() is None:
+            return None
+        from opensculptboy.material import LashMaterial
+
+        return LashMaterial.from_dict(lashes)
 
     def teeth_material(self):
         """The :class:`~opensculptboy.material.TeethMaterial` of ``material.teeth``, or None

@@ -79,6 +79,8 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+import numpy as np
+
 SUBSURFACE_METHODS = ("random_walk_skin", "random_walk", "burley")
 TEXTURE_KEYS = (
     "base_color",
@@ -121,8 +123,13 @@ _KEYS |= {
     "teeth",
     "mouth",
     "tiers",
+    "lashes",
 }
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
+
+
+def _is_real(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _number(value, name: str, low=None, high=None) -> float:
@@ -178,12 +185,13 @@ class SkinMaterial:
         values = {
             k: v
             for k, v in data.items()
-            if k not in ("subsurface", "eyes", "reference_eyes", "teeth", "mouth")
+            if k
+            not in ("subsurface", "eyes", "reference_eyes", "teeth", "mouth", "lashes")
         }
         subsurface = dict(SUBSURFACE_DEFAULTS)
         subsurface.update(data.get("subsurface", {}))
         eyes = None
-        if "eyes" in data:
+        if isinstance(data.get("eyes"), dict):
             eyes = EyeMaterial.from_dict(data["eyes"], data.get("reference_eyes"))
         return cls(subsurface=subsurface, eyes=eyes, **values)
 
@@ -269,12 +277,14 @@ def check_material(data: dict) -> dict:
         raise ValueError("material ears must hold paths.")
     if ears and "uvs" not in ears:
         raise ValueError("material ears needs its 'uvs' file.")
-    if "eyes" in data:
+    if "eyes" in data and data["eyes"] is not False:
         check_eyes(data["eyes"])
     if "reference_eyes" in data:
         check_reference_eyes(data["reference_eyes"])
     if "teeth" in data:
         check_teeth(data["teeth"])
+    if "lashes" in data and data["lashes"] is not False:
+        check_lashes(data["lashes"])
     if "mouth" in data:
         check_mouth(data["mouth"])
     _check_tiers(data.get("tiers", {}))
@@ -338,6 +348,9 @@ EYE_DEFAULTS = {
     "caruncle": True,  # the mound in the inner corner and the pink, wet skin of the socket
     "caruncle_color": [0.42, 0.15, 0.13],  # both of them (the conjunctiva)
     "highlight": 1.0,  # VRM: the strength of the matcap highlight
+    "gaze": "auto",  # "auto": each eye looks where the reference's does (the gaze of the
+    #                  card's reference_eyes, which the bake finds), else straight ahead;
+    #                  "straight": along -Y
 }
 EYE_SOURCES = ("auto", "procedural", "baked")
 # the cornea's values of eyes without a reference: a human cornea's IOR and front (7.8 mm),
@@ -389,6 +402,8 @@ class EyeMaterial:
         default_factory=lambda: list(EYE_DEFAULTS["caruncle_color"])
     )
     highlight: float = 1.0
+    # "straight", or each eye's gaze at rest ({"L": [x, y, z], "R": ...}, Anny's frame)
+    gaze: str | dict = "straight"
 
     @classmethod
     def from_dict(
@@ -405,6 +420,12 @@ class EyeMaterial:
         for key, default in EYE_REFERENCE_DEFAULTS.items():
             if data.get(key, "auto") == "auto":
                 data[key] = float(reference.get(key, default))
+        gaze = data.get("gaze", "auto")
+        data["gaze"] = (
+            {k: list(v) for k, v in reference["gaze"].items()}
+            if gaze == "auto" and reference.get("gaze")
+            else "straight"
+        )
         return cls(
             **{k: (list(v) if isinstance(v, list) else v) for k, v in data.items()}
         )
@@ -525,6 +546,8 @@ def check_eyes(data: dict) -> dict:
         raise ValueError("eyes cornea must be true, false or 'auto'.")
     if "caruncle" in data and not isinstance(data["caruncle"], bool):
         raise ValueError("eyes caruncle must be true or false.")
+    if data.get("gaze", "auto") not in ("auto", "straight"):
+        raise ValueError("eyes gaze must be 'auto' or 'straight'.")
     if "seed" in data and (
         isinstance(data["seed"], bool) or not isinstance(data["seed"], int)
     ):
@@ -532,25 +555,168 @@ def check_eyes(data: dict) -> dict:
     return data
 
 
+def eyes_section(material: dict | None, detail: dict | None = None) -> dict | None:
+    """
+    The eyes section that a card's ``material`` turns on, or None for anny's own eyeballs:
+    ``material.eyes`` itself; ``{}`` (the defaults) for a fitted card without it, whose bake
+    measured the reference's eyes (``material.reference_eyes``) or baked its eye texture
+    (``textures.eyes`` of the card's ``detail``); None for ``"eyes": false`` and for other
+    cards without it.
+    """
+    material = material or {}
+    eyes = material.get("eyes")
+    if eyes is False:
+        return None
+    if eyes is not None:
+        return eyes
+    baked = ((detail or {}).get("textures") or {}).get("eyes")
+    if material.get("reference_eyes") or baked:
+        return {}
+    return None
+
+
 def check_reference_eyes(data: dict) -> dict:
     """
     Raise ValueError for a ``material.reference_eyes`` section that is not valid; returns it.
     The section holds the values of a reference's eyes that the bake measured
     (:meth:`opensculptboy.fit.reference.Reference.eye_values`): some of ``cornea_radius_mm``,
-    ``cornea_roughness`` and ``cornea_ior``, as numbers. The eyes' ``"auto"`` values take
-    them; the section turns no eyes on by itself.
+    ``cornea_roughness`` and ``cornea_ior``, as numbers, and ``gaze``, the direction in which
+    each eye (``"L"``, ``"R"``) looks at rest (:func:`opensculptboy.texture.eyes.
+    bake_eye_layout`). The eyes' ``"auto"`` values take
+    them, and the section turns the eyes on for a card without ``material.eyes``
+    (:func:`eyes_section`).
     """
     if not isinstance(data, dict):
         raise ValueError("material reference_eyes must be a JSON object.")
-    unknown = sorted(set(data) - set(_CORNEA_RANGES))
+    keys = set(_CORNEA_RANGES) | {"gaze"}
+    unknown = sorted(set(data) - keys)
     if unknown:
         raise ValueError(
-            f"Unknown reference_eyes keys {unknown}; the keys are {sorted(_CORNEA_RANGES)}."
+            f"Unknown reference_eyes keys {unknown}; the keys are {sorted(keys)}."
         )
+    gaze = data.get("gaze", {})
+    if not isinstance(gaze, dict) or set(gaze) - {"L", "R"}:
+        raise ValueError("reference_eyes gaze must map 'L' and 'R' to directions.")
+    for side, value in gaze.items():
+        direction = value
+        if (
+            not isinstance(direction, (list, tuple))
+            or len(direction) != 3
+            or not all(_is_real(c) for c in direction)
+            or float(np.linalg.norm(direction)) < 0.5
+            or float(direction[1]) / float(np.linalg.norm(direction)) > -0.8
+        ):
+            raise ValueError(
+                f"reference_eyes gaze {side} must be a direction of 3 numbers within "
+                "about 37 degrees of -Y."
+            )
     for key, value in data.items():
+        if key == "gaze":
+            continue
         if isinstance(value, (str, bool)):
             raise ValueError(f"reference_eyes {key} must be a number (got {value!r}).")
         _number(value, f"reference_eyes {key}", *_CORNEA_RANGES[key])
+    return data
+
+
+# The lashes (``material.lashes``, :mod:`opensculptboy.eyes.lashes`): every key is optional.
+# They come with the eyes of opensculptboy.eyes; ``"lashes": false`` leaves them out.
+# Colours are linear RGB, lengths millimetres.
+LASH_DEFAULTS = {
+    "source": "auto",  # "auto" ("reference" with a mesh, else "generic"), "reference",
+    #                    "generic"
+    "mesh": None,  # the reference's lashes in the card's rest frame (a .safetensors file that
+    #                the bake writes, opensculptboy.eyes.lashes.LashData), relative to the card
+    "base_color": None,  # their texture (RGBA), relative to the card
+    "color": [0.018, 0.011, 0.007],  # generic lashes: a dark brown
+    "length_mm": 6.5,  # generic upper lashes at their longest
+    "lower": True,  # generic lashes on the lower lids too
+    "lower_length_mm": 2.5,
+    "curl": 0.45,  # how far the generic lashes curl away from the eye, a share of their length
+    "density": 1.0,  # the share of the generic texture's strands
+    "roughness": 1.0,  # a matt strand: a shiny card reads grey at a grazing angle
+    "seed": 0,  # of the generic strands
+}
+LASH_SOURCES = ("auto", "reference", "generic")
+
+
+@dataclasses.dataclass
+class LashMaterial:
+    """The resolved lashes of a card: every value of :data:`LASH_DEFAULTS` present, and
+    ``source`` resolved to ``"reference"`` or ``"generic"``."""
+
+    source: str = "generic"
+    mesh: str | None = None
+    base_color: str | None = None
+    color: list = dataclasses.field(
+        default_factory=lambda: list(LASH_DEFAULTS["color"])
+    )
+    length_mm: float = 6.5
+    lower: bool = True
+    lower_length_mm: float = 2.5
+    curl: float = 0.45
+    density: float = 1.0
+    roughness: float = 1.0
+    seed: int = 0
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "LashMaterial":
+        data = check_lashes(dict(data or {}))
+        values = {**LASH_DEFAULTS, **data}
+        source = values["source"]
+        if source == "auto":
+            source = "reference" if values["mesh"] else "generic"
+        if source == "reference" and not values["mesh"]:
+            raise ValueError("lashes source 'reference' needs the mesh of the bake.")
+        values["source"] = source
+        values["color"] = [float(c) for c in values["color"]]
+        return cls(**values)
+
+    def extras(self) -> dict[str, Any]:
+        """What the files record of the lashes."""
+        out = {"source": self.source, "roughness": float(self.roughness)}
+        if self.source == "generic":
+            out.update(
+                color=[float(c) for c in self.color],
+                length_mm=float(self.length_mm),
+                lower=bool(self.lower),
+            )
+        return out
+
+
+def check_lashes(data: dict) -> dict:
+    """Raise ValueError for a ``material.lashes`` section that is not valid; returns it."""
+    if not isinstance(data, dict):
+        raise ValueError("material lashes must be a JSON object or false.")
+    unknown = sorted(set(data) - set(LASH_DEFAULTS))
+    if unknown:
+        raise ValueError(
+            f"Unknown lashes keys {unknown}; the keys are {sorted(LASH_DEFAULTS)}."
+        )
+    if data.get("source", "auto") not in LASH_SOURCES:
+        raise ValueError(
+            f"lashes source must be one of {list(LASH_SOURCES)} (got {data['source']!r})."
+        )
+    for key in ("mesh", "base_color"):
+        if data.get(key) is not None and not isinstance(data[key], str):
+            raise ValueError(f"lashes {key} must be a path.")
+    if "color" in data:
+        _colour(data["color"], "lashes color", 3)
+    for key, low, high in (
+        ("length_mm", 1.0, 20.0),
+        ("lower_length_mm", 0.5, 15.0),
+        ("curl", 0.0, 1.0),
+        ("density", 0.05, 3.0),
+        ("roughness", 0.0, 1.0),
+    ):
+        if key in data:
+            _number(data[key], f"lashes {key}", low, high)
+    if "lower" in data and not isinstance(data["lower"], bool):
+        raise ValueError("lashes lower must be true or false.")
+    if "seed" in data and (
+        isinstance(data["seed"], bool) or not isinstance(data["seed"], int)
+    ):
+        raise ValueError("lashes seed must be an integer.")
     return data
 
 

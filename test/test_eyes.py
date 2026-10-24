@@ -218,10 +218,17 @@ class TestReferenceEyes(unittest.TestCase):
         self.assertEqual(card.eye_material().cornea_radius_mm, 9.3)
         self.assertEqual(card.eye_material().sized().extras()["cornea_radius_mm"], 9.3)
         self.assertIsNone(card.skin_material())
-        # the measured values alone turn no eyes on and keep the exporters' own skin
+        # the measured values alone turn the eyes on (a fitted card) and keep the
+        # exporters' own skin; "eyes": false keeps anny's own eyeballs
         alone = Character(material={"reference_eyes": self.measured})
-        self.assertIsNone(alone.eye_material())
+        self.assertEqual(alone.eye_material().cornea_radius_mm, 9.3)
         self.assertIsNone(alone.skin_material())
+        off = Character(material={"eyes": False, "reference_eyes": self.measured})
+        self.assertIsNone(off.eye_material())
+        self.assertIsNone(off.lash_material())
+        baked = Character(detail={"textures": {"eyes": "card.eyes.png"}})
+        self.assertIsNotNone(baked.eye_material())
+        self.assertIsNone(Character().eye_material())
         skin = Character(
             material={"ior": 1.4, "eyes": {}, "reference_eyes": self.measured}
         )
@@ -727,7 +734,9 @@ class TestExports(unittest.TestCase):
         g = self.glb.json
         self.assertEqual(structure_errors(self.glb), [])
         prims = self._materials(self.glb)
-        self.assertEqual(sorted(prims), ["conjunctiva", "cornea", "eyes", "skin"])
+        self.assertEqual(
+            sorted(prims), ["conjunctiva", "cornea", "eyes", "lashes", "skin"]
+        )
         for p in prims.values():  # the eye parts share the body's vertices and targets
             self.assertEqual(p["attributes"], prims["skin"]["attributes"])
             self.assertEqual(p.get("targets"), prims["skin"].get("targets"))
@@ -787,7 +796,7 @@ class TestExports(unittest.TestCase):
         export_glb(path, card, self.model)
         glb = GLB(path)
         self.assertEqual(structure_errors(glb), [])
-        self.assertEqual(sorted(self._materials(glb)), ["eyes", "skin"])
+        self.assertEqual(sorted(self._materials(glb)), ["eyes", "lashes", "skin"])
         eyes = next(m for m in glb.json["materials"] if m["name"] == "eyes")
         self.assertEqual(
             eyes["extensions"]["KHR_materials_clearcoat"]["clearcoatFactor"], 1.0
@@ -887,7 +896,7 @@ class TestExports(unittest.TestCase):
                     self.assertEqual(check(g), [])
                     self.assertEqual(
                         [m["name"] for m in g["materials"]],
-                        ["skin", "eyes", "conjunctiva"],
+                        ["skin", "eyes", "conjunctiva", "lashes"],
                     )
                     self.assertEqual(
                         [i["name"] for i in g["images"][:2]],
@@ -967,7 +976,7 @@ class TestExports(unittest.TestCase):
         )
 
         settings = read_skin_settings(str(self.path), EYE_EXTRAS_KEY)
-        self.assertEqual(sorted(settings), ["conjunctiva", "cornea", "eyes"])
+        self.assertEqual(sorted(settings), ["conjunctiva", "cornea", "eyes", "lashes"])
         cornea = eye_principled_values(settings["cornea"])
         self.assertTrue(cornea["shadow_transparent"])
         self.assertEqual(cornea["inputs"]["Transmission Weight"], 1.0)
@@ -998,9 +1007,105 @@ class TestExports(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(["export", str(out), "--eyes", str(values)]), 0)
         glb = GLB(out)
-        self.assertEqual(sorted(self._materials(glb)), ["cornea", "eyes", "skin"])
+        self.assertEqual(
+            sorted(self._materials(glb)), ["cornea", "eyes", "lashes", "skin"]
+        )
         card = glb.json["scenes"][0]["extras"]["opensculptboy"]["character"]
         self.assertEqual(card["material"]["eyes"]["iris_color"], [0.1, 0.2, 0.1])
+
+
+def _has_embree() -> bool:
+    try:
+        import trimesh.ray.ray_pyembree  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@unittest.skipUnless(_has_embree(), "the eye bake needs embreex (the viewer extra)")
+class TestEyeLayoutBake(unittest.TestCase):
+    """The reference's eyes baked straight onto the eye texture's layout, with the gaze turned
+    toward the reference's pupil."""
+
+    def test_layout_and_gaze(self):
+        from opensculptboy.eyes import geometry
+        from opensculptboy.eyes import texture as tex
+        from opensculptboy.fit.handoff import HandoffPart
+        from opensculptboy.fit.reference import Reference
+        from opensculptboy.texture.eyes import bake_eye_layout, turned_axes
+
+        # a reference eye: a sphere of 12 mm whose texture draws a dark pupil and a grey iris
+        # about a gaze 6 degrees toward +X from -Y
+        radius, centre = 0.012, np.array([0.03, -0.05, 1.5])
+        rings, segments = 48, 96
+        theta = np.linspace(0, np.pi, rings + 1)
+        phi = np.linspace(0, 2 * np.pi, segments + 1)
+        t, p = np.meshgrid(theta, phi, indexing="ij")
+        local = np.stack(
+            [np.sin(t) * np.cos(p), np.sin(t) * np.sin(p), np.cos(t)], -1
+        ).reshape(-1, 3)
+        uvs = np.stack([p / (2 * np.pi), t / np.pi], -1).reshape(-1, 2)
+        quads = []
+        for i in range(rings):
+            for j in range(segments):
+                a = i * (segments + 1) + j
+                quads += [
+                    [a, a + segments + 1, a + 1],
+                    [a + 1, a + segments + 1, a + segments + 2],
+                ]
+        axes = np.stack([[1.0, 0, 0], [0, 0, 1.0], [0, -1.0, 0]], 1)  # +X, up, gaze
+        gaze = turned_axes(axes, [np.sin(np.radians(6)), -np.cos(np.radians(6)), 0.0])
+        points = centre + radius * local @ gaze.T
+        h, w = 256, 512
+        v, u = np.mgrid[0:h, 0:w]
+        angle = (v + 0.5) / h * 180.0  # from the gaze (the texture's v)
+        image = np.full((h, w, 3), 230, np.uint8)
+        image[angle < 25] = (110, 110, 100)
+        image[angle < 9] = (5, 5, 5)
+        part = HandoffPart("eye", "eyes", points, np.asarray(quads), uvs, image)
+        target = Reference(
+            points,
+            np.asarray(quads),
+            parts=[part],
+            part_offsets=np.array([0, len(points)]),
+        )
+        frames = {"L": geometry.EyeFrame("L", centre, radius, axes)}
+        colour, normal, out_axes = bake_eye_layout(target, frames)
+        self.assertEqual(colour.shape, (512, 1024, 3))
+        self.assertEqual(normal.shape, (512, 1024, 3))
+        # the gaze turned toward the reference's pupil, within a degree
+        turn = np.degrees(np.arccos(np.clip(out_axes["L"][:, 2] @ gaze[:, 2], -1, 1)))
+        self.assertLess(turn, 1.0)
+        # and the pupil sits on the gaze of the baked layout, with the iris round about it
+        s, phi_, left = tex.texel_polar()
+        hit = tex.find_iris(tex.linear(colour[left]), s[left], phi_[left])
+        self.assertIsNotNone(hit)
+        self.assertLess(np.hypot(*hit[0]), 0.02)
+        self.assertAlmostEqual(hit[2], np.sin(np.radians(25)), delta=0.03)
+        # the normals of a plain sphere are the sphere's own
+        n = normal[left].astype(float) / 255.0 * 2.0 - 1.0
+        front = s[left] < 0.9
+        self.assertGreater(np.median(n[front, 2]), 0.99)
+        # an eye frame turned to a recorded gaze looks along it
+        frame = geometry.eye_frame("L", points, gaze[:, 2])
+        np.testing.assert_allclose(frame.axes[:, 2], gaze[:, 2], atol=1e-9)
+        # a part without a texture (a clear shell over the eye) gives no colour: where its
+        # hits come nearest, the texels take the colour of the textured eye around them
+        shell_points = centre + (radius + 0.0004) * local @ gaze.T
+        cos = (local @ np.array([0.0, 0.0, 1.0]))[np.asarray(quads)].mean(1)
+        band = np.asarray(quads)[(cos < np.cos(np.radians(40))) & (cos > 0.5)]
+        shell = HandoffPart("shell", "eyes", shell_points, band, None, None)
+        n = len(points)
+        target = Reference(
+            np.concatenate([points, shell_points]),
+            np.concatenate([np.asarray(quads), band + n]),
+            parts=[part, shell],
+            part_offsets=np.array([0, n, 2 * n]),
+        )
+        frames = {"L": geometry.EyeFrame("L", centre, radius + 0.0005, gaze)}
+        colour, _, _ = bake_eye_layout(target, frames, gaze=False)
+        ring = left & (s > np.sin(np.radians(45))) & (s < np.sin(np.radians(55)))
+        self.assertGreater(float(colour[ring].min()), 200)
 
 
 if __name__ == "__main__":

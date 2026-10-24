@@ -416,6 +416,36 @@ class TestDressedFiles(unittest.TestCase):
         _, bare = self.export("bare.glb", outfit="none")
         self.assertEqual(bare["wearables"], [])
 
+    def test_skin_goes_only_under_shown_pieces(self):
+        """An export removes the body's skin only under the pieces it shows: a bare body
+        (no outfit, or every piece hidden) keeps every body triangle, and hiding a piece
+        brings back the skin that it alone covers."""
+
+        def body_triangles(path):
+            g = GLB(path).json
+            body = next(n for n in g["nodes"] if "mesh" in n and "skin" in n)
+            return sum(
+                g["accessors"][p["indices"]]["count"] // 3
+                for p in g["meshes"][body["mesh"]]["primitives"]
+            )
+
+        whole, _ = self.export("whole.glb", covered="keep")
+        dressed, every = self.export("every.glb")
+        no_tunic, some = self.export("no_tunic.glb", hide=("tunic",))
+        hidden, none_shown = self.export(
+            "hidden.glb", hide=("tunic", "circlet", "cape")
+        )
+        bare, no_outfit = self.export("none.glb", outfit="none")
+        self.assertEqual(none_shown["removed_body_triangles"], 0)
+        self.assertEqual(no_outfit["removed_body_triangles"], 0)
+        self.assertEqual(body_triangles(hidden), body_triangles(whole))
+        self.assertEqual(body_triangles(bare), body_triangles(whole))
+        self.assertLess(some["removed_body_triangles"], every["removed_body_triangles"])
+        self.assertEqual(
+            body_triangles(dressed),
+            body_triangles(whole) - every["removed_body_triangles"],
+        )
+
     def test_dressed_glb_with_eight_influences(self):
         """Eight bones per vertex: the pieces hold them in two sets of four, as the body."""
         path = self.folder / "eight.glb"

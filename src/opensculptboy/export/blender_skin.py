@@ -38,7 +38,9 @@ The eyes of :mod:`opensculptboy.eyes` keep their settings under ``opensculptboy_
   iris and greys the pupil) and, under a cornea, no specular reflection of its own (Specular
   IOR Level 0, as the file's ``KHR_materials_specular`` says): its rough reflection would lay a
   milky veil over the eye;
-- ``conjunctiva``: the caruncle and the skin of the socket, with subsurface scattering.
+- ``conjunctiva``: the caruncle and the skin of the socket, with subsurface scattering;
+- ``lashes``: the lashes keep the file's colour and alpha, and their shadow rays pass
+  through them, as the cornea's do.
 
 A wardrobe file (:mod:`opensculptboy.wearables`) holds every piece of every outfit as its own
 node. Blender's importer reads every node and ignores ``KHR_node_visibility``, so
@@ -148,6 +150,10 @@ def eye_principled_values(settings: dict, unit_scale: float = 1.0) -> dict:
             inputs["Specular IOR Level"] = 0.0
             inputs["Coat Weight"] = 0.0
         return {"inputs": inputs, "shadow_transparent": False, "drop_volume": False}
+    if role == "lashes":
+        # the lashes keep the file's colour and alpha, and cast no shadow (a game's lash
+        # material casts none either; their shadow darkens the whole eye)
+        return {"inputs": {}, "shadow_transparent": True, "drop_volume": False}
     if role == "conjunctiva":
         inputs = {
             "Subsurface Weight": 0.35,
