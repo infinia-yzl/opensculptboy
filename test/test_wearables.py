@@ -230,6 +230,23 @@ class TestBinding(unittest.TestCase):
         piece.garment.materials[0].alpha_mode = "MASK"  # lace: the skin may show
         self.assertEqual(int(ray_cover(body, piece).sum()), 0)
 
+    def test_group_masks_without_a_mask_of_the_fixed_groups(self):
+        """A package with group masks and no ``covers`` mask: the ray test covers the skin
+        of its fixed groups, and each shown group adds its mask."""
+        from opensculptboy.wearables.cover import piece_cover, ray_cover
+
+        body = template_body()
+        w = tunic()
+        w.covers = None
+        shins = body.vertices[:, 2] < body.vertices[:, 2].min() + 0.3
+        w.group_covers["front"] = w.group_covers["front"] | shins
+        piece = dress(body, _worn(w))[0]
+        mask = piece_cover(body, piece)
+        self.assertTrue(mask[shins].all())
+        self.assertTrue(mask[ray_cover(body, piece)].all())
+        piece.hidden_groups = ["front"]
+        self.assertFalse(piece_cover(body, piece)[shins].any())
+
     def test_smoothed_weights(self):
         """Diffused weights keep their sums, join vertices at one position and blend
         neighbours alike."""
