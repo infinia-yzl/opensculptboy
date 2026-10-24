@@ -924,7 +924,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
 // ------------------------------------------------------------------ the body build in a worker
 // A slider edit builds the body in a worker (body_worker.ts), so the page keeps drawing frames during a drag. The
 // worker builds one set of values at a time, and the newest values wait for the build in flight. The shot mode, the
-// test hooks (window.setSliders, window.setFace) and '?bodyworker=off' build the body on the page.
+// test hooks (window.setLook, window.setSliders, window.setFace) and '?bodyworker=off' build the body on the page.
 declare const __BODY_WORKER__: string;
 const BW: any = { worker: null, ready: false, busy: false, want: null, flight: null, spare: null, gen: 0, id: 0, sync: 0, latency: 0 };
 // copies of the buffers for the worker: a view of the model data would carry the whole decoded model with it
@@ -2752,7 +2752,7 @@ window.weightStats = weightStats;
 window.setFpsCap = (cap) => { setFpsCap(cap); return FPS.cap; };
 window.__CORR = CORR;
 window.__U = U;
-window.setLook = (look) => { applyLook(look, false); return true; };
+window.setLook = (look) => syncBody(() => { applyLook(look, false); return true; });
 window.setMotion = (name, t = 0, paused = true) => { MOTION.playing = !paused; return setMotion(name, { instant: true, t, remember: false }); };
 window.__MOTION = MOTION; window.__RIG = RIG;
 // the camera and the navigation state, for tests of the interface
