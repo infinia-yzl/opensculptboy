@@ -526,6 +526,7 @@ def vrm_spec(
     textures=None,
     detail_region: str | None = None,
     tier: dict | None = None,
+    dressing=None,
 ) -> VrmSpec:
     """
     The content of a VRM file of a character (see :func:`export_vrm` for the arguments).
@@ -632,6 +633,7 @@ def vrm_spec(
         weights, indices = split_head_weights(
             weights, indices, list(weight_model.bone_labels), model
         )
+    file_skin = (weights, indices)  # Anny's rows, for the wearables' weights
     w4, i4, _ = top_skin_weights(weights, indices, 4)
     w4 = w4.astype(np.float64)
     w4 /= w4.sum(axis=1, keepdims=True)
@@ -827,12 +829,31 @@ def vrm_spec(
         if eyed is not None or toothed is not None:
             body.anny_source = _anny_source(eyed, toothed)[body.source]
 
+    # The wearables: bound into the T-pose with the file's skin weights at their points.
+    if dressing is None and character.has_wardrobe() and not bare:
+        from opensculptboy.wearables.export import Dressing
+
+        dressing = Dressing()
+    dressed, wear_body, worn_meshes = None, None, []
+    if dressing is not None:
+        from opensculptboy.wearables.export import dress_card, vrm_piece_meshes
+
+        if dressing.wardrobe:
+            raise ValueError(
+                "A wardrobe file is a GLB file; a VRM file wears one outfit."
+            )
+        wear_body, dressed = dress_card(
+            character, model, detail_dir, dressing, 4, skin_weights=file_skin
+        )
+        worn_meshes = vrm_piece_meshes(dressed, rb, G)
+
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
     root = labels.index("root")
-    offset = np.array(
-        [-joints[root, 0], -float(body.positions[:, 1].min()), -joints[root, 2]]
-    )
+    low = float(body.positions[:, 1].min())
+    for _, piece_body in worn_meshes:
+        low = min(low, float(piece_body.positions[:, 1].min()))
+    offset = np.array([-joints[root, 0], -low, -joints[root, 2]])
     joints = joints + offset
 
     # Nodes: the joints in the file's hierarchy, with normalised (identity) rotations.
@@ -895,6 +916,20 @@ def vrm_spec(
             model, body, None if detail is None else detail.topology
         )
     rest = np.ones(len(body.triangles), bool)
+    removed = 0
+    if dressed and dressing.covered == "remove":
+        from opensculptboy.wearables.export import covered_body_triangles
+
+        covered = covered_body_triangles(
+            wear_body,
+            dressed,
+            body,
+            int(body.source.max(initial=-1)) + 1,
+            len(model.template_vertices),
+            detail,
+        )
+        removed = int(covered.sum())
+        rest &= ~covered
     extra = []
     if eye_triangles is not None and eye_triangles.any():
         # the eyeballs: the same vertices and targets, their own texture
@@ -933,7 +968,7 @@ def vrm_spec(
             materials.append(head_material)
             extra.insert(0, SpecPrimitive(len(materials) - 1, body.triangles[head]))
             rest &= ~head
-    if extra:
+    if extra or not rest.all():
         primitives = [SpecPrimitive(material=0, triangles=body.triangles[rest])] + extra
     meshes = [
         SpecMesh(
@@ -946,6 +981,32 @@ def vrm_spec(
     ]
     nodes.append(SpecNode("body", np.zeros(3), mesh=0, skin=0))
     scene_nodes = [j for j, p in enumerate(parents) if p < 0] + [len(nodes) - 1]
+    garment_images = []
+    if worn_meshes:
+        from opensculptboy.wearables.export import vrm_piece_materials
+
+        first = len([s for s in VRM_TEXTURE_SLOTS if s in images])
+        for piece, piece_body in worn_meshes:
+            toon, garment_images = vrm_piece_materials(piece, first, garment_images)
+            parts = []
+            for m, material in enumerate(toon):
+                rows = piece_body.triangle_faces == m
+                if rows.any():
+                    materials.append(material)
+                    parts.append(
+                        SpecPrimitive(len(materials) - 1, piece_body.triangles[rows])
+                    )
+            meshes.append(
+                SpecMesh(
+                    name=piece.ref,
+                    body=piece_body,
+                    translation=offset,
+                    primitives=parts,
+                    target_names=[],
+                )
+            )
+            nodes.append(SpecNode(piece.ref, np.zeros(3), mesh=len(meshes) - 1, skin=0))
+            scene_nodes.append(len(nodes) - 1)
 
     humanoid = {
         bone: labels.index(label)
@@ -1007,6 +1068,10 @@ def vrm_spec(
         extras["textures"] = sorted(images)
     if tier is not None:
         extras["tier"] = dict(tier)
+    if dressing is not None:
+        from opensculptboy.wearables.export import summary as wear_summary
+
+        extras["wearables"] = wear_summary(dressed, removed, dressing)
     return VrmSpec(
         version=version,
         frame=G.copy(),
@@ -1031,7 +1096,8 @@ def vrm_spec(
         skin_weights=w4,
         skin_indices=i4,
         parents=parents,
-        images=[(slot, images[slot]) for slot in VRM_TEXTURE_SLOTS if slot in images],
+        images=[(slot, images[slot]) for slot in VRM_TEXTURE_SLOTS if slot in images]
+        + garment_images,
     )
 
 
@@ -1826,6 +1892,7 @@ def export_vrm(
     textures=None,
     detail_region: str | None = None,
     tier: dict | None = None,
+    dressing=None,
 ) -> dict:
     """
     Write a character as a VRM file.
@@ -1881,6 +1948,12 @@ def export_vrm(
             ``"full"`` or ``"head"`` for that region of ``detail_level`` as it is.
         tier: the rendering-budget tier of the file (:meth:`opensculptboy.tiers.Tier.extras`),
             recorded in the scene extras; None records nothing.
+        dressing: the wearables of the file
+            (:class:`opensculptboy.wearables.export.Dressing`; a wardrobe is for GLB files
+            only): each shown piece becomes a mesh bound into the T-pose with the file's
+            skin weights at its bound points and an MToon material, and the covered body
+            triangles leave the file unless ``dressing.covered`` is ``"keep"``. None dresses
+            a card with wardrobe fields in its active outfit (none with ``bare``).
 
     Returns:
         A summary: counts, the file size, the version and the budget messages.
@@ -1915,8 +1988,13 @@ def export_vrm(
         textures=textures,
         detail_region=detail_region,
         tier=tier,
+        dressing=dressing,
     )
     summary = write_vrm(spec, path, budget=budget)
+    if "wearables" in spec.extras:
+        summary["wearables"] = [
+            p["piece"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
+        ]
     if tier is not None:
         summary["tier"] = tier.get("name")
     return summary

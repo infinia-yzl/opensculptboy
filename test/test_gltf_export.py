@@ -49,6 +49,7 @@ REFERENCE_CASES = (
     "float32",
     "all_phenotypes",
     "head_dense",
+    "dressed",
 )
 # Floats of the structure and the fingerprints match within this relative and absolute
 # tolerance. A float64 model gives the same float32 values on every machine: the rounding noise
@@ -253,6 +254,9 @@ def reference_cases() -> dict[str, dict]:
       firmness phenotypes) and local changes, at 8 influences.
     - ``head_dense``: the head part model with its default facial-action targets; the targets
       that move 40 % of its vertices or more are dense.
+    - ``dressed``: a card that wears the synthetic outfit of ``test.wearable_fixtures`` (a
+      tunic, a rigid circlet and a cape that hides the tunic's back), with the covered
+      skin removed; ``wearables`` makes the export write the packages next to the file.
 
     ``model`` names the model: ``"float64"`` for a float64 model of the character's settings,
     or ``"exporter"`` for the model that ``export_glb`` builds itself.
@@ -336,7 +340,17 @@ def reference_cases() -> dict[str, dict]:
             options=dict(morph_targets=["jawOpen", "eyeBlinkRight"], max_influences=8),
         ),
         "head_dense": dict(character=head, face_shapes=False, options={}),
+        "dressed": dict(
+            character=dressed_card(), face_shapes=False, options={}, wearables=True
+        ),
     }
+
+
+def dressed_card() -> Character:
+    """The card of the ``dressed`` case (its packages are written by export_case)."""
+    from test.wearable_fixtures import outfit_card
+
+    return outfit_card()
 
 
 def assert_float32_matches_float64(
@@ -373,7 +387,13 @@ def assert_float32_matches_float64(
 def export_case(case: dict, directory, name: str) -> pathlib.Path:
     """Export one reference case with its model (see case_model); returns the path of the file."""
     path = pathlib.Path(directory) / f"{name}.glb"
-    export_glb(path, case["character"], case_model(case), **case["options"])
+    options = dict(case["options"])
+    if case.get("wearables"):
+        from test.wearable_fixtures import write_outfit
+
+        write_outfit(directory)
+        options["detail_dir"] = directory
+    export_glb(path, case["character"], case_model(case), **options)
     return path
 
 
@@ -416,6 +436,7 @@ def write_reference(path=REFERENCE) -> None:
                 character=case["character"].to_dict(),
                 face_shapes=case["face_shapes"],
                 model=case.get("model", "float64"),
+                **({"wearables": True} if case.get("wearables") else {}),
                 options=json_value(case["options"]),
                 structure=structure,
                 accessors=accessors,
@@ -861,6 +882,7 @@ class TestGltfReference(unittest.TestCase):
                         face_shapes=recorded["face_shapes"],
                         model=recorded["model"],
                         options=recorded["options"],
+                        wearables=recorded.get("wearables", False),
                     )
                     path = export_case(case, tmp, name)
                     found = gltf_fingerprint(path)
@@ -910,7 +932,8 @@ class TestGltfReference(unittest.TestCase):
         self.assertNotEqual(integers["sha256"], moved_integers["sha256"])
 
     def test_reference_is_small(self):
-        self.assertLess(REFERENCE.stat().st_size, 300_000)
+        # the dressed case holds its own node list (the joints and the pieces): about 45 kB
+        self.assertLess(REFERENCE.stat().st_size, 340_000)
 
 
 def json_value(value):

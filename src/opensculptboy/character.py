@@ -9,11 +9,13 @@ from typing import Any
 
 import torch
 
-# Schema 2 adds the optional ``detail`` field and schema 3 the optional ``material`` field. A
-# card is written with the lowest schema that holds its fields, so that a card without them
-# stays byte for byte what earlier versions wrote and read.
-SCHEMA_VERSION = 3
-SCHEMA_VERSIONS = (1, 2, 3)
+# Schema 2 adds the optional ``detail`` field, schema 3 the optional ``material`` field and
+# schema 4 the wardrobe fields (``wearables``, ``outfits``, ``active_outfit`` and
+# ``wearable_overrides``). A card is written with the lowest schema that holds its fields, so
+# that a card without them stays byte for byte what earlier versions wrote and read.
+SCHEMA_VERSION = 4
+SCHEMA_VERSIONS = (1, 2, 3, 4)
+WARDROBE_FIELDS = ("wearables", "outfits", "active_outfit", "wearable_overrides")
 
 
 @dataclasses.dataclass
@@ -49,6 +51,13 @@ class Character:
     roughness, the specular reflection and the subsurface scattering, and the thickness and
     curvature maps of real-time skin shading (see :mod:`opensculptboy.material`). An empty
     ``material`` keeps the exporters' own skin.
+
+    The wardrobe fields (schema 4, :mod:`opensculptboy.wearables.wardrobe`) list what the
+    character can wear: ``wearables`` holds loose pieces (``{"id", "file", "enabled"}``, each
+    file a wearable package), ``outfits`` holds outfits (``{"id", "label", "pieces":
+    [{"piece", "file", "enabled"}]}``), ``active_outfit`` names the outfit worn and
+    ``wearable_overrides`` switches single pieces (``{"<outfit>/<piece>": {"enabled":
+    false}}``).
     """
 
     name: str = "character"
@@ -62,6 +71,10 @@ class Character:
     pose: dict[str, Any] = dataclasses.field(default_factory=dict)
     detail: dict[str, Any] = dataclasses.field(default_factory=dict)
     material: dict[str, Any] = dataclasses.field(default_factory=dict)
+    wearables: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    outfits: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    active_outfit: str = ""
+    wearable_overrides: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def skin_material(self):
         """The :class:`~opensculptboy.material.SkinMaterial` of ``material``, or None (also
@@ -201,9 +214,14 @@ class Character:
             "root": [round(float(x), 6) for x in params[0, :3, 3]],
         }
 
+    def has_wardrobe(self) -> bool:
+        """Whether the card sets any of the wardrobe fields."""
+        return any(getattr(self, name) for name in WARDROBE_FIELDS)
+
     def to_dict(self) -> dict[str, Any]:
         """The card as a JSON object in the lowest schema that holds it: a card without
-        detail and material keeps schema 1, and one without material schema 2"""
+        detail, material and wardrobe keeps schema 1, one without material and wardrobe
+        schema 2, and one without wardrobe schema 3"""
         data = dataclasses.asdict(self)
         schema = 1
         if self.detail:
@@ -214,6 +232,11 @@ class Character:
             schema = 3
         else:
             del data["material"]
+        if self.has_wardrobe():
+            schema = 4
+        for name in WARDROBE_FIELDS:
+            if not getattr(self, name):
+                del data[name]
         return {"schema": schema, **data}
 
     @classmethod
@@ -232,6 +255,9 @@ class Character:
             raise ValueError("The detail field needs character schema 2.")
         if schema in (1, 2) and "material" in data:
             raise ValueError("The material field needs character schema 3.")
+        wardrobe = sorted(set(data) & set(WARDROBE_FIELDS))
+        if schema in (1, 2, 3) and wardrobe:
+            raise ValueError(f"The fields {wardrobe} need character schema 4.")
         fields = {f.name for f in dataclasses.fields(cls)}
         unknown = sorted(set(data) - fields - {"schema"})
         if unknown:
@@ -244,6 +270,10 @@ class Character:
             from opensculptboy.material import check_material
 
             check_material(character.material)
+        if character.has_wardrobe():
+            from opensculptboy.wearables.wardrobe import check_wardrobe
+
+            check_wardrobe(character)
         return character
 
     def check_detail(self) -> None:

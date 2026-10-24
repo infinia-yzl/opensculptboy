@@ -98,6 +98,7 @@ def export_glb(
     detail_dir: str | pathlib.Path | None = None,
     textures=None,
     tier: dict | None = None,
+    dressing=None,
 ) -> dict:
     """
     Write a character as a binary glTF 2.0 file.
@@ -142,6 +143,11 @@ def export_glb(
         tier: the rendering-budget tier of the file (:meth:`opensculptboy.tiers.Tier.extras`),
             recorded in the scene extras, whose ``shading`` names the skin shading it is
             meant for in the skin materials' extras; None (the default) records nothing.
+        dressing: the wearables of the file
+            (:class:`opensculptboy.wearables.export.Dressing`): each shown piece becomes a
+            mesh skinned by the character's skin, and the body triangles it covers leave the
+            file unless ``dressing.covered`` is ``"keep"``. None dresses a card with
+            wardrobe fields in its active outfit and leaves other cards as they are.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -311,6 +317,17 @@ def export_glb(
             body.anny_source = source[body.source]
         elif eyed is not None:
             body.anny_source = eyed.anny_vertex()[body.source]
+    dressed, wear_body, removed = None, None, 0
+    if dressing is None and character.has_wardrobe():
+        from opensculptboy.wearables.export import Dressing
+
+        dressing = Dressing()
+    if dressing is not None:
+        from opensculptboy.wearables.export import covered_body_triangles, dress_card
+
+        wear_body, dressed = dress_card(
+            character, model, detail_dir, dressing, max_influences
+        )
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
     head_material, head, ear_material = None, None, None
     if skin is not None:
@@ -354,6 +371,17 @@ def export_glb(
         hidden = toothed.hidden_mask()
     elif toothed is not None:
         teeth_parts = _teeth_materials(doc, toothed, teeth)
+    if dressed and dressing.covered == "remove" and not dressing.wardrobe:
+        covered = covered_body_triangles(
+            wear_body,
+            dressed,
+            body,
+            len(vertices),
+            len(model.template_vertices),
+            detail,
+        )
+        removed = int((covered & ~hidden).sum())
+        hidden = hidden | covered
     rest = ~hidden
     if eye_material is not None:
         rest &= ~eyes
@@ -430,7 +458,12 @@ def export_glb(
     lift = np.eye(4)
     if ground:
         # the lowest vertex as the file stores it (float32), on the floor
-        lift[1, 3] = -float(body.positions[:, 1].astype(np.float32).min())
+        low = float(body.positions[:, 1].astype(np.float32).min())
+        if dressed:  # footwear may reach below the skin
+            from opensculptboy.wearables.export import lowest
+
+            low = min(low, float(np.float32(lowest(dressed, C3))))
+        lift[1, 3] = -low
     default_local = _local_transforms(lift @ bind, parents)
     for j, label in enumerate(labels):
         node = {
@@ -454,6 +487,19 @@ def export_glb(
         }
     )
     mesh_node = doc.add_node({"name": character.name, "mesh": mesh_index, "skin": skin})
+    piece_nodes = []
+    if dressed:
+        from opensculptboy.wearables.gltf import add_pieces
+
+        piece_nodes = add_pieces(
+            doc,
+            dressed,
+            skin,
+            C3,
+            joint_type,
+            visibility=dressing.wardrobe and dressing.visibility,
+            all_groups=dressing.wardrobe,
+        )
 
     if character.pose:
         doc.add_animation(
@@ -486,6 +532,9 @@ def export_glb(
 
     doc.scene_name = character.name
     doc.scene_nodes = roots + [mesh_node]
+    for node, shown in piece_nodes:  # without visibility, the hidden pieces stay out
+        if shown or (dressing.wardrobe and dressing.visibility):
+            doc.scene_nodes.append(node)
     doc.scene_extras = {
         "opensculptboy": {
             "generator": "opensculptboy",
@@ -527,6 +576,12 @@ def export_glb(
         doc.scene_extras["opensculptboy"][key] = toothed.extras
     if tier is not None:
         doc.scene_extras["opensculptboy"]["tier"] = dict(tier)
+    if dressing is not None:
+        from opensculptboy.wearables.export import summary as wear_summary
+
+        doc.scene_extras["opensculptboy"]["wearables"] = wear_summary(
+            dressed, removed, dressing
+        )
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -543,6 +598,9 @@ def export_glb(
         summary["detail"] = detail.extras()
     if tier is not None:
         summary["tier"] = tier.get("name")
+    if dressing is not None:
+        summary["wearables"] = [p.ref for p in dressed if p.shown]
+        summary["removed_body_triangles"] = removed
     return summary
 
 
