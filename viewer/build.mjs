@@ -131,11 +131,18 @@ function reusedData() {
 }
 const gz = process.argv.includes('--reuse-data') ? reusedData() : await encodeData();
 
+// the body worker (src/body_worker.ts): its own bundle, which the page starts from a string
+const worker = await esbuild.build({
+  entryPoints: [path.join(here, 'src', 'body_worker.ts')],
+  bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
+  legalComments: 'none',
+});
 // the script: the TypeScript with three.js in one bundle
 const bundle = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'main.ts')],
   bundle: true, format: 'esm', minify: true, write: false, target: 'es2022',
   alias: { 'three/addons': 'three/examples/jsm' },
+  define: { __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text) },
   legalComments: 'none',
 });
 const app = bundle.outputFiles[0].text;
