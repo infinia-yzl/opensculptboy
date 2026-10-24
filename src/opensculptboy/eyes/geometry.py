@@ -152,10 +152,15 @@ def front_curvature_mm(
     return fit_sphere(points[front])[1] * 1000.0
 
 
-def eye_frame(side: str, points: np.ndarray) -> EyeFrame:
-    """The frame of an eye whose eyeball has the vertices ``points`` (N, 3)."""
+def eye_frame(side: str, points: np.ndarray, gaze=None) -> EyeFrame:
+    """The frame of an eye whose eyeball has the vertices ``points`` (N, 3): its gaze along
+    -Y, or along ``gaze`` (a direction) by the smallest turn from -Y."""
     centre, radius = fit_sphere(points)
     axes = np.stack([np.cross(UP, GAZE), UP, GAZE], axis=1)
+    if gaze is not None:
+        from opensculptboy.texture.eyes import turned_axes
+
+        axes = turned_axes(axes, gaze)
     return EyeFrame(side, centre, radius, axes)
 
 

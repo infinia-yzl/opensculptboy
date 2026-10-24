@@ -389,6 +389,12 @@ def tier_textures(
             size = (tier.ear_tile_size, tier.ear_tile_size // 2)
         elif slot in ("eyes", "eyes_normal"):
             size = (tier.eye_size, tier.eye_size // 2)
+        elif slot in (
+            "eye_layout",
+            "eye_layout_normal",
+        ):  # the eyes' own layout, as it is
+            keep[slot] = data
+            continue
         else:
             continue
         keep[slot] = _resize(data, size, normal=slot.endswith("normal"))

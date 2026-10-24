@@ -343,7 +343,7 @@ class TestExports(unittest.TestCase):
         self.assertEqual(structure_errors(glb), [])
         self.assertEqual(
             sorted(self._primitives(glb)),
-            ["conjunctiva", "cornea", "eyes", "skin", "teeth"],
+            ["conjunctiva", "cornea", "eyes", "lashes", "skin", "teeth"],
         )
 
     def test_vrm(self):

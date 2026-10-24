@@ -670,6 +670,11 @@ def vrm_spec(
     images = texture_images(character, textures, detail_dir)
     skin = character.skin_material()
     eye = character.eye_material()
+    lashes, lash_png = None, None
+    if eye is not None:  # the lashes of opensculptboy.eyes.lashes come with the eyes
+        from opensculptboy.eyes.lashes import eyed_lashes
+
+        lashes, lash_png = eyed_lashes(character, detail_dir)
     ear_topology, ears = ear_mesh(character, skin, images, detail, detail_dir)
     if textures is None:  # the card's maps, baked on its finest level
         from opensculptboy.texture.levels import level_normals
@@ -696,8 +701,19 @@ def vrm_spec(
             from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
+            layout = None
+            if "eye_layout" in images and "eye_base_color" not in images:
+                layout = (images["eye_layout"], images.get("eye_layout_normal"))
             eyed = eyed_mesh(
-                model, None, base, eye, "vrm", baked, skin_baked=baked_skin(images)
+                model,
+                None,
+                base,
+                eye,
+                "vrm",
+                baked,
+                skin_baked=baked_skin(images),
+                lashes=lashes,
+                layout=layout,
             )
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
@@ -786,6 +802,9 @@ def vrm_spec(
             from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
+            layout = None
+            if "eye_layout" in images and "eye_base_color" not in images:
+                layout = (images["eye_layout"], images.get("eye_layout_normal"))
             eyed = eyed_mesh(
                 model,
                 mesh,
@@ -794,6 +813,8 @@ def vrm_spec(
                 "vrm",
                 baked,
                 skin_baked=baked_skin(images),
+                lashes=lashes,
+                layout=layout,
             )
             normals = eyed.normals(vertices, normals)
             weights, indices = eyed.skin_weights(weights, indices)
@@ -908,7 +929,9 @@ def vrm_spec(
     eye_material = None if eyed is not None else _eye_toon_material(images, model)
     eye_triangles = None
     if eyed is not None:  # the eyes of opensculptboy.eyes: their texture and the matcap
-        eye_parts = _eye_part_toon_materials(images, eyed, eye, model, baked_eyes)
+        eye_parts = _eye_part_toon_materials(
+            images, eyed, eye, model, baked_eyes, lash_png, character.lash_material()
+        )
     if eye_material is not None:
         from opensculptboy.export.body import eyeball_triangles
 
@@ -1119,6 +1142,8 @@ VRM_TEXTURE_SLOTS = (
     # a toon tier's shade texture: the base colour darkened by the baked ambient occlusion
     # (opensculptboy.tiers); without it, the base colour is the shade texture too
     "shade",
+    # the lashes of opensculptboy.eyes.lashes (last, so that no other slot's index moves)
+    "lashes",
 )
 
 
@@ -1220,7 +1245,15 @@ def _eye_toon_material(images: dict, model) -> mtoon.ToonMaterial | None:
     return material
 
 
-def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None):
+def _eye_part_toon_materials(
+    images: dict,
+    eyed,
+    eye,
+    model,
+    baked: bytes | None,
+    lash_png: bytes | None = None,
+    lashes=None,
+):
     """
     The MToon materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (the
     single-surface eyeball, the caruncle and the skin of the socket), with their textures put
@@ -1229,7 +1262,9 @@ def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None
     :func:`opensculptboy.eyes.texture.matcap_pixels` (scaled by ``eye.highlight``) gives the
     wet highlight, which stays toward the light of the view as the eye turns. MToon 0.x does
     not mask the matcap, and neither does this material in 1.0. ``baked`` is the baked eye
-    texture on anny's atlas, if any.
+    texture on anny's atlas, if any. The lashes (``lashes``, a
+    :class:`~opensculptboy.material.LashMaterial`, with their texture ``lash_png``, slot
+    ``lashes``) take a double-sided MToon material blended by the texture's alpha.
     """
     from opensculptboy.eyes.mesh import eye_texture
     from opensculptboy.eyes.texture import matcap_pixels
@@ -1269,6 +1304,20 @@ def _eye_part_toon_materials(images: dict, eyed, eye, model, baked: bytes | None
         pink.matcap_texture = eyeball.matcap_texture
         pink.matcap_factor = (0.5 * k, 0.5 * k, 0.5 * k)
         out.append((pink, pink_mask))
+    lash_mask = eyed.part_mask("lashes")
+    if lashes is not None and lash_png is not None and lash_mask.any():
+        images["lashes"] = lash_png
+        lash = mtoon.soft_material("lashes", (1.0, 1.0, 1.0, 1.0))
+        lash.shade_color = (0.8, 0.8, 0.8)
+        lash.base_texture = lash.shade_texture = _texture_index(images, "lashes")
+        lash.alpha_mode = "BLEND"
+        lash.double_sided = True
+        out.append((lash, lash_mask))
+        eyed.extras["lashes"] = dict(
+            lashes.extras(),
+            points=int(len(eyed.lashes.points)),
+            triangles=int(len(eyed.lashes.triangles)),
+        )
     return out
 
 

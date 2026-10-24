@@ -272,6 +272,8 @@ class Reference:
     mouth_parts: list = dataclasses.field(default_factory=list)
     # the converted maps of the inner mouth by slot (paths), from the handoff's ``mouth``
     mouth_textures: dict = dataclasses.field(default_factory=dict)
+    # the parts of role "lashes", for the lashes of the bake
+    lash_parts: list = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=np.float64)
@@ -379,6 +381,7 @@ class Reference:
             regions,
             [p for p in handoff.parts if p.role == "mouth"],
             dict(getattr(handoff, "mouth_textures", None) or {}),
+            [p for p in handoff.parts if p.role == "lashes"],
         )
 
     def eye_values(self) -> dict:
@@ -454,6 +457,14 @@ class Reference:
                 for p in self.mouth_parts
             ],
             self.mouth_textures,
+            [
+                dataclasses.replace(
+                    p,
+                    vertices=p.vertices @ R.T + t,
+                    normals=None if p.normals is None else p.normals @ R.T,
+                )
+                for p in self.lash_parts
+            ],
         )
         return moved
 

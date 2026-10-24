@@ -165,6 +165,10 @@ TEXTURE_SLOTS = (
     "ears_thickness",
     "ears_curvature",
     "eye_base_color",
+    # the reference's eyes baked onto the layout of opensculptboy.eyes.texture, and their
+    # normals there (opensculptboy.texture.eyes.bake_eye_layout)
+    "eye_layout",
+    "eye_layout_normal",
     # the ambient occlusion of the master mesh on anny's atlas, and the shade texture of a
     # toon tier (the base colour darkened by the occlusion; opensculptboy.tiers)
     "occlusion",

@@ -58,6 +58,29 @@ class EyePart:
     operator: np.ndarray
     blend: np.ndarray
     source: np.ndarray  # (M,) the anchor row nearest each point
+    # the lashes (opensculptboy.eyes.lashes.PatchFollow): the points follow the rigid
+    # motions of patches of the mesh's vertices in place of the linear ``operator``
+    follow: object = None
+
+    def positions(self, x: np.ndarray) -> np.ndarray:
+        """The part's points for positions ``x`` (N, 3) of the mesh."""
+        if self.follow is None:
+            return self.operator @ x[self.anchors]
+        rotations, centres = self.follow.motions(lambda rows: x[rows])
+        return self.follow.points(self.rest, rotations, centres)
+
+    def offsets(self, offsets: np.ndarray, rest: np.ndarray) -> np.ndarray:
+        """The part's morph-target offsets (R, M, 3) for the mesh's offsets (R, N, 3) from
+        its rest vertices ``rest`` (N, 3)."""
+        if self.follow is None:
+            return np.einsum("mn,rnd->rmd", self.operator, offsets[:, self.anchors])
+        out = np.empty((len(offsets), len(self.rest), 3))
+        for r, d in enumerate(offsets):
+            rotations, centres = self.follow.motions(
+                lambda rows, d=d: rest[rows] + d[rows]
+            )
+            out[r] = self.follow.points(self.rest, rotations, centres) - self.rest
+        return out
 
 
 def affine_operator(anchors: np.ndarray, points: np.ndarray) -> np.ndarray:
@@ -113,6 +136,13 @@ class EyedMesh:
     # the triangles that a later stage appends after this mesh's (the teeth of
     # opensculptboy.teeth): part_mask leaves them out
     trailing_triangles: int = 0
+    # the lashes of the parts "lashes" (opensculptboy.eyes.lashes.LashData, in the rest
+    # frame of the mesh), or None
+    lashes: object = None
+    # the base mesh's rest vertices, from which the lashes' targets move
+    rest: np.ndarray | None = None
+    # the eyes baked straight onto the eye texture's layout: (colours, normals) as PNG bytes
+    layout: tuple | None = None
 
     def radii_mm(self) -> dict[str, float]:
         """The radius of each eyeball in millimetres."""
@@ -125,15 +155,12 @@ class EyedMesh:
     def vertices(self, x: np.ndarray) -> np.ndarray:
         """(N + M, 3) positions of the mesh's (N, 3), the parts' carried over."""
         x = np.asarray(x, dtype=np.float64)
-        return np.concatenate([x] + [p.operator @ x[p.anchors] for p in self.parts])
+        return np.concatenate([x] + [p.positions(x) for p in self.parts])
 
     def targets(self, offsets: np.ndarray) -> np.ndarray:
         """(R, N + M, 3) morph-target offsets of the mesh's (R, N, 3)."""
         offsets = np.asarray(offsets, dtype=np.float64)
-        parts = [
-            np.einsum("mn,rnd->rmd", p.operator, offsets[:, p.anchors])
-            for p in self.parts
-        ]
+        parts = [p.offsets(offsets, self.rest) for p in self.parts]
         return np.concatenate([offsets] + parts, axis=1)
 
     def normals(
@@ -150,6 +177,10 @@ class EyedMesh:
             base_normals = vertex_normals(x, kept)
         out = [np.asarray(base_normals, dtype=np.float64)]
         for p in self.parts:
+            if p.follow is not None:
+                rotations, _ = p.follow.motions(lambda rows: x[rows])
+                out.append(p.follow.directions(p.normals, rotations))
+                continue
             rest = p.operator @ x[p.anchors]
             turn = _rotation(p.rest, rest) if len(p.rest) > 2 else np.eye(3)
             out.append(p.normals @ turn.T)
@@ -236,11 +267,13 @@ def _base_mesh(model, mesh):
     return triangles, uv_triangles, uvs
 
 
-def measure_baked(model, eyeballs: dict, radii: dict, baked: bytes) -> dict:
+def measure_baked(
+    model, eyeballs: dict, radii: dict, baked: bytes, layout=None
+) -> dict:
     """The iris and pupil diameters (mm) by side that :func:`~opensculptboy.eyes.texture.
     find_iris` finds in a baked eye texture (PNG or JPEG bytes on anny's atlas) carried over
-    through the mesh's ``eyeballs`` (:attr:`EyedMesh.eyeballs`); sides without an iris are
-    left out."""
+    through the mesh's ``eyeballs`` (:attr:`EyedMesh.eyeballs`), or in the eyes baked onto
+    the layout (``layout``, :func:`eyed_mesh`); sides without an iris are left out."""
     import io
 
     from PIL import Image
@@ -248,8 +281,13 @@ def measure_baked(model, eyeballs: dict, radii: dict, baked: bytes) -> dict:
     from opensculptboy.eyes import texture as tex
     from opensculptboy.texture.eyes import eye_uv_box
 
-    image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
-    carried = tex.carry_baked(image, eye_uv_box(model), eyeballs)
+    if layout is not None:  # baked onto the layout already
+        carried = tex.linear(
+            np.asarray(Image.open(io.BytesIO(layout[0])).convert("RGB"))
+        )
+    else:
+        image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
+        carried = tex.carry_baked(image, eye_uv_box(model), eyeballs)
     s, phi, left = tex.texel_polar()
     out = {}
     for side, half in (("L", left), ("R", ~left)):
@@ -356,6 +394,8 @@ def eyed_mesh(
     kind: str = "gltf",
     baked: bytes | None = None,
     skin_baked: bool = False,
+    lashes=None,
+    layout=None,
 ) -> EyedMesh:
     """
     The mesh of a file with the eyes of ``eye`` (an :class:`~opensculptboy.material.
@@ -370,8 +410,15 @@ def eyed_mesh(
     skin carries a baked texture (:func:`baked_skin`): on the ``sculpt`` topology the eye
     corner and the skin of the socket then keep the skin's material, so that they show the
     reference's own appearance from the bake, and the conjunctiva's material is left to
-    characters without one. Raises ValueError for a mesh without anny's eyeballs, and for
-    ``"baked"`` sizes that no baked iris gives.
+    characters without one. ``lashes`` is (a :class:`~opensculptboy.material.LashMaterial`,
+    the reference's :class:`~opensculptboy.eyes.lashes.LashData` or None for generic lashes),
+    or None for no lashes: the lashes become the parts ``"lashes"`` of each eye and lid
+    (:func:`opensculptboy.eyes.lashes.lash_parts`). ``layout`` is the file's eyes baked
+    straight onto the eye texture's layout (PNG bytes of the colours and of the normals,
+    :func:`opensculptboy.texture.eyes.bake_eye_layout`), or None: with it, the baked eyes
+    come from there, and ``baked`` only says that they are baked. The eyes look along
+    ``eye.gaze``. Raises ValueError for a mesh without
+    anny's eyeballs, and for ``"baked"`` sizes that no baked iris gives.
     """
     from opensculptboy.export.body import vertex_normals
 
@@ -392,6 +439,8 @@ def eyed_mesh(
     skin = used & ~on_eye
 
     # a cornea of "auto": one surface for the eyes of a bake, as the reference draws them
+    if layout is not None and baked is None:
+        baked = layout[0]
     eye = eye.resolved(baked is not None and eye.source in ("auto", "baked"))
     two_surface = kind == "gltf" and eye.cornea
     segments = geometry.SEGMENTS[kind]
@@ -406,7 +455,8 @@ def eyed_mesh(
     def clearance(iris_mm):
         clear = {}
         for side in ("L", "R"):
-            frame = geometry.eye_frame(side, rest[rows[side]])
+            gaze = eye.gaze.get(side) if isinstance(eye.gaze, dict) else None
+            frame = geometry.eye_frame(side, rest[rows[side]], gaze)
             shape = geometry.EyeShape.of(iris_mm, frame.radius, eye.cornea_radius_mm)
             shell = 1.0 + shape.gap if two_surface else 1.0
             frames[side] = frame
@@ -438,9 +488,11 @@ def eyed_mesh(
         )
     # the sizes of the iris and the pupil: the card's, or those of the baked eyes
     measured = {}
+    if layout is not None and baked is None:
+        baked = layout[0]
     if eye.wants_measure() and baked is not None and eye.source in ("auto", "baked"):
         radii = {side: f.radius * 1000.0 for side, f in frames.items()}
-        measured = measure_baked(model, eyeballs, radii, baked)
+        measured = measure_baked(model, eyeballs, radii, baked, layout)
     eye = eye.sized(_mean_sizes(measured))
     if eye.iris_mm != nominal.iris_mm:
         clear = clearance(eye.iris_mm)
@@ -490,6 +542,14 @@ def eyed_mesh(
             parts.append(
                 _part("caruncle", side, frame, surface, rest, near, blend=blend_c)
             )
+    lash_data = None
+    if lashes is not None:
+        from opensculptboy.eyes.lashes import lash_parts
+
+        lash_list, lash_data = lash_parts(
+            lashes, frames, rest, normals, skin, skin_tris
+        )
+        parts += lash_list
     socket = (
         socket_vertices[triangles].all(1) & kept
         if eye.caruncle and not follow_bake
@@ -520,6 +580,9 @@ def eyed_mesh(
         shapes=shapes,
         eye=eye,
         measured=measured,
+        lashes=lash_data,
+        rest=rest,
+        layout=layout,
     )
 
 
@@ -558,13 +621,14 @@ def eye_texture(
     """
     The eye texture (H, W, 3, 8-bit sRGB) of a file and what it was drawn from:
     ``"texture"`` (the card's own ``eye.base_color``, read by the caller), ``"baked"`` (the
-    baked eye texture ``baked`` on anny's atlas, carried over and fitted, per side) or
-    ``"procedural"``. With ``want_normals`` a third value: the baked eyes' normals in the
-    layout (:func:`opensculptboy.eyes.texture.carry_baked_normals`, moved with the iris) from
-    ``normal_map`` (the baked eye normals on the eye texture's box of the atlas with
-    ``normal_box``, the ``eyes_normal`` slot, else the card's normal map on anny's whole
-    atlas, which the bake also fills on the eyeballs with the reference's eyes, at a few
-    texels across the iris), or None without it or when the eyes are not baked.
+    eyes baked onto the layout, :attr:`EyedMesh.layout`, else the baked eye texture
+    ``baked`` on anny's atlas carried over, fitted per side) or ``"procedural"``. With
+    ``want_normals`` a third value: the baked eyes' normals in the layout (the layout's own
+    normals, else :func:`opensculptboy.eyes.texture.carry_baked_normals` of ``normal_map``,
+    the baked eye normals on the eye texture's box of the atlas with ``normal_box``, the
+    ``eyes_normal`` slot, else the card's normal map on anny's whole atlas, which the bake
+    also fills on the eyeballs with the reference's eyes, at a few texels across the iris),
+    moved with the iris, or None without them or when the eyes are not baked.
     """
     from opensculptboy.eyes import texture as tex
 
@@ -575,6 +639,8 @@ def eye_texture(
             eye, iris_mm=eyed.eye.iris_mm, pupil_mm=eyed.eye.pupil_mm
         )
     eye = tex._sized(eye)
+    if eyed.layout is not None and baked is None:
+        baked = eyed.layout[0]
     use_baked = baked is not None and eye.source in ("auto", "baked")
     if eye.source == "baked" and baked is None:
         raise ValueError(
@@ -591,15 +657,24 @@ def eye_texture(
 
     from opensculptboy.texture.eyes import eye_uv_box
 
-    image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
-    box = eye_uv_box(model)
-    carried = tex.carry_baked(image, box, eyed.eyeballs)
     bent = None
-    if with_normals and normal_map is not None:
-        atlas = np.asarray(Image.open(io.BytesIO(normal_map)).convert("RGB"))
-        bent = tex.carry_baked_normals(
-            atlas / 255.0, eyed.eyeballs, box=box if normal_box else None
+    if eyed.layout is not None:  # baked onto the layout already
+        carried = tex.linear(
+            np.asarray(Image.open(io.BytesIO(eyed.layout[0])).convert("RGB"))
         )
+        if with_normals and eyed.layout[1] is not None:
+            code = np.asarray(Image.open(io.BytesIO(eyed.layout[1])).convert("RGB"))
+            bent = tex._unit(code / 255.0 * 2.0 - 1.0)
+    else:
+        box = eye_uv_box(model)
+        image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
+        carried = tex.carry_baked(image, box, eyed.eyeballs)
+        if with_normals and normal_map is not None:
+            atlas = np.asarray(Image.open(io.BytesIO(normal_map)).convert("RGB"))
+            bent = tex.carry_baked_normals(
+                atlas / 255.0, eyed.eyeballs, box=box if normal_box else None
+            )
+    if bent is not None:
         fitted, found, bent = tex.fit_baked_iris(carried, eye, radii, normals=bent)
     else:
         fitted, found = tex.fit_baked_iris(carried, eye, radii)
