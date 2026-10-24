@@ -32,6 +32,7 @@ VRM spring-bone update on joint positions, for tests.
 from __future__ import annotations
 
 import dataclasses
+import warnings
 
 import numpy as np
 
@@ -40,6 +41,11 @@ from opensculptboy.wearables.geometry import unit_rows
 # glTF axes (Y up, the figure facing +Z) to Anny's (Z up, the figure facing -Y), and back
 GLTF_TO_ANNY = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
 ANNY_TO_GLTF = GLTF_TO_ANNY.T
+
+
+class SpringWarning(UserWarning):
+    """A spring that the joint budget cut down or left out, or that found no loose region."""
+
 
 KINDS = ("auto", "chain")
 SETTING_KEYS = ("stiffness", "gravity_power", "gravity_dir", "drag_force", "hit_radius")
@@ -440,7 +446,9 @@ class Chain:
 
 @dataclasses.dataclass
 class SpringNode:
-    """A node of the chains: its name, its parent (a body bone index below the bone count,
+    """A node of the chains: its name (the chain's name and the joint's place, with ``_``
+    for the ``/`` of a piece reference, since engines read ``/`` in node names as a path),
+    its parent (a body bone index below the bone count,
     or the index of another node of the rig), its rest position (Anny's frame), its chain and
     its place there. Tails come after every other node, and they carry no skin weight."""
 
@@ -494,7 +502,7 @@ class SpringRig:
                     )
                     out.append(
                         SpringNode(
-                            f"{chain.name}.{k}",
+                            f"{chain.name.replace('/', '_')}.{k}",
                             parent,
                             chain.positions[k].copy(),
                             c,
@@ -806,6 +814,8 @@ def rig_springs(body, pieces, parents, max_skin_joints=None) -> SpringRig | None
                     f"{piece.ref}: spring {spec.name!r} found no loose region"
                 )
             owners.append((piece, spec, made))
+    for message in messages:
+        warnings.warn(message, SpringWarning, stacklevel=2)
     if not chains:
         return None
     rig = SpringRig(J, chains, colliders, messages)

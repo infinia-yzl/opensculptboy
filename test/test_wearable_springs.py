@@ -29,6 +29,7 @@ from opensculptboy.wearables.springs import (
     COLLIDER_TABLE,
     TORSO,
     SpringSim,
+    SpringWarning,
     body_colliders,
     collider_distance,
     parse_springs,
@@ -205,11 +206,13 @@ class TestChains(unittest.TestCase):
         self.assertGreater(float(share[~far].max()), 0.9)
 
     def test_joint_budget(self):
-        _, rig = _rigged(long_cape(), skirt(), max_skin_joints=24)
+        with self.assertWarns(SpringWarning):
+            _, rig = _rigged(long_cape(), skirt(), max_skin_joints=24)
         self.assertLessEqual(rig.skin_joint_count, 24)
         self.assertTrue(rig.messages)
         self.assertTrue(all(c.count >= 3 for c in rig.chains))
-        self.assertIsNone(_rigged(long_cape(), max_skin_joints=1)[1])
+        with self.assertWarnsRegex(SpringWarning, "left out"):
+            self.assertIsNone(_rigged(long_cape(), max_skin_joints=1)[1])
 
 
 class TestColliders(unittest.TestCase):
@@ -358,7 +361,8 @@ class TestSpringFiles(unittest.TestCase):
         self.assertEqual(len(glb.json["skins"][0]["joints"]), J + skin_joints)
         self.assertEqual(self.glb["joints"], J + skin_joints)
         for chain in springs["chains"]:
-            self.assertEqual(nodes[chain["nodes"][0]]["name"], chain["name"] + ".0")
+            first = nodes[chain["nodes"][0]]["name"]
+            self.assertEqual(first, chain["name"].replace("/", "_") + ".0")
             self.assertIn("opensculptboy_spring", nodes[chain["nodes"][0]]["extras"])
         self.assertTrue(
             all("node" in c and "offset" in c for c in springs["colliders"])
