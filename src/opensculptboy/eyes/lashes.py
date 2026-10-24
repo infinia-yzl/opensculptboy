@@ -498,31 +498,32 @@ def generic_lashes(frames: dict, margins: dict, settings) -> LashData:
 def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
     """
     The generic lashes' texture (H, W, 4, 8-bit sRGB and alpha): tapered strands from the
-    bottom edge (the root, v = 0) toward the top (the tip), each slanting a little and curving,
-    in ``settings.color``, more strands in the middle of the lid than at its ends; the alpha
-    falls to nothing at the tips.
+    bottom edge (the root, v = 0) toward the top (the tip) in ``settings.color``, gathered in
+    clumps of 2 to 5 whose strands lean together toward the clump's tip, as lashes clump; the
+    strands are opaque near the root and fade at the tip.
     """
     from opensculptboy.eyes.texture import srgb
 
     w, h = size
     rng = np.random.default_rng(int(settings.seed))
     alpha = np.zeros((h, w))
-    count = int(round(settings.density * w / 2.5))
+    clumps = int(round(settings.density * w / 9.0))
     yy, xx = np.mgrid[0:h, 0:w]
     v = 1.0 - (yy + 0.5) / h  # 0 at the root (bottom), 1 at the tip
-    for _ in range(count):
-        x0 = rng.uniform(0, w)
-        reach = rng.uniform(0.55, 1.0)
-        slant = rng.normal(0.0, 0.08) * w / 10.0
-        bend = rng.normal(0.0, 0.05) * w / 10.0
-        width = rng.uniform(2.5, 4.0)
-        along = np.clip(v / reach, 0.0, 1.0)
-        centre = x0 + slant * along + bend * along**2
-        dx = np.abs(((xx - centre + w / 2) % w) - w / 2)
-        taper = width * (1.0 - 0.85 * along)
-        strand = np.clip(1.0 - dx / np.maximum(taper, 0.3), 0.0, 1.0)
-        strand *= (v <= reach) * (1.0 - along**3)
-        alpha = np.maximum(alpha, strand)
+    for _ in range(clumps):
+        tip_x = rng.uniform(0, w)
+        reach = rng.uniform(0.6, 1.0)
+        lean = rng.normal(0.0, 0.06) * w / 10.0
+        for _ in range(int(rng.integers(2, 6))):
+            x0 = tip_x - lean + rng.normal(0.0, 4.0)
+            width = rng.uniform(3.5, 5.5)
+            along = np.clip(v / reach, 0.0, 1.0)
+            centre = x0 + (tip_x - x0) * along**1.5 + lean * along
+            dx = np.abs(((xx - centre + w / 2) % w) - w / 2)
+            taper = width * (1.0 - 0.8 * along)
+            strand = np.clip(1.5 * (1.0 - dx / np.maximum(taper, 0.4)), 0.0, 1.0)
+            strand *= (v <= reach) * (1.0 - along**4)
+            alpha = np.maximum(alpha, strand)
     colour = np.empty((h, w, 3))
     colour[...] = np.asarray(settings.color, dtype=np.float64)
     out = np.empty((h, w, 4), dtype=np.uint8)
