@@ -176,6 +176,42 @@ class TestBinding(unittest.TestCase):
         self.assertGreater(float(np.percentile(after[0][near], 1)), 0.0008)
         self.assertGreater(float(after[0][near].min()), 0.0)
 
+    def test_push_out_over_a_rigid_piece_on_other_bodies(self):
+        """On a taller and on a shorter body the chest bone moves, and the rigid plate with
+        it: the coat keeps the relation it had with the plate on the binding body (outside
+        by the 1 mm gap, or by as little as it lay outside there)."""
+        import dataclasses
+
+        from opensculptboy.wearables import bind_rigid
+        from opensculptboy.wearables.geometry import Surface
+
+        body = template_body()
+        plate = tunic(offset=0.008)
+        plate = dataclasses.replace(
+            plate,
+            name="plate",
+            layer=40,
+            weights="rigid",
+            binding=bind_rigid(plate.garment, body, "spine03"),
+        )
+        coat = tunic(offset=0.012)
+        home = Surface(plate.garment.vertices, plate.garment.triangles)
+        target = np.minimum(home.signed_distance(coat.garment.vertices)[0], 0.001)
+        worn = [WornPiece(w.name, w.name, None, "", w, True) for w in (plate, coat)]
+        for height in (0.0, 1.0):
+            with self.subTest(height=height):
+                other = card_body(
+                    Character(phenotype={"height": height}), template_model()
+                )
+                pushed = dress(other, worn)
+                under = Surface(
+                    pushed[0].vertices, plate.garment.triangles, pushed[0].normals
+                )
+                signed, found, _ = under.signed_distance(pushed[1].vertices)
+                near = found.distance < 0.01
+                self.assertGreater(int(near.sum()), 50)
+                self.assertGreater(float((signed - target)[near].min()), -1e-4)
+
     def test_weights(self):
         body = template_body()
         dressed = dress(body, _worn(tunic(), circlet()))
