@@ -34,9 +34,10 @@ class Dressing:
             the file; ``"keep"`` keeps every triangle.
         wardrobe: write every piece of every outfit, each as its own node, with the body
             whole; the worn outfit decides what shows by default.
-        visibility: in a wardrobe file, mark the pieces and groups that do not show with
-            ``KHR_node_visibility``; without it, a wardrobe file holds the pieces that do not
-            show outside the scene.
+        visibility: in a wardrobe file, keep every piece in the default scene and mark the
+            pieces and groups that do not show with ``KHR_node_visibility``. Without it (the
+            default, since Blender's importer ignores the extension), the default scene holds
+            what the worn outfit shows and a second scene holds every piece.
         push: run the push-out of :func:`opensculptboy.wearables.fit.dress`.
     """
 
@@ -45,7 +46,7 @@ class Dressing:
     hide: tuple = ()
     covered: str = "remove"
     wardrobe: bool = False
-    visibility: bool = True
+    visibility: bool = False
     push: bool = True
 
     def check(self) -> None:

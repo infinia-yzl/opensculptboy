@@ -150,7 +150,7 @@ def _dressing(args, character, parser):
         hide=tuple(args.hide or ()),
         covered=args.covered or "remove",
         wardrobe=bool(args.wardrobe),
-        visibility=not args.no_node_visibility,
+        visibility=bool(args.node_visibility),
     )
 
 
@@ -817,13 +817,13 @@ def main(argv=None) -> int:
         "--wardrobe",
         action="store_true",
         help="a .glb file with every piece of every outfit as its own node and the body "
-        "whole; the worn outfit sets what shows (KHR_node_visibility)",
+        "whole: the default scene shows the worn outfit, a second scene holds every piece",
     )
     w.add_argument(
-        "--no-node-visibility",
+        "--node-visibility",
         action="store_true",
-        help="with --wardrobe: leave the pieces that do not show out of the scene instead "
-        "of marking them hidden with KHR_node_visibility",
+        help="with --wardrobe: one scene with every piece, the pieces that do not show "
+        "marked hidden with KHR_node_visibility",
     )
     g = e.add_argument_group("glTF (.glb) options")
     g.add_argument(

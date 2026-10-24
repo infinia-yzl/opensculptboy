@@ -334,7 +334,9 @@ class TestDressedFiles(unittest.TestCase):
         self.assertEqual(vrm_piece_meshes([piece], Rebind(), C), [])
 
     def test_wardrobe_glb(self):
-        path, _ = self.export("wardrobe.glb", wardrobe=True, hide=("circlet",))
+        path, _ = self.export(
+            "wardrobe.glb", wardrobe=True, visibility=True, hide=("circlet",)
+        )
         glb = GLB(path)
         self.assertEqual(structure_errors(glb), [])
         self.assertIn("KHR_node_visibility", glb.json["extensionsUsed"])
@@ -353,6 +355,11 @@ class TestDressedFiles(unittest.TestCase):
         self.assertNotIn(
             names_index(glb, "test_outfit/circlet"), glb.json["scenes"][0]["nodes"]
         )
+        self.assertEqual(
+            len(glb.json["scenes"]), 2
+        )  # the second scene holds every piece
+        for name in ("test_outfit/circlet", "test_outfit/tunic.back"):
+            self.assertIn(names_index(glb, name), glb.json["scenes"][1]["nodes"])
 
     def test_vrm_files(self):
         from opensculptboy.export.vrm import export_vrm

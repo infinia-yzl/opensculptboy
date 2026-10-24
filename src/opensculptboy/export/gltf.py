@@ -535,6 +535,15 @@ def export_glb(
     for node, shown in piece_nodes:  # without visibility, the hidden pieces stay out
         if shown or (dressing.wardrobe and dressing.visibility):
             doc.scene_nodes.append(node)
+    if dressing is not None and dressing.wardrobe and not dressing.visibility:
+        # a second scene holds every piece, for tools that switch scenes
+        doc.extra_scenes.append(
+            {
+                "name": f"{character.name} wardrobe",
+                "nodes": roots + [mesh_node] + [node for node, _ in piece_nodes],
+                "extras": {"opensculptboy_wardrobe": "every piece of every outfit"},
+            }
+        )
     doc.scene_extras = {
         "opensculptboy": {
             "generator": "opensculptboy",
