@@ -583,9 +583,21 @@ def bind_garment(
                 "unknown_joints",
                 "Skin the garment to the bones of the exported armature.",
             )
+        empty = skin_weights.sum(axis=1) <= 0
+        if empty.any():
+            raise GarmentError(
+                f"{int(empty.sum())} garment vertices carry no skin weight; paint their "
+                "weights, or leave out --weights own.",
+                "unweighted_vertices",
+                "Paint a weight on every garment vertex, or bind with the body's weights.",
+            )
+        # the joints that weigh on the garment, so that the file's other joints (a
+        # control bone, a joint of the body's mesh) need no bone of the rig
+        remap = np.zeros(len(joint_names), np.int64)
+        remap[used] = np.arange(len(used))
         binding.skin_weights = skin_weights
-        binding.skin_joints = skin_joints
-        binding.joint_names = list(joint_names)
+        binding.skin_joints = remap[skin_joints]
+        binding.joint_names = [joint_names[j] for j in used]
     group_covers: dict[str, np.ndarray] = {}
     if covers == "auto" and fixed_covers is None:
         for g, group in enumerate(garment.groups):

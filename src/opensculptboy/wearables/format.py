@@ -124,7 +124,9 @@ class Garment:
             self.materials = [Material("garment")]
 
     def check(self) -> None:
-        if len(self.triangles) and int(self.triangles.max()) >= len(self.vertices):
+        if len(self.triangles) == 0:  # a glTF mesh holds at least one primitive
+            raise ValueError("A garment needs at least one triangle.")
+        if int(self.triangles.max()) >= len(self.vertices):
             raise ValueError("A garment triangle names a vertex that does not exist.")
         if self.normals.shape != self.vertices.shape:
             raise ValueError("A garment needs one normal per vertex.")

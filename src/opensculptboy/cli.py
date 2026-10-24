@@ -210,7 +210,7 @@ def _export(args, parser) -> int:
             detail_dir=_detail_dir(args.character),
             dressing=dressing,
         )
-    except ValueError as error:
+    except (OSError, ValueError) as error:  # a missing package or a wrong piece name
         if dressing is None:
             raise
         parser.error(_one_line(error))
@@ -353,6 +353,11 @@ def _export_tier(args, parser) -> int:
             kwargs["morph_targets"] = [
                 n.strip() for n in args.morph_targets.split(",") if n.strip()
             ]
+    dressing = _dressing(args, character, parser)
+    if dressing is not None:
+        if is_vrm and dressing.wardrobe:
+            parser.error("--wardrobe writes .glb files; a VRM file wears one outfit.")
+        kwargs["dressing"] = dressing
     failure = None
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")

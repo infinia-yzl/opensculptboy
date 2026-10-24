@@ -158,9 +158,10 @@ def write_tube_glb(path, body, normals=True, shift=(0.0, 0.0, 0.0), lift=None, *
     return vertices + to_anny(np.asarray(shift)[None], 0.0)
 
 
-def write_ring_glb(path, body, skinned=False):
-    """The ring as a GLB file; ``skinned`` binds it to a joint node ``head`` at the
-    origin with an identity inverse bind matrix."""
+def write_ring_glb(path, body, skinned=False, joints=("head",), unweighted=0):
+    """The ring as a GLB file; ``skinned`` binds it to the first of the joint nodes
+    ``joints``, each at the origin with an identity inverse bind matrix, and leaves the
+    first ``unweighted`` vertices without weights."""
     vertices, normals, triangles = ring(body)
     positions = _to_file(vertices, ground_lift(body))
     doc = GltfDocument("test")
@@ -176,12 +177,12 @@ def write_ring_glb(path, body, skinned=False):
         attributes["JOINTS_0"] = doc.accessor(
             np.zeros((len(positions), 4), np.uint8), ARRAY_BUFFER
         )
-        attributes["WEIGHTS_0"] = doc.accessor(
-            np.tile(np.float32([1, 0, 0, 0]), (len(positions), 1)), ARRAY_BUFFER
-        )
-        joint = doc.add_node({"name": "head"})
-        nodes.append(joint)
-        entry["skin"] = doc.add_skin({"joints": [joint]})
+        weights = np.tile(np.float32([1, 0, 0, 0]), (len(positions), 1))
+        weights[:unweighted] = 0.0
+        attributes["WEIGHTS_0"] = doc.accessor(weights, ARRAY_BUFFER)
+        joint_nodes = [doc.add_node({"name": name}) for name in joints]
+        nodes.extend(joint_nodes)
+        entry["skin"] = doc.add_skin({"joints": joint_nodes})
     gold = doc.add_material({"name": "gold", "pbrMetallicRoughness": {}})
     entry["mesh"] = doc.add_mesh(
         {
@@ -367,6 +368,24 @@ class TestBind(unittest.TestCase):
         )
         self.assertEqual(w.weights, "own")
         self.assertEqual(w.binding.joint_names, ["head"])
+        # a joint of the file that weighs on nothing (a control bone) needs no bone of
+        # the rig, and the piece dresses a body
+        path = self.folder / "ring_control.glb"
+        write_ring_glb(path, self.body, skinned=True, joints=("head", "control"))
+        w, _ = make_wearable(
+            path, self.body, "ring", "head", 60, weights="own", licence=LICENCE
+        )
+        self.assertEqual(w.binding.joint_names, ["head"])
+        piece = dress(self.body, [WornPiece("ring", "ring", None, "", w, True)])[0]
+        head = self.body.bone_labels.index("head")
+        self.assertTrue((piece.joints[:, 0] == head).all())
+        # vertices without weights would leave the file's skin without weights there
+        path = self.folder / "ring_unweighted.glb"
+        write_ring_glb(path, self.body, skinned=True, unweighted=3)
+        with self.assertRaisesRegex(GarmentError, "3 garment vertices carry no"):
+            make_wearable(
+                path, self.body, "ring", "head", 60, weights="own", licence=LICENCE
+            )
         with self.assertRaisesRegex(GarmentError, "skinned"):
             make_wearable(
                 self.ring_path, self.body, "ring", "head", 60, weights="own",
