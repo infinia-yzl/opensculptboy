@@ -150,7 +150,7 @@ def worn_pieces(
     refs = [e[0] for e in entries]
     outfit_ids = [o["id"] for o in character.outfits]
     active = character.active_outfit if outfit is None else outfit
-    if not active or active == NO_OUTFIT:  # a card without an active outfit wears none
+    if not active or active == NO_OUTFIT:  # a card of loose pieces names no outfit
         active = None
     if active is not None and active not in outfit_ids:
         close = difflib.get_close_matches(active, outfit_ids, n=3)
