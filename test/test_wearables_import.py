@@ -486,6 +486,33 @@ class TestQuality(unittest.TestCase):
         self.assertEqual(overlap(small), 0.0)
         self.assertAlmostEqual(overlap(small + small[:5]), 5 / 105, delta=0.01)
 
+    def test_flipped_uvs(self):
+        """Mirrored halves that meet at a seam are no flips; a fold of one vertex is."""
+        from opensculptboy.wearables.format import Garment
+        from opensculptboy.wearables.quality import Quality, check_uvs, weld_ids
+
+        n = 8
+        x, y = np.meshgrid(np.linspace(-1, 1, 2 * n + 1), np.linspace(0, 1, n + 1))
+        a = (np.arange(2 * n)[None, :] + (2 * n + 1) * np.arange(n)[:, None]).ravel()
+        w = 2 * n + 1
+        t = np.concatenate([np.c_[a, a + 1, a + w + 1], np.c_[a, a + w + 1, a + w]])
+        vertices = np.column_stack([x.ravel(), y.ravel(), np.zeros(x.size)]) * 0.2
+
+        def flipped(uv):
+            quality = Quality()
+            garment = Garment(vertices, t, uvs=uv)
+            check_uvs(garment, quality, weld_ids(vertices))
+            return sum(i.count for i in quality.items if i.code == "uv_flipped")
+
+        mirrored = np.column_stack([np.abs(x.ravel()), y.ravel()]) * 0.9 + 0.05
+        self.assertEqual(flipped(mirrored), 0)
+        plain = np.column_stack([(x.ravel() + 1) / 2, y.ravel()]) * 0.9 + 0.05
+        self.assertEqual(flipped(plain), 0)
+        fold = plain.copy()
+        fold[4 * w + 4, 0] += 3 * 0.9 / (2 * n)  # past its right neighbours
+        self.assertGreater(flipped(fold), 0)
+        self.assertLess(flipped(fold), 6)
+
     def test_geometry_fixes(self):
         from opensculptboy.wearables.format import Garment
         from opensculptboy.wearables.quality import check_garment

@@ -492,14 +492,7 @@ def check_uvs(garment: Garment, quality: Quality, weld_id: np.ndarray) -> None:
             "Unwrap those faces; a texture shows one stretched texel on them.",
             count=int(zero.sum()),
         )
-    # flipped UV triangles: the minority sign within a UV chart (mirrored charts keep theirs)
-    charts = _components(len(uv), t)[t[:, 0]]
-    sign = np.sign(signed)
-    flipped = 0
-    for chart in np.unique(charts):
-        rows = (charts == chart) & ~zero
-        pos, neg = int((sign[rows] > 0).sum()), int((sign[rows] < 0).sum())
-        flipped += min(pos, neg)
+    flipped = _flipped_uvs(t, len(uv), signed, zero)
     if flipped:
         quality.add(
             "uv_flipped",
@@ -510,6 +503,44 @@ def check_uvs(garment: Garment, quality: Quality, weld_id: np.ndarray) -> None:
         )
     _uv_overlap(garment, signed, zero, quality)
     _texel_density(garment, signed, textured, quality)
+
+
+def _flipped_uvs(t, count: int, signed, zero) -> int:
+    """The flipped UV triangles: within a UV chart, the triangles of the other sign than its
+    largest region of one sign, where their region holds less than half as many triangles.
+    Mirrored charts keep their sign, and mirrored halves that meet at a seam (two regions of
+    one size) count as no flips."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    charts = _components(count, t)[t[:, 0]]
+    sign = np.sign(signed)
+    sign[zero] = 0
+    e, tri, key = _edges(t)
+    order = np.lexsort((key[:, 1], key[:, 0]))
+    ks = key[order]
+    same = np.flatnonzero((ks[1:] == ks[:-1]).all(axis=1))
+    a, b = tri[order[same]], tri[order[same + 1]]
+    link = (sign[a] == sign[b]) & (sign[a] != 0)
+    graph = coo_matrix(
+        (np.ones(int(link.sum())), (a[link], b[link])), shape=(len(t), len(t))
+    )
+    _, region = connected_components(graph, directed=False)
+    flipped = 0
+    for chart in np.unique(charts):
+        rows = np.flatnonzero((charts == chart) & (sign != 0))
+        if not len(rows):
+            continue
+        sizes = np.bincount(region[rows])
+        largest = int(np.argmax(sizes))
+        main = sign[rows][region[rows] == largest][0]
+        for r in np.unique(region[rows]):
+            if (
+                sign[rows][region[rows] == r][0] != main
+                and 2 * sizes[r] < sizes[largest]
+            ):
+                flipped += int(sizes[r])
+    return flipped
 
 
 def _uv_overlap(garment, signed, zero, quality) -> None:
