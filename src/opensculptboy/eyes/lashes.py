@@ -178,8 +178,9 @@ PATCH_SPREAD = 0.003
 ACROSS_REACH = 0.0025
 # as the upper lid closes, its lashes turn down about the margin by this share of the angle
 # that the lids' opening closes (seen from the eye's centre), on top of the lid's own turn:
-# the edge of a closing lid rolls, so that the lashes of a closed eye point down and out
-CLOSE_TURN = 2.0
+# the edge of a closing lid rolls, so that the lashes of a closed eye point forward and down
+# and rest along the closed lid
+CLOSE_TURN = 1.5
 # the opening of the lids is measured in degrees, and a closed eye turns its lashes by at most
 # this angle (degrees)
 MAX_CLOSE_TURN = 70.0
@@ -401,7 +402,11 @@ def bind(points, lids, margins, rest, eyeball=None):
 GENERIC_SEGMENTS = 16
 GENERIC_ROWS = 3
 GENERIC_SPAN = (0.12, 0.98)
-GENERIC_TEXTURE = (1024, 128)
+# the generic texture: the upper lashes' strands on its left half, the lower lashes' on its
+# right half
+GENERIC_TEXTURE = (2048, 128)
+# the lower lashes against the upper ones: the share of strands, their width and their opacity
+GENERIC_LOWER = (0.45, 0.75, 0.6)
 # how far (metres) the generic lashes' roots sit from the lid margin toward the opening: the
 # margin's vertices lie on the lid's outer skin a little away from its rim
 GENERIC_ROOT_LIFT = 0.0008
@@ -468,7 +473,14 @@ def generic_lashes(frames: dict, margins: dict, settings) -> LashData:
                 curl = settings.curl * f * f
                 p = base + length[:, None] * (f * out_dir + curl * across)
                 points.append(p)
-                uvs.append(np.stack([u, np.full(len(u), f)], 1))
+                # each lid's strands take their half of the texture, a texel in from its edges
+                half = 0.0 if lid == UPPER else 0.5
+                inset = 2.0 / GENERIC_TEXTURE[0]
+                uvs.append(
+                    np.stack(
+                        [half + inset + (0.5 - 2 * inset) * u, np.full(len(u), f)], 1
+                    )
+                )
                 lids.append(np.full(len(u), lid))
                 normals.append(
                     np.cross(tangent, out_dir) * (1.0 if lid == UPPER else -1.0)
@@ -498,32 +510,36 @@ def generic_lashes(frames: dict, margins: dict, settings) -> LashData:
 def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
     """
     The generic lashes' texture (H, W, 4, 8-bit sRGB and alpha): tapered strands from the
-    bottom edge (the root, v = 0) toward the top (the tip) in ``settings.color``, gathered in
-    clumps of 2 to 5 whose strands lean together toward the clump's tip, as lashes clump; the
-    strands are opaque near the root and fade at the tip.
+    bottom edge (the root, v = 0) toward the top (the tip) in ``settings.color``, each slanting
+    a little and curving; the alpha falls to nothing at the tips. The left half holds the upper
+    lashes' strands and the right half the lower lashes', fewer, finer and lighter
+    (:data:`GENERIC_LOWER`).
     """
     from opensculptboy.eyes.texture import srgb
 
     w, h = size
+    half = w // 2
     rng = np.random.default_rng(int(settings.seed))
-    alpha = np.zeros((h, w))
-    clumps = int(round(settings.density * w / 9.0))
-    yy, xx = np.mgrid[0:h, 0:w]
+    yy, xx = np.mgrid[0:h, 0:half]
     v = 1.0 - (yy + 0.5) / h  # 0 at the root (bottom), 1 at the tip
-    for _ in range(clumps):
-        tip_x = rng.uniform(0, w)
-        reach = rng.uniform(0.6, 1.0)
-        lean = rng.normal(0.0, 0.06) * w / 10.0
-        for _ in range(int(rng.integers(2, 6))):
-            x0 = tip_x - lean + rng.normal(0.0, 4.0)
-            width = rng.uniform(3.5, 5.5)
+    halves = []
+    for share, thin, opacity in ((1.0, 1.0, 1.0), GENERIC_LOWER):
+        alpha = np.zeros((h, half))
+        for _ in range(int(round(settings.density * share * half / 4.0))):
+            x0 = rng.uniform(0, half)
+            reach = rng.uniform(0.55, 1.0)
+            slant = rng.normal(0.0, 0.08) * half / 10.0
+            bend = rng.normal(0.0, 0.05) * half / 10.0
+            width = rng.uniform(1.6, 2.6) * thin
             along = np.clip(v / reach, 0.0, 1.0)
-            centre = x0 + (tip_x - x0) * along**1.5 + lean * along
-            dx = np.abs(((xx - centre + w / 2) % w) - w / 2)
-            taper = width * (1.0 - 0.8 * along)
-            strand = np.clip(1.5 * (1.0 - dx / np.maximum(taper, 0.4)), 0.0, 1.0)
-            strand *= (v <= reach) * (1.0 - along**4)
+            centre = x0 + slant * along + bend * along**2
+            dx = np.abs(((xx - centre + half / 2) % half) - half / 2)
+            taper = width * (1.0 - 0.85 * along)
+            strand = np.clip(1.0 - dx / np.maximum(taper, 0.3), 0.0, 1.0)
+            strand *= (v <= reach) * (1.0 - along**3)
             alpha = np.maximum(alpha, strand)
+        halves.append(alpha * opacity)
+    alpha = np.concatenate(halves, 1)
     colour = np.empty((h, w, 3))
     colour[...] = np.asarray(settings.color, dtype=np.float64)
     out = np.empty((h, w, 4), dtype=np.uint8)

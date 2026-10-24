@@ -628,10 +628,10 @@ LASH_DEFAULTS = {
     "mesh": None,  # the reference's lashes in the card's rest frame (a .safetensors file that
     #                the bake writes, opensculptboy.eyes.lashes.LashData), relative to the card
     "base_color": None,  # their texture (RGBA), relative to the card
-    "color": [0.022, 0.016, 0.013],  # generic lashes: a dark brown
-    "length_mm": 8.0,  # generic upper lashes at their longest
+    "color": [0.018, 0.011, 0.007],  # generic lashes: a dark brown
+    "length_mm": 6.5,  # generic upper lashes at their longest
     "lower": True,  # generic lashes on the lower lids too
-    "lower_length_mm": 3.5,
+    "lower_length_mm": 2.5,
     "curl": 0.45,  # how far the generic lashes curl away from the eye, a share of their length
     "density": 1.0,  # the share of the generic texture's strands
     "roughness": 1.0,  # a matt strand: a shiny card reads grey at a grazing angle
@@ -651,9 +651,9 @@ class LashMaterial:
     color: list = dataclasses.field(
         default_factory=lambda: list(LASH_DEFAULTS["color"])
     )
-    length_mm: float = 8.0
+    length_mm: float = 6.5
     lower: bool = True
-    lower_length_mm: float = 3.5
+    lower_length_mm: float = 2.5
     curl: float = 0.45
     density: float = 1.0
     roughness: float = 1.0

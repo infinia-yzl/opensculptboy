@@ -66,12 +66,16 @@ class TestLashCard(unittest.TestCase):
 
     def test_texture(self):
         image = generic_texture(LashMaterial())
-        self.assertEqual(image.shape, (128, 1024, 4))
+        self.assertEqual(image.shape, (128, 2048, 4))
         alpha = image[..., 3] / 255.0
-        self.assertTrue(0.03 < alpha.mean() < 0.5)
+        upper, lower = alpha[:, :1024], alpha[:, 1024:]
+        self.assertTrue(0.03 < upper.mean() < 0.5)
         # dense at the roots (the bottom rows), gone at the tips (the top row)
-        self.assertGreater(alpha[-8:].mean(), 5 * alpha[:8].mean())
+        self.assertGreater(upper[-8:].mean(), 5 * upper[:8].mean())
         self.assertLess(alpha[0].max(), 0.2)
+        # the lower lashes are sparser and lighter
+        self.assertLess(lower.mean(), 0.5 * upper.mean())
+        self.assertLess(lower.max(), 0.65)
 
 
 class TestLashMesh(unittest.TestCase):
