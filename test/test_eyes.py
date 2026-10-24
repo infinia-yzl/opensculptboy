@@ -1093,3 +1093,20 @@ class TestEyeLayoutBake(unittest.TestCase):
         # an eye frame turned to a recorded gaze looks along it
         frame = geometry.eye_frame("L", points, gaze[:, 2])
         np.testing.assert_allclose(frame.axes[:, 2], gaze[:, 2], atol=1e-9)
+        # a part without a texture (a clear shell over the eye) gives no colour: where its
+        # hits come nearest, the texels take the colour of the textured eye around them
+        shell_points = centre + (radius + 0.0004) * local @ gaze.T
+        cos = (local @ np.array([0.0, 0.0, 1.0]))[np.asarray(quads)].mean(1)
+        band = np.asarray(quads)[(cos < np.cos(np.radians(40))) & (cos > 0.5)]
+        shell = HandoffPart("shell", "eyes", shell_points, band, None, None)
+        n = len(points)
+        target = Reference(
+            np.concatenate([points, shell_points]),
+            np.concatenate([np.asarray(quads), band + n]),
+            parts=[part, shell],
+            part_offsets=np.array([0, n, 2 * n]),
+        )
+        frames = {"L": geometry.EyeFrame("L", centre, radius + 0.0005, gaze)}
+        colour, _, _ = bake_eye_layout(target, frames, gaze=False)
+        ring = left & (s > np.sin(np.radians(45))) & (s < np.sin(np.radians(55)))
+        self.assertGreater(float(colour[ring].min()), 200)
