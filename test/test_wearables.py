@@ -678,6 +678,10 @@ class TestReferenceWearables(unittest.TestCase):
                 hidden = worn_pieces(card, out, hide=["cloak"])
                 self.assertEqual(hidden[0].hidden_groups, [])
                 shirt_package = by_ref["travel/shirt"].wearable
+                self.assertEqual(shirt_package.springs, [])
+                self.assertEqual(
+                    by_ref["travel/cloak"].wearable.springs, [{"name": "loose"}]
+                )
                 self.assertEqual(shirt_package.weights, "own")
                 self.assertTrue(shirt_package.cover_ray)
                 np.testing.assert_allclose(
