@@ -17,6 +17,10 @@
 //   vrmVertices(mesh, prim, indices)  the world positions of vertices of a glTF mesh primitive,
 //                                     skinned and morphed as the GPU draws them
 //   vrmRender()                       draws one frame; returns the draw calls and the covered share
+//   vrmSprings(frames, speed)         runs the spring bones: the figure rests for ``frames`` frames of
+//                                     1/60 s, then its hips move forward at ``speed`` m/s for as many;
+//                                     returns the joints, the colliders and the largest move (m) of a
+//                                     chain's tail from its place on the figure in each phase
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMHumanBoneList, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm';
@@ -162,7 +166,46 @@ function vrmRender() {
   return { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, covered: covered / (width * height), glError: error };
 }
 
-Object.assign(window, { vrmLoad, vrmInfo, vrmLookAt, vrmExpression, vrmRoll, vrmVertices, vrmRender });
+function vrmSprings(frames: number, speed: number) {
+  const v = current();
+  const manager = v.springBoneManager;
+  if (!manager) return null;
+  v.humanoid.resetNormalizedPose();
+  manager.reset();
+  update();
+  const joints = Array.from(manager.joints);
+  const bones = new Set(joints.map((j) => j.bone));
+  // the tail of each chain: the child that no joint turns (VRM 1.0), or a joint without a child
+  // (VRM 0.x, whose last node turns a virtual tail)
+  const tails: THREE.Object3D[] = [];
+  for (const j of joints) {
+    if (j.child && !bones.has(j.child)) tails.push(j.child);
+    else if (!j.child) tails.push(j.bone);
+  }
+  const hips = v.humanoid.getNormalizedBoneNode('hips')!;
+  const raw = v.humanoid.getRawBoneNode('hips')!;
+  const at = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3());
+  const start = at(raw);
+  const rest = tails.map(at);
+  const dt = 1 / 60;
+  let still = 0;
+  let moving = 0;
+  for (let f = 0; f < 2 * frames; f++) {
+    if (f >= frames) hips.position.z += speed * dt;
+    v.update(dt);
+    v.scene.updateMatrixWorld(true);
+    const shift = at(raw).sub(start);
+    const d = Math.max(0, ...tails.map((t, k) => at(t).distanceTo(rest[k].clone().add(shift))));
+    if (f < frames) still = Math.max(still, d);
+    else moving = Math.max(moving, d);
+  }
+  v.humanoid.resetNormalizedPose();
+  manager.reset();
+  update();
+  return { joints: joints.length, colliders: manager.colliders.length, tails: tails.length, still, moving };
+}
+
+Object.assign(window, { vrmLoad, vrmInfo, vrmLookAt, vrmExpression, vrmRoll, vrmVertices, vrmRender, vrmSprings });
 
 const url = new URLSearchParams(location.search).get('vrm') ?? (window as any).__VRM_URL;
 if (url) {

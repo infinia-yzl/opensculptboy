@@ -22,6 +22,10 @@ Playwright), and the tests check what three-vrm makes of the file:
 The Khronos glTF validator (the gltf-validator package) must report no error in either file; the
 test prints its warnings.
 
+``TestThreeVrmSprings`` loads the files of a card with a synthetic long cape and skirt
+(test.wearable_fixtures) in both versions: three-vrm builds every spring joint and collider, the
+chains rest within 5 cm of their shape, and they swing when the hips move on.
+
 The page is bundled at test time with the viewer's esbuild, so three-vrm never enters the viewer
 page. The checks need the viewer's node packages (``cd viewer && npm ci``), Playwright and
 Chromium; each check skips with its reason when one is missing.
@@ -464,6 +468,122 @@ class TestThreeVrm0(_ThreeVrm, unittest.TestCase):
         hand, _ = rotation_angle(rest[1], rolled[1])
         self.assertAlmostEqual(hand, 90.0, delta=0.5)
         self.assertLess(twist, 0.5)
+
+
+def page_results(files: dict[str, pathlib.Path], script: str) -> dict[str, dict]:
+    """Load each VRM file in the page (Playwright and Chromium, as ``_ThreeVrm`` does) and
+    evaluate ``script`` on it; returns the result per name, with the page's errors."""
+    from playwright.sync_api import sync_playwright
+
+    out = page_dir()
+    args = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+    results = {}
+    with sync_playwright() as p:
+        kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
+        try:
+            browser = p.chromium.launch(args=args, **kw)
+        except Exception as error:  # no browser for Playwright
+            raise unittest.SkipTest(f"Chromium does not start: {error}")
+        try:
+            for name, path in files.items():
+                shutil.copy(path, out / name)
+                tab = browser.new_page(viewport=dict(width=320, height=320))
+                errors = []
+                tab.on("pageerror", lambda e: errors.append(str(e)))
+
+                def serve(route):
+                    file = out / route.request.url[len(ORIGIN) :].split("?")[0]
+                    if file.is_file():
+                        kind = CONTENT_TYPES.get(
+                            file.suffix, "application/octet-stream"
+                        )
+                        route.fulfill(path=str(file), content_type=kind)
+                    else:
+                        route.fulfill(status=404, body="")
+
+                tab.route(ORIGIN + "**", serve)
+                tab.goto(f"{ORIGIN}index.html?vrm={name}")
+                tab.wait_for_function("window.__VRM_READY === true", timeout=600_000)
+                error = tab.evaluate("() => window.__VRM_ERROR || null")
+                if error:
+                    raise AssertionError(f"three-vrm could not load {name}: {error}")
+                results[name] = dict(tab.evaluate(script), page_errors=errors)
+                tab.close()
+        finally:
+            browser.close()
+    return results
+
+
+@local_only("Playwright, Chromium and the viewer's node packages (three-vrm)")
+class TestThreeVrmSprings(unittest.TestCase):
+    """The spring chains of loose wearables in three-vrm, both versions."""
+
+    @classmethod
+    def setUpClass(cls):
+        reason = missing_page_tools() or missing_node_package("gltf-validator")
+        if reason:
+            raise unittest.SkipTest(reason)
+        from opensculptboy.export.vrm import export_vrm
+        from test.wearable_fixtures import write_loose
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        folder = pathlib.Path(cls.tmp.name)
+        card = write_loose(folder)
+        cls.files, cls.docs = {}, {}
+        for version in ("1.0", "0.x"):
+            name = f"springs_{version}.vrm"
+            export_vrm(
+                folder / name,
+                card,
+                author="test",
+                version=version,
+                detail_dir=folder,
+                refine_weights=False,
+            )
+            cls.files[name] = folder / name
+            cls.docs[name] = GLB(folder / name).json
+        cls.results = page_results(
+            cls.files,
+            "() => Object.assign(window.vrmSprings(60, 2.0), "
+            "{info: window.__VRM_INFO.springJoints})",
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_joints_and_colliders(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                doc = self.docs[name]
+                self.assertEqual(result["page_errors"], [])
+                if "VRMC_springBone" in doc["extensions"]:
+                    ext = doc["extensions"]["VRMC_springBone"]
+                    # every joint but the tail of each spring turns
+                    turning = sum(len(s["joints"]) - 1 for s in ext["springs"])
+                    self.assertEqual(result["joints"], turning)
+                    self.assertEqual(result["colliders"], len(ext["colliders"]))
+                    self.assertEqual(result["tails"], len(ext["springs"]))
+                else:
+                    secondary = doc["extensions"]["VRM"]["secondaryAnimation"]
+                    roots = sum(len(g["bones"]) for g in secondary["boneGroups"])
+                    spheres = sum(
+                        len(g["colliders"]) for g in secondary["colliderGroups"]
+                    )
+                    self.assertEqual(result["tails"], roots)
+                    self.assertEqual(result["colliders"], spheres)
+                    self.assertGreater(result["joints"], 2 * roots)
+
+    def test_chains_rest_and_swing(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                self.assertLess(result["still"], 0.05)
+                self.assertGreater(result["moving"], 0.3)
+
+    def test_validator(self):
+        for report in validate(list(self.files.values())):
+            errors = [m for m in report["messages"] if m["severity"] == ERROR]
+            self.assertEqual(errors[:20], [], report["file"])
 
 
 def validate(paths: list[pathlib.Path]) -> list[dict]:
