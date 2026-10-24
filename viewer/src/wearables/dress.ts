@@ -269,6 +269,9 @@ export function visibleTriangles(p: { wearable: Wearable; hiddenGroups: string[]
 // what a dress keeps between calls: the binding bodies and the push targets that depend on them alone
 export class DressCache {
   homes = new Map<Wearable, { home: BodySurface; vertices: F64; target: F64; lower: Map<string, F64> }>();
+  // the skin weights of each piece: they depend on the binding and the body's skin weights alone, which a slider
+  // edit leaves as they are
+  weights = new Map<Wearable, { source: F64; weights: Float32Array; joints: Uint16Array }>();
 }
 
 export interface DressOptions { push?: boolean; gap?: number; cache?: DressCache; timing?: Record<string, number> }
@@ -316,7 +319,9 @@ export function dress(body: BodySurface, pieces: WornPiece[], opts: DressOptions
       timing.push = (timing.push || 0) + now() - t0;
     }
     t0 = now();
-    const { weights, joints } = bodyWeights(w, body);
+    let sw = cache.weights.get(w);
+    if (!sw || sw.source !== body.weights) { sw = { source: body.weights, ...bodyWeights(w, body) }; cache.weights.set(w, sw); }
+    const { weights, joints } = sw;
     timing.weights = (timing.weights || 0) + now() - t0;
     const piece: DressedPiece = { ...worn, hiddenGroups: [...worn.hiddenGroups], hideableGroups: [...worn.hideableGroups], vertices, normals, weights, joints, pushed, pushMm };
     out[k] = piece;

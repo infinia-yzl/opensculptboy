@@ -44,7 +44,7 @@ export class Wardrobe {
   pieces: DressedPiece[] = []; worn: WornRef[] = [];
   notes: string[] = [];
   timing: Record<string, number> = {};
-  private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; hidden: string }>();
+  private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; hidden: string; weights: Float32Array | null }>();
   private cache = new DressCache();
   private skin: Int32Array | null = null; private weights: Float64Array | null = null; private indices: Int32Array | null = null;
   private bodyIndex: Uint32Array | null = null;
@@ -232,8 +232,11 @@ export class Wardrobe {
       const at = m.geo.attributes as any;
       at.position.array.set(p.vertices); at.position.needsUpdate = true;
       at.normal.array.set(p.normals); at.normal.needsUpdate = true;
-      at.skinIndex.array.set(p.joints); at.skinIndex.needsUpdate = true;
-      at.skinWeight.array.set(p.weights); at.skinWeight.needsUpdate = true;
+      if (m.weights !== p.weights) {   // the same weights after a slider edit (DressCache)
+        at.skinIndex.array.set(p.joints); at.skinIndex.needsUpdate = true;
+        at.skinWeight.array.set(p.weights); at.skinWeight.needsUpdate = true;
+        m.weights = p.weights;
+      }
       const hidden = p.hiddenGroups.slice().sort().join(',');
       if (hidden !== m.hidden) { this.setIndex(m, p); m.hidden = hidden; }
       m.geo.computeBoundingSphere();
@@ -254,7 +257,7 @@ export class Wardrobe {
     mesh.bind(this.host.skeleton(), new T.Matrix4());
     mesh.frustumCulled = false; mesh.name = p.ref;
     this.host.scene.add(mesh); this.host.opaque.push(mesh);
-    const m = { mesh, geo, wearable: w, materials, hidden: '\u0000' };
+    const m = { mesh, geo, wearable: w, materials, hidden: '\u0000', weights: null as Float32Array | null };
     this.meshes.set(p.ref, m);
     return m;
   }

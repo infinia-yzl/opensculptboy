@@ -93,7 +93,8 @@ export function wearablesSection(app: App): HTMLElement {
       ...groups.flatMap(([title, list]) => [h('h3.sub', { text: title }), h('div.wear-list', {}, ...list.map((r) => row(r, worn)))]),
       h('h3.sub', { text: 'Skin' }), skinT.el, stats);
   };
-  W()?.listeners.push(() => { if (W()?.loaded) { const s = W()!.stats(), t = s.timing as any; if (t.full) paint(); } });
+  // a full dress repaints the section (the counts and times); the quick dress of a slider edit leaves it
+  W()?.listeners.push(() => { if (W()?.loaded && (W()!.timing as any).full) paint(); });
   paint();
   return el;
 }
