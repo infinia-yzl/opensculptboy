@@ -36,6 +36,7 @@ The phenotype, the local changes and the face shapes that are not morph targets 
 - `--teeth [FILE|off]` adds teeth: the reference's teeth for a fitted card, else a generic set ([Teeth](teeth.md)).
 - A card fitted to a reference with an inner mouth carries that mouth, a jaw bone and the reference's mouth poses ([Mouth](mouth.md)).
 - `--tier NAME` writes one of the rendering budgets of a fitted card ([Budget tiers](budget-tiers.md)).
+- A card with outfits wears its active outfit; `--outfit`, `--show`, `--hide`, `--covered` and `--wardrobe` choose the pieces, the covered skin and a file with every piece as its own node ([Wearables](wearables.md)).
 - `blender --python src/opensculptboy/export/blender_skin.py -- ada.glb` imports a file into Blender and sets the skin's subsurface and the eyes' cornea from its extras.
 
 ## Accuracy and testing
@@ -44,4 +45,4 @@ With 4 bones per vertex, 99 % of the vertices lie within 4 mm of Anny's own outp
 
 ## Not in the file yet
 
-Hair and the soft-tissue correctives: the export uses plain skinning. Painted textures come only from a reference bake ([Fit to a reference](reference-fit.md)); other characters get a plain skin colour.
+Hair, spring bones for loose clothing and the soft-tissue correctives: the export uses plain skinning. Painted textures come only from a reference bake ([Fit to a reference](reference-fit.md)); other characters get a plain skin colour.

@@ -89,6 +89,10 @@ uv run --extra viewer opensculptboy bake-tiers card.json                        
 uv run opensculptboy export out.glb --character card.json --tier medium          # a rendering-budget tier: master, high, medium (.glb) or low (.vrm by default)
 uv run opensculptboy portraits --character card.json --out avatars/              # a portrait and an expression sheet (neutral, smile, surprised, sad, angry) in flat toon shading
 uv run --extra viewer python -m unittest test.test_budget_tiers                   # the tiers: meshes, budgets, baked normals against the master, files, portraits (about 20 s)
+uv run opensculptboy export out.glb --character card.json --outfit travel --hide cape   # an outfit with single pieces hidden (docs/wearables.md)
+uv run opensculptboy export out.glb --character card.json --wardrobe                   # every piece of every outfit as its own node
+uv run opensculptboy wearables reference handoff/ --card card.json --out folder/       # reference wearables (private packages, outside the repository)
+uv run python -m unittest test.test_wearables                                          # the wearables with synthetic garments: format, provenance, binding, fit gate, outfits, files
 ```
 
 ### Face calibration
@@ -172,6 +176,7 @@ uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and 
 | Teeth | `opensculptboy/teeth/` | The reference's teeth or a generic set, appended after the body mesh ([docs/teeth.md](docs/teeth.md)) |
 | Mouth | `opensculptboy/mouth/`, `fit/lips.py` | The `anny-mouth` rig, `jawOpen` as a jaw turn and corrective, a reference's inner mouth, sealed lips, the jaw's weights and mouth poses as targets; `test_mouth_rig` holds `MEASURED_ANGLE` and `MEASURED_EXPLAINED` ([docs/mouth.md](docs/mouth.md)) |
 | Sculpt topology | `opensculptboy/topology/` | Anny's mesh with append-only patches (the eye corner on; the ear root off), built into `data/topology/sculpt.safetensors`, and the card converter ([docs/sculpt-topology.md](docs/sculpt-topology.md)) |
+| Wearables | `opensculptboy/wearables/` | Wearable packages (`opensculptboy.wearable/1`, with a `provenance` guard), surface and rigid binding to Anny's template, the fit with layers and push-out, cover masks, outfits with slot replacement and hides rules, dressed GLB, wardrobe and VRM files, and reference wearables from a handoff's `equipment`; `TestNoPrivatePackages` fails on any private package under `src/` or `test/data/` ([docs/wearables.md](docs/wearables.md)) |
 | Character card | `opensculptboy/character.py` | `Character`, the JSON card that every export reads and stores in its scene extras ([docs/character-card.md](docs/character-card.md)) |
 
 ### Phenotype System
