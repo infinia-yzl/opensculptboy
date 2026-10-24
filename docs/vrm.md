@@ -52,7 +52,7 @@ The spring chains of the [wearables](wearables.md#springs) become `VRMC_springBo
 
 The chains' skin joints count against the joint budget. Unless `--budget off` is given, a spring takes fewer joints (3 at least), then fewer chains, then leaves the file until the file fits, and the export reports it with a `SpringWarning` and in `spring_messages` of the summary: the 104 bones of the `anny` rig leave a VRM 0.x file 24 joints, enough for a cape of 5 chains and a skirt of 7, each of 3 joints.
 
-
+## Testing
 
 The files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`). three-vrm loads both versions with their look-at, expressions and spring bones, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM are untested so far.
 
