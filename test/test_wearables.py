@@ -492,6 +492,14 @@ class TestDressedFiles(unittest.TestCase):
         )
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             main(["export", str(out), "--character", str(card), "--hide", "hat"])
+        # a tier export takes the same choices
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            command = ["export", str(out), "--character", str(card), "--tier", "high"]
+            self.assertEqual(main(command + ["--hide", "cape"]), 0)
+        summary = _last_json(printed.getvalue())
+        self.assertEqual(
+            summary["wearables"], ["test_outfit/tunic", "test_outfit/circlet"]
+        )
         # a package file that is missing is a usage error of one line
         lost = self.folder / "lost.json"
         data = self.card.to_dict()
