@@ -12,7 +12,8 @@ materials and their textures, fixes what it can fix safely and returns the garme
 the quality as it is.
 
 The fixes: degenerate triangles and unused vertices are removed, duplicate vertices (one
-position, UV and normal) are merged, triangles wound against their neighbours are turned
+position, UV and normal) are merged, duplicate triangles (the same three vertices in the same
+turn) are removed, triangles wound against their neighbours are turned
 over, missing normals are computed (weighted by the angle of each corner, welded by
 position, so that UV seams and material borders stay smooth), and a normal map in DirectX
 convention gets its green channel flipped (``normal_green``). The packages and the exports
@@ -147,8 +148,8 @@ def _keep(garment: Garment, triangles_kept: np.ndarray, rows: np.ndarray) -> Gar
 
 
 def fix_geometry(garment: Garment, quality: Quality) -> tuple[Garment, np.ndarray]:
-    """Remove degenerate triangles and unused vertices and merge duplicate vertices; returns
-    the garment and the old index of each new vertex."""
+    """Remove degenerate triangles and unused vertices, merge duplicate vertices and remove
+    duplicate triangles; returns the garment and the old index of each new vertex."""
     t = garment.triangles
     repeated = (t[:, 0] == t[:, 1]) | (t[:, 1] == t[:, 2]) | (t[:, 2] == t[:, 0])
     flat = _areas(garment.vertices, t) < 1e-12
@@ -206,6 +207,21 @@ def fix_geometry(garment: Garment, quality: Quality) -> tuple[Garment, np.ndarra
             used = np.unique(t[~again])
             garment = _keep(garment, ~again, used)
             rows = rows[used]
+    # duplicate triangles: the same three vertices in the same turn
+    t = garment.triangles
+    turn = np.take_along_axis(
+        t, (np.argmin(t, axis=1)[:, None] + np.arange(3)) % 3, axis=1
+    )
+    _, first = np.unique(turn, axis=0, return_index=True)
+    if len(first) < len(t):
+        keep = np.zeros(len(t), bool)
+        keep[first] = True
+        quality.fix(
+            "duplicate_triangles_removed",
+            f"{len(t) - len(first)} duplicate triangles (the same three vertices) removed",
+            count=int(len(t) - len(first)),
+        )
+        garment = _keep(garment, keep, np.arange(len(garment.vertices)))
     return garment, rows
 
 

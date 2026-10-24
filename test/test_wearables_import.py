@@ -476,15 +476,19 @@ class TestQuality(unittest.TestCase):
         from opensculptboy.wearables.quality import check_garment
 
         v = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], float)
-        t = np.array([[0, 1, 2], [1, 3, 2], [4, 3, 2], [0, 0, 1]])
-        garment = Garment(v * 0.1, t, normals=np.tile([0, 0, 1.0], (5, 1)))
+        v = np.vstack([v, [[0.5, 0.5, 1.0]]])
+        t = np.array([[0, 1, 2], [1, 3, 2], [4, 3, 2], [0, 0, 1], [2, 1, 3], [1, 2, 5]])
+        garment = Garment(v * 0.1, t, normals=np.tile([0, 0, 1.0], (6, 1)))
         fixed, rows, quality = check_garment(garment)
-        found = quality.codes()
+        found = {i.code: i for i in quality.items}
         self.assertIn("degenerate_triangles_removed", found)
         self.assertIn("duplicate_vertices_merged", found)
-        self.assertIn("non_manifold_edges", found)  # 1-2 then shared by three triangles
-        self.assertEqual(len(fixed.vertices), 4)
-        self.assertEqual(sorted(rows.tolist()), [0, 1, 2, 3])
+        # 4-3-2 is 1-3-2 once 4 merges into 1, and 2-1-3 is 1-3-2 in another turn
+        self.assertEqual(found["duplicate_triangles_removed"].count, 2)
+        self.assertEqual(len(fixed.triangles), 3)
+        self.assertIn("non_manifold_edges", found)  # 1-2 shared by three triangles
+        self.assertEqual(len(fixed.vertices), 5)
+        self.assertEqual(sorted(rows.tolist()), [0, 1, 2, 3, 5])
 
 
 class TestCardCommands(unittest.TestCase):
