@@ -108,6 +108,7 @@ export class Wardrobe {
       catch (err: any) { notes.push(`detail level 0: ${err.message || err}`); }
     }
     if ((card.detail?.levels || []).some((l: any) => Number(l.subdiv) > 0)) notes.push('the page shows level 0 of the card\'s detail layer');
+    clearTimeout(this.settle); this.settle = null;
     this.clearMeshes();
     this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes;
     this.outfit = card.active_outfit && card.active_outfit !== NO_OUTFIT ? card.active_outfit : (card.outfits?.[0]?.id ?? null);
@@ -133,8 +134,10 @@ export class Wardrobe {
   }
 
   unload() {
+    clearTimeout(this.settle); this.settle = null;
     this.clearMeshes();
-    this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = [];
+    // the dress cache holds the packages (their garments and texture bytes) by reference
+    this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.cache = new DressCache();
     this.host.setBodyOffsets(null);
     this.restoreBody();
     this.host.changed(); this.notify();
