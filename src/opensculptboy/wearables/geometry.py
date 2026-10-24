@@ -148,7 +148,9 @@ class Surface:
             bary = _closest_on_triangles(q, a, b, c)
             foot = bary[:, :1] * a + bary[:, 1:2] * b + bary[:, 2:] * c
             dist = np.linalg.norm(q - foot, axis=1).reshape(len(p), k)
-            pick = np.argmin(dist, axis=1)
+            # the nearest triangle; of triangles equally near (within 1e-12 m), the one of the
+            # lowest index, so that the k-d tree's order of ties on another CPU changes nothing
+            pick = np.lexsort((near, np.round(dist, 12)), axis=-1)[:, 0]
             rows = np.arange(len(p)) * k + pick
             sl = slice(start, start + len(p))
             best_t[sl] = near[np.arange(len(p)), pick]
