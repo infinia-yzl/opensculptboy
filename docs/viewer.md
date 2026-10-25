@@ -10,6 +10,7 @@
 - The camera orbits with a drag and zooms with the wheel. The `?` key lists every shortcut.
 - The **Performance** card (the `` ` `` key or `?stats=1`) shows the frame times and runs a 10-second benchmark.
 - `?shot` hides the whole interface, for screenshots.
+- A slider edit builds the body in a Web Worker, so the page keeps drawing during a drag. `?bodyworker=off` builds it on the page, for comparison.
 
 The Pose section saves the pose shown as a character card ([Character card](character-card.md)) for `opensculptboy export`, or as a silhouette SVG.
 
