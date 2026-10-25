@@ -302,18 +302,19 @@ def _push(
         for points, directions, target in covered
     ]
     for final in [False] * PUSH_ROUNDS + [True]:
-        for surface, target in zip(colliders, targets):
-            signed, found, n = surface.signed_distance(vertices)
-            bad = (signed < target - 1e-7) & (found.distance < DEPTH)
-            if bad.any():
-                vertices[bad] += (target - signed)[bad, None] * n[bad]
-                moved |= bad
+        # the triangles first: the vertices' targets, met last, hold after the pass
         for mover in movers:
             step = mover(vertices)
             some = np.abs(step).sum(axis=1) > 0
             if some.any():
                 vertices = vertices + step
                 moved |= some
+        for surface, target in zip(colliders, targets):
+            signed, found, n = surface.signed_distance(vertices)
+            bad = (signed < target - 1e-7) & (found.distance < DEPTH)
+            if bad.any():
+                vertices[bad] += (target - signed)[bad, None] * n[bad]
+                moved |= bad
         if not final:
             vertices = start + _fade(vertices - start, moved, triangles)
     shift = np.linalg.norm(vertices - start, axis=1)
