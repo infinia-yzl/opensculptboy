@@ -1066,6 +1066,55 @@ class TestQuality(unittest.TestCase):
         self.assertGreater(flipped(fold), 0)
         self.assertLess(flipped(fold), 6)
 
+    def test_computed_normals_agree_with_mixed_winding(self):
+        """A flap folded back over a sheet, joined by a non-manifold edge and wound the
+        other way, keeps its winding and takes normals of its own, so that every triangle
+        agrees with its computed normals and a second check finds nothing to report."""
+        from opensculptboy.wearables.format import Garment
+        from opensculptboy.wearables.quality import check_garment
+
+        n, step = 5, 0.02
+        x, y = np.meshgrid(np.arange(n), np.arange(n))
+        sheet = np.column_stack([x.ravel(), y.ravel(), np.zeros(n * n)]) * step
+        a = (np.arange(n - 1)[None, :] + n * np.arange(n - 1)[:, None]).ravel()
+        t = np.concatenate([np.c_[a, a + 1, a + n + 1], np.c_[a, a + n + 1, a + n]])
+        flap = np.array([[2.5, 2.4, 0.1]]) * step  # over the edge from (2, 2) to (3, 2)
+        vertices = np.vstack([sheet, flap])
+        triangles = np.vstack([t, [[2 * n + 2, n * n, 2 * n + 3]]])  # wound downward
+        garment = Garment(vertices, triangles)
+        fixed, rows, quality = check_garment(garment, normals_from_file=False)
+        v, f = fixed.vertices, fixed.triangles
+        face = np.cross(v[f[:, 1]] - v[f[:, 0]], v[f[:, 2]] - v[f[:, 0]])
+        against = np.einsum("ij,ij->i", face, fixed.normals[f].sum(axis=1)) < 0
+        self.assertEqual(int(against.sum()), 0)
+        self.assertEqual(int((face[:, 2] < 0).sum()), 1)  # the flap keeps its winding
+        codes_found = [i.code for i in quality.items]
+        self.assertIn("normals_split", codes_found)
+        self.assertNotIn("normals_against_winding", codes_found)
+        self.assertEqual(len(rows), len(v))
+        np.testing.assert_array_equal(v, vertices[rows])
+        _, _, again = check_garment(fixed)  # the normals now count as the file's
+        self.assertNotIn("normals_against_winding", [i.code for i in again.items])
+
+    def test_computed_normals_face_away_from_the_body(self):
+        """A patch of the torso wound toward the skin turns over when its normals are
+        computed, and no part faces into the body."""
+        from opensculptboy.wearables.format import Garment
+        from opensculptboy.wearables.quality import check_garment
+        from test.wearable_fixtures import _region_shell, torso_mask
+
+        body = template_body()
+        vertices, triangles, _ = _region_shell(body, torso_mask(body), 0.01)
+        garment = Garment(vertices, triangles[:, ::-1])
+        fixed, _, quality = check_garment(garment, body=body, normals_from_file=False)
+        codes_found = [i.code for i in quality.items]
+        self.assertIn("parts_turned_outward", codes_found)
+        self.assertNotIn("part_faces_inward", codes_found)
+        outward = fixed.vertices - body.surface.closest(fixed.vertices).point
+        self.assertGreater(
+            float((np.einsum("ij,ij->i", fixed.normals, outward) > 0).mean()), 0.99
+        )
+
     def test_geometry_fixes(self):
         from opensculptboy.wearables.format import Garment
         from opensculptboy.wearables.quality import check_garment
