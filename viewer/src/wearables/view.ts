@@ -13,7 +13,7 @@ import { dirname, FileSet, type PickedFile } from './files.ts';
 import { readSafetensors, readWearable, type Material, type Wearable } from './package.ts';
 import { GARMENT_FS, GARMENT_VS } from './shading.ts';
 import { skinTriangles } from './skin.ts';
-import { NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
+import { cardOutfit, NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
 
 // what the wardrobe needs from the renderer (main.ts)
 export interface WardrobeHost {
@@ -97,7 +97,7 @@ export class Wardrobe {
     card.wearables = (card.wearables || []).filter((w: any) => ok(w.file, w.id || String(w.file).split('/').pop()!.split('.')[0]));
     const refs = this.refsOf(card);
     for (const k of Object.keys(card.wearable_overrides || {})) {
-      try { resolveRef(k, refs, card.active_outfit || null); } catch (e) { delete card.wearable_overrides[k]; notes.push(`override ${k}: no such piece`); }
+      try { resolveRef(k, refs, cardOutfit(card)); } catch (e) { delete card.wearable_overrides[k]; notes.push(`override ${k}: no such piece`); }
     }
     if ((card.local_changes && Object.keys(card.local_changes).length)) notes.push('the card\'s local changes are not shown in the page');
     // the level-0 offsets of the card's detail layer
@@ -111,7 +111,7 @@ export class Wardrobe {
     clearTimeout(this.settle); this.settle = null;
     this.clearMeshes();
     this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes;
-    this.outfit = card.active_outfit && card.active_outfit !== NO_OUTFIT ? card.active_outfit : (card.outfits?.[0]?.id ?? null);
+    this.outfit = cardOutfit(card);   // a card that names no outfit wears none, as in an export
     this.show = []; this.hide = []; this.cache = new DressCache(); this.worn = []; this.pieces = [];
     this.host.setBodyOffsets(offsets);
     if (card.phenotype || card.face_shapes) this.host.applyCard(card);

@@ -10,7 +10,7 @@ import path from 'path';
 import { BodySurface, dress, estimatedPose, IDENTITY_FRAME, outfitCover } from '../src/wearables/dress.ts';
 import { readWearable } from '../src/wearables/package.ts';
 import { skinTriangles } from '../src/wearables/skin.ts';
-import { wornPieces } from '../src/wearables/wardrobe.ts';
+import { cardOutfit, wornPieces } from '../src/wearables/wardrobe.ts';
 
 const dir = process.argv[2];
 const inp = JSON.parse(fs.readFileSync(path.join(dir, 'input.json')));
@@ -52,7 +52,8 @@ for (const c of inp.cases) {
   const info = {};
   for (const e of [...(card.outfits || []).flatMap((x) => (x.pieces || []).map((p) => ({ ref: `${x.id}/${p.piece}`, file: p.file }))),
     ...(card.wearables || []).map((w) => ({ ref: w.id, file: w.file }))]) info[e.ref] = await load(inp.folder, e.file);
-  const worn = wornPieces(card, (ref) => info[ref], c.choices || {}).map((p) => ({ ...p, wearable: info[p.ref] }));
+  // the outfit that the page wears for the card (wearables/view.ts)
+  const worn = wornPieces(card, (ref) => info[ref], { outfit: cardOutfit(card), ...(c.choices || {}) }).map((p) => ({ ...p, wearable: info[p.ref] }));
   if (c.estimate) surface.pose = (bone, b, wearable) => estimatedPose(wearable, b, exact(bone).t);
   const t0 = performance.now(), timing = {};
   const dressed = dress(surface, worn, { push: c.push !== false, timing });

@@ -50,6 +50,8 @@ CASES = [
     {"name": "no_push", "body": "thin", "push": False},
     {"name": "page_frame", "body": "thin", "frame": True},
     {"name": "estimate", "body": "random", "estimate": True},
+    # a card that names no outfit wears its loose pieces alone, as the export does
+    {"name": "no_outfit", "body": "thin", "card": "bare"},
 ]
 
 
@@ -151,6 +153,8 @@ class TestViewerWearables(unittest.TestCase):
         folder = cls.dir / "wear"
         folder.mkdir()
         card = _packages(folder)
+        cards = {"card": card, "bare": dataclasses.replace(card, active_outfit="")}
+        (folder / "bare.json").write_text(json.dumps(cards["bare"].to_dict(), indent=1))
         model = template_model()
         cls.quads = page_quads()
         cls.n = int(cls.quads.max()) + 1  # the page's body rows
@@ -166,7 +170,10 @@ class TestViewerWearables(unittest.TestCase):
         body.weights[: cls.n].astype(np.float64).tofile(cls.dir / "weights.f64")
         body.indices[: cls.n].astype(np.int32).tofile(cls.dir / "indices.i32")
         names = list(BODIES)
-        cases = [dict(c, body=names.index(c["body"]), card="card.json") for c in CASES]
+        cases = [
+            dict(c, body=names.index(c["body"]), card=f"{c.get('card', 'card')}.json")
+            for c in CASES
+        ]
         inp = {
             "folder": str(folder),
             "cases": cases,
@@ -187,7 +194,10 @@ class TestViewerWearables(unittest.TestCase):
             body = cls.bodies[c["body"]]
             choices = c.get("choices", {})
             worn = worn_pieces(
-                card, folder, show=choices.get("show", ()), hide=choices.get("hide", ())
+                cards[c.get("card", "card")],
+                folder,
+                show=choices.get("show", ()),
+                hide=choices.get("hide", ()),
             )
             pieces = dress(body, worn, push=c.get("push", True))
             cls.expected[c["name"]] = (pieces, outfit_cover(body, pieces))
@@ -257,8 +267,21 @@ class TestViewerWearables(unittest.TestCase):
         np.testing.assert_array_equal(page_cover, cover[: self.n])
 
     def test_cases(self):
-        for case in ("template", "thin", "random", "hide_cape", "swap", "no_push"):
+        for case in (
+            "template",
+            "thin",
+            "random",
+            "hide_cape",
+            "swap",
+            "no_push",
+            "no_outfit",
+        ):
             self.compare(case)
+
+    def test_no_outfit(self):
+        """A card with an empty active_outfit wears none of its outfits in the page."""
+        refs = [p["ref"] for p in self.out["no_outfit"]["pieces"]]
+        self.assertEqual(refs, ["plate", "vest"])
 
     def test_page_frame(self):
         self.compare("page_frame", frame=True, vertex_tolerance=1e-6)

@@ -15,6 +15,13 @@ export interface Choices { outfit?: string | null; show?: string[]; hide?: strin
 // the slot and the hides rules of each piece's package
 export interface PieceInfo { slot: string; hides: { piece: string; groups: string[] }[] }
 
+// the outfit that a card wears: its active_outfit, or null (no outfit) where that is empty or 'none', as the export
+// reads it
+export function cardOutfit(card: any): string | null {
+  const active = card?.active_outfit;
+  return typeof active === 'string' && active !== '' && active !== NO_OUTFIT ? active : null;
+}
+
 export function cardEntries(card: any): CardEntry[] {
   const out: CardEntry[] = [];
   for (const outfit of card.outfits || [])
