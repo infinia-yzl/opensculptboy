@@ -32,7 +32,7 @@ The phenotype, the local changes and the face shapes that are not morph targets 
 ## Options
 
 - `--detail N` exports a level of a fitted card's detail layer ([Fit to a reference](reference-fit.md)).
-- `--eyes [FILE]` replaces anny's plain eyeballs with an iris texture, a refracting cornea, a caruncle and lashes ([Eyes](eyes.md)); a fitted card has them without the option, and `--eyes off` keeps anny's eyeballs.
+- `--eyes [FILE]` replaces anny's plain eyeballs with an iris texture, a refracting cornea, a caruncle and lashes ([Eyes](eyes.md)); a fitted card has them without the option, and `--eyes off` keeps anny's eyeballs. `--lashes fine|medium|full` sets the weight of generic lashes, and `--lashes off` leaves the lashes out ([Lashes](eyes.md#lashes)).
 - `--teeth [FILE|off]` adds teeth: the reference's teeth for a fitted card, else a generic set ([Teeth](teeth.md)).
 - A card fitted to a reference with an inner mouth carries that mouth, a jaw bone and the reference's mouth poses ([Mouth](mouth.md)).
 - `--tier NAME` writes one of the rendering budgets of a fitted card ([Budget tiers](budget-tiers.md)).
@@ -45,4 +45,4 @@ With 4 bones per vertex, 99 % of the vertices lie within 4 mm of Anny's own outp
 
 ## Not in the file yet
 
-Hair, spring bones for loose clothing and the soft-tissue correctives: the export uses plain skinning. Painted textures come only from a reference bake ([Fit to a reference](reference-fit.md)); other characters get a plain skin colour.
+Hair, a spring extension that engines read for the chains of loose wearables (the file holds their joints, and their settings and colliders in the extras; [Wearables](wearables.md#springs)) and the soft-tissue correctives: the export uses plain skinning. Painted textures come only from a reference bake ([Fit to a reference](reference-fit.md)); other characters get a plain skin colour.

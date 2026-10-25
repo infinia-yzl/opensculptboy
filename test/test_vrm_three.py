@@ -22,6 +22,11 @@ Playwright), and the tests check what three-vrm makes of the file:
 The Khronos glTF validator (the gltf-validator package) must report no error in either file; the
 test prints its warnings.
 
+``TestThreeVrmSprings`` loads the files of a card with a synthetic long cape and skirt
+(test.wearable_fixtures) in both versions: three-vrm builds every spring joint and collider, the
+chains rest within 5 cm of their shape, and when the hips move on at 1.25 m/s, a walk, the
+tails lag 0.1 to 0.25 m behind their place on the figure.
+
 ``TestThreeVrmNormalMaps`` loads the files of a card whose cape has a normal map in both
 versions: every MToon material links and draws (three-vrm's MToon vertex shader writes no
 ``vTangent``, so a primitive with vertex tangents and a normal map fails to link).
@@ -512,6 +517,79 @@ def page_results(files: dict[str, pathlib.Path], script: str) -> dict[str, dict]
         finally:
             browser.close()
     return results
+
+
+@local_only("Playwright, Chromium and the viewer's node packages (three-vrm)")
+class TestThreeVrmSprings(unittest.TestCase):
+    """The spring chains of loose wearables in three-vrm, both versions."""
+
+    @classmethod
+    def setUpClass(cls):
+        reason = missing_page_tools() or missing_node_package("gltf-validator")
+        if reason:
+            raise unittest.SkipTest(reason)
+        from opensculptboy.export.vrm import export_vrm
+        from test.wearable_fixtures import write_loose
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        folder = pathlib.Path(cls.tmp.name)
+        card = write_loose(folder)
+        cls.files, cls.docs = {}, {}
+        for version in ("1.0", "0.x"):
+            name = f"springs_{version}.vrm"
+            export_vrm(
+                folder / name,
+                card,
+                author="test",
+                version=version,
+                detail_dir=folder,
+                refine_weights=False,
+            )
+            cls.files[name] = folder / name
+            cls.docs[name] = GLB(folder / name).json
+        cls.results = page_results(
+            cls.files,
+            "() => Object.assign(window.vrmSprings(60, 1.25), "
+            "{info: window.__VRM_INFO.springJoints})",
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_joints_and_colliders(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                doc = self.docs[name]
+                self.assertEqual(result["page_errors"], [])
+                if "VRMC_springBone" in doc["extensions"]:
+                    ext = doc["extensions"]["VRMC_springBone"]
+                    # every joint but the tail of each spring turns
+                    turning = sum(len(s["joints"]) - 1 for s in ext["springs"])
+                    self.assertEqual(result["joints"], turning)
+                    self.assertEqual(result["colliders"], len(ext["colliders"]))
+                    self.assertEqual(result["tails"], len(ext["springs"]))
+                else:
+                    secondary = doc["extensions"]["VRM"]["secondaryAnimation"]
+                    roots = sum(len(g["bones"]) for g in secondary["boneGroups"])
+                    spheres = sum(
+                        len(g["colliders"]) for g in secondary["colliderGroups"]
+                    )
+                    self.assertEqual(result["tails"], roots)
+                    self.assertEqual(result["colliders"], spheres)
+                    self.assertGreater(result["joints"], 2 * roots)
+
+    def test_chains_rest_and_swing(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                self.assertLess(result["still"], 0.05)
+                self.assertGreater(result["moving"], 0.1)
+                self.assertLess(result["moving"], 0.25)
+
+    def test_validator(self):
+        for report in validate(list(self.files.values())):
+            errors = [m for m in report["messages"] if m["severity"] == ERROR]
+            self.assertEqual(errors[:20], [], report["file"])
 
 
 @local_only("Playwright, Chromium and the viewer's node packages (three-vrm)")

@@ -19,9 +19,8 @@ A card with the eyes of :mod:`opensculptboy.eyes` also gets lashes along its lid
 on the lid margin in the frame of the margin's tangent and the lid's direction away from the
 margin there (:class:`PatchFollow`), so the lashes keep their shape and turn with the edge of
 the lid in the blinks of the morph targets, the T-pose of a VRM file and every other target of
-the file. As the upper lid closes, its lashes also turn down about the margin by 1.5 times the
-angle that the opening between the lids closes (:data:`CLOSE_TURN`): the edge of a closing lid
-rolls, and the lashes of a closed eye point forward and down along the lid line. They also stay
+the file. The blinks give their lashes a turn of their own on top
+(:func:`opensculptboy.eyes.blink.blink_lash_offsets`). The lashes also stay
 :data:`CLEARANCE` outside the outward-facing skin around the eye, so a closed lid lays them on
 its skin. The lashes take the skin weights of their roots on the margin.
 
@@ -176,14 +175,6 @@ def lid_margins(frame, rest, normals, skin, skin_triangles) -> dict[int, Margin]
 ROOT_SPREAD = 0.0015
 PATCH_SPREAD = 0.003
 ACROSS_REACH = 0.0025
-# as the upper lid closes, its lashes turn down about the margin by this share of the angle
-# that the lids' opening closes (seen from the eye's centre), on top of the lid's own turn:
-# the edge of a closing lid rolls, so that the lashes of a closed eye point forward and down
-# and rest along the closed lid
-CLOSE_TURN = 1.5
-# the opening of the lids is measured in degrees, and a closed eye turns its lashes by at most
-# this angle (degrees)
-MAX_CLOSE_TURN = 70.0
 # the lashes stay this far (metres) outside the outward-facing skin around the eye, or as far
 # as they lie at rest when that is less: a closed lid lays them on its skin
 CLEARANCE = 0.0003
@@ -200,7 +191,9 @@ class PatchFollow:
     (M, n) each); their rest positions are ``rest``. A point keeps its offset from its root
     in the frame of the tangent, the lid's normal (the tangent across the lid's direction)
     and the third axis, so the lashes keep their shape and turn with the edge of the lid as
-    it closes over the eyeball.
+    it closes over the eyeball. The lashes turn with the margin's frame alone: a squint or a
+    look down moves the lid without rolling its edge, and the blinks set their lashes'
+    own turn (:func:`opensculptboy.eyes.blink.blink_lash_offsets`).
     """
 
     rows: np.ndarray  # (n,)
@@ -208,12 +201,6 @@ class PatchFollow:
     root: np.ndarray  # (M, n), rows sum to 1
     tangent: np.ndarray  # (M, n), rows sum to 0
     across: np.ndarray  # (M, n), rows sum to 0
-    # the upper lashes: the eye's centre and the root's nearest point on the lower lid's
-    # margin, (M, n) each with rows that sum to 1, and how far the lashes turn as the opening
-    # between them closes (CLOSE_TURN; 0 for the lower lashes)
-    centre: np.ndarray | None = None
-    opposite: np.ndarray | None = None
-    turn: np.ndarray | None = None  # (M,)
     # the outward-facing skin around the eye (rows of the mesh, and its triangles over them),
     # and how far each point may come to it (CLEARANCE, or its distance at rest)
     skin_rows: np.ndarray | None = None
@@ -256,14 +243,6 @@ class PatchFollow:
         n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
         return np.stack([t, np.cross(n, t), n], 2)  # (M, 3, 3), columns t, b, n
 
-    def _opening(self, x, axis):
-        """The signed angle (M,) about ``axis`` from the root to its point on the lower
-        margin, seen from the eye's centre."""
-        c = self.centre @ x
-        u = self.root @ x - c
-        v = self.opposite @ x - c
-        return np.arctan2((np.cross(u, v) * axis).sum(1), (u * v).sum(1))
-
     def motions(self, positions):
         """The rotation (M, 3, 3) of each point's frame, and its root at rest and in
         ``positions`` (M, 3) (a function of the rows, returning (n, 3))."""
@@ -271,17 +250,6 @@ class PatchFollow:
         f0 = self._frames(self.rest, self.tangent, self.across)
         f1 = self._frames(moved, self.tangent, self.across)
         rotations = np.einsum("mij,mkj->mik", f1, f0)
-        if self.turn is not None and self.centre is not None:
-            # the extra turn of a closing lid: about the tangent, toward the lower lid
-            axis = f1[:, :, 0]
-            before = self._opening(self.rest, f0[:, :, 0])
-            after = self._opening(moved, axis)
-            sense = np.sign(before)
-            closed = np.clip((before - after) * sense, 0.0, None)
-            angle = sense * np.minimum(self.turn * closed, np.radians(MAX_CLOSE_TURN))
-            rotations = np.einsum(
-                "mij,mjk->mik", _axis_rotations(axis, angle), rotations
-            )
         return rotations, (self.root @ self.rest, self.root @ moved)
 
     def points(self, points, rotations, centres) -> np.ndarray:
@@ -295,16 +263,7 @@ class PatchFollow:
         return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
 
 
-def _axis_rotations(axes: np.ndarray, angles: np.ndarray) -> np.ndarray:
-    """Rotations (M, 3, 3) by ``angles`` (M,) about unit ``axes`` (M, 3) (Rodrigues)."""
-    k = np.zeros((len(axes), 3, 3))
-    k[:, 0, 1], k[:, 0, 2], k[:, 1, 2] = -axes[:, 2], axes[:, 1], -axes[:, 0]
-    k -= np.transpose(k, (0, 2, 1))
-    s, c = np.sin(angles)[:, None, None], np.cos(angles)[:, None, None]
-    return np.eye(3)[None] + s * k + (1 - c) * (k @ k)
-
-
-def bind(points, lids, margins, rest, eyeball=None):
+def bind(points, lids, margins, rest):
     """
     How lash ``points`` (M, 3) of one eye follow its lid margins: (anchors (n,), blend (M,
     n), source (M,), :class:`PatchFollow`). ``lids`` gives each point's lid, whose margin
@@ -312,28 +271,20 @@ def bind(points, lids, margins, rest, eyeball=None):
     margin (:data:`ROOT_SPREAD`); the margin's tangent and the lid's direction away from the
     margin are weighted by their distance from the root (:data:`PATCH_SPREAD`). blend @ the
     anchors' skin weights gives the points' skin weights (the root's, from the margin's
-    vertices), and source is each point's nearest margin vertex. With ``eyeball`` (the rows
-    of the eye's eyeball, whose mean is its centre), the upper lashes also turn down as the
-    lids close (:data:`CLOSE_TURN`).
+    vertices), and source is each point's nearest margin vertex.
     """
     points = np.asarray(points, dtype=np.float64)
     rest = np.asarray(rest, dtype=np.float64)
-    eyeball = np.zeros(0, np.int64) if eyeball is None else np.asarray(eyeball)
-    anchors = np.unique(
-        np.concatenate([m.lid_rows for m in margins.values()] + [eyeball])
-    ).astype(np.int64)
+    anchors = np.unique(np.concatenate([m.lid_rows for m in margins.values()])).astype(
+        np.int64
+    )
     column = np.full(int(anchors.max()) + 1, -1)
     column[anchors] = np.arange(len(anchors))
     n = len(anchors)
     root_w = np.zeros((len(points), n))
     tangent_w = np.zeros((len(points), n))
     across_w = np.zeros((len(points), n))
-    centre_w = np.zeros((len(points), n))
-    opposite_w = np.zeros((len(points), n))
-    turn = np.zeros(len(points))
     source = np.zeros(len(points), dtype=np.int64)
-    if len(eyeball):
-        centre_w[:, column[eyeball]] = 1.0 / len(eyeball)
     for lid in np.unique(lids):
         key = int(lid) if int(lid) in margins else next(iter(margins))
         margin = margins[key]
@@ -367,32 +318,11 @@ def bind(points, lids, margins, rest, eyeball=None):
         u /= u.sum(1, keepdims=True)
         across_w[np.ix_(mine, column[near])] += u
         across_w[np.ix_(mine, cols)] -= w
-        if key == UPPER and LOWER in margins and len(eyeball):
-            lower = margins[LOWER]
-            d2 = ((root[:, None] - lower.points[None]) ** 2).sum(2)
-            soft = np.exp(-(d2 - d2.min(1, keepdims=True)) / ROOT_SPREAD**2)
-            soft /= soft.sum(1, keepdims=True)
-            opposite_w[np.ix_(mine, column[lower.rows])] = soft
-            turn[mine] = CLOSE_TURN
-    upper = turn > 0
-    if not upper.any():
-        opposite_w[:] = root_w  # unused: no lashes turn
-    else:
-        opposite_w[~upper] = root_w[~upper]
     return (
         anchors,
         root_w,
         source,
-        PatchFollow(
-            anchors,
-            rest[anchors],
-            root_w,
-            tangent_w,
-            across_w,
-            centre_w if len(eyeball) else None,
-            opposite_w if len(eyeball) else None,
-            turn if len(eyeball) else None,
-        ),
+        PatchFollow(anchors, rest[anchors], root_w, tangent_w, across_w),
     )
 
 
@@ -513,7 +443,9 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
     bottom edge (the root, v = 0) toward the top (the tip) in ``settings.color``, each slanting
     a little and curving; the alpha falls to nothing at the tips. The left half holds the upper
     lashes' strands and the right half the lower lashes', fewer, finer and lighter
-    (:data:`GENERIC_LOWER`).
+    (:data:`GENERIC_LOWER`). ``settings.density`` sets the number of strands, and
+    ``settings.opacity`` scales each strand's alpha before it is clipped to 1, so that above
+    1 its opaque core widens.
     """
     from opensculptboy.eyes.texture import srgb
 
@@ -537,7 +469,7 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
             taper = width * (1.0 - 0.85 * along)
             strand = np.clip(1.0 - dx / np.maximum(taper, 0.3), 0.0, 1.0)
             strand *= (v <= reach) * (1.0 - along**3)
-            alpha = np.maximum(alpha, strand)
+            alpha = np.maximum(alpha, np.clip(settings.opacity * strand, 0.0, 1.0))
         halves.append(alpha * opacity)
     alpha = np.concatenate(halves, 1)
     colour = np.empty((h, w, 3))
@@ -720,11 +652,7 @@ def lash_parts(lashes, frames, rest, normals, skin, skin_triangles, eyeballs=Non
             if lid not in margins[side]:
                 lids[:] = next(iter(margins[side]))
             anchors, blend, source, follow = bind(
-                data.points[rows],
-                lids,
-                margins[side],
-                rest,
-                None if eyeballs is None else eyeballs.get(side),
+                data.points[rows], lids, margins[side], rest
             )
             if eyeballs is not None:
                 _keep_outside(

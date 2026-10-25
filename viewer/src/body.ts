@@ -203,6 +203,7 @@ export class AnnyBody {
   face: FaceData | null = null;         // anny's face shapes (anny_shape.ts), when the data carries them
   faceValues: Record<string, number> = {};
   timing: Record<string, number> = {};   // ms of each step of the last update
+  coarseOffsets: Float32Array | null = null;   // offsets of the coarse body (a card's level-0 detail layer, page frame)
   jointsDefault: Float32Array;
   constructor(meta: any, bufs: {
     template: Float32Array; components: Int16Array; projection: Float32Array; jointTemplate: Float32Array; jointBlend: Float32Array;
@@ -294,6 +295,8 @@ export class AnnyBody {
       const f = this.faceVector(face);
       if (f.some((x) => x !== 0)) addFace(this.face, faceRowWeights(this.face.tables, f, faceScales(this.face, c)), V, J);
     }
+    const O = this.coarseOffsets;
+    if (O) for (let i = 0; i < O.length; i++) V[i] += O[i];
     marks?.push(['shape', performance.now()]);
     let minY = Infinity;
     for (let i = 0; i < this.nBody; i++) minY = Math.min(minY, V[i * 3 + 1]);

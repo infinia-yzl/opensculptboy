@@ -189,6 +189,12 @@
   .sub-val { font-size: 12px; color: var(--muted); }
   .note { margin: 0; font-size: 12px; color: var(--muted); text-wrap: pretty; }
   .note.empty { text-align: center; padding: 12px 0; }
+  .wear-drop { padding: 14px 12px; border: 1px dashed var(--line-2); border-radius: 10px; font-size: 12px; color: var(--muted); text-align: center; }
+  body.wear-dragging .wear-drop, body.wear-dragging #c { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  .wear-list { display: flex; flex-direction: column; gap: 6px; }
+  .wear-piece { display: flex; flex-direction: column; gap: 2px; }
+  .wear-meta { padding-left: 46px; font-size: 11.5px; color: var(--muted); }
+  .wear-stats { margin-top: 6px; }
   .inline-msg { margin: 0; font-size: 12px; color: var(--muted); }
   .inline-msg:empty { display: none; }
   .inline-msg[data-kind="error"] { color: var(--bad); }

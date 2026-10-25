@@ -58,6 +58,9 @@ _VRM_ONLY = (
     "budget",
     "anny_vertex",
     "refine_weights",
+    "fit_budget",
+    "fit_priority",
+    "fit_triangles",
 )
 
 
@@ -116,6 +119,26 @@ def _with_eyes(character, value, parser):
     return dataclasses.replace(character, material={**character.material, "eyes": eyes})
 
 
+def _with_lashes(character, value):
+    """The character with the lashes of ``--lashes``: None keeps the card as it is; "off"
+    leaves the lashes out; a weight of :data:`~opensculptboy.material.LASH_WEIGHTS` sets
+    the weight of the card's generic lashes."""
+    if value is None:
+        return character
+    import dataclasses
+
+    material = dict(character.material)
+    if value == "off":
+        material["lashes"] = False
+    else:
+        lashes = material.get("lashes")
+        material["lashes"] = {
+            **(lashes if isinstance(lashes, dict) else {}),
+            "weight": value,
+        }
+    return dataclasses.replace(character, material=material)
+
+
 def _with_teeth(character, value, parser):
     """The character with the teeth of ``--teeth``: None keeps the card as it is; "" turns
     on the teeth of opensculptboy.teeth (the card's, else generic teeth); "off" leaves them
@@ -149,12 +172,13 @@ def _dressing(args, character, parser):
         or args.hide
         or args.wardrobe
         or args.covered is not None
+        or getattr(args, "springs", None) is not None
     )
     if not character.has_wardrobe():
         if wants:
             parser.error(
-                "--outfit, --show, --hide, --covered and --wardrobe need a card with "
-                "wearables or outfits (docs/wearables.md)."
+                "--outfit, --show, --hide, --covered, --springs and --wardrobe need a "
+                "card with wearables or outfits (docs/wearables.md)."
             )
         return None
     from opensculptboy.wearables.export import Dressing
@@ -169,6 +193,7 @@ def _dressing(args, character, parser):
         covered=args.covered or "remove",
         wardrobe=bool(args.wardrobe),
         visibility=bool(args.node_visibility),
+        springs=getattr(args, "springs", None) != "off",
     )
 
 
@@ -190,6 +215,7 @@ def _export(args, parser) -> int:
 
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    character = _with_lashes(character, getattr(args, "lashes", None))
     model, morph_targets = None, None  # export_glb builds the model it needs
     if args.morph_targets == "none":
         morph_targets = []
@@ -225,6 +251,29 @@ def _export(args, parser) -> int:
     return 0
 
 
+def _fit_options(args, parser):
+    """The options of --fit-budget, or None without it."""
+    if not args.fit_budget:
+        if args.fit_priority or args.fit_triangles:
+            parser.error("--fit-priority and --fit-triangles need --fit-budget.")
+        return None
+    from opensculptboy.export.fit_budget import FitOptions
+
+    try:
+        return FitOptions.parse(args.fit_priority, args.fit_triangles)
+    except ValueError as error:
+        parser.error(f"--fit-priority/--fit-triangles: {_one_line(error)}")
+
+
+def _print_fit(summary) -> None:
+    """What --fit-budget did, one line per step on stderr."""
+    if summary.get("fit"):
+        from opensculptboy.export.fit_budget import summary_lines
+
+        for line in summary_lines(summary["fit"]):
+            print(f"fit: {line}", file=sys.stderr)
+
+
 def _export_vrm(args, parser) -> int:
     from opensculptboy.export.budget import BudgetError
     from opensculptboy.export.vrm import DEFAULT_BIND, VrmMeta, export_vrm
@@ -244,6 +293,7 @@ def _export_vrm(args, parser) -> int:
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    character = _with_lashes(character, getattr(args, "lashes", None))
     dressing = _dressing(args, character, parser)
     if dressing is not None and dressing.wardrobe:
         parser.error("--wardrobe writes .glb files; a VRM file wears one outfit.")
@@ -272,6 +322,7 @@ def _export_vrm(args, parser) -> int:
                 detail_level=args.detail or 0,
                 detail_dir=_detail_dir(args.character),
                 dressing=dressing,
+                fit_budget=_fit_options(args, parser),
             )
         except BudgetError as error:
             failure = (1, _one_line(error))
@@ -286,6 +337,7 @@ def _export_vrm(args, parser) -> int:
             parser.error(message)
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
+    _print_fit(summary)
     _result(summary)
     return 0
 
@@ -313,6 +365,7 @@ def _export_tier(args, parser) -> int:
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    character = _with_lashes(character, getattr(args, "lashes", None))
     kwargs = {}
     if is_vrm:
         from opensculptboy.export.vrm import VrmMeta
@@ -341,6 +394,7 @@ def _export_tier(args, parser) -> int:
             budget=args.budget or "warn",
             keep_anny_vertex=args.anny_vertex,
             refine_weights=args.refine_weights is not False,
+            fit_budget=_fit_options(args, parser),
         )
         if args.bind:
             kwargs["bind"] = args.bind
@@ -392,6 +446,7 @@ def _export_tier(args, parser) -> int:
             parser.error(message)
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
+    _print_fit(summary)
     _result(summary)
     return 0
 
@@ -1285,6 +1340,13 @@ def main(argv=None) -> int:
         "'off' keeps anny's eyeballs",
     )
     e.add_argument(
+        "--lashes",
+        choices=("fine", "medium", "full", "off"),
+        help="the weight of generic lashes (docs/eyes.md): fine (the default), medium or "
+        "full, the density, lengths and opacity of their strands; 'off' leaves the lashes "
+        "out",
+    )
+    e.add_argument(
         "--teeth",
         nargs="?",
         const="",
@@ -1324,6 +1386,12 @@ def main(argv=None) -> int:
         choices=("remove", "keep"),
         help="the body triangles that the shown pieces cover: 'remove' (the default) or "
         "'keep'",
+    )
+    w.add_argument(
+        "--springs",
+        choices=("on", "off"),
+        help="the spring chains of loose pieces (capes, skirts, long hems): 'on' (the "
+        "default) or 'off', which leaves every piece on the body's bones",
     )
     w.add_argument(
         "--wardrobe",
@@ -1403,6 +1471,27 @@ def main(argv=None) -> int:
         choices=("strict", "warn", "off"),
         help="a file over the budget of its VRM version fails, warns (the default) or "
         "passes",
+    )
+    r.add_argument(
+        "--fit-budget",
+        action="store_true",
+        help="fit the file into the budget of its VRM version: reduce the pieces (the "
+        "body's face and hands last), bake their normal maps again, merge the wearables' "
+        "materials into atlases and shrink the textures, and print what was done "
+        "(docs/vrm.md)",
+    )
+    r.add_argument(
+        "--fit-priority",
+        action="append",
+        metavar="PIECE=FACTOR",
+        help="with --fit-budget: a factor on a piece's importance (body, eyes, lashes, "
+        "teeth, mouth, wearable or a piece's reference such as travel/cape); repeatable",
+    )
+    r.add_argument(
+        "--fit-triangles",
+        action="append",
+        metavar="PIECE=COUNT",
+        help="with --fit-budget: a fixed number of triangles for a piece; repeatable",
     )
     r.add_argument(
         "--anny-vertex",

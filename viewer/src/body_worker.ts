@@ -10,6 +10,7 @@
 // Messages to the worker:
 //   { type: 'init', meta, bufs, detailStep }
 //   { type: 'update', id, gen, t, values, face, out: { pos, nrm, ns, coarse, joints } }
+//   { type: 'offsets', offsets } (the coarse offsets of a card's level-0 detail layer, or null; AnnyBody.coarseOffsets)
 // Messages from the worker:
 //   { type: 'ready', ms } or { type: 'error', message }
 //   { type: 'done', id, gen, t, ms, timing, eyes, values, face, out } (id, gen and t come back as they went)
@@ -27,6 +28,8 @@ self.onmessage = (e: MessageEvent) => {
       body = new AnnyBody(m.meta, m.bufs);
       body.detailStep = m.detailStep;
       post({ type: 'ready', ms: performance.now() - t0 });
+    } else if (m.type === 'offsets' && body) {
+      body.coarseOffsets = m.offsets;
     } else if (m.type === 'update' && body) {
       const r = body.update(m.values, m.face);
       const o = m.out;

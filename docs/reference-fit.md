@@ -120,7 +120,7 @@ Three tiles give parts of the body textures of their own, each drawn as a primit
 | head | 2048 by 4096 | the head's UV island, through a texture transform |
 | ears | 2048 by 1024 | the outer ears on levels 1 and 2, with UVs of their own unwrapped from the fitted ears |
 
-The texture transforms use `KHR_texture_transform` in glTF and VRM 1.0, and the ST vector of `_MainTex` in VRM 0.x. The bake also writes the target's eyes straight onto the layout of the exported eyes (`eye_layout`, 1024 by 512, with their normals), with each eye's gaze, and the fitted card's exports show them without `--eyes` ([Eyes](eyes.md)). It takes the target's lashes ([Eyes](eyes.md#lashes)), teeth and inner mouth ([Teeth](teeth.md), [Mouth](mouth.md)) as well, and the target's blinks when the handoff has them ([Eyes](eyes.md#a-references-blinks)).
+The texture transforms use `KHR_texture_transform` in glTF and VRM 1.0, and the ST vector of `_MainTex` in VRM 0.x. The bake also writes the target's eyes straight onto the layout of the exported eyes (`eye_layout`, 2048 by 1024 by default, `--eye-size`, with their normals), with each eye's gaze, and the fitted card's exports show them without `--eyes` ([Eyes](eyes.md)). It takes the target's lashes ([Eyes](eyes.md#lashes)), teeth and inner mouth ([Teeth](teeth.md), [Mouth](mouth.md)) as well, and the target's blinks when the handoff has them ([Eyes](eyes.md#a-references-blinks)).
 
 ## The skin material in the exports
 

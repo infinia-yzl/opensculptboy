@@ -291,7 +291,7 @@ def measure_baked(
     else:
         image = tex.linear(np.asarray(Image.open(io.BytesIO(baked)).convert("RGB")))
         carried = tex.carry_baked(image, eye_uv_box(model), eyeballs)
-    s, phi, left = tex.texel_polar()
+    s, phi, left = tex.texel_polar((carried.shape[1], carried.shape[0]))
     out = {}
     for side, half in (("L", left), ("R", ~left)):
         hit = tex.find_iris(carried[half], s[half], phi[half])

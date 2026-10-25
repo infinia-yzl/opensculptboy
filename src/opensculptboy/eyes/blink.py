@@ -65,6 +65,14 @@ MAX_RIM_TURN = 20.0
 # the turn that brings the rims together fades out over this share of the opening's length
 # at each corner of the eye
 MEET_TAPER = 0.1
+# the smoothed turn can leave the rims apart between the upper rim's vertices, where a coarse
+# lid holds few of them (10 to 15 on level 0): in at most SEAL_ROUNDS more rounds, the upper
+# rim's vertices turn down by the least turns that close the gaps left (sampled SEAL_SAMPLES
+# times along the opening), until the rims overlap by SEAL_OVERLAP (metres) everywhere from
+# CORNER_MARGIN of each corner
+SEAL_ROUNDS = 6
+SEAL_SAMPLES = 256
+SEAL_OVERLAP = 0.00002
 # the lashes turn about the eye's horizontal axis by this share of their lid's turn: the
 # upper lashes of a reference character turn 15 degrees while the upper rim turns about 41
 LASH_TURN = 0.37
@@ -843,7 +851,10 @@ def meet_rims(
     lid; with ``back`` false, a rim that passes further keeps its place. The turn fades out
     toward the corners of the eye (:data:`MEET_TAPER`) and stays within
     :data:`MAX_RIM_TURN`. Each row of the upper lid turns by its weight
-    (:func:`_upper_weights`), and the half-closed pose by half as much.
+    (:func:`_upper_weights`), and the half-closed pose by half as much. The smoothed turn
+    can leave the rims apart between the upper rim's vertices of a coarse lid, so the last
+    rounds seal them (:data:`SEAL_ROUNDS`): the upper rim's vertices turn down by the least
+    turns that close every gap left (:func:`_seal_turns`).
     """
     frame = lids.frame
     R = frame.radius
@@ -883,7 +894,59 @@ def meet_rims(
         if half is not None:
             sh, ph, qh = cylinder(frame, X0[r] + half[r])
             half[r] = from_cylinder(frame, sh, ph + 0.5 * step, qh) - X0[r]
+    for _ in range(SEAL_ROUNDS):
+        X1 = X0 + out
+        s_u, p_u = _margin_curve(lids, X1, lids.upper, True)
+        s_l, p_l = _margin_curve(lids, X1, lids.lower, False)
+        lo, hi = max(s_u[0], s_l[0]), min(s_u[-1], s_l[-1])
+        if hi <= lo or len(s_u) < 2:
+            break
+        ss = np.linspace(lo, hi, SEAL_SAMPLES)
+        gap = (
+            np.interp(ss, s_u, p_u) - np.interp(ss, s_l, p_l) + SEAL_OVERLAP / (R * rho)
+        )
+        away = np.minimum(ss - lo, hi - ss) * R >= CORNER_MARGIN
+        gap = np.where(away, np.clip(gap, 0.0, None), 0.0)
+        if gap.max(initial=0.0) * R * rho <= 0.2 * SEAL_OVERLAP:
+            break
+        need = _seal_turns(s_u, ss, gap)
+        su0 = np.interp(s_u, *_rest_along(lids, X0, X1))
+        step = -w[r] * np.interp(sr, su0, need, left=0.0, right=0.0)
+        limit = np.radians(MAX_RIM_TURN)
+        step = np.clip(extra[r] + step, -limit, limit) - extra[r]
+        extra[r] += step
+        s1, p1, q1 = cylinder(frame, X1[r])
+        out[r] = from_cylinder(frame, s1, p1 + step, q1) - X0[r]
+        if half is not None:
+            sh, ph, qh = cylinder(frame, X0[r] + half[r])
+            half[r] = from_cylinder(frame, sh, ph + 0.5 * step, qh) - X0[r]
     return out, half, extra
+
+
+def _seal_turns(s_u, ss, gap) -> np.ndarray:
+    """The least turns (n,) of the upper rim's vertices at ``s_u`` (sorted) that cover the
+    ``gap`` (S,) at the places ``ss`` along the opening, the rim running straight between its
+    vertices: a linear programme, else each vertex takes the widest gap on its two
+    segments."""
+    from scipy.optimize import linprog
+
+    n = len(s_u)
+    j = np.clip(np.searchsorted(s_u, ss) - 1, 0, n - 2)
+    a = np.clip((ss - s_u[j]) / np.maximum(s_u[j + 1] - s_u[j], 1e-12), 0.0, 1.0)
+    open_ = gap > 0
+    hat = np.zeros((int(open_.sum()), n))
+    rows = np.arange(len(hat))
+    hat[rows, j[open_]] = 1.0 - a[open_]
+    hat[rows, j[open_] + 1] += a[open_]
+    found = linprog(
+        np.ones(n), A_ub=-hat, b_ub=-gap[open_], bounds=(0, None), method="highs"
+    )
+    if found.status == 0:
+        return np.clip(found.x, 0.0, None)
+    need = np.zeros(n)
+    np.maximum.at(need, j[open_], gap[open_])
+    np.maximum.at(need, j[open_] + 1, gap[open_])
+    return need
 
 
 def _rest_along(lids: EyeLids, rest, moved):

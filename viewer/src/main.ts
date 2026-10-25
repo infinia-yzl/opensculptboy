@@ -31,6 +31,7 @@ import { initUI } from './ui/index.ts';
 import { Retargeter, adjustHead, cardBones, quaternions, type M3, type RestBody, type V3 } from './pose_from_image.ts';
 import { detect as detectPicture } from './picture.ts';
 import { silhouetteSvg } from './flat.ts';
+import { Wardrobe } from './wearables/view.ts';
 
 const qs = new URLSearchParams(location.search);
 const DEG = Math.PI / 180;
@@ -919,6 +920,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
   // build in the worker, the body's time passes in the worker and the page spends the rest)
   BODY.lastMs = bodyMs; BODY.lastTotalMs = performance.now() - t0;
   BODY.lastTiming = Object.assign({}, BODY.anny.timing, steps);
+  WEAR?.bodyChanged();
 }
 
 // ------------------------------------------------------------------ the body build in a worker
@@ -1002,6 +1004,39 @@ function updateEyeShape() {
     e.shape.makeTranslation(g.center[0], g.center[1], g.center[2]).multiply(new THREE.Matrix4().makeScale(g.scale, g.scale, g.scale))
       .multiply(new THREE.Matrix4().makeTranslation(-c0[0], -c0[1], -c0[2]));
   }
+}
+
+// ------------------------------------------------------------------ wearables
+// The wardrobe (wearables/view.ts): a card's outfits and packages from the user's own files, dressed on the body and
+// skinned by the rig. The level-0 offsets of the card's detail layer move the coarse body.
+let WEAR: Wardrobe | null = null;
+function initWardrobe() {
+  const fr = MANIFEST.shape.frame;
+  WEAR = new Wardrobe({
+    THREE, scene, opaque,
+    skeleton: () => RIG.skel,
+    uniforms: U,
+    depth: depthMat,
+    envDefines: () => ENV_DEFINES,
+    toMRT,
+    body: () => ({ coarse: BODY.anny.coarse, joints: BODY.anny.joints, nBody: BODY.anny.nBody, quads: BODY.anny.quads, coarseSkin: BODY.anny.coarseSkin,
+      bones: RIG.bones.map((b: any) => b.name), frame: { scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset },
+      subdivision: BODY.anny.sub, geometry: BODY.geo }),
+    // a card's offsets and sliders build the body on the page, so that the dress that follows sees the card's body;
+    // the worker keeps the offsets for the slider edits after it
+    setBodyOffsets: (o: Float32Array | null) => {
+      if (!o && !BODY.anny.coarseOffsets) return;
+      BODY.anny.coarseOffsets = o; BODY.values = null;
+      BW.worker?.postMessage({ type: 'offsets', offsets: o ? o.slice() : null });
+      syncBody(() => applyBodyShape(currentLook.phenotype, currentLook.face));
+      HOOKS.look();
+    },
+    applyCard: (card: any) => {
+      const phenotype = Object.assign(baselinePhenotype(), card.phenotype || {});
+      syncBody(() => applyLook(Object.assign({}, currentLook, { name: card.name || currentLook.name, phenotype, face: Object.assign({}, card.face_shapes || {}) }), false));
+    },
+    changed: () => { shadowsDirty = true; resetAccum(); },
+  });
 }
 
 // ------------------------------------------------------------------ rig
@@ -2222,6 +2257,7 @@ async function init() {
     setMotion(rm && MOTION.byName[rm.name] ? rm.name : 'a_pose', { instant: true, remember: false });
     if (!SHOT) { const f = bodyFrameFor(MOTION.cur); placeCamera(f.yaw, f.pitch, frameDistance(f), ...f.target); MOTION.lastFramed = MOTION.cur; }
   }
+  initWardrobe();
   setProgress(0.95, 'Compiling shaders');
   await nextFrame();
   renderer.compile(scene, camera);
@@ -2644,6 +2680,7 @@ const APP: any = {
   sampleFace: (ph: any, spread: number) => drawFace(ph, spread),
   raceShare, stature,
   bodyTiming: () => ({ ms: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming, worker: BW.ready, latency: BW.latency }),
+  wardrobe: () => WEAR,
   hairSpecs,
   hairDefaults: (name: string) => HAIR ? HAIR.defaults(name) : null,
   fadeRange: FADE_RANGE,
@@ -2742,6 +2779,11 @@ window.hairPoints = (n) => { HAIR.update(renderer); return Array.from(HAIR.readP
 window.hairRest = (n) => HAIR.readRest(renderer, n);
 window.hairGuides = () => HAIR.readGuides(renderer);
 window.frameStats = frameStats;
+// the wardrobe for tests: its counts and times (the files load through the Wearables section's file input)
+window.wearStats = () => WEAR ? WEAR.stats() : null;
+window.__WEAR = () => WEAR;
+// the rest vertices of the dressed pieces (the page's frame) and the page's frame, for the page test
+window.wearPieces = () => WEAR ? WEAR.pieces.map((p) => ({ ref: p.ref, shown: p.shown, hidden: p.hiddenGroups, vertices: Array.from(p.vertices) })) : [];
 window.stepHair = (dt = 1 / 60) => { hairClock = true; if (HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); } return HAIR.stats(); };
 window.setHairPhysics = (on) => { HAIR.setPhysics(!!on); HOOKS.hair(); return HAIR.physics; };
 window.setPreset = (n) => { applyPreset(n); return true; };
