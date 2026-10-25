@@ -240,26 +240,89 @@ def needs_bake(character, tier) -> dict[str, bool]:
     }
 
 
-def tier_budget(character, tier, images: dict | None = None) -> dict:
-    """The counts of a tier for a card: triangles and vertices of its mesh, and the size of
-    each texture (``images``: slot -> PNG or JPEG bytes, as :func:`tier_textures` gives them)
-    with their texels and the bytes they take on a GPU (RGBA8 with mipmaps, uncompressed)."""
+def wearable_counts(
+    character, detail_dir=None, dressing=None, bare: bool = False
+) -> dict:
+    """
+    The pieces, triangles, vertices and materials of the wearables that a file of the card
+    holds, and the size of each of their textures (by ``<ref>:<material>:<slot>``): the pieces
+    that ``dressing`` (:class:`~opensculptboy.wearables.export.Dressing`) shows, without the
+    groups that other pieces hide, or every piece of a wardrobe file. A card with wardrobe
+    fields wears its active outfit when ``dressing`` is None, as the exports do; ``bare``
+    (a VRM file without wearables) and a card without wardrobe fields hold none.
+    """
+    from opensculptboy.export.budget import image_size
+
+    out = {"pieces": 0, "triangles": 0, "vertices": 0, "materials": 0, "textures": {}}
+    if bare or (dressing is None and not character.has_wardrobe()):
+        return out
+    from opensculptboy.wearables.export import Dressing
+    from opensculptboy.wearables.wardrobe import worn_pieces
+
+    dressing = dressing or Dressing()
+    pieces = worn_pieces(
+        character,
+        detail_dir,
+        dressing.outfit,
+        dressing.show,
+        dressing.hide,
+        every_outfit=dressing.wardrobe,
+    )
+    for piece in pieces:
+        if not (piece.shown or dressing.wardrobe):
+            continue
+        garment = piece.wearable.garment
+        keep = np.ones(len(garment.triangles), bool)
+        if not dressing.wardrobe:
+            for g, group in enumerate(garment.groups):
+                if group in piece.hidden_groups:
+                    keep &= garment.triangle_group != g
+        if not keep.any():  # other pieces hide every group of this one
+            continue
+        out["pieces"] += 1
+        out["triangles"] += int(keep.sum())
+        out["vertices"] += len(garment.vertices)
+        out["materials"] += len(garment.materials)
+        for material in garment.materials:
+            for slot, data in material.textures.items():
+                size = image_size(data)
+                if size is not None:
+                    out["textures"][f"{piece.ref}:{material.name}:{slot}"] = list(size)
+    return out
+
+
+def tier_budget(
+    character,
+    tier,
+    images: dict | None = None,
+    detail_dir=None,
+    dressing=None,
+    bare: bool = False,
+) -> dict:
+    """The counts of a tier for a card: triangles and vertices of its mesh and of the
+    wearables that the file holds (:func:`wearable_counts`, also under ``wearables``), and the
+    size of each texture (``images``: slot -> PNG or JPEG bytes, as :func:`tier_textures` gives
+    them, and the wearables' textures) with their texels and the bytes they take on a GPU
+    (RGBA8 with mipmaps, uncompressed)."""
     from opensculptboy.export.budget import image_size
 
     tier = get_tier(tier)
     mesh = tier_mesh(character, tier)
     triangles, vertices = MESH_COUNTS[mesh]
+    wear = wearable_counts(character, detail_dir, dressing, bare)
     textures = {}
     for slot, data in (images or {}).items():
         size = image_size(data)
         if size is not None:
             textures[slot] = list(size)
+    textures.update(wear["textures"])
     texels = sum(w * h for w, h in textures.values())
     return {
         "tier": tier.name,
         "mesh": {"subdiv": mesh[0], "region": mesh[1]},
-        "triangles": triangles,
-        "vertices": vertices,
+        "triangles": triangles + wear["triangles"],
+        "vertices": vertices + wear["vertices"],
+        "wearables": {k: v for k, v in wear.items() if k != "textures"},
         "textures": textures,
         "texels": int(texels),
         "gpu_bytes": int(texels * 4 * 4 / 3),
@@ -389,6 +452,12 @@ def tier_textures(
             size = (tier.ear_tile_size, tier.ear_tile_size // 2)
         elif slot in ("eyes", "eyes_normal"):
             size = (tier.eye_size, tier.eye_size // 2)
+        elif slot in (
+            "eye_layout",
+            "eye_layout_normal",
+        ):  # the eyes' own layout, as it is
+            keep[slot] = data
+            continue
         else:
             continue
         keep[slot] = _resize(data, size, normal=slot.endswith("normal"))
@@ -430,8 +499,9 @@ def export_tier(
     the skin weights per vertex of a GLB file, and records itself in the file's extras;
     ``kwargs`` pass on to :func:`~opensculptboy.export.gltf.export_glb` or
     :func:`~opensculptboy.export.vrm.export_vrm` and override the tier's choices
-    (``morph_targets``, ``max_influences``, ``version``...). A tier whose mesh is over the
-    triangle budget of a VRM version cannot be written as VRM (ValueError). The summary adds
+    (``morph_targets``, ``max_influences``, ``version``...). A tier whose mesh and wearable
+    pieces (:func:`wearable_counts`) are over the triangle budget of a VRM version cannot be
+    written as VRM (ValueError). The summary adds
     the tier's counts (:func:`tier_budget`) and the messages of a file over the tier's
     budget, which also warn.
     """
@@ -450,16 +520,22 @@ def export_tier(
     if not path.suffix:
         path = path.with_suffix("." + format)
     mesh = tier_mesh(character, tier)
+    dressing, bare = kwargs.get("dressing"), bool(kwargs.get("bare"))
     if format == "vrm":
         version = kwargs.pop("version", tier.vrm_version)
         target = "vrm1" if version in ("1.0", "1") else "vrm0"
-        limit = budgets.BUDGETS[target]["triangles"]
-        if MESH_COUNTS[mesh][0] > limit and kwargs.get("budget", "warn") != "off":
-            raise ValueError(
-                f"the {tier.name} tier has {MESH_COUNTS[mesh][0]:,} triangles, over the "
-                f"{budgets.LABELS[target]} budget of {limit:,}: write a .glb file, or use the "
-                + ("medium or low tier." if target == "vrm1" else "low tier.")
-            )
+        limit = budgets.BUDGETS[target]
+        if kwargs.get("budget", "warn") != "off":
+            wear = wearable_counts(character, detail_dir, dressing, bare)
+            triangles = MESH_COUNTS[mesh][0] + wear["triangles"]
+            worn = f" with {wear['pieces']} wearable pieces" if wear["pieces"] else ""
+            if triangles > limit["triangles"]:
+                raise ValueError(
+                    f"the {tier.name} tier{worn} has {triangles:,} triangles, over the "
+                    f"{budgets.LABELS[target]} budget of {limit['triangles']:,}: write a "
+                    ".glb file, wear fewer pieces, or use the "
+                    + ("medium or low tier." if target == "vrm1" else "low tier.")
+                )
     images = tier_textures(character, tier, detail_dir, format)
     extras = tier.extras(mesh)
     if format == "vrm":
@@ -500,7 +576,9 @@ def export_tier(
     for message in messages:
         warnings.warn(f"{path.name}: {message}", UserWarning, stacklevel=2)
     summary["path"] = str(path)
-    summary["tier_budget"] = tier_budget(character, tier, images)
+    summary["tier_budget"] = tier_budget(
+        character, tier, images, detail_dir, dressing, bare and format == "vrm"
+    )
     summary["tier_messages"] = messages
     return summary
 
@@ -577,7 +655,7 @@ def bake_tiers(
             "the card that bake-tiers writes must lie in the folder of the card it reads, "
             "next to the files that both name."
         )
-    character = Character.from_dict(json.loads(card.read_text()))
+    character = Character.from_dict(json.loads(card.read_text(encoding="utf-8")))
     tiers = [get_tier(t) for t in tiers]
     model = character.build_model(dtype=torch.float64)
     with torch.no_grad():
@@ -690,5 +768,5 @@ def bake_tiers(
     if entries:
         material["tiers"] = entries
     character.material = material
-    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n", encoding="utf-8")
     return character, report

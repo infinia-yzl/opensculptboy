@@ -38,14 +38,23 @@ The eyes of :mod:`opensculptboy.eyes` keep their settings under ``opensculptboy_
   iris and greys the pupil) and, under a cornea, no specular reflection of its own (Specular
   IOR Level 0, as the file's ``KHR_materials_specular`` says): its rough reflection would lay a
   milky veil over the eye;
-- ``conjunctiva``: the caruncle and the skin of the socket, with subsurface scattering.
+- ``conjunctiva``: the caruncle and the skin of the socket, with subsurface scattering;
+- ``lashes``: the lashes keep the file's colour and alpha, and their shadow rays pass
+  through them, as the cornea's do.
+
+A wardrobe file (:mod:`opensculptboy.wearables`) holds every piece of every outfit as its own
+node. Blender's importer reads every node and ignores ``KHR_node_visibility``, so
+:func:`apply_wearable_visibility` hides the pieces and groups that the file's extras mark as
+not shown (``opensculptboy_wearable.shown`` and ``opensculptboy_wearable_group.shown``), in
+the viewport and in renders; showing them again is a click in the outliner.
 
 The script needs nothing but Blender's own Python. Run it on a file with::
 
     blender --python blender_skin.py -- character.glb
 
-which imports the file and sets its skin and its eyes, or, inside Blender, ``exec`` it and call
-``apply_skin_materials()`` and ``apply_eye_materials()`` after an import
+which imports the file and sets its skin, its eyes and the visibility of its wearables, or,
+inside Blender, ``exec`` it and call ``apply_skin_materials()`` and ``apply_eye_materials()``
+after an import
 (``apply_skin_materials("character.glb")`` reads the settings from the file when the importer
 left out the extras).
 """
@@ -141,6 +150,10 @@ def eye_principled_values(settings: dict, unit_scale: float = 1.0) -> dict:
             inputs["Specular IOR Level"] = 0.0
             inputs["Coat Weight"] = 0.0
         return {"inputs": inputs, "shadow_transparent": False, "drop_volume": False}
+    if role == "lashes":
+        # the lashes keep the file's colour and alpha, and cast no shadow (a game's lash
+        # material casts none either; their shadow darkens the whole eye)
+        return {"inputs": {}, "shadow_transparent": True, "drop_volume": False}
     if role == "conjunctiva":
         inputs = {
             "Subsurface Weight": 0.35,
@@ -280,6 +293,43 @@ def apply_eye_materials(path: str | None = None) -> list[str]:
     return done
 
 
+def read_wearable_visibility(path: str) -> dict[str, bool]:
+    """Node name -> shown, for the wearable pieces and groups of a GLB file."""
+    with open(path, "rb") as f:
+        head = f.read(20)
+        if len(head) < 20 or head[:4] != b"glTF":
+            return {}
+        length = struct.unpack("<I", head[12:16])[0]
+        document = json.loads(f.read(length))
+    out = {}
+    for node in document.get("nodes", []):
+        extras = node.get("extras") or {}
+        for key in ("opensculptboy_wearable", "opensculptboy_wearable_group"):
+            entry = extras.get(key)
+            if isinstance(entry, dict) and "shown" in entry and node.get("name"):
+                out[node["name"]] = bool(entry["shown"])
+    return out
+
+
+def apply_wearable_visibility(path: str) -> list[str]:
+    """Hide the objects of the wearable pieces and groups that a GLB file marks as not shown;
+    returns the names of the objects hidden."""
+    import bpy
+
+    shown = read_wearable_visibility(path)
+    hidden = []
+    for obj in bpy.data.objects:
+        name = obj.name if obj.name in shown else obj.name.rsplit(".", 1)[0]
+        if shown.get(name) is False:
+            obj.hide_viewport = obj.hide_render = True
+            try:
+                obj.hide_set(True)
+            except RuntimeError:  # an object outside the view layer: hidden above
+                pass
+            hidden.append(obj.name)
+    return hidden
+
+
 def main(argv: list[str]) -> None:
     import bpy
 
@@ -288,6 +338,7 @@ def main(argv: list[str]) -> None:
         bpy.ops.import_scene.gltf(filepath=path)
         print("skin set on", apply_skin_materials(path))
         print("eyes set on", apply_eye_materials(path))
+        print("wearables hidden", apply_wearable_visibility(path))
 
 
 if __name__ == "__main__" and "bpy" in sys.modules:

@@ -21,7 +21,7 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 
 | Field | Holds |
 |---|---|
-| `schema` | 1 for the fields above, 2 with `detail`, 3 with `material`. A card is written with the lowest schema that holds its fields, so that older cards stay byte for byte the same. |
+| `schema` | 1 for the fields above, 2 with `detail`, 3 with `material`, 4 with the wardrobe fields. A card is written with the lowest schema that holds its fields, so that older cards stay byte for byte the same. |
 | `name` | the character's name |
 | `rig` | `anny` (104 bones), or `anny-mouth` with a jaw bone and a tongue chain ([Mouth](mouth.md)) |
 | `topology` | `anny`, or `sculpt` and `sculpt-quads` ([Sculpt topology](sculpt-topology.md)) |
@@ -33,6 +33,9 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `pose` | a still pose: `"bones"` maps bone names to unit quaternions (x, y, z, w) relative to the parent, and `"root"` moves the root bone (metres); an empty pose is the rest pose |
 | `detail` | the detail layer of a fitted character |
 | `material` | the skin, eyes, teeth, inner mouth and tiers |
+| `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`) and the one worn ([Wearables](wearables.md)) |
+| `wearables` | loose pieces: `{"id", "file", "enabled"}`, each file a wearable package |
+| `wearable_overrides` | single pieces switched on or off: `{"<outfit>/<piece>": {"enabled": false}}` |
 
 ## `detail`
 
@@ -61,7 +64,8 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
   "head": {"base_color": "character.head_base_color.png", "normal": "character.head_normal.png", "roughness": "character.head_roughness.png"},
   "ears": {"uvs": "character.ear_uvs.safetensors", "base_color": "character.ears_base_color.png", "normal": "character.ears_normal.png"},
   "eyes": {"iris_color": [0.2, 0.1, 0.04], "pupil_mm": "auto"},
-  "reference_eyes": {"cornea_radius_mm": 9.25, "cornea_roughness": 0.05, "cornea_ior": 1.5},
+  "reference_eyes": {"cornea_radius_mm": 9.25, "cornea_roughness": 0.05, "cornea_ior": 1.5, "gaze": {"L": [0.05, -0.998, 0.0], "R": [-0.05, -0.998, 0.0]}},
+  "lashes": {"source": "reference", "mesh": "character.lashes.safetensors", "base_color": "character.lashes.png"},
   "teeth": {"source": "auto"},
   "mouth": {"mesh": "character.mouth.safetensors", "base_color": "character.mouth_base_color.png", "poses": "character.mouth_poses.safetensors"},
   "tiers": {"low": {"subdiv": 0, "region": "full", "normal": "character.low.normal.png"}}
@@ -75,10 +79,11 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `specular`, `specular_color`, `ior` | the surface's reflection | |
 | `subsurface` | the scattering: weight 0 to 1, mean free path per RGB channel in mm, IOR, anisotropy, and one of Blender's methods (`random_walk_skin`, `random_walk`, `burley`) | [Fit to a reference](reference-fit.md#the-skin-material-in-the-exports) |
 | `head`, `ears` | the head tile's and the ear tile's maps; `ears.uvs` holds the ears' own UVs | [Fit to a reference](reference-fit.md#textures) |
-| `eyes` | the eyes of `--eyes`: iris, pupil, sclera, cornea and caruncle | [Eyes](eyes.md) |
-| `reference_eyes` | the cornea's values measured on the reference, used where `eyes` says `"auto"` | [Eyes](eyes.md) |
+| `eyes` | the eyes of `--eyes`: iris, pupil, sclera, cornea and caruncle; `false` keeps anny's eyeballs | [Eyes](eyes.md) |
+| `reference_eyes` | the cornea's values and the gaze measured on the reference, used where `eyes` says `"auto"`, and the file of the reference's blinks (`poses`); a fitted card's eyes are on without `eyes` | [Eyes](eyes.md) |
+| `lashes` | the lashes that come with the eyes: the reference's or generic ones; `false` leaves them out | [Eyes](eyes.md#lashes) |
 | `teeth` | the teeth of `--teeth`: the reference's or a generic set | [Teeth](teeth.md) |
 | `mouth` | the reference's inner mouth and its mouth poses | [Mouth](mouth.md) |
 | `tiers` | per rendering-budget tier, the normal maps baked for that tier's mesh | [Budget tiers](budget-tiers.md) |
 
-A card without `material` gets the exporters' own plain skin. A section that holds only `eyes`, `reference_eyes`, `teeth` or `mouth` keeps that plain skin and changes those parts alone. `fit --textures` and `opensculptboy bake` write the section of a fitted character, and `--material skin.json` lays further values over it.
+A card without `material` gets the exporters' own plain skin. A section that holds only `eyes`, `reference_eyes`, `lashes`, `teeth` or `mouth` keeps that plain skin and changes those parts alone. `fit --textures` and `opensculptboy bake` write the section of a fitted character, and `--material skin.json` lays further values over it.

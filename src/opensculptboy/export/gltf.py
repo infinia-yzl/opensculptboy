@@ -98,6 +98,7 @@ def export_glb(
     detail_dir: str | pathlib.Path | None = None,
     textures=None,
     tier: dict | None = None,
+    dressing=None,
 ) -> dict:
     """
     Write a character as a binary glTF 2.0 file.
@@ -142,6 +143,11 @@ def export_glb(
         tier: the rendering-budget tier of the file (:meth:`opensculptboy.tiers.Tier.extras`),
             recorded in the scene extras, whose ``shading`` names the skin shading it is
             meant for in the skin materials' extras; None (the default) records nothing.
+        dressing: the wearables of the file
+            (:class:`opensculptboy.wearables.export.Dressing`): each shown piece becomes a
+            mesh skinned by the character's skin, and the body triangles it covers leave the
+            file unless ``dressing.covered`` is ``"keep"``. None dresses a card with
+            wardrobe fields in its active outfit and leaves other cards as they are.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -232,7 +238,7 @@ def export_glb(
         images = level_normals(
             model, character, images, detail, mesh, ears, base, detail_dir
         )
-    eyed = None
+    eyed, lash_png, blinks = None, None, None
     teeth = character.teeth_material()
     mouth = character.mouth_material()
     if mouth is not None:  # the reference's inner mouth holds its own teeth
@@ -261,15 +267,48 @@ def export_glb(
         normals = None
         rows_mesh = mesh  # the file's mesh before the eyes and the teeth
         if eye is not None:  # the eyes of opensculptboy.eyes replace anny's eyeballs
+            from opensculptboy.eyes.lashes import eyed_lashes
             from opensculptboy.eyes.mesh import baked_skin, eyed_mesh
 
             baked = None if "eye_base_color" in images else images.get("eyes")
+            layout = None
+            if "eye_layout" in images and "eye_base_color" not in images:
+                layout = (images["eye_layout"], images.get("eye_layout_normal"))
+            lashes, lash_png = eyed_lashes(character, detail_dir)
             eyed = eyed_mesh(
-                model, mesh, vertices, eye, "gltf", baked, skin_baked=baked_skin(images)
+                model,
+                mesh,
+                vertices,
+                eye,
+                "gltf",
+                baked,
+                skin_baked=baked_skin(images),
+                lashes=lashes,
+                layout=layout,
             )
+            # the blinks closed around the eyes (opensculptboy.eyes.blink), from the
+            # reference's blinks when the card has them, with an in-between corrective
+            # each, played by the animation "<target>.close"
+            from opensculptboy.eyes.blink import blink_offsets, blink_targets
+            from opensculptboy.eyes.poses import card_blink_poses
+
+            offsets, blinks = blink_offsets(
+                eyed,
+                vertices,
+                offsets,
+                [t.name for t in targets],
+                card_blink_poses(character, detail, detail_dir),
+            )
+            if blinks is not None:
+                targets = targets + blink_targets(blinks)
             normals = eyed.normals(vertices)
             weights, indices = eyed.skin_weights(weights, indices)
+            blink_rest = vertices
             vertices, offsets = eyed.vertices(vertices), eyed.targets(offsets)
+            if blinks is not None:
+                from opensculptboy.eyes.blink import blink_lash_offsets
+
+                offsets = blink_lash_offsets(eyed, blinks, blink_rest, offsets)
             ears = eyed.extend_mask(ears)
             mesh = eyed
         if teeth is not None or mouth is not None:  # opensculptboy.teeth, mouth.inner
@@ -311,6 +350,17 @@ def export_glb(
             body.anny_source = source[body.source]
         elif eyed is not None:
             body.anny_source = eyed.anny_vertex()[body.source]
+    dressed, wear_body, removed = None, None, 0
+    if dressing is None and character.has_wardrobe():
+        from opensculptboy.wearables.export import Dressing
+
+        dressing = Dressing()
+    if dressing is not None:
+        from opensculptboy.wearables.export import covered_body_triangles, dress_card
+
+        wear_body, dressed = dress_card(
+            character, model, detail_dir, dressing, max_influences
+        )
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
     head_material, head, ear_material = None, None, None
     if skin is not None:
@@ -342,7 +392,9 @@ def export_glb(
     eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
     if eyed is not None:
         eye_material, eyes = None, None
-        eye_parts = _eye_part_materials(doc, model, body, eyed, eye, images)
+        eye_parts = _eye_part_materials(
+            doc, model, body, eyed, eye, images, lash_png, character.lash_material()
+        )
     else:
         eye_material, eyes = _eye_material(
             doc, model, body, images, None if detail is None else detail.topology
@@ -354,6 +406,17 @@ def export_glb(
         hidden = toothed.hidden_mask()
     elif toothed is not None:
         teeth_parts = _teeth_materials(doc, toothed, teeth)
+    if dressed and dressing.covered == "remove" and not dressing.wardrobe:
+        covered = covered_body_triangles(
+            wear_body,
+            dressed,
+            body,
+            len(vertices),
+            len(model.template_vertices),
+            detail,
+        )
+        removed = int((covered & ~hidden).sum())
+        hidden = hidden | covered
     rest = ~hidden
     if eye_material is not None:
         rest &= ~eyes
@@ -365,59 +428,43 @@ def export_glb(
     if head_material is not None:
         head &= rest
         rest &= ~head
-    primitive = body_primitive(
-        doc,
-        body,
-        material,
-        triangles=None if rest.all() else body.triangles[rest],
-        joint_type=joint_type,
-        anny_vertex=detail is None or detail.subdiv == 0,
-    )
-    primitives = [primitive]
+    # the body's primitives: the skin, the ear tile, the head tile, the eyeballs, the eyes and
+    # the teeth; one that the wearables cover whole leaves the file, since a glTF accessor
+    # holds at least one element
+    parts = [(material, rest)]
     if ear_material is not None:  # the ear tile: the outer ears on UVs of their own
-        primitives.append(
-            body_primitive(
-                doc,
-                body,
-                ear_material,
-                triangles=body.triangles[ears],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
-            )
-        )
+        parts.append((ear_material, ears))
     if head_material is not None:  # the head tile: the same vertices, its own textures
-        primitives.append(
-            body_primitive(
-                doc,
-                body,
-                head_material,
-                triangles=body.triangles[head],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
-            )
-        )
+        parts.append((head_material, head))
     if eye_material is not None:  # the eyeballs: the same vertices, their own texture
-        primitives.append(
-            body_primitive(
+        parts.append((eye_material, eyes))
+    parts += eye_parts + teeth_parts  # the eyes and the teeth
+    parts = [(m, mask) for m, mask in parts if mask.any()] if dressed else parts
+    if not parts:
+        raise ValueError(
+            "The shown wearables cover every triangle of the body; use --covered keep."
+        )
+    primitives = []
+    for part_material, part in parts:
+        if not primitives:  # the first writes the attributes and the targets
+            primitive = body_primitive(
                 doc,
                 body,
-                eye_material,
-                triangles=body.triangles[eyes],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
+                part_material,
+                triangles=None if part.all() else body.triangles[part],
+                joint_type=joint_type,
+                anny_vertex=detail is None or detail.subdiv == 0,
             )
-        )
-    for part_material, part in eye_parts + teeth_parts:  # the eyes and the teeth
-        primitives.append(
-            body_primitive(
+        else:
+            primitive = body_primitive(
                 doc,
                 body,
                 part_material,
                 triangles=body.triangles[part],
-                attributes=primitive["attributes"],
-                targets=primitive.get("targets"),
+                attributes=primitives[0]["attributes"],
+                targets=primitives[0].get("targets"),
             )
-        )
+        primitives.append(primitive)
     mesh = {"name": character.name, "primitives": primitives}
     if targets:
         mesh["weights"] = [t.weight for t in targets]
@@ -430,7 +477,12 @@ def export_glb(
     lift = np.eye(4)
     if ground:
         # the lowest vertex as the file stores it (float32), on the floor
-        lift[1, 3] = -float(body.positions[:, 1].astype(np.float32).min())
+        low = float(body.positions[:, 1].astype(np.float32).min())
+        if dressed:  # footwear may reach below the skin
+            from opensculptboy.wearables.export import lowest
+
+            low = min(low, float(np.float32(lowest(dressed, C3))))
+        lift[1, 3] = -low
     default_local = _local_transforms(lift @ bind, parents)
     for j, label in enumerate(labels):
         node = {
@@ -454,6 +506,19 @@ def export_glb(
         }
     )
     mesh_node = doc.add_node({"name": character.name, "mesh": mesh_index, "skin": skin})
+    piece_nodes = []
+    if dressed:
+        from opensculptboy.wearables.gltf import add_pieces
+
+        piece_nodes = add_pieces(
+            doc,
+            dressed,
+            skin,
+            C3,
+            joint_type,
+            visibility=dressing.wardrobe and dressing.visibility,
+            all_groups=dressing.wardrobe,
+        )
 
     if character.pose:
         doc.add_animation(
@@ -469,6 +534,11 @@ def export_glb(
                 doc, jaw_open, labels, default_local, mesh_node, targets
             )
         )
+    if blinks is not None:
+        from opensculptboy.eyes.blink import blink_animations
+
+        for name, keys in blink_animations(blinks, targets):
+            doc.add_animation(_weights_animation(doc, name, keys, mesh_node))
     for k, turn in enumerate(pose_turns):
         name = mouth_pose_data.target_name(mouth_poses.names[k])
         doc.add_animation(
@@ -486,6 +556,18 @@ def export_glb(
 
     doc.scene_name = character.name
     doc.scene_nodes = roots + [mesh_node]
+    for node, shown in piece_nodes:  # without visibility, the hidden pieces stay out
+        if shown or (dressing.wardrobe and dressing.visibility):
+            doc.scene_nodes.append(node)
+    if dressing is not None and dressing.wardrobe and not dressing.visibility:
+        # a second scene holds every piece, for tools that switch scenes
+        doc.extra_scenes.append(
+            {
+                "name": f"{character.name} wardrobe",
+                "nodes": roots + [mesh_node] + [node for node, _ in piece_nodes],
+                "extras": {"opensculptboy_wardrobe": "every piece of every outfit"},
+            }
+        )
     doc.scene_extras = {
         "opensculptboy": {
             "generator": "opensculptboy",
@@ -507,6 +589,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["ear_tile"] = True
     if eyed is not None:
         doc.scene_extras["opensculptboy"]["eyes"] = eyed.extras
+        if blinks is not None:
+            eyed.extras["blinks"] = blinks.extras
     if jaw_open is not None:
         doc.scene_extras["opensculptboy"]["mouth"] = jaw_open.extras()
     if mouth_poses is not None:
@@ -527,6 +611,12 @@ def export_glb(
         doc.scene_extras["opensculptboy"][key] = toothed.extras
     if tier is not None:
         doc.scene_extras["opensculptboy"]["tier"] = dict(tier)
+    if dressing is not None:
+        from opensculptboy.wearables.export import summary as wear_summary
+
+        doc.scene_extras["opensculptboy"]["wearables"] = wear_summary(
+            dressed, removed, dressing
+        )
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -543,6 +633,9 @@ def export_glb(
         summary["detail"] = detail.extras()
     if tier is not None:
         summary["tier"] = tier.get("name")
+    if dressing is not None:
+        summary["wearables"] = [p.ref for p in dressed if p.shown]
+        summary["removed_body_triangles"] = removed
     return summary
 
 
@@ -571,13 +664,22 @@ def _eye_material(doc: GltfDocument, model, body, images: dict, mesh=None):
 
 
 # the texture slots of the eyes alone, which leave the skin's material as it is
-EYE_SLOTS = {"eyes", "eyes_normal", "eye_base_color"}
+EYE_SLOTS = {"eyes", "eyes_normal", "eye_base_color", "eye_layout", "eye_layout_normal"}
 # the key of the eye materials' settings in their extras
 EYE_EXTRAS = "opensculptboy_eye"
 EYE_EXTRAS_FORMAT = "opensculptboy/eye@1"
 
 
-def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict):
+def _eye_part_materials(
+    doc: GltfDocument,
+    model,
+    body,
+    eyed,
+    eye,
+    images: dict,
+    lash_png: bytes | None = None,
+    lashes=None,
+):
     """
     The materials and triangle masks of the eyes of :mod:`opensculptboy.eyes` (an
     :class:`~opensculptboy.eyes.mesh.EyedMesh` behind ``body``):
@@ -592,7 +694,10 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
       ``KHR_materials_volume`` with the depth of the anterior chamber as its thickness,
       ``KHR_materials_ior``). As the transmission extension asks, it is OPAQUE: readers
       without the extension draw it white, so ``eye.cornea`` false suits them better;
-    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat).
+    - ``conjunctiva``: the caruncle and the skin of the socket, pink and wet (a clear coat);
+    - ``lashes``: the lashes of :mod:`opensculptboy.eyes.lashes` (``lashes``, a
+      :class:`~opensculptboy.material.LashMaterial`, with their texture ``lash_png``),
+      double-sided and blended by the texture's alpha.
 
     The extras of each hold :data:`EYE_EXTRAS` (``opensculptboy/eye@1``) with its ``role``
     and the eye's settings, which :mod:`opensculptboy.export.blender_skin` reads.
@@ -683,6 +788,33 @@ def _eye_part_materials(doc: GltfDocument, model, body, eyed, eye, images: dict)
         }
         pink["extras"] = extras("conjunctiva")
         out.append((doc.add_material(pink), pink_mask))
+    lash_mask = eyed.part_mask("lashes")
+    if lashes is not None and lash_png is not None and lash_mask.any():
+        texture = doc.add_texture(
+            doc.add_image(lash_png, mime_type(lash_png), "lashes")
+        )
+        lash = pbr_material(
+            "lashes",
+            (1.0, 1.0, 1.0, 1.0),
+            0.0,
+            float(lashes.roughness),
+            texture=texture,
+            alpha_mode="BLEND",
+            double_sided=True,
+        )
+        lash["extras"] = {
+            EYE_EXTRAS: {
+                "format": EYE_EXTRAS_FORMAT,
+                "role": "lashes",
+                **lashes.extras(),
+            }
+        }
+        out.append((doc.add_material(lash), lash_mask))
+        eyed.extras["lashes"] = dict(
+            lashes.extras(),
+            points=int(len(eyed.lashes.points)),
+            triangles=int(len(eyed.lashes.triangles)),
+        )
     return out
 
 
@@ -986,6 +1118,19 @@ def _animation(
         parents,
         default_local,
     )
+
+
+def _weights_animation(doc, name: str, keys, mesh_node) -> dict:
+    """An animation of the body's morph-target weights: ``keys`` is (times (K,), weights
+    (K, T)), linear between them."""
+    times, weights = keys
+    sampler = {
+        "input": doc.accessor(np.asarray(times, np.float32), minmax=True),
+        "output": doc.accessor(np.asarray(weights, np.float32).reshape(-1)),
+        "interpolation": "LINEAR",
+    }
+    channel = {"sampler": 0, "target": {"node": mesh_node, "path": "weights"}}
+    return {"name": name, "samplers": [sampler], "channels": [channel]}
 
 
 def _jaw_open_animation(

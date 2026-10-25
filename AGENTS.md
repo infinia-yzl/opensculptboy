@@ -69,6 +69,8 @@ uv run --extra viewer opensculptboy bake handoff/ --card card.json --material sk
 blender --python src/opensculptboy/export/blender_skin.py -- out.glb            # import a GLB into Blender and set the skin's subsurface and the eyes' cornea from its extras
 uv run opensculptboy export out.glb --character card.json --eyes eyes.json      # the eyes of opensculptboy.eyes (docs/eyes.md): eyeball, cornea, caruncle, iris texture
 uv run python -m unittest test.test_eyes                                        # the eyes: card, geometry, texture, eyed mesh, caruncle, GLB, VRM
+uv run python -m unittest test.test_lashes                                      # the lashes: card, generic texture, lid margins, blinks, reference lashes, GLB, VRM
+uv run python -m unittest test.test_blinks                                      # the blinks: rims that meet, eye clearance, in-between, lashes, files at 0 to 100 %, a reference's blink
 uv run python -m unittest test.test_texture_levels                              # normal maps re-encoded for a coarser level than the bake's
 uv run python -m unittest test.test_mouth_rig                                   # the anny-mouth rig: jaw and tongue bones, jawOpen as a jaw turn and a corrective, GLB and VRM
 uv run python -m unittest test.test_mouth_lips                                  # the sealed lips (lip line, edges, seal) and the jaw's weights from a reference's mouth poses
@@ -89,6 +91,10 @@ uv run --extra viewer opensculptboy bake-tiers card.json                        
 uv run opensculptboy export out.glb --character card.json --tier medium          # a rendering-budget tier: master, high, medium (.glb) or low (.vrm by default)
 uv run opensculptboy portraits --character card.json --out avatars/              # a portrait and an expression sheet (neutral, smile, surprised, sad, angry) in flat toon shading
 uv run --extra viewer python -m unittest test.test_budget_tiers                   # the tiers: meshes, budgets, baked normals against the master, files, portraits (about 20 s)
+uv run opensculptboy export out.glb --character card.json --outfit travel --hide cape   # an outfit with single pieces hidden (docs/wearables.md)
+uv run opensculptboy export out.glb --character card.json --wardrobe                   # every piece of every outfit as its own node
+uv run opensculptboy wearables reference handoff/ --card card.json --out folder/       # reference wearables (private packages, outside the repository)
+uv run python -m unittest test.test_wearables                                          # the wearables with synthetic garments: format, provenance, binding, fit gate, outfits, files
 ```
 
 ### Face calibration
@@ -168,10 +174,11 @@ uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and 
 | Detail layer and textures | `opensculptboy/detail/`, `export/detail.py`, `texture/` | Subdivision levels 1 and 2 with offsets, the texture bake, head and ear tiles, MikkTSpace tangents and level-matched normal maps ([docs/reference-fit.md](docs/reference-fit.md)) |
 | Skin material | `opensculptboy/material.py`, `export/skin_ramp.py`, `export/blender_skin.py` | `Character.material`: PBR skin with subsurface settings in the extras, an MToon skin ramp for VRM, and the Blender helper ([docs/character-card.md](docs/character-card.md)) |
 | Budget tiers | `opensculptboy/tiers.py`, `texture/transfer.py`, `render/sheet.py` | Master, high, medium and low tiers cut down from the master, with baked normal maps and portraits; `test_budget_tiers` holds `MEASURED_LOW_ERROR`, so measure again when a change moves it ([docs/budget-tiers.md](docs/budget-tiers.md)) |
-| Eyes | `opensculptboy/eyes/` | Eyeball, cornea, caruncle and iris texture that replace Anny's eyeballs in the exports ([docs/eyes.md](docs/eyes.md)) |
+| Eyes | `opensculptboy/eyes/` | Eyeball, cornea, caruncle, iris texture and lashes that replace Anny's eyeballs in the exports, and blinks from a reference's lid joints, its lashes included, or from Anny's own; a fitted card has them by default ([docs/eyes.md](docs/eyes.md)) |
 | Teeth | `opensculptboy/teeth/` | The reference's teeth or a generic set, appended after the body mesh ([docs/teeth.md](docs/teeth.md)) |
 | Mouth | `opensculptboy/mouth/`, `fit/lips.py` | The `anny-mouth` rig, `jawOpen` as a jaw turn and corrective, a reference's inner mouth, sealed lips, the jaw's weights and mouth poses as targets; `test_mouth_rig` holds `MEASURED_ANGLE` and `MEASURED_EXPLAINED` ([docs/mouth.md](docs/mouth.md)) |
 | Sculpt topology | `opensculptboy/topology/` | Anny's mesh with append-only patches (the eye corner on; the ear root off), built into `data/topology/sculpt.safetensors`, and the card converter ([docs/sculpt-topology.md](docs/sculpt-topology.md)) |
+| Wearables | `opensculptboy/wearables/` | Wearable packages (`opensculptboy.wearable/1`, with a `provenance` guard), surface and rigid binding to Anny's template, the fit with layers and push-out, cover masks, outfits with slot replacement and hides rules, dressed GLB, wardrobe and VRM files, and reference wearables from a handoff's `equipment`; `TestNoPrivatePackages` fails on any private package under `src/` or `test/data/` ([docs/wearables.md](docs/wearables.md)) |
 | Character card | `opensculptboy/character.py` | `Character`, the JSON card that every export reads and stores in its scene extras ([docs/character-card.md](docs/character-card.md)) |
 
 ### Phenotype System

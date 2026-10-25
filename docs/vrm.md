@@ -20,11 +20,11 @@ The avatar rests in the VRM T-pose: the arms, hands and fingers point straight o
 - the mesh with 4 skin weights per vertex, and the humanoid bone map of the `anny` rig (with `jaw` on the `anny-mouth` rig, [Mouth](mouth.md));
 - expressions mixed from the 52 ARKit facial actions: the visemes aa, ih, ou, ee and oh, blink, blinkLeft and blinkRight, the emotions happy, angry, sad, relaxed and surprised, and neutral; in VRM 1.0 files an emotion damps blinking and lip sync in proportion to its weight;
 - the 52 facial actions as perfect-sync expressions named in PascalCase (`EyeBlinkLeft`), and in VRM 0.x files the VSeeFace visemes SIL, CH, DD, FF, KK, NN, PP, RR, SS and TH;
-- look-at on the eye bones, and MToon toon materials;
+- look-at on the eye bones, and MToon toon materials; the primitives carry no `TANGENT`, so a normal map takes its tangent frame from the UVs as glTF asks (UniVRM computes tangents on import, three-vrm a frame per pixel), since three-vrm's MToon shader fails to link a primitive with vertex tangents and a normal map;
 - the licence metadata with the credits, and an optional thumbnail;
 - the [character card](character-card.md) in the scene extras, so that `read_character("ada.vrm")` reads it back.
 
-The face shapes are baked into the mesh, because a VRM skeleton is fixed, and the facial actions become the expressions. The eyes of `--eyes`, the teeth of `--teeth` and a fitted card's inner mouth go into the file as they do for [glTF](export.md).
+The face shapes are baked into the mesh, because a VRM skeleton is fixed, and the facial actions become the expressions. The eyes of `--eyes` with their lashes, the teeth of `--teeth` and a fitted card's inner mouth go into the file as they do for [glTF](export.md).
 
 ## Metadata and licence
 
@@ -52,4 +52,4 @@ The files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`). three-vr
 
 ## Not in the file yet
 
-Hair, eyelashes, outfits and spring bones. Painted textures come only from a reference bake; other characters get a plain skin colour.
+Hair and spring bones; outfits and lashes come with [Wearables](wearables.md) and [Eyes](eyes.md#lashes). Painted textures come only from a reference bake; other characters get a plain skin colour.

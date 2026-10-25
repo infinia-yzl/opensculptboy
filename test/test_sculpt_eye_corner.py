@@ -603,7 +603,9 @@ class TestSculptEyes(unittest.TestCase):
             glb.json["materials"][p["material"]]["name"]
             for p in glb.json["meshes"][0]["primitives"]
         ]
-        self.assertEqual(sorted(names), ["conjunctiva", "cornea", "eyes", "skin"])
+        self.assertEqual(
+            sorted(names), ["conjunctiva", "cornea", "eyes", "lashes", "skin"]
+        )
         vrm = folder / "sculpt_eyes.vrm"
         export_vrm(vrm, self.card, self.model, author="test")
         self.assertGreater(vrm.stat().st_size, 0)
@@ -774,7 +776,9 @@ class TestCornerFit(unittest.TestCase):
         from opensculptboy.detail import character_offsets
 
         for topology in ("anny", "sculpt"):
-            card = Character.from_dict(json.loads(self.cards[topology].read_text()))
+            card = Character.from_dict(
+                json.loads(self.cards[topology].read_text(encoding="utf-8"))
+            )
             for subdiv in (0, 1):
                 with self.subTest(topology=topology, subdiv=subdiv):
                     written = character_offsets(card, subdiv, self.folder)

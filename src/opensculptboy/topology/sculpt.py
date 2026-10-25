@@ -153,7 +153,9 @@ class SculptData:
         safetensors.torch.save_file(tensors, str(path))
         header = self._header()
         header["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-        path.with_suffix(".json").write_text(json.dumps(header, indent=2) + "\n")
+        path.with_suffix(".json").write_text(
+            json.dumps(header, indent=2) + "\n", encoding="utf-8"
+        )
         return path
 
 
@@ -172,7 +174,7 @@ def read_sculpt_data(
     import safetensors.torch
 
     path = pathlib.Path(path)
-    header = json.loads(_sidecar(path).read_text())
+    header = json.loads(_sidecar(path).read_text(encoding="utf-8"))
     if header.get("format") != FORMAT or header.get("base") != BASE:
         raise ValueError(
             f"{path} is not a sculpt topology file of format {FORMAT} on {BASE}."
