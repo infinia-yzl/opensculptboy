@@ -16,11 +16,13 @@ rest, in the T-pose of the VRM export and on sampled frames of the built-in clip
   its normal meets the upper piece within 3 cm on either side, on that body at rest) and that
   lies more than the tolerance outside the upper piece.
 
-"Outside" is measured from the vertex's partner on the piece: its closest point at rest
-(within 5 cm; a vertex further away takes no part), carried into each pose by the piece's
-own triangle and barycentric coordinates, along the piece's normal there. A partner keeps
-each vertex to the part of the piece above it, so that an arm against the torso is measured
-against its sleeve and never against the side of the shirt.
+"Outside" is measured from the vertex's partner on the piece (:class:`Partners`): the
+nearest point of the piece at rest on the line along the vertex's normal (within 3 cm on
+either side), else its closest point (within 5 cm; a vertex further away takes no part),
+carried into each pose by the piece's own triangle and barycentric coordinates, along the
+piece's normal there, turned away from the body. A partner keeps each vertex to the part of
+the piece above it, so that an arm against the torso is measured against its sleeve and
+never against the side of the shirt.
 
 The body and the pieces move by linear blend skinning with one set of bone transforms: the
 body with its own skin weights, the pieces with the weights of the dressing; in the T-pose
@@ -219,14 +221,67 @@ def _visible_rows(piece) -> np.ndarray:
     return np.unique(piece.visible_triangles())
 
 
+def ray_partners(origins, directions, vertices, triangles, reach: float = RAY):
+    """The nearest point of the triangles on the line through each origin along its
+    direction, within ``reach`` on either side: (hit (N,), triangle (N,), barycentric
+    (N, 3)), Moller-Trumbore on the triangles near each origin."""
+    from scipy.spatial import cKDTree
+
+    from opensculptboy.wearables.geometry import unit_rows
+
+    origins = np.asarray(origins, dtype=np.float64)
+    directions = unit_rows(np.asarray(directions, dtype=np.float64))
+    count = len(origins)
+    best = np.full(count, np.inf)
+    triangle = np.zeros(count, np.int64)
+    barycentric = np.zeros((count, 3))
+    if not len(triangles) or not count:
+        return np.isfinite(best), triangle, barycentric
+    corners = vertices[triangles]
+    centroids = corners.mean(axis=1)
+    radius = float(np.linalg.norm(corners - centroids[:, None], axis=2).max())
+    near = cKDTree(centroids).query_ball_point(origins, reach + radius)
+    rows = np.repeat(np.arange(count), [len(n) for n in near])
+    if not len(rows):
+        return np.isfinite(best), triangle, barycentric
+    cols = np.concatenate([np.asarray(n, dtype=np.int64) for n in near])
+    for start in range(0, len(rows), 400_000):
+        r, c = rows[start : start + 400_000], cols[start : start + 400_000]
+        a, b, cc = (corners[c, i] for i in range(3))
+        d = directions[r]
+        e1, e2 = b - a, cc - a
+        p = np.cross(d, e2)
+        det = np.einsum("ij,ij->i", e1, p)
+        ok = np.abs(det) > 1e-14
+        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+        s = origins[r] - a
+        u = np.einsum("ij,ij->i", s, p) * inv
+        q = np.cross(s, e1)
+        v = np.einsum("ij,ij->i", d, q) * inv
+        t = np.abs(np.einsum("ij,ij->i", e2, q) * inv)
+        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t <= reach)
+        k = np.flatnonzero(good)
+        k = k[np.lexsort((c[k], t[k], r[k]))]  # per origin, the nearest hit first
+        first = np.ones(len(k), bool)
+        first[1:] = r[k][1:] != r[k][:-1]
+        k = k[first]
+        k = k[t[k] < best[r[k]]]  # nearer than a hit of an earlier chunk
+        best[r[k]] = t[k]
+        triangle[r[k]] = c[k]
+        barycentric[r[k]] = np.stack([1.0 - u[k] - v[k], u[k], v[k]], axis=1)
+    return np.isfinite(best), triangle, barycentric
+
+
 @dataclasses.dataclass
 class Partners:
     """Points of a set of ``rows`` (body or lower-piece vertices) and their partners on a
-    piece: the closest point of the piece's visible triangles at rest (``triangle``, an index
-    into those triangles, and ``barycentric``), which each pose carries along. ``side`` (+1
-    or -1) turns the piece's normal at the partner away from the body: the normal of the
-    triangles' winding, turned where it faces the skin at rest, so that a piece wound inside
-    out, or the far side of a double-sided panel, still measures outward."""
+    piece at rest (``triangle``, an index into the piece's visible triangles, and
+    ``barycentric``), which each pose carries along: the nearest point of the piece on the
+    line along the point's normal within 3 cm, else the closest point of the piece within
+    5 cm. ``side`` (+1 or -1) turns the piece's normal at the partner away from the body:
+    the normal of the triangles' winding, turned where it faces the skin at rest, so that a
+    piece wound inside out, or the far side of a double-sided panel, still measures
+    outward."""
 
     rows: np.ndarray
     triangle: np.ndarray
@@ -234,7 +289,7 @@ class Partners:
     side: np.ndarray
 
     @classmethod
-    def at_rest(cls, points, rows, piece, body):
+    def at_rest(cls, points, rows, piece, body, directions=None):
         from opensculptboy.wearables.geometry import (
             Surface,
             interpolate,
@@ -248,7 +303,15 @@ class Partners:
             return cls(empty, empty, np.zeros((0, 3)), np.zeros(0))
         found = Surface(piece.vertices, tris).closest(points[rows])
         near = found.distance < NEAR
-        triangle, barycentric = found.triangle[near], found.barycentric[near]
+        triangle, barycentric = found.triangle.copy(), found.barycentric.copy()
+        if directions is not None:
+            hit, ray_triangle, ray_barycentric = ray_partners(
+                points[rows], directions, piece.vertices, tris
+            )
+            triangle[hit] = ray_triangle[hit]
+            barycentric[hit] = ray_barycentric[hit]
+            near |= hit
+        triangle, barycentric = triangle[near], barycentric[near]
         corners = tris[triangle]
         n = unit_rows(
             interpolate(vertex_normals(piece.vertices, tris), corners, barycentric)
@@ -300,13 +363,15 @@ class Layout:
 def layout(body, dressed) -> Layout:
     """The covers and pairs of a dressed body at rest (see the module documentation)."""
     from opensculptboy.wearables.cover import piece_cover
-    from opensculptboy.wearables.geometry import ray_hits, vertex_normals
+    from opensculptboy.wearables.geometry import vertex_normals
 
     pieces = [p for p in dressed if p.shown]
-    covers = [
-        Partners.at_rest(body.vertices, np.flatnonzero(piece_cover(body, p)), p, body)
-        for p in pieces
-    ]
+    covers = []
+    for p in pieces:
+        rows = np.flatnonzero(piece_cover(body, p))
+        covers.append(
+            Partners.at_rest(body.vertices, rows, p, body, body.normals[rows])
+        )
     pairs = []
     for u, upper in enumerate(pieces):
         tris = upper.visible_triangles()
@@ -319,12 +384,16 @@ def layout(body, dressed) -> Layout:
             if not len(rows):
                 continue
             normals = vertex_normals(lower.vertices, lower.visible_triangles())[rows]
-            origins = lower.vertices[rows]
-            hit = ray_hits(origins, normals, upper.vertices, tris, RAY)
-            hit |= ray_hits(origins, -normals, upper.vertices, tris, RAY)
+            hit = ray_partners(lower.vertices[rows], normals, upper.vertices, tris)[0]
             if hit.any():
                 pairs.append(
-                    (u, k, Partners.at_rest(lower.vertices, rows[hit], upper, body))
+                    (
+                        u,
+                        k,
+                        Partners.at_rest(
+                            lower.vertices, rows[hit], upper, body, normals[hit]
+                        ),
+                    )
                 )
     return Layout(
         body,
