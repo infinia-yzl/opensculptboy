@@ -160,9 +160,23 @@ def circlet(body=None) -> Wearable:
     )
 
 
-def cape(body=None) -> Wearable:
+def bump_normal_map(size: int = 64) -> bytes:
+    """A PNG tangent-space normal map (glTF convention) of a grid of round bumps."""
+    from opensculptboy.export.document import png_bytes
+
+    u = (np.arange(size) + 0.5) / size
+    U, V = np.meshgrid(u, u)
+    x = 0.4 * np.cos(8 * np.pi * U) * np.sin(8 * np.pi * V)
+    y = 0.4 * np.sin(8 * np.pi * U) * np.cos(8 * np.pi * V)
+    n = np.stack([x, y, np.ones_like(x)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    return png_bytes(np.round((n * 0.5 + 0.5) * 255).astype(np.uint8))
+
+
+def cape(body=None, normal_map: bool = False) -> Wearable:
     """A cape: a panel of 12 by 20 vertices behind the back, from the shoulders to the knees,
-    4 cm off the skin, which hides the tunic's ``back`` group."""
+    4 cm off the skin, which hides the tunic's ``back`` group. With ``normal_map`` the panel
+    has UVs and its material a normal map (:func:`bump_normal_map`)."""
     body = body or template_body()
     v = body.vertices
     low, h = float(v[:, 2].min()), float(np.ptp(v[:, 2]))
@@ -180,11 +194,18 @@ def cape(body=None) -> Wearable:
             np.stack([p, p + 21, p + 20], -1).reshape(-1, 3),
         ]
     )
+    wool = Material("wool", (0.5, 0.1, 0.1, 1.0), 0.0, 1.0, double_sided=True)
+    uvs = None
+    if normal_map:
+        uvs = np.stack([(X - xs[0]) / np.ptp(xs), (zs[-1] - Z) / np.ptp(zs)], -1)
+        uvs = uvs.reshape(-1, 2)
+        wool.textures["normal"] = bump_normal_map()
     garment = Garment(
         vertices,
         triangles,
         normals=np.tile([0.0, 1.0, 0.0], (len(vertices), 1)),
-        materials=[Material("wool", (0.5, 0.1, 0.1, 1.0), 0.0, 1.0, double_sided=True)],
+        uvs=uvs,
+        materials=[wool],
     )
     return Wearable(
         name="cape",
@@ -214,14 +235,15 @@ def outfit_card() -> Character:
     )
 
 
-def write_outfit(folder, body=None) -> Character:
-    """Write the three pieces into ``folder`` and return :func:`outfit_card`."""
+def write_outfit(folder, body=None, normal_map: bool = False) -> Character:
+    """Write the three pieces into ``folder`` and return :func:`outfit_card`; with
+    ``normal_map`` the cape has a normal map."""
     import pathlib
 
     from opensculptboy.wearables import write_wearable
 
     folder = pathlib.Path(folder)
     for make in PIECES:
-        w = make(body)
+        w = make(body, normal_map=True) if make is cape and normal_map else make(body)
         write_wearable(folder / f"{w.name}.wearable.json", w)
     return outfit_card()
