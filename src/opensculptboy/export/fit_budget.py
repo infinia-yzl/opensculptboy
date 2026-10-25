@@ -10,7 +10,7 @@ keeps within :data:`opensculptboy.export.budget.BUDGETS`, and reports what it di
    of their reduction: one run of :func:`opensculptboy.export.decimate.decimate` over every
    piece removes the vertices whose removal costs least, where the cost of a vertex is its
    geometric error times its importance. The importance is the piece's priority
-   (:data:`PRIORITIES`, the face of the body six times and the hands three times its rest),
+   (:data:`PRIORITIES`, the face of the body nine times and the hands four times its rest),
    times how much of the vertex's surface the views of :mod:`opensculptboy.render.ids` see
    (the front most), so hidden and inner surfaces go first. Each piece keeps a floor of its
    triangles (:data:`FLOORS`, more when the budget asks for little: :data:`FLOOR_RATIOS`); the
@@ -42,7 +42,7 @@ import numpy as np
 # the priority of each kind of piece, and the factors of its face and hands
 PRIORITIES = {"body": 1.0, "teeth": 0.5, "mouth": 0.5, "wearable": 1.0}
 REGION_FACTORS = {
-    "body": {"face": 6.0, "hands": 3.0},
+    "body": {"face": 9.0, "hands": 4.0},
     "wearable": {"face": 2.0, "hands": 1.5},
 }
 # the share of its triangles that each kind of piece keeps at least: the larger of a fixed
@@ -307,10 +307,10 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
             # a run that stops above the target (the floors, or no valid collapse left) runs
             # again with the floors halved
             for attempt in range(4):
-                r = decimate(
+                r = decimate(  # one below: a last collapse can stop one above
                     positions,
                     out_t,
-                    target,
+                    max(target - 1, 1),
                     labels=out_l,
                     groups=out_g,
                     floors=floors,

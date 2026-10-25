@@ -21,8 +21,9 @@ The mesh is the vertex data of a glTF primitive: vertices split at UV seams and 
   their shape and the texture its layout; every other vertex stays (an end or a crossing of
   feature lines, or a vertex on a non-manifold edge);
 - the cost of a collapse is the area-weighted quadric of the planes around both vertices at the
-  kept vertex, in the rest shape and in each of the given morph target shapes, scaled by the
-  removed vertex's importance; feature edges add planes along their lines;
+  kept vertex (the squared distance times the area that moves), in the rest shape and in each
+  of the given morph target shapes, scaled by the removed vertex's importance; feature edges
+  add planes along their lines;
 - a collapse is refused when it breaks the link condition (it would join two sheets), turns a
   triangle by more than 60 degrees, flips or collapses a UV triangle, or makes a sliver.
 
@@ -48,7 +49,8 @@ FLIP_COS = 0.5
 # the normal term: a turn of 90 degrees between the normals of the two vertices costs as much
 # as a move of this distance (metres) over the vertex's area
 NORMAL_LENGTH = 0.003
-# a mild preference for short edges, which keeps the triangles even on flat panels
+# a mild preference for short edges, which keeps the triangles even on flat panels: an edge of
+# length L costs as much as a distance of sqrt(LENGTH_WEIGHT) L over the vertex's area
 LENGTH_WEIGHT = 1e-3
 # each pass takes collapses up to this quantile of the cheapest collapse of every vertex, in
 # rounds of independent sets
@@ -401,6 +403,12 @@ def decimate(
         ok &= ~((au0 == au1) & (av0 != av1) & (au1 >= 0))
         common = _common_neighbours(E, W)
         ok &= common[e] == E.count[e]
+        # a collapse removes the triangles of its edge: none of a group at its floor
+        limited = np.zeros(int(groups.max(initial=0)) + 2, bool)
+        for g, a in allowance.items():
+            limited[g] = a < 2
+        ok &= ~limited[groups[E.t0[e]]]
+        ok &= ~((E.t1[e] >= 0) & limited[groups[np.maximum(E.t1[e], 0)]])
         if not ok.any():
             stopped = "no collapse is allowed"
             break
@@ -410,12 +418,11 @@ def decimate(
         for s, offset in enumerate(shape_list):
             cost += _evaluate(Q[s][cu] + Q[s][cv], Pw[cv] + offset[cv])
         cost /= S
-        vertex_area = wsum
         edge_vec = Pw[cv] - Pw[cu]
-        cost += LENGTH_WEIGHT * vertex_area[cu] * (edge_vec**2).sum(1)
+        cost += LENGTH_WEIGHT * wsum[cu] * (edge_vec**2).sum(1)
         if NRM is not None:
             turn = 1.0 - (NRM[au0[cand]] * NRM[av0[cand]]).sum(1)
-            cost += vertex_area[cu] * NORMAL_LENGTH**2 * np.maximum(turn, 0.0)
+            cost += wsum[cu] * NORMAL_LENGTH**2 * np.maximum(turn, 0.0)
         cost = np.maximum(cost, 0.0) * imp[cu]
         cmap = (au0[cand], av0[cand], au1[cand], av1[cand])
 
@@ -491,10 +498,15 @@ def decimate(
             accept &= (np.cumsum(events) <= a) | (events == 0)
         total = np.cumsum(1 + has1.astype(np.int64))
         accept &= total <= max(len(T) - target, 1)
-        c, ec, g0, g1 = c[accept], ec[accept], g0[accept], g1[accept]
-        if len(c) == 0:
-            stopped = "the groups' floors"
+        if not accept.any() and len(T) - target <= 1:
+            break  # one triangle above the target: the last collapse would pass it
+        if not accept.any():
+            stopped = (
+                f"the groups' floors ({len(c)} collapses, none within "
+                f"{ {g: a for g, a in allowance.items() if a < 64} })"
+            )
             break
+        c, ec, g0, g1 = c[accept], ec[accept], g0[accept], g1[accept]
         uu, vv = cu[c], cv[c]
         for g in np.unique(g0):
             pick = g0 == g
