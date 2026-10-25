@@ -14,13 +14,13 @@ cutoff are discarded, as the apps draw them). It reports:
 - **surface**: where both pictures show the same piece, the distance between the two surfaces
   along the view (mm), the angle between their interpolated normals and the angle between
   their shading normals (the normals bent by the normal maps in the MikkTSpace frames that
-  the apps derive from the UVs), in degrees, per piece;
+  the apps derive from the UVs, averaged over blocks of 4 by 4 pixels), in degrees, per piece;
 - **uv**: per piece, the UV triangles of zero area or flipped against the triangle's own
   winding, before and after;
 - **texel density**: per piece, the base colour texels per metre of surface (the square root of
   the texels its UV triangles cover over their area), before and after, and their ratio;
 - **colour**: where both pictures show the same piece, the mean difference of the drawn colour
-  (base colour, alpha test and a toon light), in 8-bit sRGB steps.
+  (base colour, alpha test and a toon light) over blocks of 4 by 4 pixels, in 8-bit sRGB steps.
 
 :func:`picture` draws a spec with its textures in that light, for review pages.
 """
@@ -245,6 +245,17 @@ def picture(
     return _draw(spec, sc, camera, _Textures(spec))[1]
 
 
+POOL = 4
+
+
+def _pool(image: np.ndarray) -> np.ndarray:
+    """The mean of blocks of POOL by POOL pixels of an image (H, W) or (H, W, C)."""
+    h, w = image.shape[0] // POOL * POOL, image.shape[1] // POOL * POOL
+    x = image[:h, :w]
+    shape = (h // POOL, POOL, w // POOL, POOL) + x.shape[2:]
+    return x.reshape(shape).mean(axis=(1, 3))
+
+
 def _outline_length(mask: np.ndarray) -> float:
     edges = (mask[:, 1:] != mask[:, :-1]).sum() + (mask[1:, :] != mask[:-1, :]).sum()
     return float(edges)
@@ -334,17 +345,23 @@ def compare(full, fitted, size: int = SIZE, names=VIEWS) -> dict:
             entry["depth"].append(np.abs(da[same] - db[same]))
             cos = np.clip((na[same] * nb[same]).sum(1), -1, 1)
             entry["angle"].append(np.degrees(np.arccos(np.abs(cos))))
-            cos = np.clip((sa[same] * sb[same]).sum(1), -1, 1)
-            entry["shading"].append(np.degrees(np.arccos(np.abs(cos))))
-            entry["colour"].append(
-                np.abs(ca[same].astype(float) - cb[same].astype(float)).mean(1)
-            )
+            # the shading and the colour over blocks of POOL by POOL pixels, so that a shift
+            # of less than a texel in a fine pattern does not count as a change
+            block = _pool(same.astype(float)) > 0.999
+            if block.any():
+                ma_, mb_ = _pool(sa), _pool(sb)
+                ma_ /= np.maximum(np.linalg.norm(ma_, axis=-1, keepdims=True), 1e-12)
+                mb_ /= np.maximum(np.linalg.norm(mb_, axis=-1, keepdims=True), 1e-12)
+                cos = np.clip((ma_[block] * mb_[block]).sum(1), -1, 1)
+                entry["shading"].append(np.degrees(np.arccos(np.abs(cos))))
+                diff = np.abs(_pool(ca.astype(float)) - _pool(cb.astype(float)))
+                entry["colour"].append(diff[block].mean(1))
     pieces = {}
     for name, entry in per_piece.items():
         depth = np.concatenate(entry["depth"]) * 1000.0
         angle = np.concatenate(entry["angle"])
-        shade = np.concatenate(entry["shading"])
-        colour = np.concatenate(entry["colour"])
+        shade = np.concatenate(entry["shading"] or [np.zeros(1)])
+        colour = np.concatenate(entry["colour"] or [np.zeros(1)])
         pieces[name] = {
             "pixels": entry["pixels"],
             "surface_mm_mean": float(depth.mean()),
