@@ -28,6 +28,79 @@ import pathlib
 from opensculptboy.wearables.format import read_wearable
 
 NO_OUTFIT = "none"
+# the keys of an outfit on a card, and of each of its pieces
+OUTFIT_KEYS = {"id", "label", "description", "tags", "source", "pieces"}
+PIECE_KEYS = {"piece", "file", "enabled", "overrides", "hides", "springs"}
+OVERRIDE_KEYS = {"layer", "label"}
+
+
+def check_piece_settings(entry: dict, ref: str) -> None:
+    """Raise ValueError for settings of an outfit's piece on a card that do not hold:
+    ``overrides`` (``layer`` 0 to 100, ``label``), ``hides`` (rules in the form of a package's
+    ``hides``, added to its own) and ``springs`` (spring entries in the form of a package's
+    ``springs``, in place of its own)."""
+    unknown = set(entry) - PIECE_KEYS
+    if unknown:
+        raise ValueError(f"Unknown keys {sorted(unknown)} in piece {ref!r}.")
+    if not isinstance(entry.get("enabled", True), bool):
+        raise ValueError(f"enabled of piece {ref!r} must be true or false.")
+    overrides = entry.get("overrides", {})
+    if not isinstance(overrides, dict) or set(overrides) - OVERRIDE_KEYS:
+        raise ValueError(
+            f"overrides of piece {ref!r} may set {sorted(OVERRIDE_KEYS)}: {overrides!r}."
+        )
+    layer = overrides.get("layer")
+    if layer is not None and (
+        not isinstance(layer, int) or isinstance(layer, bool) or not 0 <= layer <= 100
+    ):
+        raise ValueError(f"The layer override of piece {ref!r} must lie in 0..100.")
+    label = overrides.get("label")
+    if label is not None and (not isinstance(label, str) or not label.strip()):
+        raise ValueError(f"The label override of piece {ref!r} must be text.")
+    hides = entry.get("hides", [])
+    if not isinstance(hides, list):
+        raise ValueError(f"hides of piece {ref!r} must be a list of rules.")
+    for rule in hides:
+        if (
+            not isinstance(rule, dict)
+            or set(rule) - {"piece", "groups"}
+            or not isinstance(rule.get("piece"), str)
+            or not isinstance(rule.get("groups"), list)
+            or not all(isinstance(g, str) for g in rule["groups"])
+        ):
+            raise ValueError(
+                f"A hides rule of piece {ref!r} is {{'piece': id, 'groups': [names]}}: "
+                f"{rule!r}."
+            )
+    springs = entry.get("springs", [])
+    if not isinstance(springs, list) or not all(
+        isinstance(s, dict) and isinstance(s.get("name"), str) for s in springs
+    ):
+        raise ValueError(f"springs of piece {ref!r} must be a list of named entries.")
+
+
+def with_settings(wearable, entry: dict):
+    """The package of a card's piece with the piece's ``overrides``, ``hides`` and
+    ``springs`` applied (:func:`check_piece_settings`); the package itself when it has
+    none."""
+    import dataclasses
+
+    overrides = entry.get("overrides") or {}
+    hides = entry.get("hides") or []
+    if not overrides and not hides and "springs" not in entry:
+        return wearable
+    changes = {}
+    if "layer" in overrides:
+        changes["layer"] = int(overrides["layer"])
+    if "label" in overrides:
+        changes["label"] = overrides["label"]
+    if hides:
+        rules = [dict(r) for r in wearable.hides]
+        rules += [dict(r) for r in hides if dict(r) not in rules]
+        changes["hides"] = rules
+    if "springs" in entry:
+        changes["springs"] = [dict(s) for s in entry["springs"]]
+    return dataclasses.replace(wearable, **changes)
 
 
 @dataclasses.dataclass
@@ -68,7 +141,7 @@ def check_wardrobe(character) -> None:
         if outfit["id"] in outfits:
             raise ValueError(f"Two outfits share the id {outfit['id']!r}.")
         outfits.add(outfit["id"])
-        unknown = set(outfit) - {"id", "label", "pieces"}
+        unknown = set(outfit) - OUTFIT_KEYS
         if unknown:
             raise ValueError(
                 f"Unknown keys {sorted(unknown)} in outfit {outfit['id']!r}."
@@ -81,6 +154,7 @@ def check_wardrobe(character) -> None:
                 )
             if not isinstance(piece.get("file"), str):
                 raise ValueError(f"Piece {piece['piece']!r} needs a 'file'.")
+            check_piece_settings(piece, f"{outfit['id']}/{piece['piece']}")
             if piece["piece"] in pieces:
                 raise ValueError(
                     f"Outfit {outfit['id']!r} names piece {piece['piece']!r} twice."
@@ -168,13 +242,20 @@ def worn_pieces(
     base = detail_dir or "."
     loaded = {}
 
+    settings = {
+        f"{o['id']}/{p['piece']}": p
+        for o in character.outfits
+        for p in o.get("pieces", [])
+    }
+
     def load(ref):
         if ref not in loaded:
             entry = entries[refs.index(ref)]
             path = pathlib.Path(entry[3])
             if not path.is_absolute():
                 path = pathlib.Path(base) / path
-            loaded[ref] = (read_wearable(path), str(path))
+            wearable = with_settings(read_wearable(path), settings.get(ref, {}))
+            loaded[ref] = (wearable, str(path))
         return loaded[ref][0]
 
     for name in hide:
