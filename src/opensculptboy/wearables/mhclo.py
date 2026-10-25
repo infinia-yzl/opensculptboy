@@ -1,0 +1,1486 @@
+# OpenSculptBoy
+# Apache License, Version 2.0
+"""
+MakeHuman clothes assets as wearable packages (``opensculptboy wearables import-mhclo``,
+docs/wearables.md, "Free outfits").
+
+A MakeHuman clothes asset is three kinds of file: the ``.mhclo`` file (a header and the
+binding of each garment vertex to MakeHuman's base mesh), its ``.obj`` mesh and its
+``.mhmat`` material with the textures. This module reads them as MakeHuman 1.x and MPFB2
+write them:
+
+- **Header.** ``name``, ``uuid``, ``description``, ``tag`` (one per line), ``z_depth``,
+  ``obj_file``, ``material``, ``basemesh``, and the licence keys ``author``, ``license``,
+  ``homepage`` and ``copyright``, either as keys or in comment lines (``# license CC0``);
+  MPFB2 writes the description in a comment line too (``# description: ...``), which a
+  ``description`` key replaces.
+- **Binding.** After ``verts``, one line per garment vertex in the order of the ``.obj``
+  vertices: three base-mesh vertex indices, three weights and an offset (``v1 v2 v3 w1 w2 w3
+  dx dy dz``), or one index alone (the vertex sits on that base-mesh vertex). On a body ``h``
+  (MakeHuman's frame: decimetres, Y up) the vertex lies at ``w1 h[v1] + w2 h[v2] + w3 h[v3] +
+  S d``, where ``S`` is diagonal: for each axis n of ``x_scale``, ``y_scale`` and ``z_scale``
+  (``v1 v2 length``), ``|h[v1][n] - h[v2][n]| / length``, so that the offset stretches with
+  the body. Without scale lines ``S`` is the identity; ``shear_x``, ``shear_y`` and
+  ``shear_z`` (``v1 v2 x1 x2``) give ``(h[v2][n] - h[v1][n]) / (x2 - x1)`` per axis.
+- **Covered skin.** ``delete_verts`` lists base-mesh vertices that the garment hides, as
+  numbers and ranges ``a - b``.
+
+The binding is evaluated on the binding body (the default card), with the base-mesh
+vertices that Anny's template lacks taken from MakeHuman's targets
+(:mod:`opensculptboy.wearables.basemesh`), and the evaluated garment then binds to the
+nearest triangles of the skin with :func:`opensculptboy.wearables.make.bind_garment`.
+
+:func:`licence_block` records the licence, the author and the source of the header as
+found; choosing assets and following their licences is the user's responsibility.
+
+Sources: MakeHuman 1.x ``shared/proxy.py`` and ``makehuman.py`` (``LicenseInfo``), MPFB2
+``entities/clothes/mhclo.py``, and the MakeHuman asset FAQ on CC-BY attribution; see
+docs/wearables.md for the links.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import io
+import pathlib
+import re
+
+import numpy as np
+
+from opensculptboy.wearables.format import (
+    PUBLIC,
+    SLOTS,
+    Garment,
+    Material,
+    WearableError,
+)
+
+IMPORT_COVERS = ("auto", "ray", "none")
+DEFAULT_LAYER = 50  # MakeHuman's z_depth when a file gives none
+# The distance of the .obj from its binding's place above which the report notes it.
+SOURCE_OFFSET_MM = 5.0
+
+# Words of an asset's name and tags that name a slot, in the order they are tried. The
+# names of MakeHuman's own clothes and of its community's asset packs (shirts01, hats01)
+# check them (test_slot_words). "tube" is left out ("tube socks"): a tube top is a top.
+SLOT_WORDS = {
+    "head": "hat cap helmet hood beanie crown tiara bonnet headband beret turban headscarf "
+    "headwear fedora sombrero stetson",
+    "face": "glasses spectacles sunglasses mask goggles eyepatch monocle veil",
+    "neck": "scarf necklace collar choker bowtie necktie cravat pendant amulet",
+    "hands": "glove gloves gauntlet gauntlets mitten mittens mitts",
+    "feet": "shoe shoes boot boots sandal sandals sneaker sneakers heels slipper slippers "
+    "sock socks loafers flats footwear pumps trainers flipflops clogs moccasins",
+    "under": "underwear underpants undies knickers bra panties briefs boxer boxers "
+    "lingerie thong undershirt bikini bralette swimsuit swimwear",
+    "cloak": "cape cloak poncho mantle",
+    "legs": "pants trousers jeans shorts skirt leggings tights stockings pantyhose bottom "
+    "bottoms kilt capris chinos joggers culottes sarong",
+    "torso": "shirt tshirt top blouse sweater jumper hoodie jacket coat vest dress suit "
+    "tunic robe gown jumpsuit overall overalls fullbody uniform cardigan tank halter "
+    "turtleneck camisole cami bodice corset polo tee crop blazer waistcoat parka anorak "
+    "kimono leotard bodysuit romper tuxedo",
+    "arms": "sleeve sleeves bracer bracers armlet",
+    "accessory": "belt bag ring bracelet earring earrings watch jewelry jewellery backpack "
+    "purse",
+}
+# Words that name a slot only when no word of SLOT_WORDS does ("short sleeves").
+WEAK_SLOT_WORDS = {"short": "legs"}
+_LOOSE_WORDS = {"clothes", "clothing", "female", "male", "makehuman", "mh", "proxy"}
+
+
+class MhcloError(WearableError):
+    """A MakeHuman clothes asset that cannot become a package as it stands."""
+
+    code = "invalid_mhclo"
+
+
+@dataclasses.dataclass
+class MhcloAsset:
+    """The contents of a ``.mhclo`` file. ``refs``, ``weights`` and ``offsets`` (V, 3) are the
+    binding of each garment vertex (offsets in MakeHuman's frame, decimetres, Y up), ``scale``
+    the three ``(v1, v2, length)`` scale references or None, ``shear`` the three ``(v1, v2,
+    x1, x2)`` shear references or None, and ``delete_verts`` the base-mesh vertices that the
+    garment hides."""
+
+    path: pathlib.Path
+    name: str | None = None
+    uuid: str | None = None
+    description: str | None = None
+    tags: list = dataclasses.field(default_factory=list)
+    author: str | None = None
+    licence: str | None = None
+    homepage: str | None = None
+    copyright: str | None = None
+    z_depth: int | None = None
+    obj_file: pathlib.Path | None = None
+    material: pathlib.Path | None = None
+    basemesh: str | None = None
+    refs: np.ndarray | None = None
+    weights: np.ndarray | None = None
+    offsets: np.ndarray | None = None
+    single: np.ndarray | None = None  # (V,) True for a binding of one index
+    scale: list | None = None
+    shear: list | None = None
+    delete_verts: np.ndarray | None = None
+    notes: list = dataclasses.field(default_factory=list)
+
+
+def _file(folder: pathlib.Path, value: str, suffix: str) -> pathlib.Path:
+    path = pathlib.Path(value)
+    if not path.suffix:
+        path = path.with_suffix(suffix)
+    return path if path.is_absolute() else folder / path
+
+
+def _number(word: str) -> bool:
+    try:
+        float(word)
+    except ValueError:
+        return False
+    return True
+
+
+LICENCE_KEYS = {"author", "license", "licence", "homepage", "copyright"}
+
+
+def read_mhclo(path) -> MhcloAsset:
+    """Read a ``.mhclo`` file (see the module documentation)."""
+    path = pathlib.Path(path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise MhcloError(
+            f"{path}: {error.strerror or error}",
+            "file_not_found",
+            "Name an existing .mhclo file.",
+        ) from error
+    folder = path.parent
+    asset = MhcloAsset(path=path)
+    refs, weights, offsets, single = [], [], [], []
+    deleted: set[int] = set()
+    scale: list = [None, None, None]
+    shear: list = [None, None, None]
+    section = None
+    ignored = set()
+    number, line = 0, ""
+    try:
+        for number, raw in enumerate(text.splitlines(), 1):
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("#") or line.startswith("//"):
+                words = line.lstrip("#/").split()
+                if words:
+                    key = words[0].rstrip(":").lower()
+                    if key in LICENCE_KEYS and len(words) > 1:
+                        _set_licence(asset, key, " ".join(words[1:]))
+                    elif key == "description" and asset.description is None:
+                        asset.description = " ".join(words[1:]) or None  # MPFB2
+                continue
+            words = line.split()
+            key = words[0].rstrip(":")
+            if section == "verts" and _number(key):
+                if len(words) == 1:
+                    v = int(words[0])
+                    refs.append((v, v, v))
+                    weights.append((1.0, 0.0, 0.0))
+                    offsets.append((0.0, 0.0, 0.0))
+                    single.append(True)
+                elif len(words) in (6, 9):
+                    refs.append(tuple(int(w) for w in words[:3]))
+                    weights.append(tuple(float(w) for w in words[3:6]))
+                    d = words[6:9] if len(words) == 9 else (0, 0, 0)
+                    offsets.append(tuple(float(w) for w in d))
+                    single.append(False)
+                else:
+                    raise MhcloError(
+                        f"{path}, line {number}: a vertex binding holds one index, or three "
+                        f"indices, three weights and an optional offset; got {len(words)} "
+                        "numbers.",
+                        "malformed_binding",
+                        "Export the asset again with MakeClothes or MPFB2.",
+                    )
+                continue
+            if section == "delete" and (_number(key) or key == "-" or "-" in key):
+                _delete_words(words, deleted, path, number)
+                continue
+            if section == "weights" and _number(key):
+                continue
+            section = None
+            lower = key.lower()
+            value = " ".join(words[1:])
+            if lower in LICENCE_KEYS:
+                _set_licence(asset, lower, value)
+            elif lower == "name":
+                asset.name = value
+            elif lower == "uuid":
+                asset.uuid = value
+            elif lower == "description":
+                asset.description = value
+            elif lower == "tag":
+                if value:
+                    asset.tags.append(value.lower())
+            elif lower == "z_depth":
+                asset.z_depth = int(float(words[1]))
+            elif lower == "obj_file":
+                asset.obj_file = _file(folder, value, ".obj")
+            elif lower == "material":
+                asset.material = _file(folder, value, ".mhmat")
+            elif lower == "basemesh":
+                asset.basemesh = value
+            elif lower in ("x_scale", "y_scale", "z_scale"):
+                scale["xyz".index(lower[0])] = (
+                    int(words[1]),
+                    int(words[2]),
+                    float(words[3]),
+                )
+            elif lower in ("shear_x", "shear_y", "shear_z"):
+                shear["xyz".index(lower[-1])] = (
+                    int(words[1]),
+                    int(words[2]),
+                    float(words[3]),
+                    float(words[4]),
+                )
+            elif lower == "verts":
+                section = "verts"
+            elif lower == "delete_verts":
+                section = "delete"
+                if len(words) > 1:
+                    _delete_words(words[1:], deleted, path, number)
+            elif lower == "weights":
+                section = "weights"
+                ignored.add("weights")
+            else:
+                ignored.add(lower)
+    except (ValueError, IndexError) as error:
+        if isinstance(error, MhcloError):
+            raise
+        what = "a vertex binding" if section == "verts" else f"the line {line!r}"
+        raise MhcloError(
+            f"{path}, line {number}: {what} has a missing or malformed value "
+            f"({error}).",
+            "malformed_binding" if section == "verts" else "malformed_header",
+            "Correct the line as MakeHuman writes it, or export the asset again with "
+            "MakeClothes or MPFB2.",
+        ) from error
+    if not refs:
+        raise MhcloError(
+            f"{path}: no vertex bindings (a 'verts' section).",
+            "malformed_binding",
+            "Name a MakeHuman clothes file (.mhclo) with a 'verts' section.",
+        )
+    asset.refs = np.array(refs, np.int64)
+    asset.weights = np.array(weights, np.float64)
+    asset.offsets = np.array(offsets, np.float64)
+    asset.single = np.array(single, bool)
+    if all(s is not None for s in scale):
+        asset.scale = scale
+    elif any(s is not None for s in scale):
+        asset.notes.append(
+            "the file gives scale references for some axes only; unscaled"
+        )
+    if asset.scale is None and all(s is not None for s in shear):
+        asset.shear = shear
+    asset.delete_verts = np.array(sorted(deleted), np.int64)
+    ignored -= {"version", "max_pole", "special_pose"}
+    if ignored:
+        asset.notes.append(f"keys left out: {sorted(ignored)}")
+    return asset
+
+
+def _set_licence(asset: MhcloAsset, key: str, value: str) -> None:
+    value = value.strip()
+    if not value:
+        return
+    if key in ("license", "licence"):
+        asset.licence = value
+    else:
+        setattr(asset, key, value)
+
+
+def _delete_words(words, deleted: set, path, number) -> None:
+    items: list[str] = []
+    for word in words:  # "a - b", "a -b", "a- b" and "a-b"
+        items.extend(p for p in re.split(r"(-)", word) if p)
+    previous = None
+    pending = False
+    for item in items:
+        if item == "-":
+            pending = True
+            continue
+        try:
+            v = int(item)
+        except ValueError as error:
+            raise MhcloError(
+                f"{path}, line {number}: delete_verts holds numbers and ranges a - b; "
+                f"got {item!r}.",
+                "malformed_binding",
+                "Export the asset again with MakeClothes or MPFB2.",
+            ) from error
+        if pending and previous is not None:
+            deleted.update(range(min(previous, v), max(previous, v) + 1))
+        else:
+            deleted.add(v)
+        previous, pending = v, False
+
+
+# -- the licence gate -------------------------------------------------------------------
+
+
+def licence_name(text: str | None) -> str | None:
+    """The licence name of a header's licence text, without the words after it: a part in
+    brackets, a URL, ``see also ...`` or a clause after ``;`` (``AGPL3 (see also http://...)``
+    is ``AGPL3``), else None."""
+    if not text or not text.strip():
+        return None
+    name = re.split(
+        r"[(\[;]|https?://|www\.|\bsee\b|\s[-–—]\s", text, maxsplit=1, flags=re.I
+    )[0]
+    name = " ".join(name.split()).strip(" ,.:")
+    return name or None
+
+
+# GNU licences: (pattern of the short name, SPDX base, default version)
+_GNU = (
+    (r"agpl", "AGPL", "3.0"),
+    (r"lgpl", "LGPL", None),
+    (r"gpl", "GPL", None),
+)
+_GNU_VERSIONS = {
+    "AGPL": ("3.0",),
+    "LGPL": ("2.0", "2.1", "3.0"),
+    "GPL": ("1.0", "2.0", "3.0"),
+}
+_PLAIN_SPDX = {
+    "mit": "MIT",
+    "expat": "MIT",
+    "apache 2": "Apache-2.0",
+    "apache 2.0": "Apache-2.0",
+    "apache v2": "Apache-2.0",
+    "bsd 2 clause": "BSD-2-Clause",
+    "bsd 3 clause": "BSD-3-Clause",
+    "mpl 2": "MPL-2.0",
+    "mpl 2.0": "MPL-2.0",
+    "unlicense": "Unlicense",
+    "the unlicense": "Unlicense",
+    "wtfpl": "WTFPL",
+    "zlib": "Zlib",
+    "isc": "ISC",
+    "ofl": "OFL-1.1",
+    "ofl 1.1": "OFL-1.1",
+}
+_CC_VERSIONS = ("1.0", "2.0", "2.5", "3.0", "4.0")
+
+
+def spdx_of(text: str | None) -> str | None:
+    """
+    The SPDX id of a licence as a MakeHuman header or pack names it, else None. The text may
+    carry words after the name (:func:`licence_name`). ``CC0`` is CC0-1.0; ``CC-BY``,
+    ``CC BY 4.0`` and ``Creative Commons Attribution-ShareAlike 3.0`` are CC-BY-4.0 and
+    CC-BY-SA-3.0, where a CC licence without a version is 4.0 (MakeHuman's FAQ reads its
+    community's CC-BY as CC BY 4.0); ``AGPL3`` and ``AGPLv3`` are AGPL-3.0-only (``AGPL3+``
+    and ``or later`` give AGPL-3.0-or-later), and GPL and LGPL alike; ``MIT``, ``Apache
+    2.0``, ``BSD 3-Clause``, ``MPL 2.0``, ``Unlicense``, ``ISC``, ``Zlib``, ``OFL``.
+    """
+    name = licence_name(text)
+    if name is None:
+        return None
+    later = bool(re.search(r"\+|or[- ]later|or any later", text, re.I))
+    t = " ".join(name.lower().replace("_", " ").split())
+    t = re.sub(r"\b(licen[cs]e[sd]?|version|international|public)\b", " ", t)
+    t = t.replace("creative commons", "cc").replace("attribution", "by")
+    t = re.sub(r"share[- ]?alike", "sa", t)
+    t = re.sub(r"non[- ]?commercial", "nc", t)
+    t = re.sub(r"no[- ]?deriv(ative)?s?(atives)?", "nd", t)
+    t = t.replace("gnu ", "")
+    t = re.sub(r"\baffero (general|gpl)\b", "agpl", t)
+    t = re.sub(r"\b(lesser|library) (general|gpl)\b", "lgpl", t)
+    t = re.sub(r"\bgeneral\b", "gpl", t)
+    t = " ".join(t.replace("+", " ").replace(",", " ").split())
+    plain = t.replace("-", " ")
+    if plain in _PLAIN_SPDX:
+        return _PLAIN_SPDX[plain]
+    if re.fullmatch(r"cc[- ]?(0|zero)([- ]?(v?1(\.0)?|universal|pdd))*", t):
+        return "CC0-1.0"
+    m = re.fullmatch(r"cc[- ]?by((?:[- ](?:sa|nc|nd))*)(?:[- ]?v?(\d(?:\.\d)?))?", t)
+    if m:
+        parts = {x.upper() for x in re.split(r"[- ]", m.group(1)) if x}
+        version = m.group(2) or "4.0"
+        version = version if "." in version else version + ".0"
+        if version not in _CC_VERSIONS or ("SA" in parts and "ND" in parts):
+            return None
+        order = [p for p in ("NC", "SA", "ND") if p in parts]  # SPDX: BY-NC-SA, BY-ND
+        return "-".join(["CC-BY", *order, version])
+    for pattern, base, default in _GNU:
+        m = re.fullmatch(
+            pattern + r"[- ]?v?(\d(?:\.\d)?)?(?:[- ](?:only|or[- ]later))?", t
+        )
+        if m:
+            version = m.group(1) or default
+            if version is None:
+                return None
+            version = version if "." in version else version + ".0"
+            if version not in _GNU_VERSIONS[base]:
+                return None
+            return f"{base}-{version}-{'or-later' if later else 'only'}"
+    return None
+
+
+# -- the pack metadata -------------------------------------------------------------------
+
+# The fields of a pack JSON entry that the import reads.
+PACK_FIELDS = (
+    "description",
+    "author",
+    "source",
+    "original_author",
+    "original_source",
+    "category",
+    "license",
+)
+# The folder levels above the .mhclo file that the search for packs/*.json walks.
+PACK_SEARCH_LEVELS = 4
+
+
+@dataclasses.dataclass
+class PackEntry:
+    """An asset's entry in a pack JSON file (``packs/<pack>.json`` of a MakeHuman asset
+    pack, an object keyed by the item's folder name): ``file`` the JSON file, ``item`` the
+    key and ``fields`` the text values of :data:`PACK_FIELDS` that the entry gives."""
+
+    file: pathlib.Path
+    item: str
+    fields: dict
+
+    def get(self, key: str) -> str | None:
+        return self.fields.get(key)
+
+    def category_tags(self) -> list[str]:
+        """The pack's category as tags: ``Shirt/T-shirt/Sweater`` gives ``shirt``,
+        ``t-shirt`` and ``sweater``."""
+        text = self.get("category") or ""
+        return [
+            t for t in (" ".join(w.split()) for w in re.split(r"[/,;|]", text)) if t
+        ]
+
+
+def _pack_items(path: pathlib.Path) -> dict:
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise MhcloError(
+            f"{path}: {error.strerror or error}",
+            "file_not_found",
+            "Name an existing pack JSON file (packs/<pack>.json of the asset pack).",
+        ) from error
+    except ValueError as error:
+        raise MhcloError(
+            f"{path}: not a JSON file ({error}).",
+            "malformed_pack",
+            "Name the pack JSON file of the asset pack (packs/<pack>.json).",
+        ) from error
+    if not isinstance(data, dict):
+        raise MhcloError(
+            f"{path}: a pack JSON file holds an object keyed by item folder names.",
+            "malformed_pack",
+            "Name the pack JSON file of the asset pack (packs/<pack>.json).",
+        )
+    return data
+
+
+def _entry(path: pathlib.Path, items: dict, keys) -> PackEntry | None:
+    for key in keys:
+        value = items.get(key)
+        if isinstance(value, dict):
+            fields = {
+                k: " ".join(str(value[k]).split())
+                for k in PACK_FIELDS
+                if isinstance(value.get(k), (str, int, float)) and str(value[k]).strip()
+            }
+            return PackEntry(path, key, fields)
+    return None
+
+
+def pack_files(mhclo: pathlib.Path) -> list[pathlib.Path]:
+    """The pack JSON files of the asset pack that holds ``mhclo``: the ``packs/*.json``
+    files of the first folder above it that holds both ``clothes/`` and ``packs/``, within
+    :data:`PACK_SEARCH_LEVELS` levels."""
+    folder = pathlib.Path(mhclo).resolve().parent
+    for parent in [folder, *folder.parents][: PACK_SEARCH_LEVELS + 1]:
+        if (parent / "clothes").is_dir() and (parent / "packs").is_dir():
+            return sorted((parent / "packs").glob("*.json"))
+    return []
+
+
+def find_pack_entry(mhclo, pack_json=None) -> tuple[PackEntry | None, list[str]]:
+    """The entry of the asset ``mhclo`` in a pack JSON file, found by its folder name or
+    its file stem, and notes on what the search skipped. ``pack_json`` names the file;
+    without it, the search reads :func:`pack_files`. Returns (None, notes) without one."""
+    mhclo = pathlib.Path(mhclo)
+    keys = list(dict.fromkeys([mhclo.parent.name, mhclo.stem]))
+    if pack_json is not None:
+        path = pathlib.Path(pack_json)
+        entry = _entry(path, _pack_items(path), keys)
+        notes = [] if entry else [f"{path.name} lists none of {keys}"]
+        return entry, notes
+    notes = []
+    for path in pack_files(mhclo):
+        try:
+            items = _pack_items(path)
+        except MhcloError as error:
+            notes.append(f"pack file skipped: {error}")
+            continue
+        entry = _entry(path, items, keys)
+        if entry is not None:
+            return entry, notes
+    return None, notes
+
+
+def _same_licence(a: str | None, b: str | None) -> bool:
+    sa, sb = spdx_of(a), spdx_of(b)
+    if sa and sb:
+        return sa == sb
+    na, nb = licence_name(a), licence_name(b)
+    return (na or "").casefold() == (nb or "").casefold()
+
+
+def licence_block(
+    asset: MhcloAsset,
+    label: str,
+    *,
+    author: str | None = None,
+    source: str | None = None,
+    pack: PackEntry | None = None,
+) -> dict:
+    """
+    The licence block of a package from an asset's header and its pack entry, as found:
+    ``spdx`` (the SPDX id of :func:`spdx_of`, else None), ``declared`` (the licence name,
+    :func:`licence_name`), ``text`` (the licence text as written), ``author``, ``source``,
+    ``original_author``, ``original_source``, ``design_source``, ``pack`` (the pack entry's
+    licence and credits, apart from the file's) and an ``attribution`` line that the exports
+    carry, whatever the licence, when the block names a licence, an author or a source.
+
+    The file's licence comes first, and the pack's licence stands in for a file without
+    one. ``author`` replaces the header's and the pack's authors; else the line credits the
+    header's author and the pack's author when they differ. ``source`` replaces the pack
+    entry's source URL, which comes before the header's homepage. The tools record the
+    licence and write the credit; choosing assets and following their licences is the
+    user's responsibility.
+    """
+    pack_fields = pack.fields if pack is not None else {}
+    text = asset.licence or pack_fields.get("license")
+    declared = licence_name(text)
+    authors = [author] if author else [asset.author, pack_fields.get("author")]
+    authors = [a for a in dict.fromkeys(a for a in authors if a)]
+    source = source or pack_fields.get("source") or asset.homepage
+    original = pack_fields.get("original_author")
+    original_source = pack_fields.get("original_source")
+    name = asset.name or asset.path.stem
+    design = f"MakeHuman clothes asset '{name}'" + (
+        f" ({asset.uuid})" if asset.uuid else ""
+    )
+    block = {
+        "spdx": spdx_of(text),
+        "declared": declared,
+        "text": text,
+        "author": " and ".join(authors) or None,
+        "source": source,
+        "original_author": original,
+        "original_source": original_source,
+        "design_source": design,
+    }
+    if pack is not None:
+        entry = {
+            "file": pack.file.name,
+            "item": pack.item,
+            "spdx": spdx_of(pack_fields.get("license")),
+            "declared": licence_name(pack_fields.get("license")),
+            "text": pack_fields.get("license"),
+            "author": pack_fields.get("author"),
+            "source": pack_fields.get("source"),
+            "original_author": original,
+            "original_source": original_source,
+        }
+        block["pack"] = {k: v for k, v in entry.items() if v or k == "spdx"}
+    if declared or authors or source:
+        credit = f"'{label}'" + (f" by {block['author']}" if authors else "")
+        credit += f", {declared}" if declared else ""
+        credit += f", from {source}" if source else ""
+        if original and original not in authors:
+            credit += f"; original by {original}"
+            credit += f" ({original_source})" if original_source else ""
+        block["attribution"] = credit
+    return {k: v for k, v in block.items() if v or k == "spdx"}
+
+
+def licence_differs(asset: MhcloAsset, pack: PackEntry | None) -> bool:
+    """True when both the file and its pack entry name a licence and the two differ (by
+    SPDX id when both have one, else by name)."""
+    other = pack.get("license") if pack is not None else None
+    return bool(asset.licence and other) and not _same_licence(asset.licence, other)
+
+
+# -- the mesh and the material ----------------------------------------------------------
+
+
+@dataclasses.dataclass
+class ObjMesh:
+    """An ``.obj`` mesh: vertices (MakeHuman's frame), UVs (OBJ convention, v = 0 at the
+    bottom), and triangles as rows of (vertex, uv) index pairs (T, 3, 2); uv -1 for none."""
+
+    vertices: np.ndarray
+    uvs: np.ndarray
+    corners: np.ndarray
+    notes: list
+
+
+def read_obj(path) -> ObjMesh:
+    """Read the vertices, UVs and faces of an ``.obj`` file; polygons become triangle fans."""
+    path = pathlib.Path(path)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise MhcloError(
+            f"{path}: {error.strerror or error}",
+            "file_not_found",
+            "Keep the .obj file of the asset next to its .mhclo file.",
+        ) from error
+    vertices, uvs, corners = [], [], []
+    notes: list[str] = []
+    number = 0
+    try:
+        for number, line in enumerate(text.splitlines(), 1):
+            words = line.split()
+            if not words:
+                continue
+            if words[0] == "v":
+                vertices.append([float(w) for w in words[1:4]])
+                if len(vertices[-1]) != 3:
+                    raise ValueError("a vertex needs three coordinates")
+            elif words[0] == "vt":
+                uvs.append([float(w) for w in words[1:3]])
+                if len(uvs[-1]) != 2:
+                    raise ValueError("a UV needs two coordinates")
+            elif words[0] == "f":
+                face = []
+                for token in words[1:]:
+                    parts = token.split("/")
+                    v = int(parts[0])
+                    v = v - 1 if v > 0 else len(vertices) + v
+                    t = -1
+                    if len(parts) > 1 and parts[1]:
+                        t = int(parts[1])
+                        t = t - 1 if t > 0 else len(uvs) + t
+                    face.append((v, t))
+                for k in range(1, len(face) - 1):
+                    corners.append([face[0], face[k], face[k + 1]])
+    except (ValueError, IndexError) as error:
+        raise MhcloError(
+            f"{path}, line {number}: a malformed value ({error}).",
+            "malformed_obj",
+            "Export the mesh again as OBJ with vertices, UVs and faces.",
+        ) from error
+    if not corners:
+        raise MhcloError(
+            f"{path}: no faces.", "no_meshes", "Name the asset's mesh in obj_file."
+        )
+    return ObjMesh(
+        np.array(vertices, np.float64).reshape(-1, 3),
+        np.array(uvs, np.float64).reshape(-1, 2),
+        np.array(corners, np.int64),
+        notes,
+    )
+
+
+def _srgb_to_linear(c):
+    c = np.clip(np.asarray(c, dtype=np.float64), 0.0, 1.0)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def _image(path: pathlib.Path, quality, material: str, slot: str) -> bytes | None:
+    """PNG or JPEG bytes of a texture file (other formats become PNG), or None."""
+    label = dict(material=material, slot=slot)
+    try:
+        data = path.read_bytes()
+    except OSError:
+        quality.add(
+            "texture_missing",
+            "warning",
+            f"{material}: the {slot} texture {path.name} is missing; left out",
+            "Keep the textures next to the .mhmat file (or in its textures folder).",
+            **label,
+        )
+        return None
+    if data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff":
+        return data
+    try:
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.open(io.BytesIO(data)).save(out, format="PNG")
+    except Exception:  # noqa: BLE001 - any unreadable image is left out with an item
+        quality.add(
+            "texture_unreadable",
+            "warning",
+            f"{material}: the {slot} texture {path.name} is not a readable image; left out",
+            "Save the texture as PNG or JPEG.",
+            **label,
+        )
+        return None
+    quality.fix(
+        "texture_converted",
+        f"{material}: the {slot} texture {path.name} converted to PNG",
+        **label,
+    )
+    return out.getvalue()
+
+
+def _find_texture(folder: pathlib.Path, value: str) -> pathlib.Path:
+    path = pathlib.Path(value.replace("\\", "/"))
+    if path.is_absolute():
+        return path
+    for candidate in (
+        folder / path,
+        folder / path.name,
+        folder / "textures" / path.name,
+    ):
+        if candidate.is_file():
+            return candidate
+    return folder / path
+
+
+# The relief of a converted bump map: a texel one step from black to white rises this many
+# texel widths (before MakeHuman's bumpmapIntensity).
+DEFAULT_BUMP_STRENGTH = 2.0
+# The texture keys of a .mhmat file that become glTF slots; every other key that ends in
+# "Texture" is reported dropped. MakeHuman 1.x reads bumpmapTexture; packs write bumpTexture.
+TEXTURE_KEYS = {
+    "diffuseTexture": "base_color",
+    "normalmapTexture": "normal",
+    "aomapTexture": "occlusion",
+}
+BUMP_KEYS = ("bumpmapTexture", "bumpTexture")
+_DROPPED_WHY = {
+    "specularmapTexture": "the specular map",
+    "displacementmapTexture": "the displacement map",
+    "litsphereTexture": "the litsphere texture (MakeHuman's own shading)",
+}
+
+
+def bump_to_normal(data: bytes, strength: float = DEFAULT_BUMP_STRENGTH) -> bytes:
+    """
+    A tangent-space normal map (PNG, RGB) from a height map (grey; white is high): the
+    normal of the surface ``z = strength * h(x, y)`` in texel units, with ``h`` in [0, 1]
+    and the central differences wrapped at the borders (textures tile). The map follows
+    the OpenGL convention of glTF and MakeHuman: red points right (+u) and green up the
+    image (+v), so a rise to the right gives red below 128.
+    """
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(data))
+    if image.mode in ("I", "I;16", "I;16B", "I;16L", "F"):
+        h = np.asarray(image, dtype=np.float64)
+        top = 65535.0 if image.mode != "F" else max(float(h.max()), 1.0)
+        h = h / top
+    else:
+        h = np.asarray(image.convert("L"), dtype=np.float64) / 255.0
+    dx = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) / 2.0
+    d_up = (np.roll(h, 1, axis=0) - np.roll(h, -1, axis=0)) / 2.0  # rows run down
+    n = np.stack([-strength * dx, -strength * d_up, np.ones_like(h)], axis=-1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    rgb = np.clip(np.floor((n * 0.5 + 0.5) * 255.0 + 0.5), 0, 255).astype(np.uint8)
+    out = io.BytesIO()
+    Image.fromarray(rgb, "RGB").save(out, format="PNG")
+    return out.getvalue()
+
+
+ROUGHNESS_FORMULA = (
+    "roughnessFactor = clamp(1 - shininess, 0.04, 1), and 1 when specularColor is 0; a "
+    "'roughness' key of the .mhmat file wins"
+)
+
+
+def read_mhmat(
+    path, fallback_name: str, quality, bump_strength: float = DEFAULT_BUMP_STRENGTH
+) -> Material:
+    """
+    A glTF PBR material from a ``.mhmat`` file, with the mapping in ``quality``:
+    ``diffuseColor`` (sRGB, made linear) and ``diffuseTexture`` give the base colour,
+    ``opacity`` its alpha; ``shininess`` and ``specularColor`` give the roughness
+    (:data:`ROUGHNESS_FORMULA`), ``metallic`` the metallic factor;
+    ``transparencymapTexture`` becomes the alpha of the base colour texture; ``transparent``
+    gives BLEND, or MASK (cutoff 0.5) with ``alphaToCoverage`` or for an alpha map on an
+    opaque material; ``backfaceCull false`` gives a double-sided material;
+    ``normalmapTexture`` with ``normalmapIntensity`` the normal map, ``aomapTexture`` the
+    occlusion and ``emissiveColor`` the emission. A bump map (``bumpmapTexture``, or
+    ``bumpTexture`` as the packs write it) becomes the normal map (:func:`bump_to_normal`,
+    ``bump_strength`` times ``bumpmapIntensity``) when the material has no normal map and
+    ``shaderConfig bump`` is not false, as MakeHuman draws it; else it is dropped. Every
+    other texture key (specular, displacement and litsphere maps and any key that ends in
+    ``Texture``) has no glTF PBR slot and is dropped. Each dropped map has an item
+    (``map_dropped``). MakeHuman's material reader
+    (``shared/material.py``) ignores ``diffuseIntensity`` and ``specularIntensity`` as
+    deprecated keys and draws the colours as they are; the import does the same and reports
+    the keys with an item.
+    """
+    path = pathlib.Path(path) if path else None
+    if path is None or not path.is_file():
+        quality.add(
+            "material_missing",
+            "warning",
+            "the asset has no material file"
+            + (f" ({path.name} is missing)" if path is not None else "")
+            + "; a plain grey material",
+            "Keep the .mhmat file next to the .mhclo file.",
+        )
+        return Material(fallback_name)
+    folder = path.parent
+    values: dict[str, str] = {}
+    shader_config: dict[str, bool] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        words = line.split()
+        if not words or words[0].startswith("#") or words[0].startswith("//"):
+            continue
+        if words[0] == "shaderConfig" and len(words) >= 3:
+            shader_config[words[1]] = words[2].lower() in ("true", "1", "yes")
+            continue
+        values[words[0]] = " ".join(words[1:])
+
+    def flag(key, default=False):
+        value = values.get(key)
+        return (
+            default if value is None else value.strip().lower() in ("true", "1", "yes")
+        )
+
+    def number(key, default):
+        try:
+            return float(values[key].split()[0])
+        except (KeyError, ValueError, IndexError):
+            return default
+
+    def colour(key, default):
+        try:
+            rgb = [float(w) for w in values[key].split()[:3]]
+        except (KeyError, ValueError):
+            return default
+        return rgb if len(rgb) == 3 else default
+
+    name = values.get("name") or fallback_name
+    material = Material(name)
+    rgb = _srgb_to_linear(colour("diffuseColor", [1.0, 1.0, 1.0]))
+    alpha = float(np.clip(number("opacity", 1.0), 0.0, 1.0))
+    material.base_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]), alpha)
+    specular = np.asarray(colour("specularColor", [1.0, 1.0, 1.0]))
+    deprecated = [k for k in ("diffuseIntensity", "specularIntensity") if k in values]
+    if deprecated:
+        quality.add(
+            "deprecated_key",
+            "info",
+            f"{name}: {' and '.join(deprecated)} left out: MakeHuman ignores "
+            f"{'these deprecated keys' if len(deprecated) > 1 else 'this deprecated key'} "
+            "and draws the colours as they are",
+            "Set the colours with diffuseColor and specularColor.",
+            material=name,
+            count=len(deprecated),
+        )
+    if "roughness" in values:
+        material.roughness = float(np.clip(number("roughness", 0.8), 0.0, 1.0))
+    elif float(np.max(specular)) <= 0.0:
+        material.roughness = 1.0
+    else:
+        material.roughness = float(np.clip(1.0 - number("shininess", 0.2), 0.04, 1.0))
+    material.metallic = float(np.clip(number("metallic", 0.0), 0.0, 1.0))
+    quality.add(
+        "roughness_mapped",
+        "info",
+        f"{name}: roughnessFactor {material.roughness:.3f} ({ROUGHNESS_FORMULA})",
+        material=name,
+        value=round(material.roughness, 4),
+    )
+    material.emissive = tuple(
+        float(c) for c in _srgb_to_linear(colour("emissiveColor", [0, 0, 0]))
+    )
+    material.double_sided = not flag("backfaceCull", True)
+    if material.double_sided:
+        quality.add(
+            "double_sided",
+            "info",
+            f"{name}: backfaceCull false; the material is double-sided",
+            material=name,
+        )
+    transparent = flag("transparent") or alpha < 1.0
+    if transparent:
+        material.alpha_mode = "MASK" if flag("alphaToCoverage") else "BLEND"
+    textures = {}
+    for key, slot in TEXTURE_KEYS.items():
+        if values.get(key):
+            data = _image(_find_texture(folder, values[key]), quality, name, slot)
+            if data is not None:
+                textures[slot] = data
+    dropped: list[tuple[str, str]] = []  # (key, why)
+    for key in BUMP_KEYS:
+        if not values.get(key):
+            continue
+        file = pathlib.Path(values[key]).name
+        if values.get("normalmapTexture"):
+            dropped.append(
+                (
+                    key,
+                    f"the bump map ({file}) beside a normal map, which MakeHuman draws "
+                    "alone; dropped",
+                )
+            )
+        elif shader_config.get("bump") is False:
+            dropped.append(
+                (
+                    key,
+                    f"the bump map ({file}) is off (shaderConfig bump false); dropped",
+                )
+            )
+        elif "normal" in textures:
+            dropped.append((key, f"a second bump map ({file}); dropped"))
+        else:
+            data = _image(_find_texture(folder, values[key]), quality, name, "bump")
+            if data is None:
+                continue
+            intensity = float(np.clip(number("bumpmapIntensity", 1.0), 0.0, 1.0))
+            strength = round(float(bump_strength) * intensity, 6)
+            try:
+                textures["normal"] = bump_to_normal(data, strength)
+            except Exception:  # noqa: BLE001 - an unreadable map is reported, never raised
+                quality.add(
+                    "texture_unreadable",
+                    "warning",
+                    f"{name}: the bump map {file} is not a readable image; left out",
+                    "Save the bump map as a grey PNG.",
+                    material=name,
+                    slot=key,
+                )
+                continue
+            quality.fix(
+                "bump_converted",
+                f"{name}: the bump map {file} (a height map) became a tangent-space normal "
+                f"map, OpenGL convention, strength {strength:g} (a step from black to "
+                "white rises that many texels)",
+                "Pass --bump-strength to change the relief.",
+                material=name,
+                slot=key,
+                value=strength,
+            )
+    if values.get("transparencymapTexture"):
+        mask = _image(
+            _find_texture(folder, values["transparencymapTexture"]),
+            quality,
+            name,
+            "alpha",
+        )
+        if mask is not None:
+            textures["base_color"] = _with_alpha(textures.get("base_color"), mask)
+            quality.fix(
+                "alpha_map_merged",
+                f"{name}: the transparency map became the alpha of the base colour texture",
+                material=name,
+            )
+            if material.alpha_mode == "OPAQUE":
+                material.alpha_mode = "MASK"
+                quality.add(
+                    "alpha_map_on_opaque",
+                    "warning",
+                    f"{name}: the material is opaque and has a transparency map; written "
+                    f"as MASK with cutoff {material.alpha_cutoff}",
+                    "Set 'transparent True' in the .mhmat file for sheer cloth (BLEND).",
+                    material=name,
+                )
+    if material.alpha_mode != "OPAQUE":
+        quality.add(
+            "alpha_mode",
+            "info",
+            f"{name}: alphaMode {material.alpha_mode}"
+            + (
+                f", cutoff {material.alpha_cutoff}"
+                if material.alpha_mode == "MASK"
+                else ""
+            ),
+            material=name,
+        )
+    if "normal" in textures:
+        material.normal_scale = number("normalmapIntensity", 1.0)
+    used = {*TEXTURE_KEYS, *BUMP_KEYS, "transparencymapTexture"}
+    for key, value in values.items():
+        if key in used or not key.lower().endswith("texture") or not value:
+            continue
+        what = _DROPPED_WHY.get(key, f"the {key} map")
+        dropped.append(
+            (key, f"{what} ({pathlib.Path(value).name}) has no glTF PBR slot; dropped")
+        )
+    for key, why in dropped:
+        quality.add(
+            "map_dropped",
+            "info",
+            f"{name}: {why}",
+            "Bake it into the normal map or a metallic-roughness map.",
+            material=name,
+            slot=key,
+        )
+    material.textures = textures
+    return material
+
+
+def _with_alpha(base: bytes | None, mask: bytes) -> bytes:
+    """A PNG of the base colour texture (white without one) with the mask's grey as alpha."""
+    from PIL import Image
+
+    alpha = Image.open(io.BytesIO(mask)).convert("L")
+    if base is None:
+        rgb = Image.new("RGB", alpha.size, (255, 255, 255))
+    else:
+        rgb = Image.open(io.BytesIO(base)).convert("RGB")
+        if alpha.size != rgb.size:
+            alpha = alpha.resize(rgb.size)
+    rgb.putalpha(alpha)
+    out = io.BytesIO()
+    rgb.save(out, format="PNG")
+    return out.getvalue()
+
+
+# -- slot and binding -------------------------------------------------------------------
+
+
+def _singular(word: str) -> str | None:
+    """The singular of a plain English plural (hats, scarves), or None."""
+    if word.endswith("ves") and len(word) > 4:
+        return word[:-3] + "f"
+    if word.endswith("s") and len(word) > 3:
+        return word[:-1]
+    return None
+
+
+def infer_slot(name: str, tags) -> tuple[str | None, str | None]:
+    """(slot, reason) from the words of an asset's name and tags, or (None, None). A word of
+    :data:`SLOT_WORDS` (or its plural) names its slot; else the longest slot word inside a
+    compound word (``underpants``, ``hoodedjacket``), where a slot word of three letters
+    (``hat``, ``bra``) counts only at the end (``tophat``, ``sportsbra``)."""
+    words = []
+    for text in [name, *tags]:
+        for word in re.split(r"[\s_\-.,;/]+", str(text).lower()):
+            word = re.sub(r"\d+$", "", word)
+            if word and word not in _LOOSE_WORDS:
+                words.append(word)
+    table = {w: slot for slot, text in SLOT_WORDS.items() for w in text.split()}
+    for word in words:
+        for form in (word, _singular(word)):
+            if form in table:
+                return table[form], f"the word {word!r}"
+    for word in words:  # compound names such as casualsuit or tshirtlong
+        found = [
+            key
+            for key in table
+            if (len(key) >= 4 and key in word)
+            or (len(key) == 3 and word.endswith(key) and len(word) > 3)
+        ]
+        if found:
+            key = max(found, key=len)  # the first of the longest, in the table's order
+            return table[key], f"{key!r} in the word {word!r}"
+    for word in words:
+        if word in WEAK_SLOT_WORDS:
+            return WEAK_SLOT_WORDS[word], f"the word {word!r}"
+    return None, None
+
+
+def slot_of(asset: MhcloAsset, path, pack: PackEntry | None = None):
+    """(slot, reason) of an asset, or (None, the sources tried): from the words of its name
+    and tags (:func:`infer_slot`), else its folder name, its file stem and its pack's
+    category, in this order."""
+    path = pathlib.Path(path)
+    sources = [(asset.name or path.stem, asset.tags, None)]
+    sources.append((path.parent.name, [], "the folder name"))
+    sources.append((path.stem, [], "the file name"))
+    if pack is not None and pack.get("category"):
+        sources.append(("", pack.category_tags(), "the pack's category"))
+    for text, tags, where in sources:
+        slot, reason = infer_slot(text, tags)
+        if slot is not None:
+            return slot, reason if where is None else f"{reason} of {where}"
+    tried = [f"the name {asset.name or path.stem!r}", f"the tags {asset.tags}"]
+    tried += [f"the folder name {path.parent.name!r}", f"the file name {path.stem!r}"]
+    if pack is not None and pack.get("category"):
+        tried.append(f"the pack's category {pack.get('category')!r}")
+    return None, ", ".join(tried)
+
+
+def evaluate_binding(asset: MhcloAsset, h: np.ndarray) -> np.ndarray:
+    """(V, 3) the garment vertices on base-mesh vertices ``h`` (19158, 3) in MakeHuman's
+    frame (decimetres, Y up)."""
+    S = np.eye(3)
+    if asset.scale is not None:
+        for n, (v1, v2, length) in enumerate(asset.scale):
+            S[n, n] = abs(h[v1, n] - h[v2, n]) / length
+    elif asset.shear is not None:
+        for n, (v1, v2, x1, x2) in enumerate(asset.shear):
+            S[n, n] = (h[v2, n] - h[v1, n]) / (x2 - x1)
+    points = np.einsum("vk,vkd->vd", asset.weights, h[asset.refs])
+    return points + asset.offsets @ S.T
+
+
+def referenced(asset: MhcloAsset) -> np.ndarray:
+    """The base-mesh vertices that the binding and its scale references use."""
+    rows = [asset.refs.reshape(-1)]
+    for entry in (asset.scale or []) + (asset.shear or []):
+        rows.append(np.array(entry[:2], np.int64))
+    return np.unique(np.concatenate(rows))
+
+
+def garment_from(
+    asset: MhcloAsset, mesh: ObjMesh, vertices: np.ndarray, material: Material
+) -> tuple[Garment, np.ndarray]:
+    """The garment with one vertex per (obj vertex, UV) pair, the normals of the welded
+    mesh (so that UV seams stay smooth) and one group named by the material; returns the
+    obj vertex of each garment vertex too."""
+    from opensculptboy.wearables.geometry import vertex_normals
+
+    welded = mesh.corners[..., 0]
+    normals = vertex_normals(vertices, welded)
+    pairs = mesh.corners.reshape(-1, 2)
+    unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
+    triangles = np.asarray(inverse).reshape(-1, 3)
+    source = unique[:, 0]
+    uvs = None
+    if (unique[:, 1] >= 0).any():
+        uv = np.zeros((len(unique), 2))
+        ok = unique[:, 1] >= 0
+        uv[ok] = mesh.uvs[unique[ok, 1]]
+        uvs = np.column_stack([uv[:, 0], 1.0 - uv[:, 1]])  # glTF: v = 0 at the top
+    garment = Garment(
+        vertices[source],
+        triangles,
+        normals=normals[source],
+        uvs=uvs,
+        materials=[material],
+        groups=[material.name],
+    )
+    return garment, source
+
+
+def import_mhclo(
+    path,
+    body,
+    character,
+    model,
+    *,
+    slot: str | None = None,
+    layer: int | None = None,
+    name: str | None = None,
+    label: str | None = None,
+    tags=(),
+    description: str | None = None,
+    author: str | None = None,
+    source: str | None = None,
+    covers: str = "auto",
+    hides=(),
+    max_distance: float | None = None,
+    texture_limit: int | None = None,
+    normal_green: str = "auto",
+    accept_quality: bool = False,
+    pack_json=None,
+    bump_strength: float | None = None,
+) -> tuple[object, dict]:
+    """
+    A wearable package from a MakeHuman clothes asset, bound to ``body`` (the
+    :class:`~opensculptboy.wearables.bind.BodySurface` of ``character`` and ``model``).
+
+    ``covers``: ``auto`` takes the skin under ``delete_verts`` when the file lists any, else
+    the ray test of ``wearables bind``; ``ray`` always the ray test; ``none`` no covered skin.
+    ``pack_json`` names the pack JSON file of the asset pack; without it the import looks for
+    one (:func:`find_pack_entry`). The pack entry gives the description (``description``
+    replaces it), the author, the source URL, the original author and source, the category
+    as tags and the pack's licence, recorded apart from the file's (``licence.pack``).
+    ``bump_strength`` sets the relief of a converted bump map (:data:`DEFAULT_BUMP_STRENGTH`).
+    The garment goes through :func:`opensculptboy.wearables.quality.check_garment`
+    (``texture_limit``, ``normal_green``); an error-severity item raises
+    :class:`~opensculptboy.wearables.quality.QualityError` unless ``accept_quality``.
+    Returns the checked package and a report.
+    """
+    from opensculptboy.wearables.basemesh import (
+        MH_TO_ANNY,
+        base_groups,
+        base_mesh_vertices,
+        rows_of_base,
+    )
+    from opensculptboy.wearables.make import MAX_DISTANCE, bind_garment, clean_tags
+    from opensculptboy.wearables.quality import (
+        TEXTURE_LIMIT,
+        Quality,
+        check_garment,
+        require,
+        strip_textures_without_uvs,
+    )
+
+    if covers not in IMPORT_COVERS:
+        raise MhcloError(
+            f"covers must be one of {IMPORT_COVERS}.",
+            "bad_option",
+            f"Use --covers {' or '.join(IMPORT_COVERS)}.",
+        )
+    asset = read_mhclo(path)
+    warnings = list(asset.notes)
+    quality = Quality()
+    stem = pathlib.Path(path).stem
+    name = (
+        name or re.sub(r"[^A-Za-z0-9_.-]+", "_", asset.name or stem).strip("_") or stem
+    )
+    label = label or (asset.name or name).replace("_", " ")
+    pack, pack_notes = find_pack_entry(path, pack_json)
+    warnings += pack_notes
+    if pack_json is not None and pack is None:
+        quality.add(
+            "pack_item_missing",
+            "warning",
+            f"{pathlib.Path(pack_json).name} lists neither the folder name nor the file "
+            f"stem of {pathlib.Path(path).name}; the pack's metadata is left out",
+            "Name the pack JSON file that lists the asset, or leave out --pack-json.",
+        )
+    licence = licence_block(asset, label, author=author, source=source, pack=pack)
+    if licence_differs(asset, pack):
+        quality.add(
+            "licence_mismatch",
+            "info",
+            f"the file's licence {licence_name(asset.licence)!r} and the pack's "
+            f"{licence_name(pack.get('license'))!r} differ; both are recorded (licence and "
+            "licence.pack)",
+            "Check both licences; the package credits the file's licence.",
+        )
+    provenance = PUBLIC
+    if asset.basemesh and asset.basemesh.lower() not in ("hm08",):
+        raise MhcloError(
+            f"{path}: the asset binds to the base mesh {asset.basemesh!r}; Anny's template "
+            "is MakeHuman's hm08.",
+            "unknown_basemesh",
+            "Choose an asset made for MakeHuman's default base mesh (hm08).",
+        )
+    count = 19158
+    bad = (asset.refs < 0) | (asset.refs >= count)
+    references = [e[:2] for e in (asset.scale or []) + (asset.shear or [])]
+    if bad.any() or any(not 0 <= v < count for e in references for v in e):
+        raise MhcloError(
+            f"{path}: the binding names base-mesh vertices outside 0..{count - 1}.",
+            "unknown_basemesh",
+            "Choose an asset made for MakeHuman's default base mesh (hm08).",
+        )
+    spans = [e[2] for e in asset.scale or []] + [e[3] - e[2] for e in asset.shear or []]
+    if any(not np.isfinite(s) or s == 0 for s in spans):
+        raise MhcloError(
+            f"{path}: a scale or shear reference has a length of 0.",
+            "malformed_header",
+            "Export the asset again with MakeClothes or MPFB2.",
+        )
+    if slot is None:
+        slot, reason = slot_of(asset, path, pack)
+        if slot is None:
+            raise MhcloError(
+                f"{path}: no slot from {reason}.",
+                "unknown_slot",
+                f"Pass --slot with one of {', '.join(SLOTS)}.",
+            )
+    else:
+        reason = "--slot"
+        if slot not in SLOTS:
+            raise MhcloError(
+                f"Unknown slot {slot!r}.",
+                "unknown_slot",
+                f"Use one of {', '.join(SLOTS)}.",
+            )
+    if layer is None:
+        if asset.z_depth is None:
+            warnings.append(f"no z_depth; layer {DEFAULT_LAYER}, as MakeHuman uses")
+            layer = DEFAULT_LAYER
+        else:
+            layer = int(np.clip(asset.z_depth, 0, 100))
+    if asset.obj_file is None:
+        asset.obj_file = pathlib.Path(path).with_suffix(".obj")
+    mesh = read_obj(asset.obj_file)
+    if len(mesh.vertices) != len(asset.refs):
+        raise MhcloError(
+            f"{path}: the binding holds {len(asset.refs)} vertices and "
+            f"{asset.obj_file.name} {len(mesh.vertices)}.",
+            "binding_mismatch",
+            "Keep the .obj file that the .mhclo file was made with.",
+        )
+    v, t = mesh.corners[..., 0], mesh.corners[..., 1]
+    if (
+        (v < 0).any()
+        or (v >= len(mesh.vertices)).any()
+        or (t < -1).any()
+        or (t >= len(mesh.uvs)).any()
+    ):
+        raise MhcloError(
+            f"{asset.obj_file}: a face names a vertex or a UV that does not exist.",
+            "binding_mismatch",
+            "Export the mesh again.",
+        )
+    if bump_strength is None:
+        bump_strength = DEFAULT_BUMP_STRENGTH
+    if not np.isfinite(bump_strength) or bump_strength <= 0:
+        raise MhcloError(
+            f"The bump strength must be above 0; got {bump_strength}.",
+            "bad_option",
+            "Pass --bump-strength with a number above 0, for example 2.",
+        )
+    material = read_mhmat(asset.material, name, quality, bump_strength)
+    converted = [i for i in quality.items if i.code == "bump_converted"]
+    if converted and normal_green == "flip":
+        normal_green = "auto"  # the converted map is OpenGL; flip acts on a file's map
+    # the binding on the binding body, in MakeHuman's frame
+    needed = referenced(asset)
+    to_mh = np.linalg.inv(MH_TO_ANNY)
+    h_anny, from_targets = base_mesh_vertices(character, model, body, needed)
+    h = h_anny @ to_mh.T
+    vertices = evaluate_binding(asset, h) @ MH_TO_ANNY.T
+    # the binding on the base mesh itself, against the .obj vertices (a check of the file)
+    rows = rows_of_base(model, len(body.vertices))
+    template = np.full((count, 3), np.nan)
+    present = rows >= 0
+    template[present] = (
+        model.template_vertices.detach().cpu().double().numpy()[rows[present]]
+    )
+    missing = np.intersect1d(np.flatnonzero(~present), needed)
+    if len(missing):
+        template[missing] = _template_rows(missing)
+    on_base = evaluate_binding(asset, template @ to_mh.T)
+    # The .obj may lie away from the place its binding gives: MakeClothes 2 exports the
+    # human standing on the ground, about 8 dm above base.obj's feet. The offset is the mean
+    # translation, and the fits compare the shapes with it taken out, on base.obj and on
+    # the binding body (the human that MakeClothes 2 models on is the default one).
+    shift = (mesh.vertices - on_base).mean(axis=0)
+    source_fit = np.linalg.norm(on_base + shift - mesh.vertices, axis=1) * 100.0  # mm
+    on_body = vertices @ to_mh.T
+    body_shift = (mesh.vertices - on_body).mean(axis=0)
+    body_fit = np.linalg.norm(on_body + body_shift - mesh.vertices, axis=1) * 100.0
+    source_offset = shift @ MH_TO_ANNY.T * 1000.0  # Anny's frame, mm
+    if float(np.linalg.norm(source_offset)) > SOURCE_OFFSET_MM:
+        quality.add(
+            "source_offset",
+            "info",
+            f"the .obj lies {np.linalg.norm(source_offset):.0f} mm from the place its "
+            f"binding gives on base.obj (x, y, z: {np.round(source_offset).tolist()} mm, "
+            "as MakeClothes 2 exports a human on the ground); the binding places the garment",
+            value=round(float(np.linalg.norm(source_offset)), 1),
+        )
+    garment, _ = garment_from(asset, mesh, vertices, material)
+    garment, _, quality = check_garment(
+        garment,
+        body=body,
+        normals_from_file=False,
+        texture_limit=TEXTURE_LIMIT if texture_limit is None else texture_limit,
+        normal_green=normal_green,
+        quality=quality,
+    )
+    require(quality, accept_quality)
+    strip_textures_without_uvs(garment, quality)
+    # covered skin
+    fixed = None
+    deleted_outside = 0
+    if covers == "auto" and len(asset.delete_verts):
+        valid = asset.delete_verts[
+            (asset.delete_verts >= 0) & (asset.delete_verts < count)
+        ]
+        anny_rows = rows[valid]
+        deleted_outside = int((anny_rows < 0).sum())
+        fixed = np.zeros(len(body.vertices), bool)
+        fixed[anny_rows[anny_rows >= 0]] = True
+    groups = base_groups()
+    used = np.unique(asset.refs[asset.weights != 0])
+    helpers = {
+        group: int(np.isin(asset.refs, members).any(axis=1).sum())
+        for group, members in sorted(groups.items())
+        if group.startswith("helper-") and np.isin(used, members).any()
+    }
+    target_vertices = int(from_targets[asset.refs].any(axis=1).sum())
+    pack_tags = pack.category_tags() if pack is not None else []
+    all_tags = clean_tags([*asset.tags, *pack_tags, *tags])
+    text = description
+    if text is None:
+        text = (pack.get("description") if pack else None) or asset.description or ""
+    if not text:
+        text = f"{label}, a MakeHuman clothes asset" + (
+            f" by {licence['author']}" if licence.get("author") else ""
+        )
+    wearable, report = bind_garment(
+        garment,
+        body,
+        name,
+        slot,
+        layer,
+        label=label,
+        covers="none" if covers == "none" else "auto",
+        fixed_covers=fixed,
+        hides=hides,
+        licence=licence,
+        provenance=provenance,
+        body_kind="anny-template",
+        max_distance=MAX_DISTANCE if max_distance is None else max_distance,
+        extras={
+            "source": "opensculptboy wearables import-mhclo",
+            "mhclo": {
+                "file": pathlib.Path(path).name,
+                "name": asset.name,
+                "uuid": asset.uuid,
+                "declared_licence": asset.licence,
+                "z_depth": asset.z_depth,
+                **({"bump_strength": converted[0].value} if converted else {}),
+                **(
+                    {"pack": {"file": pack.file.name, "item": pack.item}}
+                    if pack is not None
+                    else {}
+                ),
+            },
+        },
+        tags=all_tags,
+        description=text,
+        warnings=warnings,
+        source=str(path),
+    )
+    report.update(
+        {
+            "licence": dict(wearable.licence),
+            "provenance": provenance,
+            "slot_from": reason,
+            "pack": None
+            if pack is None
+            else {"file": str(pack.file), "item": pack.item, **pack.fields},
+            "mhclo": {
+                "name": asset.name,
+                "uuid": asset.uuid,
+                "declared_licence": asset.licence,
+                "z_depth": asset.z_depth,
+                "obj_vertices": int(len(mesh.vertices)),
+                "single_bindings": int(asset.single.sum()),
+                "scale": "scale"
+                if asset.scale
+                else ("shear" if asset.shear else "none"),
+                "delete_verts": int(len(asset.delete_verts)),
+                "delete_verts_outside_anny": deleted_outside,
+                "helper_bound_vertices": helpers,
+                "target_evaluated_vertices": target_vertices,
+                "source_offset_mm": [round(float(c), 1) for c in source_offset],
+                "source_fit_mm_median": round(float(np.median(source_fit)), 3),
+                "source_fit_mm_max": round(float(source_fit.max()), 3),
+                "source_fit_body_mm_median": round(float(np.median(body_fit)), 3),
+                "source_fit_body_mm_max": round(float(body_fit.max()), 3),
+            },
+            "covers_from": "none"
+            if covers == "none"
+            else ("delete_verts" if fixed is not None else "ray"),
+            "quality": quality.to_dict(),
+        }
+    )
+    return wearable, report
+
+
+def _template_rows(rows) -> np.ndarray:
+    """The base-mesh vertices ``rows`` of ``base.obj`` in Anny's frame."""
+    from opensculptboy.wearables.basemesh import _full_targets
+
+    return _full_targets(tuple(int(r) for r in rows))[0]
