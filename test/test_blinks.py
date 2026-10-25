@@ -492,6 +492,44 @@ class TestBlinkFiles(unittest.TestCase):
                     [n for n in eyes.names if n.endswith(B.INBETWEEN_SUFFIX)]
                 )
 
+    def test_vrm_lashes_need_an_unturned_head(self):
+        # the blink targets' lash offsets go into the T-pose targets in the rest frame:
+        # the rebind leaves the lid margins unturned on anny's default character, and a
+        # turn of the head refuses the export
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from opensculptboy.export import vrm
+
+        turns = []
+        check = vrm.check_lash_rebind
+
+        def measured(linear, eyed):
+            turns.append(vrm.lash_rebind_turn(linear, eyed))
+            return check(linear, eyed)
+
+        with mock.patch.object(vrm, "check_lash_rebind", measured):
+            vrm.export_vrm(
+                pathlib.Path(_TMP.name) / "rebind.vrm",
+                CARD,
+                author="OpenSculptBoy tests",
+            )
+        self.assertEqual(len(turns), 1)
+        self.assertLess(turns[0], 1e-3)
+        # a stand-in mesh whose lashes follow rows 0 to 9, under a rebind that turns them
+        follow = SimpleNamespace(rows=np.arange(10))
+        eyed = SimpleNamespace(parts=[SimpleNamespace(name="lashes", follow=follow)])
+        linear = np.tile(np.eye(3), (20, 1, 1))
+        vrm.check_lash_rebind(linear, eyed)
+        vrm.check_lash_rebind(None, eyed)
+        linear[3] = _rotation(np.array([1.0, 0.0, 0.0]), np.radians(2.0))
+        self.assertAlmostEqual(vrm.lash_rebind_turn(linear, eyed), 2.0, places=6)
+        with self.assertRaisesRegex(ValueError, "turns the head by 2.000 degrees"):
+            vrm.check_lash_rebind(linear, eyed)
+        linear[3] = np.eye(3)
+        linear[15] = _rotation(np.array([1.0, 0.0, 0.0]), np.radians(2.0))
+        vrm.check_lash_rebind(linear, eyed)  # a row the lashes do not follow
+
     def test_cards_without_eyes_keep_anny_blink(self):
         # the blink shaping comes with the eyes; other cards export as before
         path = pathlib.Path(_TMP.name) / "plain.glb"
