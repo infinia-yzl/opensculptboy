@@ -267,7 +267,7 @@ export class Wardrobe {
     timing['body index'] = performance.now() - t;
     t = performance.now();
     this.pieces = pieces; this.cover = cover;
-    this.upload();
+    this.upload(true);
     this.setBodyIndex(index);
     timing.upload = performance.now() - t;
     return timing;
@@ -279,7 +279,8 @@ export class Wardrobe {
   private cover: Uint8Array | null = null;
 
   // ---------------------------------------------------------------- meshes
-  private upload() {
+  // the dressed pieces into their meshes; `settled` also renews the tangents of the normal maps for the new body
+  private upload(settled = false) {
     const keep = new Set(this.pieces.map((p) => p.ref));
     for (const [ref, m] of this.meshes) {
       if (m.wearable !== this.packages.get(ref)) this.dropMesh(ref);
@@ -291,6 +292,10 @@ export class Wardrobe {
       const at = m.geo.attributes as any;
       at.position.array.set(p.vertices); at.position.needsUpdate = true;
       at.normal.array.set(p.normals); at.normal.needsUpdate = true;
+      if (settled && at.gTangent) {
+        const g = p.wearable.garment;
+        at.gTangent.array.set(tangents(p.vertices, p.normals, g.uvs!, g.triangles)); at.gTangent.needsUpdate = true;
+      }
       if (m.weights !== p.weights) {   // the same weights after a slider edit (DressCache)
         at.skinIndex.array.set(p.joints); at.skinIndex.needsUpdate = true;
         at.skinWeight.array.set(p.weights); at.skinWeight.needsUpdate = true;
