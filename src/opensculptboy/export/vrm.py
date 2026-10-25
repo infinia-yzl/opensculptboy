@@ -2004,12 +2004,28 @@ def write_vrm(spec: VrmSpec, path: str | pathlib.Path, budget: str = "warn") -> 
     """
     if budget not in budgets.MODES:
         raise ValueError(f"Unknown budget mode {budget!r}; use one of {budgets.MODES}.")
+    from opensculptboy.export.pieces import piece_report, report_lines
+
+    pieces = piece_report(spec)
     doc = vrm_document(spec)
     target = "vrm1" if spec.version == "1.0" else "vrm0"
     found = budgets.counts(doc.to_json(), bytes(doc.buffers.data))
-    messages = budgets.check(found, target, budget)
+    try:
+        messages = budgets.check(found, target, budget)
+    except budgets.BudgetError as error:
+        raise budgets.BudgetError(
+            f"{error} --fit-budget reduces the pieces and merges their materials. The "
+            "pieces: " + "; ".join(report_lines(pieces)) + "."
+        ) from None
     for message in messages:
         warnings.warn(message, budgets.BudgetWarning, stacklevel=2)
+    if messages:
+        warnings.warn(
+            "the pieces of the file (--fit-budget reduces them): "
+            + "; ".join(report_lines(pieces)),
+            budgets.BudgetWarning,
+            stacklevel=2,
+        )
     doc.scene_extras["opensculptboy"]["budget"] = {
         "target": target,
         "mode": budget,
@@ -2034,6 +2050,7 @@ def write_vrm(spec: VrmSpec, path: str | pathlib.Path, budget: str = "warn") -> 
         ),
         counts=found,
         budget=messages,
+        pieces=pieces,
     )
 
 
@@ -2059,6 +2076,7 @@ def export_vrm(
     detail_region: str | None = None,
     tier: dict | None = None,
     dressing=None,
+    fit_budget=None,
 ) -> dict:
     """
     Write a character as a VRM file.
@@ -2120,9 +2138,15 @@ def export_vrm(
             skin weights at its bound points and an MToon material, and the covered body
             triangles leave the file unless ``dressing.covered`` is ``"keep"``. None dresses
             a card with wardrobe fields in its active outfit (none with ``bare``).
+        fit_budget: None or False writes the file as it comes; True or a
+            :class:`~opensculptboy.export.fit_budget.FitOptions` fits it into the budget of
+            its version first (:func:`~opensculptboy.export.fit_budget.fit_spec`: the pieces
+            reduced, their normal maps baked again, their materials merged into atlases and
+            the textures shrunk), and the summary gives what it did under ``fit``.
 
     Returns:
-        A summary: counts, the file size, the version and the budget messages.
+        A summary: counts, the file size, the version, the budget messages and the pieces
+        (:func:`~opensculptboy.export.pieces.piece_report`).
 
     Raises:
         ValueError: for a character, an option, metadata or a thumbnail that a VRM file
@@ -2156,7 +2180,15 @@ def export_vrm(
         tier=tier,
         dressing=dressing,
     )
+    fit = None
+    if fit_budget:
+        from opensculptboy.export.fit_budget import FitOptions, fit_spec
+
+        options = fit_budget if isinstance(fit_budget, FitOptions) else FitOptions()
+        fit = fit_spec(spec, options)
     summary = write_vrm(spec, path, budget=budget)
+    if fit is not None:
+        summary["fit"] = fit
     if "wearables" in spec.extras:
         summary["wearables"] = [
             p["ref"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
