@@ -13,9 +13,11 @@ vertex lay outside them on the body that the piece was bound on, whichever is le
 piece keeps the relations it was made with (a strap that sinks into a coat on the binding
 body sinks into it on every body), and a tight piece never sinks into a heavier body. A
 relation to a lower piece counts only where the two pieces were made together
-(:func:`made_together`); a lower piece made apart takes the full gap. A
-Laplacian fade spreads each push over two rings of the neighbouring vertices, and a final
-pass makes every vertex meet its target again.
+(:func:`made_together`); a lower piece made apart takes the full gap. The push also
+moves the triangles of a piece over the vertices of a lower piece, by the same targets
+along each lower vertex's normal, so that a lower piece denser than the piece over it
+shows through none of its triangles. A Laplacian fade spreads each push over two rings of
+the neighbouring vertices, and a final pass makes every vertex meet its target again.
 """
 
 from __future__ import annotations
@@ -26,12 +28,19 @@ import numpy as np
 
 from opensculptboy.wearables.bind import BodySurface, body_weights, evaluate
 from opensculptboy.wearables.format import Garment, Wearable
-from opensculptboy.wearables.geometry import Surface, adjacency, vertex_normals
+from opensculptboy.wearables.geometry import (
+    Surface,
+    adjacency,
+    line_partners,
+    unit_rows,
+    vertex_normals,
+)
 
 GAP = 0.001  # metres between a piece and what lies under it
 DEPTH = 0.03  # metres: a vertex deeper inside a surface than this is left alone
 PUSH_ROUNDS = 3
 FADE_RINGS = 2
+REACH = 0.03  # metres: the line from a lower piece's point to the piece over it
 
 
 def anny_count(model) -> int:
@@ -177,6 +186,19 @@ def _fade(displacement: np.ndarray, moved: np.ndarray, triangles: np.ndarray):
     return out
 
 
+def _outward(
+    body: BodySurface, vertices: np.ndarray, normals: np.ndarray
+) -> np.ndarray:
+    """The unit ``normals`` of a piece's ``vertices`` turned away from the body where they
+    face it (the body's normal at the closest point decides)."""
+    found = body.surface.closest(vertices)
+    skin = body.surface.normal(found.triangle, found.barycentric)
+    normals = unit_rows(np.asarray(normals, dtype=np.float64))
+    return (
+        normals * np.where(np.einsum("ij,ij->i", normals, skin) < 0, -1.0, 1.0)[:, None]
+    )
+
+
 def made_together(upper: Wearable, lower: Wearable) -> bool:
     """Whether two packages were made as one set, so that the relation between them on
     their binding body is part of their design: both are bound on the same body, and that
@@ -223,17 +245,62 @@ def _rest_on(wearable: Wearable, home: BodySurface, body: BodySurface):
     return None
 
 
+def _cover_points(vertices, triangles, points, directions, targets):
+    """Move the triangles of a piece so that each point lies under its partner (the point
+    of the triangles on the line along the point's direction, ahead first; found once)
+    by at least its target (metres along the direction): the corners of each partner's
+    triangle move along the direction by their barycentric share, the largest move of
+    each corner wins. Returns the moves (V, 3)."""
+    hit, triangle, barycentric, _ = line_partners(
+        points, directions, vertices, triangles, REACH
+    )
+    rows = np.flatnonzero(hit)
+    corners = triangles[triangle[rows]]
+    barycentric = barycentric[rows]
+    directions = directions[rows]
+    points = points[rows]
+    targets = targets[rows]
+
+    def moves(current):
+        foot = np.einsum("nk,nkj->nj", barycentric, current[corners])
+        along = np.einsum("ij,ij->i", foot - points, directions)
+        need = targets - along
+        bad = (need > 1e-7) & (along > -DEPTH)
+        out = np.zeros_like(current)
+        if not bad.any():
+            return out
+        amount = need[bad] / np.maximum((barycentric[bad] ** 2).sum(axis=1), 1e-12)
+        size = np.zeros(len(current))
+        way = np.zeros_like(current)
+        for i in range(3):
+            share = barycentric[bad, i] * amount
+            np.maximum.at(size, corners[bad, i], share)
+            np.add.at(way, corners[bad, i], share[:, None] * directions[bad])
+        moving = size > 0
+        out[moving] = size[moving, None] * unit_rows(way[moving])
+        return out
+
+    return moves
+
+
 def _push(
     vertices: np.ndarray,
     normals: np.ndarray,
     triangles: np.ndarray,
     colliders: list[Surface],
     targets: list[np.ndarray],
+    covered: list = (),
 ) -> tuple[np.ndarray, np.ndarray, int, float]:
     """Move vertices outside the colliders by at least their targets (signed metres along
-    each collider's normal at the closest point)."""
+    each collider's normal at the closest point), and move triangles over the points of
+    ``covered`` ((points, outward directions, targets) of each lower piece), so that a
+    lower piece denser than this one shows through none of its triangles."""
     start = vertices.copy()
     moved = np.zeros(len(vertices), bool)
+    movers = [
+        _cover_points(vertices, triangles, points, directions, target)
+        for points, directions, target in covered
+    ]
     for final in [False] * PUSH_ROUNDS + [True]:
         for surface, target in zip(colliders, targets):
             signed, found, n = surface.signed_distance(vertices)
@@ -241,6 +308,12 @@ def _push(
             if bad.any():
                 vertices[bad] += (target - signed)[bad, None] * n[bad]
                 moved |= bad
+        for mover in movers:
+            step = mover(vertices)
+            some = np.abs(step).sum(axis=1) > 0
+            if some.any():
+                vertices = vertices + step
+                moved |= some
         if not final:
             vertices = start + _fade(vertices - start, moved, triangles)
     shift = np.linalg.norm(vertices - start, axis=1)
@@ -313,6 +386,7 @@ def dress(
             colliders = [body.surface]
             home_vertices = evaluate(wearable.binding, home)[0]
             targets = [np.minimum(home.surface.signed_distance(home_vertices)[0], gap)]
+            covered = []
             for layer, lower in placed:
                 if layer >= int(wearable.layer):
                     continue
@@ -320,16 +394,37 @@ def dress(
                 if len(tris) == 0:
                     continue
                 colliders.append(Surface(lower.vertices, tris, lower.normals))
+                rows = np.unique(tris)
+                points = lower.vertices[rows]
+                directions = _outward(
+                    body, lower.vertices, vertex_normals(lower.vertices, tris)
+                )
                 lower_home = None
                 if made_together(wearable, lower.wearable):
                     lower_home = _rest_on(lower.wearable, home, body)
                 if lower_home is None:  # the relation as made is unknown
                     targets.append(np.full(len(home_vertices), gap))
+                    covered.append((points, directions[rows], np.full(len(rows), gap)))
                     continue
                 then = Surface(lower_home[0], tris, lower_home[1])
                 targets.append(np.minimum(then.signed_distance(home_vertices)[0], gap))
+                # the relation as made of the lower piece's points under this piece
+                home_points = lower_home[0][rows]
+                home_directions = _outward(
+                    home, lower_home[0], vertex_normals(lower_home[0], tris)
+                )[rows]
+                hit, _, _, along = line_partners(
+                    home_points, home_directions, home_vertices, triangles, REACH
+                )
+                covered.append(
+                    (
+                        points,
+                        directions[rows],
+                        np.where(hit, np.minimum(along, gap), -np.inf),
+                    )
+                )
             vertices, normals, pushed, push_mm = _push(
-                vertices, normals, triangles, colliders, targets
+                vertices, normals, triangles, colliders, targets, covered
             )
             push_mm *= 1000.0
         weights, joints = body_weights(wearable.binding, weight_body, max_influences)

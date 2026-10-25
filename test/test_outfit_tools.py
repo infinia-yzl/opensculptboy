@@ -111,6 +111,54 @@ def shell(
     )
 
 
+def bumpy(name, layer, colour, body_kind="anny-template") -> Wearable:
+    """A dense shell of anny's torso: each body triangle split in four, the corners 4 mm
+    off the skin and the edge midpoints 13 mm off it, so that it is denser than a shell of
+    the body's own triangles and bulges between their corners. It covers no skin."""
+    body = template_body()
+    _, triangles, rows = _region_shell(body, torso_mask(body), 0.0)
+    base, normal = body.vertices[rows], body.normals[rows]
+    edges = np.sort(
+        np.concatenate(
+            [triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]]
+        ),
+        axis=1,
+    )
+    edges, inverse = np.unique(edges, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    mid_normal = normal[edges[:, 0]] + normal[edges[:, 1]]
+    mid_normal /= np.linalg.norm(mid_normal, axis=1, keepdims=True)
+    vertices = np.concatenate(
+        [
+            base + 0.004 * normal,
+            0.5 * (base[edges[:, 0]] + base[edges[:, 1]]) + 0.013 * mid_normal,
+        ]
+    )
+    t = len(triangles)
+    m = len(rows) + inverse.reshape(3, t).T  # the midpoints of ab, bc and ca
+    a, b, c = triangles.T
+    split = np.concatenate(
+        [
+            np.stack([a, m[:, 0], m[:, 2]], 1),
+            np.stack([m[:, 0], b, m[:, 1]], 1),
+            np.stack([m[:, 2], m[:, 1], c], 1),
+            np.stack([m[:, 0], m[:, 1], m[:, 2]], 1),
+        ]
+    )
+    garment = Garment(vertices, split, materials=[Material(name, colour, 0.0, 0.9)])
+    return Wearable(
+        name=name,
+        slot="under",
+        layer=layer,
+        garment=garment,
+        binding=bind_surface(garment, body, body_kind),
+        licence=dict(LICENCE),
+        covers=np.zeros(len(body.vertices), bool),
+        tags=["synthetic", "shell"],
+        description="a synthetic dense shell that bulges between the body's vertices",
+    )
+
+
 def card_file(
     folder: pathlib.Path, pieces, name="card.json", outfit="test"
 ) -> pathlib.Path:
@@ -302,6 +350,13 @@ class TestCheck(unittest.TestCase):
             wear / "lining.wearable.json",
             shell("lining", 0.004, 50, (0.7, 0.7, 0.2), inside_out=True),
         )
+        write_wearable(
+            wear / "bumpy.wearable.json", bumpy("bumpy", 40, (0.8, 0.8, 0.9))
+        )
+        write_wearable(
+            wear / "over.wearable.json", shell("over", 0.008, 50, (0.3, 0.1, 0.1))
+        )
+        cls.dense = card_file(cls.folder, ["bumpy", "over"], "dense.json")
         cls.clean = card_file(cls.folder, ["tunic", "cape", "circlet"], "clean.json")
         cls.lining = card_file(cls.folder, ["lining", "cape"], "lining.json")
         cls.skin = card_file(cls.folder, ["tight"], "skin.json")
@@ -403,6 +458,16 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(len(partners.rows), 1)
         signed = partners.signed(points, piece, wall)
         self.assertAlmostEqual(float(signed[0]), -0.012, places=6)
+
+    def test_dense_lower_piece_under_a_coarse_piece(self):
+        """A dense shell that bulges 13 mm off the skin between the body's vertices, under
+        a shell of the body's own triangles 8 mm off it: the push-out moves the triangles
+        of the upper shell over the bulges, so no vertex of the lower shell shows."""
+        status, report, _ = self.check(self.dense, "--sheet", "none", "--clips", "none")
+        layers = report["states"][0]["layers"]
+        self.assertGreater(layers["covered"], 300)
+        self.assertEqual(layers["cutting"], 0, report["failed"])
+        self.assertEqual(status, 0, report["failed"])
 
     def test_layers_as_made(self):
         """A strap 8 mm off the skin under a coat 4 mm off it: made apart (on the
