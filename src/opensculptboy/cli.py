@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import pathlib
 import sys
 import warnings
@@ -216,7 +217,7 @@ def _export(args, parser) -> int:
         if dressing is None:
             raise
         parser.error(_one_line(error))
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -281,7 +282,7 @@ def _export_vrm(args, parser) -> int:
             parser.error(message)
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -387,7 +388,7 @@ def _export_tier(args, parser) -> int:
             parser.error(message)
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -408,7 +409,7 @@ def _bake_tiers(args, parser) -> int:
         )
     except (OSError, ValueError) as error:
         parser.error(_one_line(error))
-    print(json.dumps(report, indent=2))
+    _result(report)
     return 0
 
 
@@ -419,7 +420,7 @@ def _portraits(args, parser) -> int:
     written = write_portraits(
         args.out, character, args.size, detail_dir=_detail_dir(args.character)
     )
-    print(json.dumps(written, indent=2))
+    _result(written)
     return 0
 
 
@@ -444,7 +445,7 @@ def _pose(args) -> int:
     if args.card:
         text = json.dumps(character.to_dict(), indent=2)
         if args.card == "-":
-            print(text)
+            _result(text)
         else:
             pathlib.Path(args.card).write_text(text + "\n", encoding="utf-8")
             written.append(args.card)
@@ -541,7 +542,7 @@ def _fit(args, parser) -> int:
     }
     if textures:
         summary["textures"] = textures
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -678,12 +679,7 @@ def _bake(args, parser) -> int:
     if "mouth" in (character.material or {}):
         _write_mouth_poses(out, handoff)
     _write_eye_poses(out, handoff)
-    print(
-        json.dumps(
-            {"card": str(out), "covered": round(baked.covered_share, 4), **textures},
-            indent=2,
-        )
-    )
+    _result({"card": str(out), "covered": round(baked.covered_share, 4), **textures})
     return 0
 
 
@@ -697,7 +693,7 @@ def _convert(args, parser) -> int:
         summary = convert_card(args.card, out, args.to, body=not args.default_body)
     except (OSError, ValueError, KeyError) as error:
         parser.error(f"{args.card}: {_one_line(error)}")
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -733,7 +729,7 @@ def _wearables(args, parser) -> int:
                 for p in pieces
             ],
         }
-        print(json.dumps(listing, indent=2))
+        _result(listing)
         return 0
     if args.wearables_command == "bind":
         return _wearables_bind(args, parser)
@@ -755,7 +751,7 @@ def _wearables(args, parser) -> int:
         )
     except (OSError, ValueError, ProvenanceError) as error:
         parser.error(_one_line(error))
-    print(json.dumps(report, indent=2))
+    _result(report)
     return 0
 
 
@@ -824,7 +820,7 @@ def _wearables_bind(args, parser) -> int:
     for warning in report["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)
     _print_quality(report.get("quality"))
-    print(json.dumps(report, indent=2))
+    _result(report)
     return 0
 
 
@@ -840,6 +836,74 @@ def _print_quality(quality) -> None:
 
 # The wearables commands whose results and errors are JSON on stdout.
 JSON_COMMANDS = ("import-mhclo", "add", "remove", "outfit")
+
+# The results of the running command, printed on stdout when it ends (_results_alone).
+_RESULTS: list[str] | None = None
+
+
+def _result(value) -> None:
+    """Print a command's result on stdout: a JSON value (indented), or text. While a command
+    runs inside :func:`_results_alone`, the result waits for the command's end."""
+    text = value if isinstance(value, str) else json.dumps(value, indent=2)
+    if _RESULTS is None:
+        print(text)
+    else:
+        _RESULTS.append(text)
+
+
+def _flush_native() -> None:
+    """Flush the C library's stdout buffer (native code that prints with printf)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).fflush(None)
+    except Exception:  # noqa: BLE001 - a platform without it has nothing to flush
+        pass
+
+
+@contextlib.contextmanager
+def _results_alone():
+    """
+    Keep stdout for the command's results (:func:`_result`): while the command runs,
+    everything else written to stdout goes to stderr, from Python (``print``, as Warp's
+    start-up lines and module loads) and from native code (file descriptor 1); the results
+    follow on stdout when the command ends, also when it fails.
+    """
+    global _RESULTS
+    target = sys.stdout
+    saved = None
+    for stream in (target, sys.__stdout__):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
+    _flush_native()
+    try:
+        saved = os.dup(1)
+        os.dup2(2, 1)
+    except OSError:
+        saved = None
+    _RESULTS = []
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        results, _RESULTS = _RESULTS, None
+        for stream in (sys.__stdout__, sys.stderr):
+            try:
+                stream.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
+        _flush_native()
+        if saved is not None:
+            os.dup2(saved, 1)
+            os.close(saved)
+        for text in results:
+            print(text, file=target)
+        try:
+            target.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
 
 
 # The hints of the errors that carry none of their own.
@@ -869,15 +933,12 @@ def _json_error(error: BaseException, command: str, internal: bool = False) -> i
     message = _one_line(error)
     if internal:
         message = f"{type(error).__name__}: {message}"
-    print(
-        json.dumps(
-            {
-                "ok": False,
-                "command": command,
-                "error": {"code": code, "message": message, "hint": hint},
-            },
-            indent=2,
-        )
+    _result(
+        {
+            "ok": False,
+            "command": command,
+            "error": {"code": code, "message": message, "hint": hint},
+        }
     )
     print(f"error: [{code}] {message}", file=sys.stderr)
     return 2 if internal else 1
@@ -887,19 +948,16 @@ def _json_usage(parser, command: str):
     """Make a subcommand's usage errors JSON results (code ``usage``) on stdout."""
 
     def error(message):
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "command": command,
-                    "error": {
-                        "code": "usage",
-                        "message": message,
-                        "hint": f"See 'opensculptboy {command} --help'.",
-                    },
+        _result(
+            {
+                "ok": False,
+                "command": command,
+                "error": {
+                    "code": "usage",
+                    "message": message,
+                    "hint": f"See 'opensculptboy {command} --help'.",
                 },
-                indent=2,
-            )
+            }
         )
         print(f"{parser.prog}: error: {message}", file=sys.stderr)
         raise SystemExit(2)
@@ -910,9 +968,7 @@ def _json_usage(parser, command: str):
 def _wearables_import(args) -> int:
     command = "wearables import-mhclo"
     try:
-        # stdout holds the JSON result alone: the libraries' messages go to stderr
-        with contextlib.redirect_stdout(sys.stderr):
-            report = _import_report(args)
+        report = _import_report(args)
     except (OSError, ValueError, KeyError) as error:
         return _json_error(error, command)
     except Exception as error:  # one JSON error for every failure, never a traceback
@@ -921,7 +977,7 @@ def _wearables_import(args) -> int:
     for warning in report["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)
     _print_quality(report.get("quality"))
-    print(json.dumps(report, indent=2))
+    _result(report)
     return 0
 
 
@@ -979,15 +1035,14 @@ def _wearables_card(args) -> int:
 
     command = f"wearables {args.wearables_command}"
     try:
-        with contextlib.redirect_stdout(sys.stderr):
-            result = _card_change(args, cardedit)
+        result = _card_change(args, cardedit)
     except (OSError, ValueError, KeyError) as error:
         return _json_error(error, command)
     except Exception as error:  # one JSON error for every failure, never a traceback
         return _json_error(error, command, internal=True)
     for warning in result.get("warnings", []):
         print(f"warning: {warning}", file=sys.stderr)
-    print(json.dumps(result, indent=2))
+    _result(result)
     return 0
 
 
@@ -1690,8 +1745,15 @@ def main(argv=None) -> int:
     if words[:1] == ["wearables"] and words[1:2] and words[1] in JSON_COMMANDS:
         _json_usage(parser, f"wearables {words[1]}")  # unknown options at the top level
     args = parser.parse_args(argv)
+    if args.command in ("names", "viewer"):  # text for people, printed as it comes
+        return _run(args, e, wear, f, b, c, t, q)
+    with _results_alone():
+        return _run(args, e, wear, f, b, c, t, q)
+
+
+def _run(args, e, wear, f, b, c, t, q) -> int:
     if args.command == "character":
-        print(json.dumps(Character().to_dict(), indent=2))
+        _result(Character().to_dict())
         return 0
     if args.command == "export":
         return _export(args, e)

@@ -686,6 +686,55 @@ class TestCommandErrors(unittest.TestCase):
                         self.assertNotIn("Traceback", err)
 
 
+class TestStdout(unittest.TestCase):
+    """The commands that print JSON print it alone on stdout, in a new process, where Warp
+    prints its start-up lines and the module loads: an import, a card change, the list of
+    a card's pieces and a dressed export."""
+
+    def command(self, *args) -> dict:
+        import os
+        import subprocess
+        import sys
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(ROOT / "src"), str(ROOT), env.get("PYTHONPATH", "")]
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "opensculptboy", *map(str, args)],
+            capture_output=True,
+            env=env,
+            cwd=ROOT,
+            timeout=600,
+        )
+        out = result.stdout.decode("utf-8")
+        self.assertEqual(result.returncode, 0, result.stderr.decode()[-3000:])
+        try:
+            return json.loads(out)
+        except ValueError:
+            self.fail(f"stdout is not one JSON value: {out[:400]!r}")
+
+    def test_json_alone_on_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            path = write_asset(folder / "src", "shirt")
+            result = self.command(
+                "wearables", "import-mhclo", path, "--out", folder / "wear" / "shirt"
+            )
+            self.assertTrue(result["written"])
+            card = folder / "card.json"
+            card.write_text(json.dumps(Character().to_dict()))
+            package = folder / "wear" / "shirt.wearable.json"
+            result = self.command(
+                "wearables", "add", card, package, "--outfit", "casual", "--activate"
+            )
+            self.assertTrue(result["changed"])
+            result = self.command("wearables", "list", "--character", card)
+            self.assertEqual(result["active_outfit"], "casual")
+            result = self.command("export", folder / "dressed.glb", "--character", card)
+            self.assertIn("vertices", result)
+
+
 class TestMaterial(unittest.TestCase):
     def test_deprecated_intensities_leave_the_colours(self):
         """MakeHuman's material reader ignores diffuseIntensity and specularIntensity
