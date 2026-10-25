@@ -56,7 +56,12 @@ LASH_EYE_MM = 0.2
 # the upper lashes stay out of the lids: LASH_DEPTH_MM covers the lower lashes that the
 # closed upper lid hides, and the upper lashes reach 0.09 mm on anny's default character
 UPPER_LASH_DEPTH_MM = 0.2
+# a closed eye's upper lashes lie under its lower lashes by at most this much (mm; 1.15 mm on
+# anny's default character)
+LASH_ORDER_MM = 1.2
 CASES = {"left": ("L",), "right": ("R",), "both": ("L", "R")}
+# the base of a lash strip in a file: this share of its points, those nearest the eye's centre
+STRIP_BASE = 0.25
 
 _TMP = tempfile.TemporaryDirectory()
 CARD = Character(name="blinks", material={"eyes": {}})
@@ -147,18 +152,16 @@ class FileEyes:
                 surface = B.EyeSurface(sv, st[:, ::-1])
             lids = B.eye_lids(frame, welded, wt, used)
             lash = np.unique(of_side(lash_t, side))
-            # each strip or card of the lashes belongs to the lid whose margin it nears most
+            # each strip or card of the lashes belongs to the upper lid when its base (the
+            # points nearest the eye's centre) lies above the eye's horizontal line: the
+            # strip's nearest point to a margin lies at an eye corner, where both lids meet
             upper = np.zeros(len(lash), bool)
             for label in np.unique(lash_label[lash]):
                 mine = lash_label[lash] == label
-                pts = rest[lash[mine]]
-                du = np.linalg.norm(
-                    pts[:, None] - welded[lids.upper][None], axis=2
-                ).min()
-                dl = np.linalg.norm(
-                    pts[:, None] - welded[lids.lower][None], axis=2
-                ).min()
-                upper[mine] = du < dl
+                local = frame.to_local(rest[lash[mine]])
+                d = np.linalg.norm(local, axis=1)
+                base = np.argsort(d)[: max(1, round(STRIP_BASE * len(d)))]
+                upper[mine] = local[base, 1].mean() > 0.0
             self.eyes[side] = (lids, surface, lash, upper)
 
     def crack_mm(self, weights: dict) -> float:
@@ -404,6 +407,13 @@ class TestAnnyBlink(unittest.TestCase):
 class TestBlinkFiles(unittest.TestCase):
     def _check(self, kind, inbetween):
         eyes = file_eyes(kind)
+        g = eyes.glb.json
+        extras = g.get("scenes", [{}])[0].get("extras", {}).get("opensculptboy", {})
+        recorded = extras.get("eyes", {}).get("blinks", {})
+        for side in ("L", "R"):
+            upper = eyes.eyes[side][3]
+            # the reader finds the lashes of both lids
+            self.assertTrue(0 < upper.sum() < len(upper))
         for case, sides in CASES.items():
             for t in STAGES:
                 weights = stage_weights(sides, t, inbetween)
@@ -421,6 +431,15 @@ class TestBlinkFiles(unittest.TestCase):
                         self.assertLessEqual(m["lash_mm"], LASH_DEPTH_MM)
                         if t == 1.0:
                             self.assertLessEqual(m["opening_mm"], CLOSED_OPENING_MM)
+                            self.assertLessEqual(m["lash_order_mm"], LASH_ORDER_MM)
+                            # as the export measured it on its own mesh
+                            own = recorded.get(B.BLINK_TARGETS[side])
+                            if own is not None:
+                                self.assertAlmostEqual(
+                                    m["lash_order_mm"],
+                                    own["measures"]["1"]["lash_order_mm"],
+                                    delta=0.01,
+                                )
             # the other eye stays open in a blink of one eye
             if len(sides) == 1:
                 other = "R" if sides[0] == "L" else "L"
