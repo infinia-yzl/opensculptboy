@@ -73,6 +73,69 @@ def _frame(points: np.ndarray, view: View, size, margin: float):
     return s, ox, oy
 
 
+def zbuffer(px, depth, triangles, size, budget: int = 4_000_000):
+    """
+    The depth (inf where empty) and the nearest triangle (-1 where empty) at each pixel of
+    a picture of ``size`` (width, height): the triangles (T, 3) of the points ``px`` (V, 2,
+    pixels, y down) at ``depth`` (V,), larger farther. Each pixel centre takes the depth of
+    each triangle that holds it, interpolated linearly (exact for an orthographic camera),
+    and keeps the nearest, so that thin layers a few millimetres apart draw in their order.
+    """
+    w, h = size
+    zbuf = np.full(w * h, np.inf)
+    ids = np.full(w * h, -1, np.int64)
+    if not len(triangles):
+        return zbuf.reshape(h, w), ids.reshape(h, w)
+    p = px[triangles]  # (T, 3, 2)
+    lo = np.clip(np.floor(p.min(axis=1) - 0.5), 0, [w - 1, h - 1]).astype(np.int64)
+    hi = np.clip(np.ceil(p.max(axis=1) - 0.5), -1, [w - 1, h - 1]).astype(np.int64)
+    span = np.maximum(hi - lo + 1, 0)
+    count = span[:, 0] * span[:, 1]
+    a, b, c = p[:, 0], p[:, 1], p[:, 2]
+    area = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (
+        c[:, 0] - a[:, 0]
+    )
+    count[np.abs(area) < 1e-12] = 0
+    z = depth[triangles]
+    cut = np.searchsorted(np.cumsum(count), np.arange(budget, count.sum(), budget))
+    found_flat, found_z, found_tri = [], [], []
+    for part in np.split(np.arange(len(triangles)), cut):
+        part = part[count[part] > 0]
+        if not len(part):
+            continue
+        n = count[part]
+        tri = np.repeat(part, n)
+        local = np.arange(int(n.sum())) - np.repeat(np.cumsum(n) - n, n)
+        x = lo[tri, 0] + local % span[tri, 0]
+        y = lo[tri, 1] + local // span[tri, 0]
+        qx, qy = x + 0.5, y + 0.5
+        ax, ay = a[tri, 0], a[tri, 1]
+        bx, by = b[tri, 0], b[tri, 1]
+        cx, cy = c[tri, 0], c[tri, 1]
+        inv = 1.0 / area[tri]
+        wb = ((qx - ax) * (cy - ay) - (qy - ay) * (cx - ax)) * inv
+        wc = ((bx - ax) * (qy - ay) - (by - ay) * (qx - ax)) * inv
+        wa = 1.0 - wb - wc
+        inside = (wa >= -1e-9) & (wb >= -1e-9) & (wc >= -1e-9)
+        tri, x, y = tri[inside], x[inside], y[inside]
+        zz = wa[inside] * z[tri, 0] + wb[inside] * z[tri, 1] + wc[inside] * z[tri, 2]
+        found_flat.append(y * w + x)
+        found_z.append(zz)
+        found_tri.append(tri)
+    if not found_flat:
+        return zbuf.reshape(h, w), ids.reshape(h, w)
+    flat = np.concatenate(found_flat)
+    zz = np.concatenate(found_z)
+    tri = np.concatenate(found_tri)
+    order = np.lexsort((tri, zz, flat))  # per pixel, the nearest first
+    flat, zz, tri = flat[order], zz[order], tri[order]
+    first = np.ones(len(flat), bool)
+    first[1:] = flat[1:] != flat[:-1]
+    zbuf[flat[first]] = zz[first]
+    ids[flat[first]] = tri[first]
+    return zbuf.reshape(h, w), ids.reshape(h, w)
+
+
 def draw(
     meshes,
     view: View = VIEWS["front"],
@@ -89,8 +152,6 @@ def draw(
     piece keeps the scale of its own extent.
     """
     from PIL import Image, ImageDraw
-
-    from opensculptboy.render.flat import _rasters
 
     meshes = [m for m in meshes if len(m.triangles)]
     vertices = np.concatenate([np.asarray(m.vertices, np.float64) for m in meshes])
@@ -109,11 +170,13 @@ def draw(
     inside &= (px[:, 1] > -2) & (px[:, 1] < size[1] + 2)
     keep = inside[triangles].any(axis=1)
     ids = np.flatnonzero(keep)
-    d, face = _rasters(
-        px, depth, triangles[ids], size, supersample, shade=(np.arange(len(ids)) + 1.0)
+    d, face = zbuffer(
+        px * supersample,
+        depth,
+        triangles[ids],
+        (int(size[0] * supersample), int(size[1] * supersample)),
     )
-    face = np.rint(face).astype(np.int64) - 1
-    filled = np.isfinite(d) & (face >= 0)
+    filled = face >= 0
     right, up, toward = view.basis()
     light = LIGHT[0] * right + LIGHT[1] * up + LIGHT[2] * toward
     light /= np.linalg.norm(light)
