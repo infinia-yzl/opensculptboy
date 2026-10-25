@@ -838,15 +838,33 @@ def _print_quality(quality) -> None:
 JSON_COMMANDS = ("import-mhclo", "add", "remove", "outfit")
 
 
-def _json_error(error: BaseException, command: str) -> int:
-    """Print a failed command's JSON result (``code``, ``message``, ``hint``); returns 1."""
+# The hints of the errors that carry none of their own.
+_ERROR_HINTS = {
+    "file_error": "Check that the path exists and can be read and written.",
+    "invalid_input": "Check the files and the options; --help lists the options.",
+    "internal_error": (
+        "An unexpected error: report it with the command line and this message."
+    ),
+}
+
+
+def _json_error(error: BaseException, command: str, internal: bool = False) -> int:
+    """Print a failed command's JSON result (``code``, ``message``, ``hint``); returns 1, or
+    2 for an unexpected error (``internal``, code ``internal_error``)."""
     from opensculptboy.wearables.format import WearableError
 
-    code = getattr(error, "code", None) or (
-        "file_error" if isinstance(error, OSError) else "invalid_input"
-    )
-    hint = getattr(error, "hint", "") if isinstance(error, WearableError) else ""
+    if internal:
+        code, hint = "internal_error", ""
+    else:
+        code = (
+            getattr(error, "code", None) if isinstance(error, WearableError) else None
+        )
+        code = code or ("file_error" if isinstance(error, OSError) else "invalid_input")
+        hint = getattr(error, "hint", "") if isinstance(error, WearableError) else ""
+    hint = hint or _ERROR_HINTS.get(code, _ERROR_HINTS["invalid_input"])
     message = _one_line(error)
+    if internal:
+        message = f"{type(error).__name__}: {message}"
     print(
         json.dumps(
             {
@@ -858,7 +876,7 @@ def _json_error(error: BaseException, command: str) -> int:
         )
     )
     print(f"error: [{code}] {message}", file=sys.stderr)
-    return 1
+    return 2 if internal else 1
 
 
 def _json_usage(parser, command: str):
@@ -893,6 +911,8 @@ def _wearables_import(args) -> int:
             report = _import_report(args)
     except (OSError, ValueError, KeyError) as error:
         return _json_error(error, command)
+    except Exception as error:  # one JSON error for every failure, never a traceback
+        return _json_error(error, command, internal=True)
     report = {"ok": True, "command": command, **report}
     for warning in report["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)
@@ -957,6 +977,8 @@ def _wearables_card(args) -> int:
             result = _card_change(args, cardedit)
     except (OSError, ValueError, KeyError) as error:
         return _json_error(error, command)
+    except Exception as error:  # one JSON error for every failure, never a traceback
+        return _json_error(error, command, internal=True)
     for warning in result.get("warnings", []):
         print(f"warning: {warning}", file=sys.stderr)
     print(json.dumps(result, indent=2))

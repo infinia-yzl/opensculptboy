@@ -387,6 +387,47 @@ class TestImport(unittest.TestCase):
         self.assertEqual((status, result["error"]["code"]), (2, "usage"))
 
 
+class TestCommandErrors(unittest.TestCase):
+    def test_every_failure_is_one_json_error(self):
+        """A file error and an unexpected error of the JSON commands each print one JSON
+        error with a code and a hint, and no traceback; an unexpected one exits with 2."""
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as folder:
+            card = pathlib.Path(folder) / "card.json"
+            card.write_text(json.dumps(Character().to_dict()), encoding="utf-8")
+            asset = write_asset(pathlib.Path(folder), "shirt")
+            cases = (
+                (
+                    "opensculptboy.wearables.cardedit.remove_pieces",
+                    ["wearables", "remove", str(card), "x"],
+                ),
+                (
+                    "opensculptboy.wearables.cardedit.activate_outfit",
+                    ["wearables", "outfit", str(card), "--activate", "none"],
+                ),
+                (
+                    "opensculptboy.wearables.mhclo.import_mhclo",
+                    ["wearables", "import-mhclo", str(asset), "--dry-run"],
+                ),
+            )
+            for target, args in cases:
+                for raised, code, status in (
+                    (PermissionError("denied"), "file_error", 1),
+                    (RuntimeError("boom"), "internal_error", 2),
+                    (ZeroDivisionError("division by zero"), "internal_error", 2),
+                ):
+                    with self.subTest(command=args[1], error=type(raised).__name__):
+                        with mock.patch(target, side_effect=raised):
+                            got, result, err = run(args)
+                        self.assertEqual(got, status)
+                        self.assertFalse(result["ok"])
+                        self.assertEqual(result["error"]["code"], code)
+                        self.assertIn(str(raised), result["error"]["message"])
+                        self.assertTrue(result["error"]["hint"])
+                        self.assertNotIn("Traceback", err)
+
+
 class TestQuality(unittest.TestCase):
     """One synthetic asset per defect."""
 
