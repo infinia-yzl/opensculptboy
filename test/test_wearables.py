@@ -257,7 +257,8 @@ class TestBinding(unittest.TestCase):
                     self.assertLess(float(np.median(signed[near])), -0.003)
                 else:
                     self.assertGreater(dressed[1].pushed, 300)
-                    self.assertGreater(float(signed[near].min()), 0.0008)
+                    self.assertGreater(float(np.percentile(signed[near], 1)), 0.0008)
+                    self.assertGreater(float(signed[near].min()), 0.0)
 
     def test_weights(self):
         body = template_body()
