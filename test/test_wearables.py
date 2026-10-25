@@ -224,6 +224,41 @@ class TestBinding(unittest.TestCase):
                 self.assertGreater(int(near.sum()), 50)
                 self.assertGreater(float((signed - target)[near].min()), -1e-4)
 
+    def test_push_out_over_a_piece_made_apart(self):
+        """A coat 4 mm off the skin over a vest 8 mm off it (a lower layer), both bound on
+        the template: packages made apart, so the relation on the template says nothing,
+        and the push-out brings the coat over the vest by the 1 mm gap. Bound on one card's
+        body, the two were made together, and the coat keeps its place inside the vest."""
+        from opensculptboy.wearables.fit import made_together
+        from opensculptboy.wearables.geometry import Surface
+
+        body = template_body()
+        vest = dataclasses.replace(tunic(offset=0.008), name="vest", layer=40)
+        coat = dataclasses.replace(tunic(offset=0.004), name="coat", layer=50)
+
+        def on_card(w):
+            return dataclasses.replace(
+                w, binding=dataclasses.replace(w.binding, body="card")
+            )
+
+        for together in (False, True):
+            with self.subTest(together=together):
+                pair = (on_card(vest), on_card(coat)) if together else (vest, coat)
+                self.assertEqual(made_together(pair[1], pair[0]), together)
+                dressed = dress(body, _worn(*pair))
+                under = Surface(
+                    dressed[0].vertices, vest.garment.triangles, dressed[0].normals
+                )
+                signed, found, _ = under.signed_distance(dressed[1].vertices)
+                near = found.distance < 0.01
+                self.assertGreater(int(near.sum()), 300)
+                if together:
+                    self.assertEqual(dressed[1].pushed, 0)
+                    self.assertLess(float(np.median(signed[near])), -0.003)
+                else:
+                    self.assertGreater(dressed[1].pushed, 300)
+                    self.assertGreater(float(signed[near].min()), 0.0008)
+
     def test_weights(self):
         body = template_body()
         dressed = dress(body, _worn(tunic(), circlet()))

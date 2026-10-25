@@ -12,6 +12,8 @@ and outside the pieces of lower layers: at least by ``gap`` (1 mm), or by as muc
 vertex lay outside them on the body that the piece was bound on, whichever is less. So a
 piece keeps the relations it was made with (a strap that sinks into a coat on the binding
 body sinks into it on every body), and a tight piece never sinks into a heavier body. A
+relation to a lower piece counts only where the two pieces were made together
+(:func:`made_together`); a lower piece made apart takes the full gap. A
 Laplacian fade spreads each push over two rings of the neighbouring vertices, and a final
 pass makes every vertex meet its target again.
 """
@@ -175,6 +177,38 @@ def _fade(displacement: np.ndarray, moved: np.ndarray, triangles: np.ndarray):
     return out
 
 
+def made_together(upper: Wearable, lower: Wearable) -> bool:
+    """Whether two packages were made as one set, so that the relation between them on
+    their binding body is part of their design: both are bound on the same body, and that
+    body is a card's or a reference's own body. Anny's template is the common body of
+    packages made apart (a MakeHuman asset, a garment bound with ``wearables bind``), so
+    the relation of two packages on it says nothing about how they layer."""
+    a, b = upper.binding, lower.binding
+    return (
+        a.body != "anny-template"
+        and a.body == b.body
+        and np.array_equal(a.body_vertices, b.body_vertices)
+    )
+
+
+def relation_home(upper, lower, body: BodySurface):
+    """The rest vertices of two dressed pieces (or packages) on the binding body of the
+    upper one, where they were made together (:func:`made_together`): (upper vertices,
+    lower vertices), or None where the relation as made is unknown."""
+    upper_w = getattr(upper, "wearable", upper)
+    lower_w = getattr(lower, "wearable", lower)
+    if not made_together(upper_w, lower_w):
+        return None
+    home = body
+    if not np.array_equal(upper_w.binding.body_vertices, body.vertices):
+        home = body.with_vertices(upper_w.binding.body_vertices)
+    upper_home = _rest_on(upper_w, home, body)
+    lower_home = _rest_on(lower_w, home, body)
+    if upper_home is None or lower_home is None:
+        return None
+    return upper_home[0], lower_home[0]
+
+
 def _rest_on(wearable: Wearable, home: BodySurface, body: BodySurface):
     """
     The rest vertices and normals of a lower piece on ``home``, the binding body of an upper
@@ -286,8 +320,10 @@ def dress(
                 if len(tris) == 0:
                     continue
                 colliders.append(Surface(lower.vertices, tris, lower.normals))
-                lower_home = _rest_on(lower.wearable, home, body)
-                if lower_home is None:  # the relation on the binding body is unknown
+                lower_home = None
+                if made_together(wearable, lower.wearable):
+                    lower_home = _rest_on(lower.wearable, home, body)
+                if lower_home is None:  # the relation as made is unknown
                     targets.append(np.full(len(home_vertices), gap))
                     continue
                 then = Surface(lower_home[0], tris, lower_home[1])
