@@ -22,17 +22,64 @@ from opensculptboy.wearables.geometry import Surface, ray_hits
 RAY_REACH = 0.03  # metres
 
 
+def _alpha_map(material):
+    """The alpha of a material's base colour (its texture times its factor) as an array
+    (H, W), or a float where it has no texture."""
+    factor = float(material.base_color[3]) if len(material.base_color) > 3 else 1.0
+    data = material.textures.get("base_color")
+    if not data:
+        return factor
+    import io
+
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(data))
+    if "A" not in image.getbands() and image.mode != "P":
+        return factor
+    return np.asarray(image.convert("RGBA"))[..., 3] / 255.0 * factor
+
+
+def masked_solid(garment, material_index: int, triangles: np.ndarray) -> np.ndarray:
+    """(T,) whether the alpha of a masked material reaches its cutoff at the corners, the
+    edge midpoints and the centre of each of ``triangles`` (rows of the garment's
+    triangles), so that no cut-out of the texture (lace, a frayed hem) lies on them."""
+    material = garment.materials[material_index]
+    alpha = _alpha_map(material)
+    if not isinstance(alpha, np.ndarray):
+        return np.full(len(triangles), alpha >= material.alpha_cutoff)
+    if garment.uvs is None:
+        return np.zeros(len(triangles), bool)
+    uv = garment.uvs[triangles]  # (T, 3, 2)
+    samples = np.concatenate(
+        [uv, 0.5 * (uv + np.roll(uv, -1, axis=1)), uv.mean(axis=1, keepdims=True)],
+        axis=1,
+    )
+    h, w = alpha.shape
+    x = np.clip((np.mod(samples[..., 0], 1.0) * w).astype(np.int64), 0, w - 1)
+    y = np.clip((np.mod(samples[..., 1], 1.0) * h).astype(np.int64), 0, h - 1)
+    return (alpha[y, x] >= material.alpha_cutoff).all(axis=1)
+
+
 def opaque_triangles(piece) -> np.ndarray:
-    """The visible triangles of a dressed piece whose material is opaque: a masked or blended
-    material (lace, mesh, a sheer stocking) may let the skin show through."""
+    """The visible triangles of a dressed piece that hide the skin: those of opaque
+    materials, and those of a masked material whose alpha reaches the cutoff all over them
+    (:func:`masked_solid`). A blended material (a sheer stocking) and the cut-outs of a
+    masked one (lace, mesh) may let the skin show through."""
     garment = piece.garment
     keep = np.ones(len(garment.triangles), bool)
     for g, group in enumerate(garment.groups):
         if group in piece.hidden_groups:
             keep &= garment.triangle_group != g
     for m, material in enumerate(garment.materials):
-        if material.alpha_mode != "OPAQUE":
-            keep &= garment.triangle_material != m
+        if material.alpha_mode == "OPAQUE":
+            continue
+        rows = garment.triangle_material == m
+        if material.alpha_mode == "MASK" and rows.any():
+            solid = np.zeros(len(garment.triangles), bool)
+            solid[rows] = masked_solid(garment, m, garment.triangles[rows])
+            keep &= ~rows | solid
+        else:
+            keep &= ~rows
     return garment.triangles[keep]
 
 

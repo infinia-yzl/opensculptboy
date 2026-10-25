@@ -269,13 +269,30 @@ class TestBinding(unittest.TestCase):
         self.assertTrue((dressed[1].weights[:, 0] == 1.0).all())
 
     def test_see_through_materials_cover_no_skin(self):
+        """A blended material covers no skin; a masked material covers the skin under its
+        triangles where its alpha reaches the cutoff all over them, and the skin under its
+        cut-outs shows."""
+        from opensculptboy.export.document import png_bytes
         from opensculptboy.wearables.cover import ray_cover
 
         body = template_body()
         piece = dress(body, _worn(tunic()))[0]
-        self.assertGreater(int(ray_cover(body, piece).sum()), 300)
-        piece.garment.materials[0].alpha_mode = "MASK"  # lace: the skin may show
+        full = ray_cover(body, piece)
+        self.assertGreater(int(full.sum()), 300)
+        material = piece.garment.materials[0]
+        material.alpha_mode = "BLEND"  # a sheer stocking: the skin may show
         self.assertEqual(int(ray_cover(body, piece).sum()), 0)
+        material.alpha_mode = "MASK"  # no texture: the factor's alpha holds everywhere
+        np.testing.assert_array_equal(ray_cover(body, piece), full)
+        # solid on the left half of the texture (u < 0.5: x < 0), cut out on the right
+        rgba = np.full((64, 64, 4), 200, np.uint8)
+        rgba[:, 32:, 3] = 0
+        rgba[:, :32, 3] = 255
+        material.textures["base_color"] = png_bytes(rgba)
+        half = ray_cover(body, piece)
+        self.assertGreater(int(half.sum()), 100)
+        self.assertLess(int(half.sum()), int(full.sum()))
+        self.assertLess(float(body.vertices[half, 0].max()), 0.01)
 
     def test_group_masks_without_a_mask_of_the_fixed_groups(self):
         """A package with group masks and no ``covers`` mask: the ray test covers the skin
