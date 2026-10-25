@@ -99,6 +99,14 @@ def _mask_bits(mask) -> list[int]:
     return [b for b in range(value.bit_length()) if value >> b & 1]
 
 
+def reference_springs(piece) -> list:
+    """The springs of a reference piece: one ``auto`` spring (the preset of its slot) for a
+    cloak and for a piece whose objects carry physics in the handoff, so that their loose
+    regions swing (docs/wearables.md, "Springs"); none for the others."""
+    physics = any(o.physics for o in piece.objects)
+    return [{"name": "loose"}] if piece.slot == "cloak" or physics else []
+
+
 def _piece_of_object(name: str) -> str:
     """The piece of a clothing object of a one-set section: the first word of its name."""
     return re.split(r"[ _]", name.strip())[0]
@@ -595,6 +603,7 @@ def build_reference_wearables(
                 cover_ray=True,
                 group_covers=group_covers,
                 hides=piece.hides,
+                springs=reference_springs(piece),
                 extras=extras,
             )
             path = write_wearable(

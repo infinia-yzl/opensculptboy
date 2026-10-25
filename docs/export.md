@@ -45,4 +45,4 @@ With 4 bones per vertex, 99 % of the vertices lie within 4 mm of Anny's own outp
 
 ## Not in the file yet
 
-Hair, spring bones for loose clothing and the soft-tissue correctives: the export uses plain skinning. Painted textures come only from a reference bake ([Fit to a reference](reference-fit.md)); other characters get a plain skin colour.
+Hair, a spring extension that engines read for the chains of loose wearables (the file holds their joints, and their settings and colliders in the extras; [Wearables](wearables.md#springs)) and the soft-tissue correctives: the export uses plain skinning. Painted textures come only from a reference bake ([Fit to a reference](reference-fit.md)); other characters get a plain skin colour.
