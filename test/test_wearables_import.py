@@ -686,6 +686,25 @@ class TestCardCommands(unittest.TestCase):
         self.assertNotIn("active_outfit", result["wardrobe"])
         Character.from_dict(json.loads(card.read_text()))
 
+    def test_remove_bare_ids_with_no_outfit_worn(self):
+        """With ``active_outfit`` set to none, a bare id names the piece of that id in any
+        outfit, and a piece of several outfits needs its outfit."""
+        card = self.card("none_worn.json")
+        wear = [
+            str(self.folder / "wear" / f"{n}.wearable.json") for n in ("tunic", "cape")
+        ]
+        run(["wearables", "add", str(card), *wear, "--outfit", "travel"])
+        run(["wearables", "add", str(card), wear[0], "--outfit", "work"])
+        run(["wearables", "outfit", str(card), "--activate", "none"])
+        status, result, _ = run(["wearables", "remove", str(card), "cape"])
+        self.assertEqual((status, result["removed"]), (0, ["travel/cape"]))
+        status, result, _ = run(["wearables", "remove", str(card), "tunic"])
+        self.assertEqual((status, result["error"]["code"]), (1, "ambiguous_piece"))
+        status, result, _ = run(["wearables", "remove", str(card), "work/tunic"])
+        self.assertEqual(result["removed"], ["work/tunic"])
+        status, result, _ = run(["wearables", "remove", str(card), "tunic"])
+        self.assertEqual(result["removed"], ["travel/tunic"])
+
     def test_overrides_of_removed_pieces_go_with_them(self):
         """An override that names a piece by its bare id goes when the piece goes, so that
         the card still exports."""

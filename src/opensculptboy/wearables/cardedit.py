@@ -317,6 +317,8 @@ def remove_pieces(card, refs=(), *, outfit: str | None = None, dry_run: bool = F
     loose = after.get("wearables", [])
     overrides = after.get("wearable_overrides", {})
     active = after.get("active_outfit") or None
+    # a bare id names a piece of the worn outfit; with no outfit worn, of any outfit
+    worn = None if active == NO_OUTFIT else active
 
     def loose_id(e):
         return e.get("id") or pathlib.Path(e["file"]).name.split(".")[0]
@@ -352,7 +354,7 @@ def remove_pieces(card, refs=(), *, outfit: str | None = None, dry_run: bool = F
                     (o, p)
                     for o in outfits
                     for p in o.get("pieces", [])
-                    if p["piece"] == ref and (active is None or o["id"] == active)
+                    if p["piece"] == ref and (worn is None or o["id"] == worn)
                 ]
                 if len(matches) > 1:
                     raise CardError(
