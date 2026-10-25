@@ -350,10 +350,11 @@ def licence_block(
     """
     The licence block of a package from an asset's header, as found: ``spdx`` (the SPDX id
     when the header names one plainly, else None), ``declared`` (the header's text),
-    ``author``, ``source`` (``source`` or the header's homepage), ``design_source`` and, for
-    a CC-BY licence, an ``attribution`` line that the exports carry. ``author`` replaces the
-    header's author. The tools record the licence; choosing assets and following their
-    licences is the user's responsibility.
+    ``author``, ``source`` (``source`` or the header's homepage), ``design_source`` and an
+    ``attribution`` line that the exports carry, whatever the licence, when the header names
+    a licence, an author or a source. ``author`` replaces the header's author. The tools
+    record the licence and write the credit; choosing assets and following their licences
+    is the user's responsibility.
     """
     declared = asset.licence
     author = author or asset.author
@@ -369,10 +370,9 @@ def licence_block(
         "source": source,
         "design_source": design,
     }
-    words = " ".join((declared or "").lower().replace("-", " ").split())
-    if words.startswith("cc by") or words.startswith("creative commons attribution"):
+    if declared or author or source:
         credit = f"'{label}'" + (f" by {author}" if author else "")
-        credit += f", {declared}"
+        credit += f", {declared}" if declared else ""
         block["attribution"] = credit + (f", from {source}" if source else "")
     return {k: v for k, v in block.items() if v or k == "spdx"}
 

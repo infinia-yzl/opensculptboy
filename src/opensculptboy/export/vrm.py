@@ -1764,7 +1764,7 @@ def _mesh_nodes(spec: VrmSpec) -> dict[int, list[int]]:
 
 
 def _wear_credits(dressed) -> list[str]:
-    """The attribution lines of the worn pieces (CC-BY wearables), after the base model's."""
+    """The credit lines of the worn pieces, after the base model's."""
     if not dressed:
         return []
     from opensculptboy.wearables.export import credits

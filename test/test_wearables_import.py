@@ -305,6 +305,11 @@ class TestImport(unittest.TestCase):
                 self.assertEqual(wearable.licence.get("spdx", "absent"), spdx)
                 self.assertNotIn("licence", " ".join(report["warnings"]))
                 self.assertEqual(wearable.provenance, "public")
+                # every licence, or none, with an author gets a credit line
+                line = wearable.licence["attribution"]
+                self.assertIn("by OpenSculptBoy tests", line)
+                if licence:
+                    self.assertIn(licence, line)
         self.assertIn("attribution", self.tights.licence)
         self.assertIn("by OpenSculptBoy tests", self.tights.licence["attribution"])
 
@@ -330,7 +335,12 @@ class TestImport(unittest.TestCase):
         names = [n.get("name") for n in glb.json["nodes"]]
         self.assertIn("casual/shirt", names)
         wear = glb.json["scenes"][0]["extras"]["opensculptboy"]["wearables"]
-        self.assertEqual(wear["credits"], [self.tights.licence["attribution"]])
+        shirt = read_wearable(self.folder / "wear" / "shirt.wearable.json")
+        self.assertIn("CC0", shirt.licence["attribution"])
+        self.assertEqual(
+            wear["credits"],
+            [shirt.licence["attribution"], self.tights.licence["attribution"]],
+        )
 
         class Piece:
             wearable = self.tights
