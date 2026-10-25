@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/infinia-yzl/opensculptboy/blob/main/src/opensculptboy/data/wearables/outfit-1.schema.json",
+  "title": "OpenSculptBoy outfit file (opensculptboy.outfit/1)",
+  "description": "An outfit apart from any card (docs/wearables.md, 'Outfit files'): its pieces as wearable packages with paths relative to this file, the hides rules and the spring settings of its pieces. 'opensculptboy wearables add CARD FILE.outfit.json' puts it on a card.",
+  "type": "object",
+  "required": ["format", "id", "pieces"],
+  "properties": {
+    "format": {"const": "opensculptboy.outfit/1"},
+    "id": {"type": "string", "minLength": 1, "pattern": "^[^/]+$", "not": {"const": "none"}},
+    "label": {"type": "string"},
+    "description": {"type": "string", "pattern": "^[^\\n]*$", "description": "one line about the outfit"},
+    "tags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
+    "provenance": {"enum": ["public", "private"], "description": "private when a piece is private; a private outfit file never goes into a checkout of the repository"},
+    "pieces": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["piece", "file"],
+        "properties": {
+          "piece": {"type": "string", "minLength": 1, "pattern": "^[^/]+$"},
+          "file": {"type": "string", "pattern": "\\.wearable\\.json$", "description": "the package's .wearable.json file, relative to this file"},
+          "enabled": {"type": "boolean"},
+          "overrides": {
+            "type": "object",
+            "description": "fields of the package that this outfit sets for the piece",
+            "properties": {
+              "layer": {"type": "integer", "minimum": 0, "maximum": 100},
+              "label": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "hides": {
+      "type": "array",
+      "description": "rules added to the packages' own: while 'piece' shows, the named groups of 'target' are hidden",
+      "items": {
+        "type": "object",
+        "required": ["piece", "target", "groups"],
+        "properties": {
+          "piece": {"type": "string", "minLength": 1},
+          "target": {"type": "string", "minLength": 1, "description": "a piece of this outfit by its id, or a piece of a card as OUTFIT/PIECE or a loose id"},
+          "groups": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "springs": {
+      "type": "object",
+      "description": "the spring chains of a piece by its id, in the form of the package's 'springs' field; they replace the package's own",
+      "additionalProperties": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}}}
+    },
+    "credits": {"type": "array", "items": {"type": "string"}, "description": "the credit lines of the pieces, as the exports write them"},
+    "extras": {"type": "object"}
+  },
+  "additionalProperties": false
+}

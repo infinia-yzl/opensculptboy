@@ -25,7 +25,14 @@ Wearables: clothes, footwear, headgear, capes and accessories that fit any Anny 
   for MakeHuman's base mesh on a card's body;
 - :mod:`~opensculptboy.wearables.quality`: the quality checks and safe fixes of a garment;
 - :mod:`~opensculptboy.wearables.cardedit`: changes to a card's wardrobe
-  (``wearables add``, ``remove`` and ``outfit``).
+  (``wearables add``, ``remove`` and ``outfit``);
+- :mod:`~opensculptboy.wearables.catalogue`: the packages of a folder as JSON entries with
+  colours, quality summaries and thumbnails (``wearables catalogue``);
+- :mod:`~opensculptboy.wearables.check`: the quality and the fit of a card's outfit on test
+  bodies at rest, in the T-pose and in the clips, with gates and a review sheet
+  (``wearables check``);
+- :mod:`~opensculptboy.wearables.outfitfile`: outfit files ``opensculptboy.outfit/1``
+  (``wearables outfit export``, and ``wearables add`` of an outfit file).
 """
 
 from opensculptboy.wearables.bind import (
