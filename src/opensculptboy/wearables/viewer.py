@@ -116,7 +116,7 @@ def write_skin_split(path: str | pathlib.Path = TARGET) -> pathlib.Path:
     quads = page_quads()
     codes = skin_split_codes(quads, skin_triangles(model))
     path = pathlib.Path(path)
-    path.write_text(skin_split_source(codes))
+    path.write_text(skin_split_source(codes), encoding="utf-8")
     return path
 
 
