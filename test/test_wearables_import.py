@@ -266,6 +266,35 @@ class TestImport(unittest.TestCase):
         self.assertAlmostEqual(material["pbrMetallicRoughness"]["roughnessFactor"], 0.7)
         self.assertIn("normalTexture", material)
 
+    def test_obj_on_the_ground(self):
+        """An .obj exported on the ground (MakeClothes 2 lifts the human by its feet' height,
+        about 8 dm) gives the same garment: the report gives the lift as source_offset_mm,
+        the fits with it taken out stay exact, and an info item notes it."""
+        folder = self.folder / "ground"
+        path = write_asset(folder, "shirt")
+        obj = path.with_suffix(".obj")
+        lines = []
+        for line in obj.read_text(encoding="utf-8").splitlines():
+            if line.startswith("v "):
+                x, y, z = (float(w) for w in line.split()[1:4])
+                line = f"v {x:.9f} {y + 8.2:.9f} {z + 0.25:.9f}"
+            lines.append(line)
+        obj.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        lifted, report = import_mhclo(
+            path, template_body(), Character(), template_model()
+        )
+        np.testing.assert_allclose(
+            report["mhclo"]["source_offset_mm"], [0, -25, 820], atol=0.1
+        )
+        self.assertLess(report["mhclo"]["source_fit_mm_max"], 1e-3)
+        self.assertIn("source_offset", codes(report))
+        unlifted = read_wearable(self.folder / "wear" / "shirt.wearable.json")
+        np.testing.assert_allclose(
+            lifted.garment.vertices, unlifted.garment.vertices, atol=1e-9
+        )
+        self.assertNotIn("source_offset", codes(self.report))
+        self.assertEqual(self.report["mhclo"]["source_offset_mm"], [0.0, 0.0, 0.0])
+
     def test_helper_geometry_follows_the_targets(self):
         """The tights patch binds vertex by vertex to helper-tights, which Anny's template
         lacks: its vertices come from MakeHuman's targets on the binding body, and on random

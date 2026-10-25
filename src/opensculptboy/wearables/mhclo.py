@@ -57,6 +57,8 @@ from opensculptboy.wearables.format import (
 
 IMPORT_COVERS = ("auto", "ray", "none")
 DEFAULT_LAYER = 50  # MakeHuman's z_depth when a file gives none
+# The distance of the .obj from its binding's place above which the report notes it.
+SOURCE_OFFSET_MM = 5.0
 
 # Words of an asset's name and tags that name a slot, in the order they are tried.
 SLOT_WORDS = {
@@ -941,7 +943,25 @@ def import_mhclo(
     if len(missing):
         template[missing] = _template_rows(missing)
     on_base = evaluate_binding(asset, template @ to_mh.T)
-    source_fit = np.linalg.norm(on_base - mesh.vertices, axis=1) * 100.0  # dm to mm
+    # The .obj may lie away from the place its binding gives: MakeClothes 2 exports the
+    # human standing on the ground, about 8 dm above base.obj's feet. The offset is the mean
+    # translation, and the fits compare the shapes with it taken out, on base.obj and on
+    # the binding body (the human that MakeClothes 2 models on is the default one).
+    shift = (mesh.vertices - on_base).mean(axis=0)
+    source_fit = np.linalg.norm(on_base + shift - mesh.vertices, axis=1) * 100.0  # mm
+    on_body = vertices @ to_mh.T
+    body_shift = (mesh.vertices - on_body).mean(axis=0)
+    body_fit = np.linalg.norm(on_body + body_shift - mesh.vertices, axis=1) * 100.0
+    source_offset = shift @ MH_TO_ANNY.T * 1000.0  # Anny's frame, mm
+    if float(np.linalg.norm(source_offset)) > SOURCE_OFFSET_MM:
+        quality.add(
+            "source_offset",
+            "info",
+            f"the .obj lies {np.linalg.norm(source_offset):.0f} mm from the place its "
+            f"binding gives on base.obj (x, y, z: {np.round(source_offset).tolist()} mm, "
+            "as MakeClothes 2 exports a human on the ground); the binding places the garment",
+            value=round(float(np.linalg.norm(source_offset)), 1),
+        )
     garment, _ = garment_from(asset, mesh, vertices, material)
     garment, _, quality = check_garment(
         garment,
@@ -1026,8 +1046,11 @@ def import_mhclo(
                 "delete_verts_outside_anny": deleted_outside,
                 "helper_bound_vertices": helpers,
                 "target_evaluated_vertices": target_vertices,
+                "source_offset_mm": [round(float(c), 1) for c in source_offset],
                 "source_fit_mm_median": round(float(np.median(source_fit)), 3),
                 "source_fit_mm_max": round(float(source_fit.max()), 3),
+                "source_fit_body_mm_median": round(float(np.median(body_fit)), 3),
+                "source_fit_body_mm_max": round(float(body_fit.max()), 3),
             },
             "covers_from": "none"
             if covers == "none"
