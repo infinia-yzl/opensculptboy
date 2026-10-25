@@ -139,6 +139,7 @@ class DressedPiece:
     def extras(self) -> dict:
         w = self.wearable
         out = {
+            "ref": self.ref,
             "piece": self.piece,
             "outfit": self.outfit,
             "name": w.name,
