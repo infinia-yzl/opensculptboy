@@ -509,23 +509,26 @@ def _find_texture(folder: pathlib.Path, value: str) -> pathlib.Path:
 
 
 ROUGHNESS_FORMULA = (
-    "roughnessFactor = clamp(1 - shininess, 0.04, 1), and 1 when specularIntensity or "
-    "specularColor is 0; a 'roughness' key of the .mhmat file wins"
+    "roughnessFactor = clamp(1 - shininess, 0.04, 1), and 1 when specularColor is 0; a "
+    "'roughness' key of the .mhmat file wins"
 )
 
 
 def read_mhmat(path, fallback_name: str, quality) -> Material:
     """
     A glTF PBR material from a ``.mhmat`` file, with the mapping in ``quality``:
-    ``diffuseColor`` (sRGB, made linear) times ``diffuseIntensity`` and ``diffuseTexture``
-    give the base colour, ``opacity`` its alpha; ``shininess``, ``specularColor`` and
-    ``specularIntensity`` give the roughness (:data:`ROUGHNESS_FORMULA`), ``metallic`` the
-    metallic factor; ``transparencymapTexture`` becomes the alpha of the base colour texture;
-    ``transparent`` gives BLEND, or MASK (cutoff 0.5) with ``alphaToCoverage`` or for an
-    alpha map on an opaque material; ``backfaceCull false`` gives a double-sided material;
+    ``diffuseColor`` (sRGB, made linear) and ``diffuseTexture`` give the base colour,
+    ``opacity`` its alpha; ``shininess`` and ``specularColor`` give the roughness
+    (:data:`ROUGHNESS_FORMULA`), ``metallic`` the metallic factor;
+    ``transparencymapTexture`` becomes the alpha of the base colour texture; ``transparent``
+    gives BLEND, or MASK (cutoff 0.5) with ``alphaToCoverage`` or for an alpha map on an
+    opaque material; ``backfaceCull false`` gives a double-sided material;
     ``normalmapTexture`` with ``normalmapIntensity`` the normal map, ``aomapTexture`` the
     occlusion and ``emissiveColor`` the emission. Specular, bump and displacement maps have
-    no glTF PBR slot and are dropped with an item each.
+    no glTF PBR slot and are dropped with an item each. MakeHuman's material reader
+    (``shared/material.py``) ignores ``diffuseIntensity`` and ``specularIntensity`` as
+    deprecated keys and draws the colours as they are; the import does the same and reports
+    the keys with an item.
     """
     path = pathlib.Path(path) if path else None
     if path is None or not path.is_file():
@@ -567,14 +570,22 @@ def read_mhmat(path, fallback_name: str, quality) -> Material:
 
     name = values.get("name") or fallback_name
     material = Material(name)
-    rgb = _srgb_to_linear(colour("diffuseColor", [1.0, 1.0, 1.0])) * number(
-        "diffuseIntensity", 1.0
-    )
+    rgb = _srgb_to_linear(colour("diffuseColor", [1.0, 1.0, 1.0]))
     alpha = float(np.clip(number("opacity", 1.0), 0.0, 1.0))
     material.base_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]), alpha)
-    specular = np.asarray(colour("specularColor", [1.0, 1.0, 1.0])) * number(
-        "specularIntensity", 1.0
-    )
+    specular = np.asarray(colour("specularColor", [1.0, 1.0, 1.0]))
+    deprecated = [k for k in ("diffuseIntensity", "specularIntensity") if k in values]
+    if deprecated:
+        quality.add(
+            "deprecated_key",
+            "info",
+            f"{name}: {' and '.join(deprecated)} left out: MakeHuman ignores "
+            f"{'these deprecated keys' if len(deprecated) > 1 else 'this deprecated key'} "
+            "and draws the colours as they are",
+            "Set the colours with diffuseColor and specularColor.",
+            material=name,
+            count=len(deprecated),
+        )
     if "roughness" in values:
         material.roughness = float(np.clip(number("roughness", 0.8), 0.0, 1.0))
     elif float(np.max(specular)) <= 0.0:

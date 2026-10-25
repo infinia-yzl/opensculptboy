@@ -448,6 +448,31 @@ class TestCommandErrors(unittest.TestCase):
                         self.assertNotIn("Traceback", err)
 
 
+class TestMaterial(unittest.TestCase):
+    def test_deprecated_intensities_leave_the_colours(self):
+        """MakeHuman's material reader ignores diffuseIntensity and specularIntensity
+        (deprecated keys): the colours stay as diffuseColor and specularColor give them,
+        and an item names the keys."""
+        from opensculptboy.wearables.mhclo import read_mhmat
+        from opensculptboy.wearables.quality import Quality
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "cloth.mhmat"
+            path.write_text(
+                "name cloth\ndiffuseColor 0.5 0.5 0.5\ndiffuseIntensity 0.2\n"
+                "specularColor 1 1 1\nspecularIntensity 0\nshininess 0.5\n",
+                encoding="utf-8",
+            )
+            quality = Quality()
+            material = read_mhmat(path, "cloth", quality)
+        linear = ((0.5 + 0.055) / 1.055) ** 2.4
+        np.testing.assert_allclose(material.base_color[:3], [linear] * 3, rtol=1e-6)
+        self.assertAlmostEqual(material.roughness, 0.5)
+        items = [i for i in quality.items if i.code == "deprecated_key"]
+        self.assertEqual(len(items), 1)
+        self.assertIn("diffuseIntensity and specularIntensity", items[0].message)
+
+
 class TestQuality(unittest.TestCase):
     """One synthetic asset per defect."""
 
