@@ -126,7 +126,7 @@ class TestDecimate(unittest.TestCase):
         self.assertAlmostEqual(float(length), 4.0, places=9)
 
     def test_material_borders_floors_and_locks(self):
-        P, T = grid(24)
+        P, T = grid(25)  # a column of vertices at x = 0.5
         centre = P[T].mean(1)
         labels = (centre[:, 0] > 0.5).astype(int)
         locked = np.zeros(len(P), bool)
@@ -143,10 +143,12 @@ class TestDecimate(unittest.TestCase):
         )
         self.assertEqual(int((r.groups == 1).sum()), whole)
         self.assertTrue(r.kept[[5, 6, 7]].all())
-        # the border between the labels stays a straight line at x = 0.5
-        on_border = np.isclose(P[:, 0], 0.5, atol=0.03)
-        line = P[r.kept & on_border]
-        self.assertTrue(np.allclose(line[:, 0], line[0, 0]))
+        # the border between the labels stays on the line x = 0.5
+        both = np.intersect1d(
+            np.unique(r.triangles[r.labels == 0]), np.unique(r.triangles[r.labels == 1])
+        )
+        self.assertGreater(len(both), 2)
+        np.testing.assert_allclose(P[both, 0], 0.5, atol=1e-12)
         np.testing.assert_array_equal(r.labels, labels[r.origin])
 
     def test_shapes_join_the_cost(self):
@@ -279,6 +281,7 @@ class TestAtlas(unittest.TestCase):
             alpha_mode="MASK",
             alpha_cutoff=0.3,
             base_color=(0.5, 1, 1, 1),
+            shade_color=(0.3, 0.6, 0.6),  # the shade keeps the ratio of the others
             double_sided=True,
         )
         mb = self._materials(
@@ -713,7 +716,8 @@ class TestCommand(unittest.TestCase):
             lines[0].startswith("fit: fit to the vrm1 budget"), stderr.getvalue()
         )
         self.assertTrue(any(line.startswith("fit: reduced: ") for line in lines))
-        summary = json.loads(stdout.getvalue())
+        text = stdout.getvalue()  # after Warp's own lines, if any
+        summary = json.loads(text[text.index("{") :])
         self.assertLessEqual(summary["counts"]["triangles"], 15000)
         self.assertIn("pieces", summary)
 

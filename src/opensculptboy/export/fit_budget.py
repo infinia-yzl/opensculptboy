@@ -266,7 +266,7 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
             r = decimate(
                 positions,
                 T[pick],
-                number,
+                max(number - 1, 1),  # one below: a last collapse can stop one above
                 labels=labels[pick],
                 uvs=uvs,
                 normals=normals,
