@@ -902,8 +902,9 @@ def vrm_spec(
     materials = [mtoon.soft_material("skin", SKIN_COLOUR)]
     if set(images) - {"eyes", "eyes_normal", "eye_base_color"} - MOUTH_SLOTS:
         materials = [_textured_toon_material(images, skin)]
-    if "normal" in images or "head_normal" in images or "mouth_normal" in images:
-        body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
+    # No TANGENT: three-vrm's MToon vertex shader writes no vTangent, so a primitive with vertex
+    # tangents and a normal map fails to link. Without them a viewer derives the tangent frame
+    # from the UVs, as glTF asks (UniVRM on import, three-vrm per pixel).
     primitives = [SpecPrimitive(material=0)]
     eye_material = None if eyed is not None else _eye_toon_material(images, model)
     eye_triangles = None

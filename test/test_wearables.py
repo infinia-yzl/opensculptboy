@@ -37,6 +37,7 @@ from opensculptboy.wearables.cover import coverage_gaps
 from opensculptboy.wearables.export import Dressing
 from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 from test.wearable_fixtures import (
+    bump_normal_map,
     cape,
     circlet,
     cover_of,
@@ -559,6 +560,38 @@ class TestDressedFiles(unittest.TestCase):
                 else:
                     text = glb.json["extensions"]["VRM"]["meta"]["reference"]
                 self.assertIn("Wearable: " + TUNIC_CREDIT, text)
+
+    def test_vrm_normal_maps_without_tangents(self):
+        """A normal-mapped skin and piece keep their normal maps in both versions, without
+        vertex tangents (test.test_vrm_three.TestThreeVrmNormalMaps draws them in three-vrm)."""
+        from opensculptboy.export.vrm import export_vrm
+        from test.test_vrm_schema import check_vrm0, check_vrm1
+
+        folder = self.folder / "normal_map"
+        card = write_outfit(folder, normal_map=True)
+        for version, check in (("1.0", check_vrm1), ("0.x", check_vrm0)):
+            with self.subTest(version):
+                path = folder / f"normal_map_{version}.vrm"
+                export_vrm(
+                    path,
+                    card,
+                    author="test",
+                    version=version,
+                    detail_dir=folder,
+                    refine_weights=False,
+                    textures={"normal": bump_normal_map()},
+                )
+                glb = GLB(path)
+                self.assertEqual(check(glb.json), [])
+                mapped = [m for m in glb.json["materials"] if "normalTexture" in m]
+                self.assertGreaterEqual(len(mapped), 2, "the skin and the cape")
+                (mesh,) = [
+                    m for m in glb.json["meshes"] if m["name"] == "test_outfit/cape"
+                ]
+                for primitive in mesh["primitives"]:
+                    self.assertIn("TEXCOORD_0", primitive["attributes"])
+                    material = glb.json["materials"][primitive["material"]]
+                    self.assertIn("normalTexture", material)
 
     def test_command(self):
         from opensculptboy.cli import main
