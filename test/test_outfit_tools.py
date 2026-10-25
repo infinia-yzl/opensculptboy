@@ -56,11 +56,16 @@ def validate(data: dict, schema_path: pathlib.Path) -> None:
     jsonschema.validate(data, json.loads(schema_path.read_text(encoding="utf-8")))
 
 
-def shell(name, offset, layer, colour, covers=True, slot="torso") -> Wearable:
+def shell(
+    name, offset, layer, colour, covers=True, slot="torso", inside_out=False
+) -> Wearable:
     """A shell of anny's torso ``offset`` metres off the skin (negative: under it), with the
-    skin under it as its cover mask when ``covers``."""
+    skin under it as its cover mask when ``covers``; ``inside_out`` winds its triangles
+    toward the body."""
     body = template_body()
     vertices, triangles, rows = _region_shell(body, torso_mask(body), offset)
+    if inside_out:
+        triangles = triangles[:, ::-1]
     garment = Garment(vertices, triangles, materials=[Material(name, colour, 0.0, 0.9)])
     mask = np.zeros(len(body.vertices), bool)
     if covers:
@@ -241,7 +246,12 @@ class TestCheck(unittest.TestCase):
             wear / "vest.wearable.json",
             shell("vest", 0.002, 60, (0.1, 0.5, 0.1), covers=False, slot="accessory"),
         )
+        write_wearable(
+            wear / "lining.wearable.json",
+            shell("lining", 0.004, 50, (0.7, 0.7, 0.2), inside_out=True),
+        )
         cls.clean = card_file(cls.folder, ["tunic", "cape", "circlet"], "clean.json")
+        cls.lining = card_file(cls.folder, ["lining", "cape"], "lining.json")
         cls.skin = card_file(cls.folder, ["tight"], "skin.json")
         cls.layers = card_file(cls.folder, ["tunic", "vest"], "layers.json")
 
@@ -286,6 +296,12 @@ class TestCheck(unittest.TestCase):
         image = Image.open(sheet)
         self.assertEqual(image.size[0], 6 * 200)
         self.assertEqual(report["sheet"], str(sheet))
+
+    def test_inside_out_piece_measures_outward(self):
+        """A piece wound toward the body measures from the side away from the skin."""
+        status, report, _ = self.check(self.lining, "--sheet", "none")
+        self.assertEqual(status, 0, report["failed"])
+        self.assertGreater(report["states"][0]["skin"]["covered"], 100)
 
     def test_planted_skin_defect_fails(self):
         status, report, _ = self.check(self.skin, "--sheet", "none", "--no-tpose")

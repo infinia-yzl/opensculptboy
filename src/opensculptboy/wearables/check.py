@@ -223,26 +223,45 @@ def _visible_rows(piece) -> np.ndarray:
 class Partners:
     """Points of a set of ``rows`` (body or lower-piece vertices) and their partners on a
     piece: the closest point of the piece's visible triangles at rest (``triangle``, an index
-    into those triangles, and ``barycentric``), which each pose carries along."""
+    into those triangles, and ``barycentric``), which each pose carries along. ``side`` (+1
+    or -1) turns the piece's normal at the partner away from the body: the normal of the
+    triangles' winding, turned where it faces the skin at rest, so that a piece wound inside
+    out, or the far side of a double-sided panel, still measures outward."""
 
     rows: np.ndarray
     triangle: np.ndarray
     barycentric: np.ndarray
+    side: np.ndarray
 
     @classmethod
-    def at_rest(cls, points, rows, piece):
-        from opensculptboy.wearables.geometry import Surface
+    def at_rest(cls, points, rows, piece, body):
+        from opensculptboy.wearables.geometry import (
+            Surface,
+            interpolate,
+            unit_rows,
+            vertex_normals,
+        )
 
         tris = piece.visible_triangles()
         if not len(rows) or not len(tris):
-            return cls(np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros((0, 3)))
+            empty = np.zeros(0, np.int64)
+            return cls(empty, empty, np.zeros((0, 3)), np.zeros(0))
         found = Surface(piece.vertices, tris).closest(points[rows])
         near = found.distance < NEAR
-        return cls(rows[near], found.triangle[near], found.barycentric[near])
+        triangle, barycentric = found.triangle[near], found.barycentric[near]
+        corners = tris[triangle]
+        n = unit_rows(
+            interpolate(vertex_normals(piece.vertices, tris), corners, barycentric)
+        )
+        foot = interpolate(piece.vertices, corners, barycentric)
+        skin = body.surface.closest(foot)
+        outward = body.surface.normal(skin.triangle, skin.barycentric)
+        side = np.where(np.einsum("ij,ij->i", n, outward) < 0, -1.0, 1.0)
+        return cls(rows[near], triangle, barycentric, side)
 
     def signed(self, points, piece, piece_vertices) -> np.ndarray:
         """The signed distance of each point (``points[rows]``) from its partner, along the
-        piece's normal there, with the piece at ``piece_vertices``."""
+        piece's outward normal there, with the piece at ``piece_vertices``."""
         from opensculptboy.wearables.geometry import (
             interpolate,
             unit_rows,
@@ -254,7 +273,7 @@ class Partners:
         foot = interpolate(piece_vertices, corners, self.barycentric)
         normals = vertex_normals(piece_vertices, tris)
         n = unit_rows(interpolate(normals, corners, self.barycentric))
-        return np.einsum("ij,ij->i", points[self.rows] - foot, n)
+        return self.side * np.einsum("ij,ij->i", points[self.rows] - foot, n)
 
 
 @dataclasses.dataclass
@@ -285,7 +304,7 @@ def layout(body, dressed) -> Layout:
 
     pieces = [p for p in dressed if p.shown]
     covers = [
-        Partners.at_rest(body.vertices, np.flatnonzero(piece_cover(body, p)), p)
+        Partners.at_rest(body.vertices, np.flatnonzero(piece_cover(body, p)), p, body)
         for p in pieces
     ]
     pairs = []
@@ -304,7 +323,9 @@ def layout(body, dressed) -> Layout:
             hit = ray_hits(origins, normals, upper.vertices, tris, RAY)
             hit |= ray_hits(origins, -normals, upper.vertices, tris, RAY)
             if hit.any():
-                pairs.append((u, k, Partners.at_rest(lower.vertices, rows[hit], upper)))
+                pairs.append(
+                    (u, k, Partners.at_rest(lower.vertices, rows[hit], upper, body))
+                )
     return Layout(
         body,
         pieces,
