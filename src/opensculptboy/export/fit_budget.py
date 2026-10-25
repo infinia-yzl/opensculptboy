@@ -60,6 +60,8 @@ VIEW_SIZE = 384
 # triangles or fewer; before the reduction, when it asks for less than HIDDEN_RATIO of the
 # triangles, the parts of HIDDEN_PART triangles or fewer that no view sees
 THIN_PART = 16
+# the share of a material's triangles that the thinning may take
+THIN_SHARE = 0.5
 HIDDEN_PART = 64
 HIDDEN_RATIO = 0.35
 # morph targets whose shapes join the cost of the body's reduction (the largest movers)
@@ -310,6 +312,7 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
             0,
             HIDDEN_PART,
             hidden_only=True,
+            labels=labels[rows],
         )
         free[rows[~keep]] = False
         hidden = int((~keep).sum())
@@ -365,6 +368,7 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
                     importance,
                     wearable_groups,
                     len(out_t) - target,
+                    labels=out_l,
                 )
                 thinned += int((~keep).sum())
                 out_t, out_l, out_g, out_o = (
@@ -446,12 +450,14 @@ def _thin_parts(
     excess,
     max_size: int | None = None,
     hidden_only: bool = False,
+    labels=None,
 ):
     """A mask of the triangles to keep after removing whole small parts (connected parts of
     ``max_size`` triangles or fewer: :data:`THIN_PART`) of the wearable groups, those that the
-    views see least first (their seen pixels times their importance), until ``excess``
-    triangles are gone (or none is left); ``hidden_only`` removes every such part that no view
-    sees, whatever ``excess``."""
+    views see least first (the share of their surface that the views see, times their
+    importance), until ``excess`` triangles are gone (or none is left), taking no more than
+    :data:`THIN_SHARE` of any label's (material's) triangles; ``hidden_only`` removes every such
+    part that no view sees, whatever ``excess``."""
     from opensculptboy.export.decimate import _components, weld
 
     max_size = THIN_PART if max_size is None else max_size
@@ -469,15 +475,38 @@ def _thin_parts(
     small = (size <= max_size) & np.isin(groups, sorted(wearable_groups))
     if not small.any():
         return keep
-    score_t = seen[origin] * importance[T].mean(1)
-    score = np.bincount(part[small], weights=score_t[small], minlength=W)
+    # each part's score: the share of its surface that the views see, times its importance
+    q = positions[T]
+    area = 0.5 * np.linalg.norm(np.cross(q[:, 1] - q[:, 0], q[:, 2] - q[:, 0]), axis=1)
+    seen_part = np.bincount(part[small], weights=seen[origin][small], minlength=W)
+    area_part = np.bincount(part[small], weights=area[small], minlength=W)
+    weight = np.bincount(
+        part[small], weights=importance[T].mean(1)[small] * area[small], minlength=W
+    )
+    score = (
+        seen_part / np.maximum(area_part, 1e-12) * weight / np.maximum(area_part, 1e-12)
+    )
     parts = np.unique(part[small])
     if hidden_only:
-        keep[np.isin(part, parts[score[parts] <= 0]) & small] = False
+        keep[np.isin(part, parts[seen_part[parts] <= 0]) & small] = False
         return keep
     order = parts[np.argsort(score[parts], kind="stable")]
-    count = np.bincount(part[small], minlength=W)[order]
-    take = order[: int(np.searchsorted(np.cumsum(count), excess)) + 1]
+    # no label (material) loses more than THIN_SHARE of its triangles
+    label_of = np.zeros(W, np.int64)
+    label_of[part[small]] = labels[small] if labels is not None else 0
+    total = np.bincount(labels if labels is not None else np.zeros(len(T), np.int64))
+    count = np.bincount(part[small], minlength=W)
+    taken_by_label = np.zeros(len(total), np.int64)
+    removed, take = 0, []
+    for k in order.tolist():
+        if removed >= excess:
+            break
+        lab = label_of[k]
+        if taken_by_label[lab] + count[k] > THIN_SHARE * total[lab]:
+            continue
+        taken_by_label[lab] += count[k]
+        removed += count[k]
+        take.append(k)
     keep[np.isin(part, take) & small] = False
     return keep
 
@@ -602,6 +631,11 @@ def fit_spec(spec, options: FitOptions | None = None) -> dict:
         started = time.time()
         reduced = reduce_spec(spec, limits["triangles"], options)
         report["steps"].append({"step": "reduce", **reduced})
+        from opensculptboy.export.atlas import _drop_unused
+
+        _drop_unused(
+            spec, spec.materials, spec.images
+        )  # the materials of vanished parts
         if options.rebake and full is not None:
             from opensculptboy.export.rebake import rebake_spec
 

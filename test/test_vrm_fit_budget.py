@@ -613,6 +613,31 @@ class TestFitBudget(unittest.TestCase):
             w = np.asarray(mesh.body.weights) > 0
             np.testing.assert_array_equal(new[w], old[w])
 
+    def test_thinning_takes_the_least_seen_parts(self):
+        from opensculptboy.export.fit_budget import _thin_parts
+
+        P, T = [], []
+        for k in range(6):  # six cards of two triangles
+            o, b = np.array([k * 0.05, 0.0, 0.0]), len(P)
+            P += [o, o + [0.01, 0, 0], o + [0.01, 0.03, 0], o + [0, 0.03, 0]]
+            T += [[b, b + 1, b + 2], [b, b + 2, b + 3]]
+        P, T = np.array(P), np.array(T)
+        seen = np.repeat([5.0, 0.0, 3.0, 0.0, 9.0, 1.0], 2)
+        groups = np.zeros(len(T), int)
+        rows = np.arange(len(T))
+        args = (P, T, groups, rows, seen, np.ones(len(P)), {0})
+        keep = _thin_parts(*args, 0, hidden_only=True)
+        np.testing.assert_array_equal(keep.reshape(-1, 2).all(1), [1, 0, 1, 0, 1, 1])
+        # three cards: the two hidden ones, then the least seen
+        keep = _thin_parts(*args, 5)
+        np.testing.assert_array_equal(keep.reshape(-1, 2).all(1), [1, 0, 1, 0, 1, 0])
+        # at most half of each material goes
+        keep = _thin_parts(*args, 5, labels=np.repeat([0, 0, 0, 1, 1, 1], 2))
+        np.testing.assert_array_equal(keep.reshape(-1, 2).all(1), [1, 0, 1, 0, 1, 1])
+        self.assertTrue(
+            _thin_parts(P, T, groups, rows, seen, np.ones(len(P)), set(), 5).all()
+        )
+
     def test_textures_shrink_to_the_limit(self):
         spec, report = self.fit("0.x", texture_size=32)
         sizes = [s["to"] for s in report["steps"][-1]["images"]]

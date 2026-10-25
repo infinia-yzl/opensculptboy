@@ -388,6 +388,7 @@ def atlas_spec(
     from opensculptboy.export.budget import image_size
     from opensculptboy.export.pieces import primitive_triangles
 
+    _drop_unused(spec, spec.materials, spec.images)  # materials that no primitive draws
     report = AtlasReport(materials_before=len(spec.materials))
     if len(spec.materials) <= max_materials:
         report.materials_after = len(spec.materials)
