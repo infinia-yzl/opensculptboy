@@ -336,6 +336,68 @@ def skirt(body=None, springs=None) -> Wearable:
     )
 
 
+SLEEVE_BONES = ("upperarm01", "upperarm02", "lowerarm01", "lowerarm02", "wrist")
+
+
+def robe(body=None) -> Wearable:
+    """
+    A robe as a reference handoff gives it: a long back panel (the long cape's) and two wide
+    sleeves, 3.5 cm off the skin of the upper arms, the forearms and the wrists, in one piece
+    with its own skin weights by bone name (``weights: own``): the body's weights at each
+    vertex's closest skin point, smoothed over the piece, the strongest four. The weights of
+    the sleeves lie on the upper arm, forearm and hand bones and their twist bones
+    (``upperarm02``, ``lowerarm02``). One ``auto`` spring, as reference pieces with physics
+    get (:func:`opensculptboy.wearables.reference.reference_springs`).
+    """
+    from opensculptboy.wearables.bind import (
+        dense_body_weights,
+        smooth_weights,
+        strongest,
+    )
+
+    body = body or template_body()
+    labels = body.bone_labels
+    panel = long_cape(body).garment
+    arms = [labels.index(f"{b}.{s}") for b in SLEEVE_BONES for s in ("L", "R")]
+    keep = np.isin(_dominant(body), arms)
+    shell, shell_triangles, _ = _region_shell(body, keep, 0.035)
+    vertices = np.concatenate([panel.vertices, shell])
+    triangles = np.concatenate([panel.triangles, shell_triangles + len(panel.vertices)])
+    group = np.r_[
+        np.zeros(len(panel.triangles), np.int64),
+        np.ones(len(shell_triangles), np.int64),
+    ]
+    garment = Garment(
+        vertices,
+        triangles,
+        triangle_group=group,
+        groups=["back", "sleeves"],
+        materials=[Material("silk", (0.2, 0.2, 0.5, 1.0), 0.0, 0.8, double_sided=True)],
+    )
+    binding = bind_surface(garment, body)
+    dense = smooth_weights(dense_body_weights(binding, body), vertices, triangles, 10)
+    order = strongest(dense, 4)
+    w = np.take_along_axis(dense, order, axis=1)
+    w = w / w.sum(axis=1, keepdims=True)
+    used = np.unique(order[w > 0])
+    remap = np.zeros(len(labels), np.int64)
+    remap[used] = np.arange(len(used))
+    binding.skin_weights = w
+    binding.skin_joints = remap[np.where(w > 0, order, used[0])]
+    binding.joint_names = [labels[b] for b in used]
+    return Wearable(
+        name="robe",
+        slot="torso",
+        layer=50,
+        garment=garment,
+        binding=binding,
+        weights="own",
+        licence=dict(LICENCE),
+        covers=np.zeros(len(body.vertices), bool),
+        springs=[{"name": "loose"}],
+    )
+
+
 def write_loose(folder, body=None, pieces=None) -> Character:
     """Write the long cape and the skirt into ``folder`` and return a card that wears them
     as the outfit ``loose``."""

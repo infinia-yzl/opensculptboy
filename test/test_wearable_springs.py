@@ -5,8 +5,9 @@ Checks of the spring chains of loose wearables (``opensculptboy.wearables.spring
 docs/wearables.md, "Springs") with synthetic garments only: a long cape and a skirt on
 anny's template (``test.wearable_fixtures``). The package entries, the chain structure, the
 weights and the attachment at the top, the body colliders, the GLB and VRM files of both
-versions within their budgets, and a few seconds of the VRM spring update in which the cape
-and the skirt swing and stay outside the body's capsules.
+versions within their budgets, a few seconds of the VRM spring update in which the cape
+and the skirt swing and stay outside the body's capsules, and the sleeves of a robe with its
+own weights, which follow the arms in the GLB and VRM files posed arms down and in the walk.
 """
 
 import contextlib
@@ -40,6 +41,7 @@ from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 from test.test_vrm_schema import check_vrm0, check_vrm1
 from test.wearable_fixtures import (
     long_cape,
+    robe,
     skirt,
     template_body,
     template_model,
@@ -591,6 +593,222 @@ class TestSpringFiles(unittest.TestCase):
         self.assertEqual(
             len(GLB(out).json["skins"][0]["joints"]), self.model.bone_count
         )
+
+
+def _children_parents(nodes) -> dict:
+    return {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+
+
+def _set_worlds(glb, worlds: dict, rest) -> None:
+    """Give the nodes of ``worlds`` (index -> world matrix) local matrices that put them
+    there; the other nodes keep their local matrices (``rest``: the rest world matrices)."""
+    parents = _children_parents(glb.json["nodes"])
+    for i, world in worlds.items():
+        p = parents.get(i)
+        above = np.eye(4) if p is None else worlds.get(p, rest[p])
+        node = glb.json["nodes"][i]
+        for key in ("translation", "rotation", "scale"):
+            node.pop(key, None)
+        node["matrix"] = [
+            float(x) for x in (np.linalg.inv(above) @ world).T.reshape(-1)
+        ]
+
+
+def _engine_pose(glb, version, rebind, M) -> np.ndarray:
+    """
+    Pose a VRM file as an app turns its humanoid bones (the world bone poses M of Anny,
+    (J, 4, 4)): each humanoid bone takes its rotation relative to its nearest humanoid
+    ancestor, as a retargeted motion gives it, the roll constraints of a VRM 1.0 file set the
+    twist bones, and every other node keeps its rest under its parent (the spring joints
+    among them, as at the start of the spring update). Returns the translation that moves
+    the hips from their rest place to Anny's posed hips, for the comparison.
+    """
+    from opensculptboy.export.tpose import roll_constraint
+    from opensculptboy.export.vrm import FRAMES
+
+    G = FRAMES[version]
+    nodes = glb.json["nodes"]
+    ext = glb.json["extensions"]
+    if version == "1.0":
+        bones = ext["VRMC_vrm"]["humanoid"]["humanBones"]
+        human = {b: e["node"] for b, e in bones.items()}
+    else:
+        human = {e["bone"]: e["node"] for e in ext["VRM"]["humanoid"]["humanBones"]}
+    T = rebind.bone_poses
+    world = G @ M[:, :3, :3] @ np.swapaxes(T[:, :3, :3], 1, 2) @ G.T
+    parents = _children_parents(nodes)
+    humanoid = set(human.values())
+    local = {}
+    for h in humanoid:
+        a = parents.get(h)
+        while a is not None and a not in humanoid:
+            a = parents.get(a)
+        local[h] = world[h] if a is None else world[a].T @ world[h]
+    for i, node in enumerate(nodes):
+        roll = (
+            node.get("extensions", {})
+            .get("VRMC_node_constraint", {})
+            .get("constraint", {})
+            .get("roll")
+        )
+        if roll is not None:
+            axis = np.eye(3)["XYZ".index(roll["rollAxis"])]
+            local[i] = roll_constraint(local[roll["source"]], axis, roll["weight"])
+    for i, rotation in local.items():
+        m = np.eye(4)
+        m[:3, :3] = rotation
+        m[:3, 3] = nodes[i].get("translation", [0.0, 0.0, 0.0])
+        for key in ("translation", "rotation", "scale"):
+            nodes[i].pop(key, None)
+        nodes[i]["matrix"] = [float(x) for x in m.T.reshape(-1)]
+    hips = human["hips"]
+    return G @ (M[hips, :3, 3] - T[hips, :3, 3])
+
+
+class TestSleeves(unittest.TestCase):
+    """
+    A robe as a reference handoff gives it (``test.wearable_fixtures.robe``: a long back
+    panel and wide sleeves with own skin weights on the arm bones and their twist bones, and
+    an auto spring) in the VRM files of both versions and the GLB file, posed arms down
+    (``relaxed``) and in the walk: the sleeves follow the arms within 1 mm in the GLB file
+    with every bone posed, and within 2.5 cm in the VRM files posed as an app poses them
+    (the bound of the body's own humanoid error, test_vrm_tpose.test_humanoid_error: the
+    bones between the humanoid bones stay at rest); the VRM sleeves land within 2.5 cm of
+    the GLB's. Chains of the torso that took the sleeves left them 30 cm off in both files.
+    The back panel keeps its chains.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import anny.poses
+        import torch
+
+        from opensculptboy.export.vrm import write_vrm
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+        cls.robe = robe()
+        cls.card = write_loose(cls.folder, pieces=[cls.robe])
+        cls.model = template_model()
+        cls.specs = {}
+        for version in ("1.0", "0.x"):
+            spec = vrm_spec(
+                cls.card,
+                version=version,
+                author="test",
+                detail_dir=cls.folder,
+                refine_weights=False,
+            )
+            path = cls.folder / f"robe_{version}.vrm"
+            write_vrm(spec, path)
+            cls.specs[version] = (spec, path)
+        cls.glb_path = cls.folder / "robe.glb"
+        export_glb(cls.glb_path, cls.card, cls.model, detail_dir=cls.folder)
+        # the arms-down pose and every fourth frame of the walk: Anny's world bone poses
+        cls.poses = {}
+        for name in ("relaxed", "walk"):
+            params = anny.poses.pose_parameters(cls.model, name, grounded=False)
+            with torch.no_grad():
+                out = cls.model(
+                    pose_parameters=params["pose_parameters"][::4],
+                    pose_parameterization="local-ref",
+                )
+            cls.poses[name] = out["bone_poses"].double().numpy()
+        cls.dressed = dress(template_body(), _worn(cls.robe))[0]
+        garment = cls.dressed.garment
+        sleeves = garment.triangles[garment.triangle_group == 1]
+        cls.sleeve = np.unique(sleeves)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def truth(self, M):
+        """(V, 3) the robe in Anny's frame posed by its own weights."""
+        from opensculptboy.export.tpose import rigid_inverse, skin
+
+        B = template_body().bone_poses
+        d = self.dressed
+        return skin(d.vertices, d.weights, d.joints, M @ rigid_inverse(B))
+
+    def test_rig_keeps_the_sleeves_on_the_arms(self):
+        """The chains take the back panel, and the sleeves keep their own weights."""
+        piece = dress(template_body(), _worn(self.robe))[0]
+        before = piece.weights.copy(), piece.joints.copy()
+        rig = rig_springs(template_body(), [piece], _parents())
+        self.assertIsNotNone(rig)
+        J = self.model.bone_count
+        on_chains = np.where(piece.joints >= J, piece.weights, 0.0).sum(axis=1)
+        self.assertEqual(float(on_chains[self.sleeve].max()), 0.0)
+        back = np.setdiff1d(np.arange(len(piece.vertices)), self.sleeve)
+        self.assertGreater(float(on_chains[back].max()), 0.9)
+        np.testing.assert_allclose(piece.weights[self.sleeve], before[0][self.sleeve])
+        np.testing.assert_array_equal(piece.joints[self.sleeve], before[1][self.sleeve])
+
+    def test_glb_sleeves_follow_the_arms(self):
+        for name, frames in self.glb_sleeves().items():
+            for f, posed in enumerate(frames):
+                with self.subTest(pose=name, frame=f):
+                    truth = self.truth(self.poses[name][f])[self.sleeve]
+                    error = np.linalg.norm(posed - truth, axis=1)
+                    self.assertLess(float(error.max()), 0.001)
+
+    def test_vrm_sleeves_follow_the_arms(self):
+        from opensculptboy.export.vrm import FRAMES
+
+        glb_sleeves = self.glb_sleeves()
+        for version, (spec, path) in self.specs.items():
+            G = FRAMES[version]
+            for name, frames in self.poses.items():
+                for f, M in enumerate(frames):
+                    with self.subTest(version=version, pose=name, frame=f):
+                        glb = GLB(path)
+                        shift = _engine_pose(glb, version, spec.rebind, M)
+                        index = names_index(glb, "loose/robe")
+                        posed = evaluate_nodes(glb)[index][0].positions
+                        # the file's frame back to Anny's, the hips where Anny has them
+                        posed = (posed - spec.offset + shift) @ G
+                        truth = self.truth(M)
+                        error = np.linalg.norm(posed - truth, axis=1)[self.sleeve]
+                        self.assertLess(float(error.max()), 0.025)
+                        gap = posed[self.sleeve] - glb_sleeves[name][f]
+                        self.assertLess(float(np.linalg.norm(gap, axis=1).max()), 0.025)
+
+    def glb_sleeves(self) -> dict:
+        """The sleeves of the GLB file (Anny's frame) with every bone posed as Anny's, per
+        pose and frame."""
+        from opensculptboy.export.tpose import rigid_inverse
+        from test.gltf_reader import node_world_matrices
+
+        labels = list(self.model.bone_labels)
+        B = template_body().bone_poses
+        out = {}
+        G4 = np.eye(4)
+        G4[:3, :3] = C
+        for name, frames in self.poses.items():
+            out[name] = []
+            for M in frames:
+                glb = GLB(self.glb_path)
+                index = names_index(glb, "loose/robe")
+                rest = node_world_matrices(glb)
+                at_rest = evaluate_nodes(glb)[index][0].positions
+                lift = np.eye(4)
+                lift[:3, 3] = np.median(at_rest - self.dressed.vertices @ C.T, axis=0)
+                X = G4 @ M @ rigid_inverse(B) @ G4.T
+                worlds = {
+                    i: lift @ X[labels.index(n["name"])] @ np.linalg.inv(lift) @ rest[i]
+                    for i, n in enumerate(glb.json["nodes"])
+                    if n.get("name") in labels and rest[i] is not None
+                }
+                _set_worlds(glb, worlds, rest)
+                posed = evaluate_nodes(glb)[index][0].positions
+                posed = (posed - lift[:3, 3]) @ C
+                out[name].append(posed[self.sleeve])
+        return out
+
+
+def names_index(glb, name):
+    return [n.get("name") for n in glb.json["nodes"]].index(name)
 
 
 if __name__ == "__main__":

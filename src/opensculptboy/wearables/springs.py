@@ -11,6 +11,8 @@ A package lists its springs in its ``springs`` field. Each entry is one of two k
   skin point. The columns spread over the azimuth of the loose vertices around the body's
   vertical axis (all around for a skirt, across the back for a cape), and each column runs
   from the top of its loose vertices to the lowest vertex of its band, its last joint the tail.
+  Outside the ``cloak`` slot, the vertices weighted mostly to the arms (sleeves) take no
+  part: they follow the arms.
 - ``chain``: a chain of joints that the author places (``points``, metres, glTF axes, on the
   binding body at rest). On another body each point moves with the garment vertices around it.
 
@@ -21,7 +23,9 @@ branch is a chain of its own.
 :func:`rig_springs` builds the chains of the dressed pieces of an export and blends the
 pieces' skin weights into them: a vertex takes the joints of the two nearest chains, by its
 place along each chain, and its body weights fade into the chain weights over the first
-segment, so that the top of the region stays attached to the body. :func:`body_colliders`
+segment, so that the top of the region stays attached to the body. With chains that hang
+from the torso, each vertex of a piece outside the ``cloak`` slot keeps its weight on the
+arms, so that a sleeve follows the arm that it covers. :func:`body_colliders`
 fits capsules and spheres inside the skin of a body (the head, the neck, the chest and the
 shoulders as the viewer's hair colliders, ``viewer/src/hair/colliders.ts``, and the spine, the
 hips, the legs and the upper arms), and each joint's hit radius stays within its clearance from
@@ -98,6 +102,13 @@ TORSO = (
 # The bones that the chains of a cloak may hang from: the torso less the neck, the head and
 # the shoulders (which turn with the arms).
 CLOAK_ROOTS = tuple(b for b in TORSO if not b.startswith(("neck", "head", "shoulder")))
+# The upper arms: they and every bone below them are the arms. A sleeve follows them, so the
+# chains of a spring that hang from the torso leave the vertices weighted to the arms on their
+# bones: a vertex with ARM_SHARE or more of its weight on the arms takes no part in the auto
+# columns and no chain weight, and below that the chains' share falls evenly to zero. A
+# piece of the cloak slot keeps its chains over the arms: it hangs from the upper body.
+ARM_ROOTS = ("upperarm01.L", "upperarm01.R")
+ARM_SHARE = 0.5
 
 
 @dataclasses.dataclass
@@ -616,9 +627,38 @@ def _parent_bone(piece, point, parents, labels, given) -> str:
     return labels[int(np.argmax(totals))]
 
 
-def _auto_columns(piece, body, spec) -> list[np.ndarray]:
-    """The joint positions (n, 3) of each column of an ``auto`` spring on this body."""
+def arm_bones(labels, parents) -> np.ndarray:
+    """(J,) the bones of the arms: the upper arms (:data:`ARM_ROOTS`) and every bone below
+    them."""
+    labels = list(labels)
+    out = np.zeros(len(labels), bool)
+    for j in range(len(labels)):
+        b = j
+        while b >= 0 and labels[b] not in ARM_ROOTS:
+            b = int(parents[b])
+        out[j] = b >= 0
+    return out
+
+
+def arm_share(piece, arms: np.ndarray) -> np.ndarray:
+    """(V,) the share of each vertex's skin weights on the bones of the arms (``arms``, from
+    :func:`arm_bones`; the joints of chains count as other bones)."""
+    joints = np.asarray(piece.joints)
+    on_arm = np.zeros(joints.shape, bool)
+    inside = joints < len(arms)
+    on_arm[inside] = arms[joints[inside]]
+    weights = np.asarray(piece.weights, dtype=np.float64)
+    total = np.maximum(weights.sum(axis=1), 1e-12)
+    return (weights * on_arm).sum(axis=1) / total
+
+
+def _auto_columns(piece, body, spec, arm=None) -> list[np.ndarray]:
+    """The joint positions (n, 3) of each column of an ``auto`` spring on this body;
+    ``arm`` (V,) is the vertices' share of weight on the arms (:func:`arm_share`), and the
+    vertices weighted mostly to the arms (sleeves) take no part."""
     region = _region(piece, spec)
+    if arm is not None:
+        region &= arm < ARM_SHARE
     rows = np.flatnonzero(region)
     if len(rows) == 0:
         return []
@@ -812,12 +852,19 @@ def rig_springs(body, pieces, parents, max_skin_joints=None) -> SpringRig | None
         _note_reductions(planned, before, fitted, messages)
         planned = fitted
     colliders = body_colliders(body)
+    arms = arm_bones(labels, parents)
+    on_arms = {  # a cloak hangs from the upper body whole (CLOAK_ROOTS)
+        id(piece): np.zeros(len(piece.vertices))
+        if piece.wearable.slot == "cloak"
+        else arm_share(piece, arms)
+        for piece, _ in planned
+    }
     chains: list[Chain] = []
     owners = []  # (piece, spec, chain indices)
     for piece, specs in planned:
         for spec in specs:
             if spec.kind == "auto":
-                columns = _auto_columns(piece, body, spec)
+                columns = _auto_columns(piece, body, spec, on_arms[id(piece)])
             else:
                 columns = [_authored_chain(piece, spec)]
             made = []
@@ -858,6 +905,10 @@ def rig_springs(body, pieces, parents, max_skin_joints=None) -> SpringRig | None
         first = [rig.first_joint(c) for c in made]
         reach = np.inf if spec.kind == "auto" else spec.reach
         chain_part, share = _chain_weights(piece, mine, first, region, reach, count)
+        if not any(arms[labels.index(c.parent)] for c in mine):
+            # chains of the torso: a sleeve keeps its weights, and the chains' share falls
+            # to zero as the vertex's share on the arms grows to ARM_SHARE
+            share = share * np.clip(1.0 - on_arms[id(piece)] / ARM_SHARE, 0.0, 1.0)
         k = piece.weights.shape[1]
         dense = _dense(piece.weights, piece.joints, count)
         dense = (1.0 - share)[:, None] * dense + share[:, None] * chain_part

@@ -95,7 +95,7 @@ uv run opensculptboy export out.glb --character card.json --outfit travel --hide
 uv run opensculptboy export out.glb --character card.json --wardrobe                   # every piece of every outfit as its own node
 uv run opensculptboy wearables reference handoff/ --card card.json --out folder/       # reference wearables (private packages, outside the repository)
 uv run python -m unittest test.test_wearables                                          # the wearables with synthetic garments: format, provenance, binding, fit gate, outfits, files
-uv run python -m unittest test.test_wearable_springs                                   # the spring chains of a synthetic cape and skirt: chains, weights, colliders, GLB, VRM, the spring update
+uv run python -m unittest test.test_wearable_springs                                   # the spring chains of a synthetic cape and skirt: chains, weights, colliders, GLB, VRM, the spring update, a robe's sleeves on the arms
 ```
 
 ### Face calibration
