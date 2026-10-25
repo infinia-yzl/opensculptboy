@@ -32,7 +32,15 @@ SLOTS = ("head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloa
 SLOTS += ("under", "accessory")
 METHODS = ("surface", "rigid")
 BODIES = ("anny-template", "card", "reference")
-LICENCE_KEYS = ("spdx", "declared", "author", "source", "design_source", "attribution")
+LICENCE_KEYS = (
+    "spdx",
+    "declared",
+    "text",
+    "author",
+    "source",
+    "design_source",
+    "attribution",
+)
 # The JSON Schema of a package's .wearable.json description.
 SCHEMA_PATH = (
     pathlib.Path(__file__).resolve().parent.parent

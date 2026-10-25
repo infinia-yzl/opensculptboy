@@ -20,6 +20,7 @@
       "properties": {
         "spdx": {"type": ["string", "null"]},
         "declared": {"type": "string"},
+        "text": {"type": "string"},
         "author": {"type": "string"},
         "source": {"type": "string"},
         "design_source": {"type": "string"},

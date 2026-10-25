@@ -321,26 +321,102 @@ def _delete_words(words, deleted: set, path, number) -> None:
 # -- the licence gate -------------------------------------------------------------------
 
 
-def spdx_of(text: str | None) -> str | None:
-    """The SPDX id of a licence as a MakeHuman header names it, when the text names one
-    plainly (``CC0`` is CC0-1.0, ``CC-BY 4.0`` is CC-BY-4.0, ``AGPL3`` is AGPL-3.0-only),
-    else None. A licence without a version keeps None, and the text stays in ``declared``."""
+def licence_name(text: str | None) -> str | None:
+    """The licence name of a header's licence text, without the words after it: a part in
+    brackets, a URL, ``see also ...`` or a clause after ``;`` (``AGPL3 (see also http://...)``
+    is ``AGPL3``), else None."""
     if not text or not text.strip():
         return None
-    t = " ".join(text.lower().replace("_", " ").split())
+    name = re.split(
+        r"[(\[;]|https?://|www\.|\bsee\b|\s[-–—]\s", text, maxsplit=1, flags=re.I
+    )[0]
+    name = " ".join(name.split()).strip(" ,.:")
+    return name or None
+
+
+# GNU licences: (pattern of the short name, SPDX base, default version)
+_GNU = (
+    (r"agpl", "AGPL", "3.0"),
+    (r"lgpl", "LGPL", None),
+    (r"gpl", "GPL", None),
+)
+_GNU_VERSIONS = {
+    "AGPL": ("3.0",),
+    "LGPL": ("2.0", "2.1", "3.0"),
+    "GPL": ("1.0", "2.0", "3.0"),
+}
+_PLAIN_SPDX = {
+    "mit": "MIT",
+    "expat": "MIT",
+    "apache 2": "Apache-2.0",
+    "apache 2.0": "Apache-2.0",
+    "apache v2": "Apache-2.0",
+    "bsd 2 clause": "BSD-2-Clause",
+    "bsd 3 clause": "BSD-3-Clause",
+    "mpl 2": "MPL-2.0",
+    "mpl 2.0": "MPL-2.0",
+    "unlicense": "Unlicense",
+    "the unlicense": "Unlicense",
+    "wtfpl": "WTFPL",
+    "zlib": "Zlib",
+    "isc": "ISC",
+    "ofl": "OFL-1.1",
+    "ofl 1.1": "OFL-1.1",
+}
+_CC_VERSIONS = ("1.0", "2.0", "2.5", "3.0", "4.0")
+
+
+def spdx_of(text: str | None) -> str | None:
+    """
+    The SPDX id of a licence as a MakeHuman header or pack names it, else None. The text may
+    carry words after the name (:func:`licence_name`). ``CC0`` is CC0-1.0; ``CC-BY``,
+    ``CC BY 4.0`` and ``Creative Commons Attribution-ShareAlike 3.0`` are CC-BY-4.0 and
+    CC-BY-SA-3.0, where a CC licence without a version is 4.0 (MakeHuman's FAQ reads its
+    community's CC-BY as CC BY 4.0); ``AGPL3`` and ``AGPLv3`` are AGPL-3.0-only (``AGPL3+``
+    and ``or later`` give AGPL-3.0-or-later), and GPL and LGPL alike; ``MIT``, ``Apache
+    2.0``, ``BSD 3-Clause``, ``MPL 2.0``, ``Unlicense``, ``ISC``, ``Zlib``, ``OFL``.
+    """
+    name = licence_name(text)
+    if name is None:
+        return None
+    later = bool(re.search(r"\+|or[- ]later|or any later", text, re.I))
+    t = " ".join(name.lower().replace("_", " ").split())
+    t = re.sub(r"\b(licen[cs]e[sd]?|version|international|public)\b", " ", t)
     t = t.replace("creative commons", "cc").replace("attribution", "by")
-    if re.fullmatch(r"cc[- ]?(0|zero)([- ]?(v?1(\.0)?|universal))?", t):
+    t = re.sub(r"share[- ]?alike", "sa", t)
+    t = re.sub(r"non[- ]?commercial", "nc", t)
+    t = re.sub(r"no[- ]?deriv(ative)?s?(atives)?", "nd", t)
+    t = t.replace("gnu ", "")
+    t = re.sub(r"\baffero (general|gpl)\b", "agpl", t)
+    t = re.sub(r"\b(lesser|library) (general|gpl)\b", "lgpl", t)
+    t = re.sub(r"\bgeneral\b", "gpl", t)
+    t = " ".join(t.replace("+", " ").replace(",", " ").split())
+    plain = t.replace("-", " ")
+    if plain in _PLAIN_SPDX:
+        return _PLAIN_SPDX[plain]
+    if re.fullmatch(r"cc[- ]?(0|zero)([- ]?(v?1(\.0)?|universal|pdd))*", t):
         return "CC0-1.0"
-    m = re.fullmatch(
-        r"cc[- ]?by((?:[- ](?:sa|nc|nd))*)[- ]?v?(\d(?:\.\d)?)(?: international)?", t
-    )
+    m = re.fullmatch(r"cc[- ]?by((?:[- ](?:sa|nc|nd))*)(?:[- ]?v?(\d(?:\.\d)?))?", t)
     if m:
-        parts = [x for x in re.split(r"[- ]", m.group(1)) if x]
-        version = m.group(2) if "." in m.group(2) else m.group(2) + ".0"
-        return "-".join(["CC-BY", *(x.upper() for x in parts), version])
-    m = re.fullmatch(r"agpl[- ]?v?(3)(\.0)?", t)
-    if m:
-        return "AGPL-3.0-only"
+        parts = {x.upper() for x in re.split(r"[- ]", m.group(1)) if x}
+        version = m.group(2) or "4.0"
+        version = version if "." in version else version + ".0"
+        if version not in _CC_VERSIONS or ("SA" in parts and "ND" in parts):
+            return None
+        order = [p for p in ("NC", "SA", "ND") if p in parts]  # SPDX: BY-NC-SA, BY-ND
+        return "-".join(["CC-BY", *order, version])
+    for pattern, base, default in _GNU:
+        m = re.fullmatch(
+            pattern + r"[- ]?v?(\d(?:\.\d)?)?(?:[- ](?:only|or[- ]later))?", t
+        )
+        if m:
+            version = m.group(1) or default
+            if version is None:
+                return None
+            version = version if "." in version else version + ".0"
+            if version not in _GNU_VERSIONS[base]:
+                return None
+            return f"{base}-{version}-{'or-later' if later else 'only'}"
     return None
 
 
@@ -353,14 +429,15 @@ def licence_block(
 ) -> dict:
     """
     The licence block of a package from an asset's header, as found: ``spdx`` (the SPDX id
-    when the header names one plainly, else None), ``declared`` (the header's text),
-    ``author``, ``source`` (``source`` or the header's homepage), ``design_source`` and an
+    of :func:`spdx_of`, else None), ``declared`` (the licence name of the header,
+    :func:`licence_name`), ``text`` (the header's licence text as written), ``author``,
+    ``source`` (``source`` or the header's homepage), ``design_source`` and an
     ``attribution`` line that the exports carry, whatever the licence, when the header names
     a licence, an author or a source. ``author`` replaces the header's author. The tools
     record the licence and write the credit; choosing assets and following their licences
     is the user's responsibility.
     """
-    declared = asset.licence
+    declared = licence_name(asset.licence)
     author = author or asset.author
     source = source or asset.homepage
     name = asset.name or asset.path.stem
@@ -368,8 +445,9 @@ def licence_block(
         f" ({asset.uuid})" if asset.uuid else ""
     )
     block = {
-        "spdx": spdx_of(declared),
+        "spdx": spdx_of(asset.licence),
         "declared": declared,
+        "text": asset.licence,
         "author": author,
         "source": source,
         "design_source": design,

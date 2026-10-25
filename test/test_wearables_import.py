@@ -26,6 +26,7 @@ from opensculptboy.wearables.format import PRIVATE, SCHEMA_PATH, WearableError
 from opensculptboy.wearables.mhclo import (
     import_mhclo,
     infer_slot,
+    licence_name,
     read_mhclo,
     spdx_of,
 )
@@ -185,12 +186,49 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(spdx_of("CC-BY 4.0"), "CC-BY-4.0")
         self.assertEqual(spdx_of("CC BY-SA 3.0"), "CC-BY-SA-3.0")
         self.assertEqual(spdx_of("AGPL3"), "AGPL-3.0-only")
-        self.assertIsNone(spdx_of("CC-BY"))  # no version: the text stays in 'declared'
+        self.assertEqual(spdx_of("CC-BY"), "CC-BY-4.0")  # MakeHuman's FAQ: CC BY 4.0
         self.assertIsNone(spdx_of(None))
         self.assertEqual(infer_slot("female_casualsuit01", [])[0], "torso")
         self.assertEqual(infer_slot("boots02", [])[0], "feet")
         self.assertEqual(infer_slot("thing", ["Hat"])[0], "head")
         self.assertEqual(infer_slot("thing", ["clothes"]), (None, None))
+
+    def test_licence_text_with_words_after_the_name(self):
+        """A header's licence may carry a part in brackets, a URL or 'see also' words after
+        its name: the SPDX id comes from the name, the name and the text are both kept."""
+        cases = {
+            "AGPL3 (see also http://www.makehuman.org/doc/node/external_tools_license.html)": (
+                "AGPL3",
+                "AGPL-3.0-only",
+            ),
+            "CC0 - see https://example.org/cc0": ("CC0", "CC0-1.0"),
+            "CC BY 4.0; credit the author": ("CC BY 4.0", "CC-BY-4.0"),
+            "Creative Commons Attribution-ShareAlike 4.0 International": (
+                "Creative Commons Attribution-ShareAlike 4.0 International",
+                "CC-BY-SA-4.0",
+            ),
+            "AGPLv3+": ("AGPLv3+", "AGPL-3.0-or-later"),
+            "AGPL-3": ("AGPL-3", "AGPL-3.0-only"),
+            "GNU General Public License version 2": (None, "GPL-2.0-only"),
+            "MIT License": ("MIT License", "MIT"),
+            "Apache License, Version 2.0": (None, "Apache-2.0"),
+            "Public Domain": ("Public Domain", None),
+            "CC BY 5.0": ("CC BY 5.0", None),
+        }
+        for text, (name, spdx) in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(spdx_of(text), spdx)
+                if name is not None:
+                    self.assertEqual(licence_name(text), name)
+        text = next(iter(cases))
+        with tempfile.TemporaryDirectory() as tmp:
+            (wearable, report), _ = imported(tmp, "tee", licence=text)
+        self.assertEqual(wearable.licence["spdx"], "AGPL-3.0-only")
+        self.assertEqual(wearable.licence["declared"], "AGPL3")
+        self.assertEqual(wearable.licence["text"], text)
+        self.assertEqual(report["licence"]["text"], text)
+        self.assertIn(", AGPL3", wearable.licence["attribution"])
+        self.assertNotIn("see also", wearable.licence["attribution"])
 
     def test_slot_words(self):
         """The slot guess of the garment words, plurals and compound names."""
