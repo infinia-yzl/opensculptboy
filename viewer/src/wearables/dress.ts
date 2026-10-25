@@ -18,6 +18,27 @@ export const FADE_RINGS = 2;
 export const RAY_REACH = 0.03;   // metres
 export const MAX_INFLUENCES = 4;
 
+// The bones of the anny-mouth rig (opensculptboy.mouth.rig) that anny's rig leaves out: a card on that rig gives its
+// reference pieces own weights on them, and a body on anny's rig moves them with their kept ancestor, head, as anny's
+// rig moves their skin weights.
+export const MOUTH_BONES = ['jaw', 'tongue00', 'tongue01', 'tongue02', 'tongue03', 'tongue04', 'tongue05.L', 'tongue05.R', 'tongue06.L', 'tongue06.R', 'tongue07.L', 'tongue07.R'];
+export const MOUTH_ANCESTOR = 'head';
+// the index of a bone in the body's rig, with a mouth bone at its kept ancestor; -1 for a bone that the rig lacks
+export function bodyBone(name: string, bones: string[]): number {
+  const i = bones.indexOf(name);
+  return i >= 0 || !MOUTH_BONES.includes(name) ? i : bones.indexOf(MOUTH_ANCESTOR);
+}
+// the bones of a package that the body's rig moves with another bone (`folded`) and those it lacks (`missing`)
+export function packageBones(w: Wearable, bones: string[]): { folded: string[]; missing: string[] } {
+  const b = w.binding, names = [...(b.method === 'rigid' && b.bone ? [b.bone] : []), ...(b.skinWeights ? b.jointNames || [] : [])];
+  const folded: string[] = [], missing: string[] = [];
+  for (const nm of new Set(names)) {
+    if (bones.includes(nm)) continue;
+    (bodyBone(nm, bones) >= 0 ? folded : missing).push(nm);
+  }
+  return { folded, missing };
+}
+
 // a similarity of Anny's frame: p = scale * R p_anny + offset (R row-major)
 export interface Frame { scale: number; rotation: number[]; offset: number[] }
 export const IDENTITY_FRAME: Frame = { scale: 1, rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1], offset: [0, 0, 0] };
@@ -55,7 +76,7 @@ export class BodySurface {
 export function evaluate(w: Wearable, body: BodySurface): { vertices: F64; normals: F64 } {
   const b = w.binding;
   if (b.method === 'rigid') {
-    const bone = body.bones.indexOf(b.bone!);
+    const bone = bodyBone(b.bone!, body.bones);
     if (bone < 0) throw new Error(`The body's rig lacks the bone ${b.bone}.`);
     const { R, t } = body.pose(bone, body, w), L = b.local!, Nn = b.normal!, n = L.length / 3, s = body.unit;
     const vertices = new Float64Array(n * 3), normals = new Float64Array(n * 3);
@@ -91,18 +112,29 @@ export function bodyWeights(w: Wearable, body: BodySurface, k = MAX_INFLUENCES):
     for (let j = 0; j < k; j++) { const x = (ws[j] || 0) / sum; weights[i * k + j] = x; joints[i * k + j] = x > 0 ? js[j] : 0; }
   };
   if (b.skinWeights) {
-    const names = b.jointNames || [], index = names.map((nm) => body.bones.indexOf(nm));
+    const names = b.jointNames || [], index = names.map((nm) => bodyBone(nm, body.bones));
     const missing = names.filter((_, i) => index[i] < 0);
     if (missing.length) throw new Error(`The body's rig lacks the garment's bones ${missing.join(', ')}.`);
-    const K = b.skinK!;
+    const K = b.skinK!, S = b.skinWeights!, J = b.skinJoints!;
+    const folds = names.some((nm) => !body.bones.includes(nm));
+    const merged = new Map<number, number>();
     for (let i = 0; i < n; i++) {
-      const cols = Array.from({ length: K }, (_, c) => c).sort((x, y) => b.skinWeights![i * K + y] - b.skinWeights![i * K + x] || x - y).slice(0, k);
-      finish(i, cols.map((c) => b.skinWeights![i * K + c]), cols.map((c) => index[b.skinJoints![i * K + c]]));
+      if (!folds) {
+        const cols = Array.from({ length: K }, (_, c) => c).sort((x, y) => S[i * K + y] - S[i * K + x] || x - y).slice(0, k);
+        finish(i, cols.map((c) => S[i * K + c]), cols.map((c) => index[J[i * K + c]]));
+        continue;
+      }
+      // the weights of the bones that share a body bone add up before the strongest are kept
+      merged.clear();
+      for (let c = 0; c < K; c++) { const x = S[i * K + c]; if (x > 0) { const bone = index[J[i * K + c]]; merged.set(bone, (merged.get(bone) || 0) + x); } }
+      const order = [...merged.entries()].sort((p, q) => q[1] - p[1] || p[0] - q[0]).slice(0, k);
+      finish(i, order.map((p) => p[1]), order.map((p) => p[0]));
     }
     return { weights, joints };
   }
   if (b.method === 'rigid') {
-    const bone = body.bones.indexOf(b.bone!);
+    const bone = bodyBone(b.bone!, body.bones);
+    if (bone < 0) throw new Error(`The body's rig lacks the bone ${b.bone}.`);
     for (let i = 0; i < n; i++) { weights[i * k] = 1; joints[i * k] = bone; }
     return { weights, joints };
   }
@@ -176,7 +208,7 @@ const mul3 = (A: F64, B: F64) => {
 };
 // the rest pose of a rigid piece's bone on a body: `head` is the bone's head on that body
 export function estimatedPose(w: Wearable, body: BodySurface, head: ArrayLike<number>): BonePose {
-  const b = w.binding, bone = body.bones.indexOf(b.bone!), s = body.unit;
+  const b = w.binding, bone = bodyBone(b.bone!, body.bones), s = body.unit;
   const local = b.local!.map((x) => x * s), garment = fromAnny(body.frame, w.garment.positions);
   const Rb = rotationBetween(local, garment);
   const bind = fromAnny(body.frame, b.bodyVertices, body.n), wt = new Float64Array(body.n);

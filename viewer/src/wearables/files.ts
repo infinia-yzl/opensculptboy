@@ -12,11 +12,14 @@ export function fromInput(list: FileList | File[]): PickedFile[] {
   return Array.from(list, (file) => ({ path: (file as any).webkitRelativePath || file.name, file }));
 }
 
-// the files of a drop, walking dropped folders
+// the files of a drop, walking dropped folders. The items are read before the first wait, while the drop event still
+// grants them; an item without an entry (a DataTransfer built by a script) gives its file by name alone.
 export async function fromDrop(dt: DataTransfer): Promise<PickedFile[]> {
-  const entries = Array.from(dt.items || []).map((it) => (it as any).webkitGetAsEntry?.()).filter(Boolean);
-  if (!entries.length) return fromInput(dt.files);
+  const items = Array.from(dt.items || []).filter((it) => it.kind === 'file');
+  const entries = items.map((it) => (it as any).webkitGetAsEntry?.() || null);
+  if (!entries.some(Boolean)) return fromInput(dt.files);
   const out: PickedFile[] = [];
+  items.forEach((it, i) => { const f = entries[i] ? null : it.getAsFile(); if (f) out.push({ path: f.name, file: f }); });
   const walk = async (entry: any, prefix: string): Promise<void> => {
     if (entry.isFile) {
       const file: File = await new Promise((res, rej) => entry.file(res, rej));
@@ -30,7 +33,7 @@ export async function fromDrop(dt: DataTransfer): Promise<PickedFile[]> {
       }
     }
   };
-  for (const e of entries) await walk(e, '');
+  for (const e of entries) if (e) await walk(e, '');
   return out;
 }
 
