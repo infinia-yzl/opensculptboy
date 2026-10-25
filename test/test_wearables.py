@@ -493,6 +493,74 @@ class TestDressedFiles(unittest.TestCase):
 
         self.assertEqual(vrm_piece_meshes([piece], Rebind(), C), [])
 
+    def test_every_shown_piece_has_a_mesh(self):
+        """Thin pieces under a tunic: an undershirt 3 mm off the skin keeps its mesh in the GLB
+        and VRM files, and underwear 2 mm off the skin, whose every group the tunic hides,
+        leaves the files and their summaries mark it not shown. Hiding the tunic shows the
+        underwear again."""
+        from opensculptboy.export.vrm import export_vrm
+
+        folder = self.folder / "layers"
+        folder.mkdir()
+        pieces = []
+        for name, offset, layer in (
+            ("underwear", 0.002, 10),
+            ("undershirt", 0.003, 20),
+            ("tunic", 0.006, 50),
+        ):
+            piece = tunic(offset=offset)
+            piece.name, piece.layer = name, layer
+            if name == "tunic":
+                piece.hides = [{"piece": "underwear", "groups": ["front", "back"]}]
+            write_wearable(folder / f"{name}.wearable.json", piece)
+            pieces.append({"piece": name, "file": f"{name}.wearable.json"})
+        card = Character(
+            name="layers",
+            outfits=[{"id": "layers", "pieces": pieces}],
+            active_outfit="layers",
+        )
+        files = [folder / "layers.glb"]
+        summaries = [export_glb(files[0], card, self.model, detail_dir=folder)]
+        for version in ("1.0", "0.x"):
+            files.append(folder / f"layers_{version}.vrm")
+            summaries.append(
+                export_vrm(
+                    files[-1],
+                    card,
+                    author="test",
+                    version=version,
+                    detail_dir=folder,
+                    refine_weights=False,
+                )
+            )
+        for path, summary in zip(files, summaries):
+            with self.subTest(path.name):
+                glb = GLB(path)
+                self.assertEqual(structure_errors(glb), [])
+                drawn = {
+                    glb.json["meshes"][n["mesh"]]["name"]
+                    for n in glb.json["nodes"]
+                    if "mesh" in n
+                } | {n.get("name") for n in glb.json["nodes"] if "mesh" in n}
+                listed = glb_json_wearables(path)["pieces"]
+                shown = [p["ref"] for p in listed if p["shown"]]
+                self.assertEqual(shown, ["layers/undershirt", "layers/tunic"])
+                self.assertEqual(summary["wearables"], shown)
+                for ref in shown:
+                    self.assertIn(ref, drawn)
+                self.assertNotIn("layers/underwear", drawn)
+                self.assertEqual(
+                    [p["hidden_groups"] for p in listed if p["ref"].endswith("wear")],
+                    [["front", "back"]],
+                )
+        worn = {p.ref: p for p in worn_pieces(card, folder)}
+        self.assertFalse(worn["layers/underwear"].shown)
+        self.assertEqual(worn["layers/underwear"].hidden_groups, ["front", "back"])
+        self.assertTrue(worn["layers/undershirt"].shown)
+        worn = {p.ref: p for p in worn_pieces(card, folder, hide=["tunic"])}
+        self.assertTrue(worn["layers/underwear"].shown)
+        self.assertEqual(worn["layers/underwear"].hidden_groups, [])
+
     def test_wardrobe_glb(self):
         path, _ = self.export(
             "wardrobe.glb", wardrobe=True, visibility=True, hide=("circlet",)
