@@ -53,13 +53,10 @@ export function wornPieces(card: any, info: (ref: string) => PieceInfo, choices:
   for (const e of entries) shown[e.ref] = e.outfit === null || e.outfit === active ? e.enabled : false;
   for (const [key, value] of Object.entries<any>(card.wearable_overrides || {})) shown[resolveRef(key, refs, active)] = !!value.enabled;
   for (const name of choices.hide || []) shown[resolveRef(name, refs, active)] = false;
-  const elsewhere: string[] = [];
-  for (const name of choices.show || []) {
-    const ref = resolveRef(name, refs, active);
-    shown[ref] = true;
-    if (entries[refs.indexOf(ref)].outfit !== active) elsewhere.push(ref);
-  }
-  const replacers = [...elsewhere, ...entries.filter((e) => e.outfit === null && shown[e.ref]).map((e) => e.ref)];
+  for (const name of choices.show || []) shown[resolveRef(name, refs, active)] = true;
+  // slot replacement: a piece shown from another outfit (by the show list or by an override) and a loose piece replace
+  // the pieces of their slot that come from elsewhere
+  const replacers = entries.filter((e) => shown[e.ref] && (e.outfit === null || e.outfit !== active)).map((e) => e.ref);
   for (const ref of replacers) {
     const slot = info(ref).slot;
     if (slot === 'accessory') continue;

@@ -52,6 +52,8 @@ CASES = [
     {"name": "estimate", "body": "random", "estimate": True},
     # a card that names no outfit wears its loose pieces alone, as the export does
     {"name": "no_outfit", "body": "thin", "card": "bare"},
+    # an override that shows a piece of another outfit puts it in its slot
+    {"name": "override_swap", "body": "random", "card": "override"},
 ]
 
 
@@ -153,8 +155,16 @@ class TestViewerWearables(unittest.TestCase):
         folder = cls.dir / "wear"
         folder.mkdir()
         card = _packages(folder)
-        cards = {"card": card, "bare": dataclasses.replace(card, active_outfit="")}
-        (folder / "bare.json").write_text(json.dumps(cards["bare"].to_dict(), indent=1))
+        cards = {
+            "card": card,
+            "bare": dataclasses.replace(card, active_outfit=""),
+            "override": dataclasses.replace(
+                card, wearable_overrides={"work/smock": {"enabled": True}}
+            ),
+        }
+        for name in ("bare", "override"):
+            text = json.dumps(cards[name].to_dict(), indent=1)
+            (folder / f"{name}.json").write_text(text)
         model = template_model()
         cls.quads = page_quads()
         cls.n = int(cls.quads.max()) + 1  # the page's body rows
@@ -275,6 +285,7 @@ class TestViewerWearables(unittest.TestCase):
             "swap",
             "no_push",
             "no_outfit",
+            "override_swap",
         ):
             self.compare(case)
 
@@ -284,6 +295,12 @@ class TestViewerWearables(unittest.TestCase):
         for name, case in self.out.items():
             with self.subTest(case=name):
                 self.assertEqual(case["sliced_difference"], 0)
+
+    def test_override_swap(self):
+        """A piece of another outfit that the card's overrides show takes its slot."""
+        refs = [p["ref"] for p in self.out["override_swap"]["pieces"]]
+        self.assertIn("work/smock", refs)
+        self.assertNotIn("travel/tunic", refs)
 
     def test_no_outfit(self):
         """A card with an empty active_outfit wears none of its outfits in the page."""
