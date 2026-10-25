@@ -898,7 +898,7 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
     from opensculptboy.teeth.mesh import mouth_rows
 
     card_path = pathlib.Path(card_path)
-    character = Character.from_dict(json.loads(card_path.read_text()))
+    character = Character.from_dict(json.loads(card_path.read_text(encoding="utf-8")))
     material = dict(character.material or {})
     if "mouth" not in material:
         return None
@@ -950,7 +950,9 @@ def write_card_poses(card_path, handoff, reference=None) -> pathlib.Path | None:
     result.save(path)
     material["mouth"] = dict(material["mouth"], poses=path.name)
     character.material = material
-    card_path.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    card_path.write_text(
+        json.dumps(character.to_dict(), indent=2) + "\n", encoding="utf-8"
+    )
     return path
 
 

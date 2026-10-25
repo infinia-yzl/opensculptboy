@@ -389,7 +389,9 @@ def load_handoff(folder: str | pathlib.Path) -> Handoff:
         raise FileNotFoundError(f"{folder} holds no replica.glb.")
     appearance_path = folder / "appearance.json"
     appearance = (
-        json.loads(appearance_path.read_text()) if appearance_path.exists() else {}
+        json.loads(appearance_path.read_text(encoding="utf-8"))
+        if appearance_path.exists()
+        else {}
     )
     if not isinstance(appearance, dict):
         raise ValueError(f"{appearance_path} must hold a JSON object.")
@@ -523,5 +525,7 @@ def write_handoff(
             for k, m in lists.items():
                 entry[k] = [int(i) for i in np.nonzero(np.asarray(m, bool))[0]]
             appearance["masks"][region] = [entry]
-    (folder / "appearance.json").write_text(json.dumps(appearance, indent=2) + "\n")
+    (folder / "appearance.json").write_text(
+        json.dumps(appearance, indent=2) + "\n", encoding="utf-8"
+    )
     return folder

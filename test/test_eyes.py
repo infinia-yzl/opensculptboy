@@ -1001,7 +1001,8 @@ class TestExports(unittest.TestCase):
 
         values = self.folder / "eyes.json"
         values.write_text(
-            json.dumps({"iris_color": [0.1, 0.2, 0.1], "caruncle": False})
+            json.dumps({"iris_color": [0.1, 0.2, 0.1], "caruncle": False}),
+            encoding="utf-8",
         )
         out = self.folder / "command.glb"
         with contextlib.redirect_stdout(io.StringIO()):

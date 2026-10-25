@@ -323,7 +323,7 @@ def convert_card(
             f"Cards convert between {' and '.join(CARD_TOPOLOGIES)}; got {topology!r}."
         )
     source, target = pathlib.Path(source), pathlib.Path(target)
-    character = Character.from_dict(json.loads(source.read_text()))
+    character = Character.from_dict(json.loads(source.read_text(encoding="utf-8")))
     if character.topology not in CARD_TOPOLOGIES:
         raise ValueError(
             f"{source} has the topology {character.topology!r}; cards convert between "
@@ -371,5 +371,7 @@ def convert_card(
     converted = dataclasses.replace(
         character, topology=topology, detail=detail, material=material
     )
-    target.write_text(json.dumps(converted.to_dict(), indent=2) + "\n")
+    target.write_text(
+        json.dumps(converted.to_dict(), indent=2) + "\n", encoding="utf-8"
+    )
     return summary
