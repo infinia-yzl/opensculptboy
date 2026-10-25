@@ -724,6 +724,7 @@ def vrm_spec(
             if blinks is not None:
                 from opensculptboy.eyes.blink import blink_lash_offsets
 
+                check_lash_rebind(rb.linear, eyed)
                 targets = blink_lash_offsets(eyed, blinks, base, targets)
             vertices = eyed.vertices(vertices)
             mesh, rest_now = eyed, eyed.vertices(base)
@@ -840,6 +841,7 @@ def vrm_spec(
             if blinks is not None:
                 from opensculptboy.eyes.blink import blink_lash_offsets
 
+                check_lash_rebind(rb.linear, eyed)
                 targets = blink_lash_offsets(eyed, blinks, fine, targets)
             ears = eyed.extend_mask(ears)
             mesh = eyed
@@ -1139,7 +1141,7 @@ def vrm_spec(
         look_at=look_at,
         head=head,
         meta=meta,
-        credits=list(BASE_CREDITS),
+        credits=list(BASE_CREDITS) + _wear_credits(dressed),
         thumbnail=png,
         extras=extras,
         sparse_targets=version == "1.0",
@@ -1375,6 +1377,42 @@ def _mouth_toon_materials(toothed, mouth, images):
     )
     material.normal_texture = _texture_index(images, "mouth_normal")
     return [(material, toothed.part_mask(*PARTS))]
+
+
+# the blink targets' lash offsets are rest-frame offsets, written into the T-pose targets
+# as they are (:func:`opensculptboy.eyes.blink.blink_lash_offsets`): they hold while the
+# rebind leaves the lid margins unturned, which it does at the head (0.000 degrees measured
+# on Anny's default character); a turn beyond this (degrees) refuses the export
+LASH_REBIND_DEG = 0.01
+
+
+def lash_rebind_turn(linear, eyed) -> float:
+    """The largest turn (degrees) of the T-pose rebind's map of target offsets (``linear``,
+    (V, 3, 3), :attr:`~opensculptboy.export.tpose.Rebind.linear`; None for none) at the rows
+    of the lid margins that the lashes of ``eyed`` follow; 0 without lashes."""
+    if linear is None:
+        return 0.0
+    rows = [p.follow.rows for p in eyed.parts if p.name == "lashes" and p.follow]
+    if not rows:
+        return 0.0
+    m = np.asarray(linear, dtype=np.float64)[np.unique(np.concatenate(rows))]
+    u, _, vt = np.linalg.svd(m)
+    turn = u @ vt  # the rotation nearest each map
+    cos = (np.trace(turn, axis1=1, axis2=2) - 1.0) / 2.0
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))).max())
+
+
+def check_lash_rebind(linear, eyed) -> None:
+    """Raise ValueError when the T-pose rebind turns the lid margins of the lashes by more
+    than :data:`LASH_REBIND_DEG` (:func:`lash_rebind_turn`)."""
+    turn = lash_rebind_turn(linear, eyed)
+    if turn > LASH_REBIND_DEG:
+        raise ValueError(
+            f"The T-pose rebind turns the head by {turn:.3f} degrees at the lid margins, "
+            f"more than {LASH_REBIND_DEG} degrees: the blink targets' lash offsets lie in the "
+            "rest frame, so they hold only for an unturned head "
+            "(opensculptboy.export.vrm.LASH_REBIND_DEG)."
+        )
 
 
 def _vrm_blinks(
@@ -1763,6 +1801,15 @@ def _mesh_nodes(spec: VrmSpec) -> dict[int, list[int]]:
     return nodes
 
 
+def _wear_credits(dressed) -> list[str]:
+    """The credit lines of the worn pieces, after the base model's."""
+    if not dressed:
+        return []
+    from opensculptboy.wearables.export import credits
+
+    return [f"Wearable: {line}" for line in credits([p for p in dressed if p.shown])]
+
+
 def credits_text(spec: VrmSpec) -> str:
     """The credits of a file: the base model's, its parts', then those of the metadata."""
     lines = list(spec.credits)
@@ -2111,7 +2158,7 @@ def export_vrm(
     summary = write_vrm(spec, path, budget=budget)
     if "wearables" in spec.extras:
         summary["wearables"] = [
-            p["piece"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
+            p["ref"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
         ]
     if tier is not None:
         summary["tier"] = tier.get("name")
