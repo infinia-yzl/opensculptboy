@@ -259,6 +259,67 @@ class TestReferenceLashes(unittest.TestCase):
         self.assertEqual(values, {})
         self.assertIsNone(reference_lashes(parts[2:], posed, rest, np.arange(40)))
 
+    def test_one_mesh_with_both_lids(self):
+        # one lash part holds the upper and the lower strips of both eyes: each strip takes
+        # the lid on its side of the horizontal line through its eye's centre, whatever the
+        # part's median, so the lower lashes follow the lower lid
+        from opensculptboy.fit.handoff import HandoffPart
+
+        rng = np.random.default_rng(2)
+        sphere = rng.normal(size=(60, 3))
+        sphere = 0.012 * sphere / np.linalg.norm(sphere, axis=1, keepdims=True)
+        centres = {
+            "L": np.array([0.032, -0.07, 1.6]),
+            "R": np.array([-0.032, -0.07, 1.6]),
+        }
+        head = rng.normal(scale=0.05, size=(40, 3)) + [0.0, 0.0, 1.6]
+        rest = np.concatenate([head, sphere + centres["L"], sphere + centres["R"]])
+        eyes = {"L": np.arange(40, 100), "R": np.arange(100, 160)}
+
+        def strip(centre, up, count):
+            # a row of cards along a lid: roots on the lid, tips away from the eye
+            x = np.linspace(-0.012, 0.012, count)
+            root = np.stack(
+                [
+                    centre[0] + x,
+                    np.full(count, centre[1] - 0.011),
+                    np.full(count, centre[2] + up * 0.005),
+                ],
+                1,
+            )
+            tip = root + [0.0, -0.004, up * 0.006]
+            v = np.concatenate([root, tip])
+            k = np.arange(count - 1)
+            t = np.concatenate(
+                [
+                    np.stack([k, k + 1, k + count], 1),
+                    np.stack([k + 1, k + count + 1, k + count], 1),
+                ]
+            )
+            return v, t
+
+        pieces = [
+            strip(centres["L"], 1.0, 24),
+            strip(centres["L"], -1.0, 8),
+            strip(centres["R"], 1.0, 24),
+            strip(centres["R"], -1.0, 8),
+        ]
+        v, t, lid, count = [], [], [], 0
+        for k, (pv, pt) in enumerate(pieces):
+            v.append(pv)
+            t.append(pt + count)
+            lid += [UPPER if k % 2 == 0 else LOWER] * len(pv)
+            count += len(pv)
+        v, t = np.concatenate(v), np.concatenate(t)
+        uv = np.zeros((len(v), 2))
+        image = np.full((8, 8, 4), 255, np.uint8)
+        parts = [HandoffPart("lashes", "lashes", v, t, uv, image)]
+        data, _, _ = reference_lashes(parts, rest, rest, np.arange(40), eyes)
+        np.testing.assert_array_equal(data.lid, lid)
+        # without the eyes, each strip still takes its own lid
+        data, _, _ = reference_lashes(parts, rest, rest, np.arange(40))
+        np.testing.assert_array_equal(data.lid, lid)
+
     def test_file(self):
         data = LashData(
             np.zeros((3, 3)),
