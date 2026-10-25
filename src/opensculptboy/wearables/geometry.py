@@ -316,7 +316,10 @@ def line_partners(origins, directions, vertices, triangles, reach: float):
         # the rank of a hit: the distance ahead of the origin, or the reach plus the
         # distance behind it, so that every hit ahead ranks before every hit behind
         t = np.where(along >= 0.0, along, reach - along)
-        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (np.abs(along) <= reach)
+        # a line through a corner or an edge meets the triangles there within rounding
+        edge = -1e-9
+        good = ok & (u >= edge) & (v >= edge) & (u + v <= 1 - edge)
+        good &= np.abs(along) <= reach
         k = np.flatnonzero(good)
         k = k[np.lexsort((c[k], t[k], r[k]))]  # per origin, the best hit first
         first = np.ones(len(k), bool)
@@ -325,6 +328,7 @@ def line_partners(origins, directions, vertices, triangles, reach: float):
         k = k[t[k] < best[r[k]]]  # nearer than a hit of an earlier chunk
         best[r[k]] = t[k]
         triangle[r[k]] = c[k]
-        barycentric[r[k]] = np.stack([1.0 - u[k] - v[k], u[k], v[k]], axis=1)
+        weights = np.clip(np.stack([1.0 - u[k] - v[k], u[k], v[k]], axis=1), 0.0, 1.0)
+        barycentric[r[k]] = weights / weights.sum(axis=1, keepdims=True)
         signed[r[k]] = along[k]
     return np.isfinite(best), triangle, barycentric, signed
