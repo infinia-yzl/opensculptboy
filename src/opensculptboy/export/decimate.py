@@ -372,9 +372,9 @@ def decimate(
             int(g): int(c) for g, c in zip(*np.unique(groups, return_counts=True))
         }
         allowance = {g: c - int(floors.get(g, 0)) for g, c in count_g.items()}
-        # vertices of groups at their floor stay
+        # vertices of groups at their floor (or one triangle above it) stay
         frozen_groups = np.array(
-            [g for g, a in allowance.items() if a <= 0] or [-1], np.int64
+            [g for g, a in allowance.items() if a < 2] or [-1], np.int64
         )
         frozen = np.zeros(W, bool)
         on_frozen = np.isin(groups, frozen_groups)

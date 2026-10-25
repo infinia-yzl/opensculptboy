@@ -47,9 +47,9 @@ REGION_FACTORS = {
 }
 # the share of its triangles that each kind of piece keeps at least: the larger of a fixed
 # share and a multiple of the file's own share (the budget over the triangles), so the body
-# stays whole while the file keeps more than 40 % of its triangles
+# keeps at least 95 % of its own while the file keeps half of its triangles
 FLOORS = {"body": 0.3, "teeth": 0.25, "mouth": 0.15, "wearable": 0.08}
-FLOOR_RATIOS = {"body": 2.5, "teeth": 1.0, "mouth": 1.0, "wearable": 0.25}
+FLOOR_RATIOS = {"body": 2.0, "teeth": 1.0, "mouth": 1.0, "wearable": 0.25}
 MIN_TRIANGLES = 32
 # pieces that stay whole unless given a number of triangles
 WHOLE = ("eyes", "lashes")
@@ -301,23 +301,34 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
         floors = {g: max(1, int(f * scale)) for g, f in floors.items()}
     if free.any():
         if free.sum() > target:
-            r = decimate(
-                positions,
-                T[free],
-                target,
-                labels=labels[free],
-                groups=groups[free],
-                floors=floors,
-                uvs=uvs,
-                normals=normals,
-                shapes=shapes,
-                importance=importance,
-                locked=locked,
-            )
-            out_t, out_l, out_g = r.triangles, r.labels, r.groups
-            out_o = np.flatnonzero(free)[r.origin]
-            errors = r.error
-            run = {"passes": r.passes, "stopped": r.stopped}
+            out_t, out_l, out_g = T[free], labels[free], groups[free]
+            out_o = np.flatnonzero(free)
+            errors, passes = {}, 0
+            # a run that stops above the target (the floors, or no valid collapse left) runs
+            # again with the floors halved
+            for attempt in range(4):
+                r = decimate(
+                    positions,
+                    out_t,
+                    target,
+                    labels=out_l,
+                    groups=out_g,
+                    floors=floors,
+                    uvs=uvs,
+                    normals=normals,
+                    shapes=shapes,
+                    importance=importance,
+                    locked=locked,
+                )
+                out_t, out_l, out_g = r.triangles, r.labels, r.groups
+                out_o = out_o[r.origin]
+                for g, e in r.error.items():
+                    errors[g] = max(errors.get(g, 0.0), e)
+                passes += r.passes
+                if len(out_t) <= target:
+                    break
+                floors = {g: f // 2 for g, f in floors.items()}
+            run = {"passes": passes, "stopped": r.stopped, "runs": attempt + 1}
         else:
             out_t, out_l, out_g, out_o = (
                 T[free],

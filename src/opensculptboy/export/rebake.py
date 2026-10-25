@@ -212,6 +212,7 @@ def rebake_material(full, reduced, normal_map, scale, size, max_distance, seed=0
         N, tangents, T, tri[sample][ids], bary[sample][ids], normal_map, scale, UV
     )
     before = _angles(current, target)
+    sample_ids, sample_target = ids, target
     stats = {
         "texels": int(len(np.unique(texel))),
         "reached": float(len(ids) / len(sample)),
@@ -259,14 +260,18 @@ def rebake_material(full, reduced, normal_map, scale, size, max_distance, seed=0
     image[write // width, write % width] = np.clip(
         np.round((mean[agree] + 1.0) * 127.5), 0, 255
     ).astype(np.uint8)
-    # the error after, at the same samples
-    ids2, hit_tri2, hit_bary2 = _cast(
-        points[sample], n[sample], reference, max_distance, rays
-    )
-    target2 = _shading_normals(reference, hit_tri2, hit_bary2)
+    # the error after, at the same samples and their hits on the full piece
     after_n, _, _ = _shading(
-        N, tangents, T, tri[sample][ids2], bary[sample][ids2], image, 1.0, UV
+        N,
+        tangents,
+        T,
+        tri[sample][sample_ids],
+        bary[sample][sample_ids],
+        image,
+        1.0,
+        UV,
     )
+    target2 = sample_target
     after = _angles(after_n, target2)
     stats["after_deg"] = float(after.mean())
     stats["baked_texels"] = int(agree.sum())
