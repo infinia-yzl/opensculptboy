@@ -648,7 +648,9 @@ class TestReferenceClosedEye(unittest.TestCase):
                     },
                 },
             }
-            (folder / "appearance.json").write_text(json.dumps(appearance))
+            (folder / "appearance.json").write_text(
+                json.dumps(appearance), encoding="utf-8"
+            )
             handoff = load_handoff(folder)
             reference = Reference.from_handoff(handoff)
             from opensculptboy.eyes.mesh import eyeball_rows

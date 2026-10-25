@@ -660,7 +660,7 @@ def _bake(args, parser) -> int:
             for e in detail.get("levels", [])
         ]
     character.detail = detail
-    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n", encoding="utf-8")
     from opensculptboy.fit.handoff import load_handoff
 
     handoff = load_handoff(args.handoff)
