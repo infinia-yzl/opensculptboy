@@ -18,20 +18,29 @@ export function wearablesSection(app: App): HTMLElement {
   const W = (): Wardrobe | null => app.wardrobe();
   const remove = textButton('Remove', () => { W()?.unload(); paint(); }, 'close', 'tb-quiet');
   const head = sectionHead('Wearables', remove);
-  const msg = h('p.inline-msg', { role: 'status' });
+  const msg = h('p.inline-msg.wear-msg', { role: 'status' });
   const files = h('input', { type: 'file', multiple: true, hidden: true, accept: '.json,.glb,.safetensors' }) as HTMLInputElement;
   const folder = h('input', { type: 'file', multiple: true, hidden: true }) as HTMLInputElement;
   folder.setAttribute('webkitdirectory', '');
+  // the error of the last load that read no card, else the wardrobe's notes (with its failures) show in the message
+  let loadError = '';
+  const showNotes = () => {
+    const w = W();
+    if (loadError || !w?.loaded) { msg.textContent = loadError; msg.dataset.kind = loadError ? 'error' : ''; return; }
+    msg.textContent = w.notes.length ? w.notes.join('. ') + '.' : '';
+    msg.dataset.kind = w.failures ? 'error' : '';
+  };
   const open = async (picked: PickedFile[]) => {
     const w = W();
-    if (!w || !picked.length) return;
-    msg.textContent = 'Reading the files…'; msg.dataset.kind = '';
+    if (!w) return;
+    if (!picked.length) { loadError = 'The drop held no files.'; console.error(`Wearables: ${loadError}`); paint(); return; }
+    loadError = ''; msg.textContent = 'Reading the files…'; msg.dataset.kind = '';
     try {
       const r = await w.load(picked);
-      msg.textContent = r.notes.length ? r.notes.join('. ') + '.' : '';
-      toast(`${w.cardName}: ${r.pieces} pieces`);
+      toast(`${w.cardName}: ${w.pieces.length} of ${r.pieces} pieces shown`);
     } catch (e: any) {
-      msg.textContent = e.message || String(e); msg.dataset.kind = 'error';
+      loadError = e.message || String(e);
+      console.error(`Wearables: ${loadError}`, e);
     }
     paint();
   };
@@ -45,7 +54,10 @@ export function wearablesSection(app: App): HTMLElement {
   document.addEventListener('drop', async (e) => {
     if (!holds(e)) return;
     e.preventDefault(); document.body.classList.remove('wear-dragging');
-    open(await fromDrop(e.dataTransfer!));
+    let picked: PickedFile[];
+    try { picked = await fromDrop(e.dataTransfer!); }
+    catch (err: any) { loadError = `The dropped files could not be read: ${err.message || err}`; console.error(`Wearables: ${loadError}`, err); paint(); return; }
+    open(picked);
   });
   const tools = h('div.btn-row', {}, textButton('Open files', () => files.click(), 'upload'), textButton('Open folder', () => folder.click(), 'upload'));
   const body = h('div.wear-body');
@@ -67,6 +79,7 @@ export function wearablesSection(app: App): HTMLElement {
   };
   const paint = () => {
     const w = W();
+    showNotes();
     remove.hidden = !w?.loaded;
     drop.hidden = !!w?.loaded;
     head.note.textContent = w?.loaded ? w.cardName : '';
@@ -94,7 +107,7 @@ export function wearablesSection(app: App): HTMLElement {
       h('h3.sub', { text: 'Skin' }), skinT.el, stats);
   };
   // a full dress repaints the section (the counts and times); the quick dress of a slider edit leaves it
-  W()?.listeners.push(() => { if (W()?.loaded && (W()!.timing as any).full) paint(); });
+  W()?.listeners.push(() => { if (W()?.loaded && (W()!.timing as any).full) paint(); else showNotes(); });
   paint();
   return el;
 }

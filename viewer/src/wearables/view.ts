@@ -9,7 +9,7 @@
 // Nothing of the user's files is stored or sent: the packages live in this page's memory until it closes.
 
 import type * as THREE_NS from 'three';
-import { BodySurface, DressCache, dress, dressSteps, estimatedPose, outfitCoverSteps, runSteps, visibleTriangles, type DressedPiece, type Frame, type Steps, type WornPiece } from './dress.ts';
+import { BodySurface, DressCache, dress, dressSteps, estimatedPose, MOUTH_ANCESTOR, packageBones, outfitCoverSteps, runSteps, visibleTriangles, type DressedPiece, type Frame, type Steps, type WornPiece } from './dress.ts';
 import { dirname, FileSet, type PickedFile } from './files.ts';
 import { readSafetensors, readWearable, type Material, type Wearable } from './package.ts';
 import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from './shading.ts';
@@ -56,6 +56,7 @@ export class Wardrobe {
   outfit: string | null = null; show: string[] = []; hide: string[] = []; keepSkin = false;
   pieces: DressedPiece[] = []; worn: WornRef[] = [];
   notes: string[] = [];
+  failures = 0;   // the notes that report a piece or a file that failed
   timing: Record<string, number> = {};
   private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; depth: any[]; hidden: string; weights: Float32Array | null }>();
   private cache = new DressCache();
@@ -69,11 +70,18 @@ export class Wardrobe {
   constructor(host: WardrobeHost) { this.host = host; }
   get loaded() { return !!this.card; }
   private notify() { for (const f of this.listeners) f(); }
+  // a failure: a note for the section and an error in the console
+  private fail(note: string, err?: unknown) {
+    this.notes = [...this.notes, note]; this.failures++;
+    console.error(`Wearables: ${note}`, ...(err instanceof Error ? [err] : []));
+  }
 
   // ---------------------------------------------------------------- loading
   // a card and its packages from the picked files; packages without a card become loose pieces
   async load(picked: PickedFile[]): Promise<{ pieces: number; notes: string[] }> {
     const files = new FileSet(picked), notes: string[] = [];
+    let failures = 0;
+    const fail = (note: string, err?: unknown) => { notes.push(note); failures++; console.error(`Wearables: ${note}`, ...(err instanceof Error ? [err] : [])); };
     let card: any = null, cardPath = '';
     const jsons = [...files.byPath.keys()].filter((p) => p.toLowerCase().endsWith('.json') && !p.endsWith('.wearable.json'));
     for (const p of jsons) {
@@ -93,7 +101,7 @@ export class Wardrobe {
       ...(card.wearables || []).map((w: any) => ({ ref: w.id || String(w.file).split('/').pop()!.split('.')[0], file: w.file }))];
     for (const e of entries) {
       const f = files.find(e.file, folder);
-      if (!f) { notes.push(`${e.ref}: ${e.file} is missing`); continue; }
+      if (!f) { fail(`${e.ref}: ${e.file} is missing`); continue; }
       try {
         let w = byFile.get(f);
         if (!w) {
@@ -102,7 +110,15 @@ export class Wardrobe {
           byFile.set(f, w);
         }
         packages.set(e.ref, w);
-      } catch (err: any) { notes.push(`${e.ref}: ${err.message || err}`); }
+      } catch (err: any) { fail(`${e.ref}: ${err.message || err}`, err); }
+    }
+    // the bones of each piece in the page's rig: the mouth bones of a card on the anny-mouth rig move with their kept
+    // ancestor; a piece on a bone that the rig lacks stays out
+    const bones = this.host.body().bones;
+    for (const [ref, w] of packages) {
+      const { folded, missing } = packageBones(w, bones);
+      if (missing.length) { packages.delete(ref); fail(`${ref}: the page's rig lacks its bones ${missing.join(', ')}`); }
+      else if (folded.length) notes.push(`${ref}: the page moves its bones ${folded.join(', ')} with ${MOUTH_ANCESTOR}`);
     }
     // only the pieces that loaded take part
     const ok = (file: string, ref: string) => packages.has(ref) && !!file;
@@ -119,12 +135,12 @@ export class Wardrobe {
     const level0 = (card.detail?.levels || []).find((l: any) => Number(l.subdiv) === 0);
     if (level0) {
       try { offsets = this.pageOffsets(readSafetensors(await files.bytes(level0.offsets, folder)).tensors.offsets?.values); }
-      catch (err: any) { notes.push(`detail level 0: ${err.message || err}`); }
+      catch (err: any) { fail(`detail level 0: ${err.message || err}`, err); }
     }
     if ((card.detail?.levels || []).some((l: any) => Number(l.subdiv) > 0)) notes.push('the page shows level 0 of the card\'s detail layer');
     this.cancel();
     this.clearMeshes();
-    this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes;
+    this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes; this.failures = failures;
     this.outfit = cardOutfit(card);   // a card that names no outfit wears none, as in an export
     this.show = []; this.hide = []; this.cache = new DressCache(); this.worn = []; this.pieces = [];
     this.host.setBodyOffsets(offsets);
@@ -152,7 +168,7 @@ export class Wardrobe {
     this.cancel();
     this.clearMeshes();
     // the dress cache holds the packages (their garments and texture bytes) by reference
-    this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.cache = new DressCache();
+    this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
     this.host.setBodyOffsets(null);
     this.restoreBody();
     this.host.changed(); this.notify();
@@ -202,15 +218,46 @@ export class Wardrobe {
     if (!this.card) return;
     this.cancel();
     try { this.worn = wornPieces(this.card, (r) => this.info(r), this.choices()); }
-    catch (e: any) { this.notes = [...this.notes, e.message || String(e)]; this.worn = []; }
-    this.dressNow();
+    catch (e: any) { this.fail(e.message || String(e), e); this.worn = []; }
+    try { this.dressNow(); }
+    catch (e: any) {
+      // a piece that cannot be dressed on this body leaves the wardrobe with a note; the others dress
+      if (!this.dropFailing()) { this.giveUp(e); return; }
+      try { this.worn = wornPieces(this.card, (r) => this.info(r), this.choices()); this.dressNow(); }
+      catch (e2: any) { this.giveUp(e2); return; }
+    }
     this.settleNow();
+  }
+  private giveUp(e: any) {
+    this.fail(`the pieces could not be dressed: ${e?.message || e}`, e);
+    this.pieces = [];
+    try { this.upload(); } catch (e2) { /* the meshes stay hidden */ }
+    this.host.changed(); this.notify();
+  }
+  // the worn pieces that fail alone, out of the card and the packages; whether there were any
+  private dropFailing(): boolean {
+    const body = this.bodySurface(), bad = new Set<string>();
+    for (const p of this.wornWearables()) {
+      try { dress(body, [p], { push: false }); }
+      catch (e: any) { bad.add(p.ref); this.fail(`${p.ref}: ${e.message || e}`, e); }
+    }
+    if (!bad.size) return false;
+    for (const ref of bad) this.packages.delete(ref);
+    for (const o of this.card.outfits || []) o.pieces = (o.pieces || []).filter((p: any) => !bad.has(`${o.id}/${p.piece}`));
+    this.card.wearables = (this.card.wearables || []).filter((w: any) => !bad.has(w.id || String(w.file).split('/').pop()!.split('.')[0]));
+    this.show = this.show.filter((r) => !bad.has(r)); this.hide = this.hide.filter((r) => !bad.has(r));
+    const refs = this.refsOf(this.card);
+    for (const k of Object.keys(this.card.wearable_overrides || {})) {
+      try { resolveRef(k, refs, cardOutfit(this.card)); } catch (e) { delete this.card.wearable_overrides[k]; }
+    }
+    return true;
   }
   // the body changed: the pieces follow at once, the push-out and the covered skin when the sliders rest
   bodyChanged() {
     if (!this.card || !this.worn.length) return;
     this.cancel();
-    this.dressNow();
+    try { this.dressNow(); }
+    catch (e: any) { this.redress(); return; }
     this.settle = setTimeout(() => { this.settle = null; this.settleNow(); }, SETTLE_MS);
   }
   private cancel() { clearTimeout(this.settle); this.settle = null; this.job = 0; }
@@ -237,7 +284,7 @@ export class Wardrobe {
       const t0 = performance.now();
       let r: IteratorResult<void, Record<string, number>>;
       try { do r = steps.next(); while (!r.done && performance.now() - t0 < SLICE_MS); }
-      catch (e: any) { this.job = 0; this.notes = [...this.notes, e.message || String(e)]; this.notify(); return; }
+      catch (e: any) { this.job = 0; this.fail(`the push-out and the covered skin failed: ${e.message || e}`, e); this.notify(); return; }
       const ms = performance.now() - t0;
       stat.slices++; stat.work += ms; stat.longest = Math.max(stat.longest, ms);
       if (!r.done) { soon(run); return; }
