@@ -64,12 +64,14 @@ SLOT_WORDS = {
     "headwear",
     "face": "glasses spectacles sunglasses mask goggles eyepatch",
     "neck": "scarf necklace collar choker bowtie necktie",
-    "hands": "glove gloves gauntlet gauntlets mittens",
+    "hands": "glove gloves gauntlet gauntlets mitten mittens",
     "feet": "shoe shoes boot boots sandal sandals sneaker sneakers heels slipper slippers "
     "sock socks loafers flats footwear",
-    "under": "underwear bra panties briefs boxers lingerie thong undershirt",
+    "under": "underwear underpants undies knickers bra panties briefs boxer boxers "
+    "lingerie thong undershirt bikini",
     "cloak": "cape cloak poncho mantle",
-    "legs": "pants trousers jeans shorts skirt leggings tights stockings bottom bottoms kilt",
+    "legs": "pants trousers jeans shorts skirt leggings tights stockings pantyhose bottom "
+    "bottoms kilt",
     "torso": "shirt tshirt top blouse sweater jumper hoodie jacket coat vest dress suit "
     "tunic robe gown jumpsuit overall overalls fullbody uniform cardigan",
     "arms": "sleeve sleeves bracer bracers armlet",
@@ -688,8 +690,20 @@ def _with_alpha(base: bytes | None, mask: bytes) -> bytes:
 # -- slot and binding -------------------------------------------------------------------
 
 
+def _singular(word: str) -> str | None:
+    """The singular of a plain English plural (hats, scarves), or None."""
+    if word.endswith("ves") and len(word) > 4:
+        return word[:-3] + "f"
+    if word.endswith("s") and len(word) > 3:
+        return word[:-1]
+    return None
+
+
 def infer_slot(name: str, tags) -> tuple[str | None, str | None]:
-    """(slot, reason) from the words of an asset's name and tags, or (None, None)."""
+    """(slot, reason) from the words of an asset's name and tags, or (None, None). A word of
+    :data:`SLOT_WORDS` (or its plural) names its slot; else the longest slot word inside a
+    compound word (``underpants``, ``hoodedjacket``), where a slot word of three letters
+    (``hat``, ``bra``) counts only at the end (``tophat``, ``sportsbra``)."""
     words = []
     for text in [name, *tags]:
         for word in re.split(r"[\s_\-.,;/]+", str(text).lower()):
@@ -698,12 +712,19 @@ def infer_slot(name: str, tags) -> tuple[str | None, str | None]:
                 words.append(word)
     table = {w: slot for slot, text in SLOT_WORDS.items() for w in text.split()}
     for word in words:
-        if word in table:
-            return table[word], f"the word {word!r}"
+        for form in (word, _singular(word)):
+            if form in table:
+                return table[form], f"the word {word!r}"
     for word in words:  # compound names such as casualsuit or tshirtlong
-        for key, slot in table.items():
-            if len(key) >= 4 and key in word:
-                return slot, f"{key!r} in the word {word!r}"
+        found = [
+            key
+            for key in table
+            if (len(key) >= 4 and key in word)
+            or (len(key) == 3 and word.endswith(key) and len(word) > 3)
+        ]
+        if found:
+            key = max(found, key=len)  # the first of the longest, in the table's order
+            return table[key], f"{key!r} in the word {word!r}"
     return None, None
 
 

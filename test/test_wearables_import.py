@@ -192,6 +192,26 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(infer_slot("thing", ["Hat"])[0], "head")
         self.assertEqual(infer_slot("thing", ["clothes"]), (None, None))
 
+    def test_slot_words(self):
+        """The slot guess of the garment words, plurals and compound names."""
+        cases = {
+            "under": "underwear female_underwear01 underpants briefs bra sportsbra "
+            "panties boxer",
+            "feet": "socks kneesocks boots",
+            "legs": "stockings tights fishnettights pantyhose jeans",
+            "hands": "gloves glove mittens",
+            "head": "hat hats tophat helmet hood",
+            "cloak": "cape cloak hooded_cloak capes",
+            "neck": "scarf scarves",
+            "face": "glasses sunglasses mask facemask",
+            "torso": "hoodedjacket zebra_dress tshirtlong",
+            "accessory": "bracelet",
+        }
+        for slot, names in cases.items():
+            for name in names.split():
+                with self.subTest(name=name):
+                    self.assertEqual(infer_slot(name, [])[0], slot)
+
 
 class TestImport(unittest.TestCase):
     @classmethod
