@@ -15,7 +15,8 @@ enables them, the enabled loose pieces, the card's overrides, then the ``hide`` 
 lists of the export. A piece shown from another outfit, and a loose piece, replace the pieces
 of the same slot that come from elsewhere (slot replacement; ``accessory`` pieces never
 replace). Last, the ``hides`` rules of the shown pieces hide the named groups of other shown
-pieces; hiding the piece that hides them restores them.
+pieces; hiding the piece that hides them restores them. A piece whose every group they hide
+does not show (underwear under trousers that hide it whole).
 """
 
 from __future__ import annotations
@@ -144,7 +145,8 @@ def worn_pieces(
     """
     The pieces of a card with what shows (see the module documentation). ``outfit`` overrides
     the card's ``active_outfit`` (``"none"``: no outfit). ``every_outfit`` also returns the
-    pieces that do not show (for a wardrobe file); otherwise only the shown ones.
+    pieces that do not show (for a wardrobe file); otherwise only the worn ones, among them
+    the pieces whose every group the hides rules of the shown pieces hide, which do not show.
     """
     entries = list(_entries(character))
     refs = [e[0] for e in entries]
@@ -203,6 +205,7 @@ def worn_pieces(
             WornPiece(ref, piece, owner, loaded[ref][1], wearable, bool(shown[ref]))
         )
     by_ref = {p.ref: p for p in pieces}
+    rules = []  # (hiding piece, hidden piece, group)
     for p in pieces:
         for rule in p.wearable.hides:
             target = rule["piece"]
@@ -214,6 +217,30 @@ def worn_pieces(
             for group in rule.get("groups", []):
                 if group not in other.hideable_groups:
                     other.hideable_groups.append(group)
-                if p.shown and other.shown and group not in other.hidden_groups:
-                    other.hidden_groups.append(group)
+                rules.append((p, other, group))
+    # A piece whose every group the shown pieces hide does not show: the files leave it
+    # out, and its own rules hide nothing. Repeat until no further piece goes.
+    hidden_whole = []
+    while True:
+        for p in pieces:
+            p.hidden_groups = []
+        for p, other, group in rules:
+            if p.shown and other.shown and group not in other.hidden_groups:
+                other.hidden_groups.append(group)
+        gone = [
+            p
+            for p in pieces
+            if p.shown
+            and p.wearable.garment.groups
+            and set(p.wearable.garment.groups) <= set(p.hidden_groups)
+        ]
+        if not gone:
+            break
+        for p in gone:
+            p.shown = False
+        hidden_whole += gone
+    for p in hidden_whole:  # it keeps the groups that the shown pieces hide
+        p.hidden_groups = list(
+            dict.fromkeys(g for q, o, g in rules if o is p and q.shown)
+        )
     return pieces
