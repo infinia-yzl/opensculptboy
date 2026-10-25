@@ -14,11 +14,15 @@ rest, in the T-pose of the VRM export and on sampled frames of the built-in clip
   outside every piece that covers it;
 - **layers through**: a vertex of a lower piece that an upper piece covers (the line along
   its normal meets the upper piece within 3 cm on either side, on that body at rest) and that
-  lies more than the tolerance outside the upper piece.
+  lies more than the tolerance outside the upper piece, beyond how far it lay outside on the
+  binding body of two pieces made together (the relation as made, which the push-out keeps:
+  :func:`opensculptboy.wearables.fit.made_together`); the vertices within the relation as
+  made count apart (``as_made``).
 
 "Outside" is measured from the vertex's partner on the piece (:class:`Partners`): the
-nearest point of the piece at rest on the line along the vertex's normal (within 3 cm on
-either side), else its closest point (within 5 cm; a vertex further away takes no part),
+nearest point of the piece at rest ahead on the line along the vertex's normal turned away
+from the body (within 3 cm), else the nearest point behind it (within 3 cm), else its
+closest point (within 5 cm; a vertex further away takes no part),
 carried into each pose by the piece's own triangle and barycentric coordinates, along the
 piece's normal there, turned away from the body. A partner keeps each vertex to the part of
 the piece above it, so that an arm against the torso is measured against its sleeve and
@@ -65,6 +69,7 @@ BODIES = (
 SLIDERS = ("weight", "muscle", "height")
 SKIN_MARK = (225, 25, 25)
 LAYER_MARK = (255, 150, 0)
+AS_MADE_MARK = (130, 60, 200)
 
 
 class CheckError(WearableError):
@@ -222,9 +227,12 @@ def _visible_rows(piece) -> np.ndarray:
 
 
 def ray_partners(origins, directions, vertices, triangles, reach: float = RAY):
-    """The nearest point of the triangles on the line through each origin along its
-    direction, within ``reach`` on either side: (hit (N,), triangle (N,), barycentric
-    (N, 3)), Moller-Trumbore on the triangles near each origin."""
+    """The partner of each origin on the line along its direction, within ``reach`` on
+    either side: the nearest point of the triangles ahead of the origin, else the nearest
+    point behind it: (hit (N,), triangle (N,), barycentric (N, 3)), Moller-Trumbore on the
+    triangles near each origin. With the direction turned away from the body, a point
+    between two walls of a piece (the sole and the upper of a boot, the two sides of a
+    glove) takes the outer wall, so that it counts as under the piece."""
     from scipy.spatial import cKDTree
 
     from opensculptboy.wearables.geometry import unit_rows
@@ -258,10 +266,13 @@ def ray_partners(origins, directions, vertices, triangles, reach: float = RAY):
         u = np.einsum("ij,ij->i", s, p) * inv
         q = np.cross(s, e1)
         v = np.einsum("ij,ij->i", d, q) * inv
-        t = np.abs(np.einsum("ij,ij->i", e2, q) * inv)
-        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t <= reach)
+        along = np.einsum("ij,ij->i", e2, q) * inv
+        # the rank of a hit: the distance ahead of the origin, or the reach plus the
+        # distance behind it, so that every hit ahead ranks before every hit behind
+        t = np.where(along >= 0.0, along, reach - along)
+        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (np.abs(along) <= reach)
         k = np.flatnonzero(good)
-        k = k[np.lexsort((c[k], t[k], r[k]))]  # per origin, the nearest hit first
+        k = k[np.lexsort((c[k], t[k], r[k]))]  # per origin, the best hit first
         first = np.ones(len(k), bool)
         first[1:] = r[k][1:] != r[k][:-1]
         k = k[first]
@@ -276,9 +287,10 @@ def ray_partners(origins, directions, vertices, triangles, reach: float = RAY):
 class Partners:
     """Points of a set of ``rows`` (body or lower-piece vertices) and their partners on a
     piece at rest (``triangle``, an index into the piece's visible triangles, and
-    ``barycentric``), which each pose carries along: the nearest point of the piece on the
-    line along the point's normal within 3 cm, else the closest point of the piece within
-    5 cm. ``side`` (+1 or -1) turns the piece's normal at the partner away from the body:
+    ``barycentric``), which each pose carries along: the nearest point of the piece ahead
+    on the line along the point's normal (turned away from the body) within 3 cm, else the
+    nearest point behind it within 3 cm, else the closest point of the piece within 5 cm.
+    ``side`` (+1 or -1) turns the piece's normal at the partner away from the body:
     the normal of the triangles' winding, turned where it faces the skin at rest, so that a
     piece wound inside out, or the far side of a double-sided panel, still measures
     outward."""
@@ -365,6 +377,8 @@ def layout(body, dressed) -> Layout:
     from opensculptboy.wearables.cover import piece_cover
     from opensculptboy.wearables.geometry import vertex_normals
 
+    from opensculptboy.wearables.fit import relation_home
+
     pieces = [p for p in dressed if p.shown]
     covers = []
     for p in pieces:
@@ -384,17 +398,25 @@ def layout(body, dressed) -> Layout:
             if not len(rows):
                 continue
             normals = vertex_normals(lower.vertices, lower.visible_triangles())[rows]
+            # turned away from the body, so that the partner ahead lies outward
+            skin = body.surface.closest(lower.vertices[rows])
+            outward = body.surface.normal(skin.triangle, skin.barycentric)
+            normals *= np.where(np.einsum("ij,ij->i", normals, outward) < 0, -1, 1)[
+                :, None
+            ]
             hit = ray_partners(lower.vertices[rows], normals, upper.vertices, tris)[0]
-            if hit.any():
-                pairs.append(
-                    (
-                        u,
-                        k,
-                        Partners.at_rest(
-                            lower.vertices, rows[hit], upper, body, normals[hit]
-                        ),
-                    )
-                )
+            if not hit.any():
+                continue
+            partners = Partners.at_rest(
+                lower.vertices, rows[hit], upper, body, normals[hit]
+            )
+            # the relation as made: how far each vertex lay outside the upper piece on
+            # the binding body of two pieces made together, which the push-out keeps
+            allowance = np.zeros(len(partners.rows))
+            home = relation_home(upper, lower, body)
+            if home is not None:
+                allowance = np.maximum(partners.signed(home[1], upper, home[0]), 0.0)
+            pairs.append((u, k, partners, allowance))
     return Layout(
         body,
         pieces,
@@ -441,13 +463,19 @@ def measure(lay: Layout, body_vertices, piece_vertices, tolerance=TOLERANCE):
         "regions": _counts(lay.body_regions[skin_rows]),
     }
     cut_points, cut_regions, per_pair = [], [], {}
-    cutting = covered_pairs = 0
+    made_points, per_made = [], {}
+    cutting = covered_pairs = as_made = 0
     worst_mm = 0.0
-    for u, k, partners in lay.pairs:
+    for u, k, partners, allowance in lay.pairs:
         upper, lower = lay.pieces[u], lay.pieces[k]
         rows = partners.rows
         signed = partners.signed(piece_vertices[k], upper, piece_vertices[u])
-        bad = signed > tolerance
+        bad = signed > tolerance + allowance
+        made = (signed > tolerance) & ~bad
+        if made.any():
+            as_made += int(made.sum())
+            per_made[f"{lower.ref} through {upper.ref}"] = int(made.sum())
+            made_points.append(piece_vertices[k][rows[made]])
         covered_pairs += len(rows)
         if bad.any():
             cutting += int(bad.sum())
@@ -462,10 +490,13 @@ def measure(lay: Layout, body_vertices, piece_vertices, tolerance=TOLERANCE):
         "largest_mm": round(worst_mm * 1000.0, 2),
         "pairs": per_pair,
         "regions": _counts(np.concatenate(cut_regions)) if cut_regions else {},
+        "as_made": as_made,
+        "as_made_pairs": per_made,
     }
     marks = {
         "skin": body_vertices[skin_rows],
         "layers": np.concatenate(cut_points) if cut_points else np.zeros((0, 3)),
+        "as_made": np.concatenate(made_points) if made_points else np.zeros((0, 3)),
     }
     return {"skin": skin, "layers": layers}, marks
 
@@ -798,6 +829,7 @@ def review_sheet(report, views, character, tile=(200, 320)) -> bytes:
             markers = [
                 Marker(_sample(marks["skin"]), SKIN_MARK, 2.0),
                 Marker(_sample(marks["layers"]), LAYER_MARK, 2.0),
+                Marker(_sample(marks["as_made"]), AS_MADE_MARK, 1.5),
             ]
             for view in ("front", "side", "back"):
                 image = draw(meshes, VIEWS[view], size=tile, markers=markers)
@@ -823,8 +855,9 @@ def review_sheet(report, views, character, tile=(200, 320)) -> bytes:
         f"{'PASS' if report['pass'] else 'FAIL'}",
         gates,
         f"red: skin more than {report['tolerance_mm']:g} mm outside its piece; orange: a "
-        f"lower piece more than {report['tolerance_mm']:g} mm outside an upper piece "
-        "(at most 300 dots of each)",
+        f"lower piece more than {report['tolerance_mm']:g} mm outside an upper piece; "
+        "violet: a lower piece outside an upper piece as the two were made (at most 300 "
+        "dots of each)",
         "each row: rest (front, side, back), then the body's worst state (front, side, "
         "back)",
     ]
