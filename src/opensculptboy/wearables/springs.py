@@ -88,6 +88,9 @@ TORSO = (
     "neck03",
     "head",
 )
+# The bones that the chains of a cloak may hang from: the torso less the neck, the head and
+# the shoulders (which turn with the arms).
+CLOAK_ROOTS = tuple(b for b in TORSO if not b.startswith(("neck", "head", "shoulder")))
 
 
 @dataclasses.dataclass
@@ -572,18 +575,25 @@ def _region(piece, spec) -> np.ndarray:
 
 
 def _parent_bone(piece, point, parents, labels, given) -> str:
-    """The bone a chain hangs from: ``given``, else the strongest bone of the garment's
-    vertices nearest to ``point``, taken up the rig until a bone of :data:`TORSO`."""
+    """The bone a chain hangs from: ``given``, else the bone that the garment's vertices
+    nearest to ``point`` are weighted to most, each bone's weight taken up the rig to a bone
+    of :data:`TORSO`. A piece of the ``cloak`` slot hangs from the upper body
+    (:data:`CLOAK_ROOTS`): the weights of the neck, the head and the shoulders go up to the
+    spine or the clavicles, so that a head turn does not swing the cloak."""
     if given is not None:
         if given not in labels:
             raise ValueError(f"A spring names the unknown parent bone {given!r}.")
         return given
+    allowed = CLOAK_ROOTS if piece.wearable.slot == "cloak" else TORSO
     near = np.argsort(np.linalg.norm(piece.vertices - point, axis=1))[:8]
     dense = _dense(piece.weights[near], piece.joints[near], len(labels)).sum(axis=0)
-    bone = int(np.argmax(dense))
-    while labels[bone] not in TORSO and parents[bone] >= 0:
-        bone = int(parents[bone])
-    return labels[bone]
+    totals = np.zeros(len(labels))
+    for bone in np.flatnonzero(dense > 0):
+        root = int(bone)
+        while labels[root] not in allowed and parents[root] >= 0:
+            root = int(parents[root])
+        totals[root] += dense[bone]
+    return labels[int(np.argmax(totals))]
 
 
 def _auto_columns(piece, body, spec) -> list[np.ndarray]:

@@ -100,7 +100,7 @@ Loose parts of a piece (a cape, a skirt, a long hem) swing on chains of extra jo
 | `groups` | the garment groups of the spring (every group by default) |
 | `columns`, `joints` | the chains of an `auto` spring and the joints of each, the tail included (cape 5, skirt 8, hem 3; 4 joints) |
 | `points` | a `chain` spring's joints, in metres and glTF axes, on the binding body at rest |
-| `parent` | the bone that the chains hang from; `root` for the skirt preset, else the strongest torso bone at each chain's first joint |
+| `parent` | the bone that the chains hang from; `root` for the skirt preset, else the torso bone that the garment near each chain's first joint is weighted to most, each bone's weight taken up the rig to the torso; a piece of the `cloak` slot hangs from the spine or the clavicles, so the weights of the neck, the head and the shoulders go up to them and a head turn leaves the cloak still |
 | `colliders` | the collider groups that the chains hit: `head`, `torso`, `legs`, `arms` (all by default) |
 | `gap`, `hang`, `reach` | the loose test of an `auto` spring (2.5 cm from the skin, 3 cm below the closest skin point) and an authored chain's reach over the garment (15 cm) |
 

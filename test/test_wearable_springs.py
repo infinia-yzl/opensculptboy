@@ -26,6 +26,7 @@ from opensculptboy.wearables import write_wearable
 from opensculptboy.wearables.export import Dressing
 from opensculptboy.wearables.springs import (
     CLEARANCE,
+    CLOAK_ROOTS,
     COLLIDER_TABLE,
     TORSO,
     SpringSim,
@@ -174,6 +175,25 @@ class TestChains(unittest.TestCase):
                     for h in np.linspace(z.max(), z.min(), 6)
                 ]
                 self.assertTrue((np.diff(rows) >= -1e-9).all(), rows)
+
+    def test_cloak_hangs_from_the_upper_body(self):
+        """A cloak whose top rows are weighted to the head and the neck (a hood, a mantle
+        over the shoulders) hangs its chains from the spine or the clavicles."""
+        body = template_body()
+        (piece,) = dress(body, _worn(long_cape()))
+        labels = list(body.bone_labels)
+        z = piece.vertices[:, 2]
+        top = z > z.max() - 0.25
+        piece.joints[top] = 0
+        piece.weights[top] = 0.0
+        piece.joints[top, 0] = labels.index("head")
+        piece.joints[top, 1] = labels.index("neck02")
+        piece.weights[top, 0] = 0.7
+        piece.weights[top, 1] = 0.3
+        rig = rig_springs(body, [piece], _parents())
+        parents = {c.parent for c in rig.chains}
+        self.assertTrue(parents <= set(CLOAK_ROOTS), parents)
+        self.assertFalse(any(p.startswith(("neck", "head")) for p in parents))
 
     def test_hit_radii_keep_the_rest_shape(self):
         arrays = np.array([c.array() for c in self.rig.colliders])
