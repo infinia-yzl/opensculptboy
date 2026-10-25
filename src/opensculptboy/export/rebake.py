@@ -13,8 +13,9 @@ primitive (:func:`_cast`, with Embree), and the angle between the full piece's s
 normals bent by the same map in its own frames) is the error. Where the mean error exceeds
 :data:`REBAKE_DEGREES`, the material's map is baked again: each reached texel takes the full
 piece's shading normal in the reduced piece's MikkTSpace frame. Texels that several triangles
-share (mirrored or repeated islands) take the mean of their normals where these agree within
-:data:`SHARED_DEGREES`, and keep the map's value elsewhere, as do texels that no ray reaches.
+share (mirrored islands) take the mean of their normals where these agree within
+:data:`SHARED_DEGREES`, and keep the map's value elsewhere, as do texels that no ray reaches
+and texels under more than :data:`MAX_SHARED` triangles (stacked cards, tiled patterns).
 A material without a normal map gets one (flat where nothing is baked) when the bake brings
 its shading closer. The bake keeps a map only when it lowers the mean error.
 """
@@ -30,6 +31,8 @@ SAMPLES = 20_000
 # the texels of mirrored or repeated islands take the mean of their triangles' normals when
 # these agree within this angle
 SHARED_DEGREES = 10.0
+# texels covered by more triangles than this keep the map's value
+MAX_SHARED = 2
 
 
 def _texels(uv_triangles: np.ndarray, width: int, height: int, chunk: int = 2_000_000):
@@ -194,6 +197,13 @@ def rebake_material(full, reduced, normal_map, scale, size, max_distance, seed=0
     tangents = _frames(P, N, UV, T)
     width, height = size
     rows, cols, tri, bary, texel = _texels(UV[T], width, height)
+    if len(tri) == 0:
+        return None, {"texels": 0}
+    # texels that more than MAX_SHARED triangles cover (stacked cards, tiled patterns) keep
+    # their value: the triangles rarely agree there, and they multiply the work
+    _, inverse, number = np.unique(texel, return_inverse=True, return_counts=True)
+    single = number[inverse.ravel()] <= MAX_SHARED
+    rows, cols, tri, bary, texel = (a[single] for a in (rows, cols, tri, bary, texel))
     if len(tri) == 0:
         return None, {"texels": 0}
     corners = T[tri]
