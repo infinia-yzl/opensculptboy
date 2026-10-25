@@ -13,6 +13,10 @@ opensculptboy wearables list --character ada.json                         # the 
 opensculptboy wearables bind tunic.glb --out wear/tunic --slot torso --licence CC0-1.0 --design-source "own design"
 opensculptboy wearables import-mhclo shirt/shirt.mhclo --out wear/shirt     # a MakeHuman clothes asset as a package
 opensculptboy wearables add ada.json wear/shirt.wearable.json --outfit casual --activate
+opensculptboy wearables catalogue wear/ --thumbnails --query shirt         # the packages of a folder as JSON
+opensculptboy wearables check ada.json                                    # the fit on test bodies, with a review sheet
+opensculptboy wearables outfit export ada.json --outfit casual --out casual.outfit.json
+opensculptboy wearables add bo.json casual.outfit.json --activate         # an outfit file on another card
 ```
 
 ## The package
@@ -73,6 +77,8 @@ Character schema 4 adds four fields ([Character card](character-card.md)):
 "wearables": [{"id": "ring", "file": "wear/ring.wearable.json", "enabled": true}],
 "wearable_overrides": {"travel/cape": {"enabled": false}}
 ```
+
+An outfit may also hold a `description`, `tags` and the `source` outfit file it came from, and each of its pieces the settings of "Outfit files": `overrides` of the package's `layer` and `label`, `hides` rules added to the package's own, and `springs` in place of the package's own.
 
 A piece is named by its reference: `<outfit>/<piece>` for a piece of an outfit, the bare id for a loose piece. A bare id also names the piece of that id in the worn outfit, so `--hide cape` hides `travel/cape`. The export resolves what shows in this order: the worn outfit's pieces as the card enables them, the enabled loose pieces, the card's overrides, then `--hide` and `--show`.
 
@@ -195,6 +201,107 @@ opensculptboy wearables outfit ada.json --activate none
 
 The green channel of a normal map follows the OpenGL convention in MakeHuman and in glTF (green points up the image). The check measures the correlation between the change of red up the image and the change of green to the right, which a relief gives alike: positive for OpenGL, negative for DirectX. `--normal-green auto` (the default) flips a map that reads DirectX with a correlation below -0.25, `keep` leaves it with a warning, and `flip` always flips.
 
+## Catalogue
+
+`opensculptboy wearables catalogue FOLDER` lists the packages of a folder and its sub-folders, so that a person or an agent can choose pieces by their words, their colours and their quality. The command prints one JSON result (`format` `opensculptboy.catalogue/1`) whose `pieces` list holds one entry per package, sorted by path:
+
+```bash
+opensculptboy wearables catalogue wear/                                    # every package
+opensculptboy wearables catalogue wear/ --slot torso --query "linen shirt" # filters
+opensculptboy wearables catalogue wear/ --thumbnails                       # wear/NAME.thumb.png
+opensculptboy wearables catalogue wear/ --mhclo packs/                     # and the assets not imported yet
+```
+
+| Field | Meaning |
+|---|---|
+| `kind`, `path` | `package` (or `mhclo` for an asset not imported yet) and the file's path relative to the folder |
+| `name`, `label`, `slot`, `layer`, `tags`, `description`, `provenance` | the package's fields |
+| `colours` | `[{"material", "hex"}]`: the mean base colour of each material, the base colour factor times the mean of the base colour texture (weighted by its alpha), as sRGB hex |
+| `groups`, `vertices`, `triangles`, `materials` | the garment's groups and counts |
+| `binding`, `weights`, `hides` | the binding's body and method, the weights and the hides rules |
+| `licence` | `spdx`, `declared`, `author`, `source` and `credit`, the line that the exports write (null without one) |
+| `quality` | the checks of "Quality" run on the package as it stands: `errors`, `warnings`, `infos`, the `codes` of each severity and the error and warning `items`; `--no-quality` leaves them out |
+| `thumbnail` | the path of `NAME.thumb.png` next to the package, or null |
+
+- **Filters.** `--slot` keeps the slots named (repeatable or comma-separated), `--tag` keeps the pieces with every tag named, and `--query` keeps the pieces whose name, label, tags or description hold every word; a word of more than three letters that ends in `s` also matches without it (`shirts` finds `shirt`). `count` gives the entries kept and `total` the entries found.
+- **Thumbnails.** `--thumbnails` dresses each package on the default body and renders it from the front, turned 30 degrees, framed on the piece, with the skin under it left out (`--thumbnail-size`, 256 by default). A thumbnail newer than the package's three files is reused (`thumbnails.cached`); `--refresh` renders every one again. Without `--thumbnails`, an existing thumbnail is listed.
+- **Assets not imported.** `--mhclo FOLDER` (repeatable) adds the `.mhclo` assets of a folder that no listed package was imported from, by the asset's uuid, else its name. An entry holds what the header, the pack metadata and the material give (the slot with `slot_from`, the layer from `z_depth`, the tags, the description, the colour and the licence), `imported: false` and the `import` command.
+- A package that cannot be read goes into `skipped` with its `code` and `message`. The errors are `folder_not_found`, `unknown_slot` and `usage`.
+
+## Check
+
+`opensculptboy wearables check CARD` checks the worn outfit of a card (or `--outfit NAME`) before an export: the quality of every worn piece, and the fit on test bodies at rest, in the T-pose of the VRM export and through the built-in clips. It prints one JSON report (`format` `opensculptboy.check/1`) and writes a review sheet. The exit status is 0 when every gate passes, 1 when a gate fails, and 2 on an error.
+
+```bash
+opensculptboy wearables check ada.json                                         # every body, clip and gate; ada.check.png
+opensculptboy wearables check ada.json --outfit travel --sheet travel.png
+opensculptboy wearables check ada.json --bodies card,default --clips walk --frames 2   # a quick round
+```
+
+- **Test bodies.** `--bodies` takes a comma-separated list; the default is every body: `card` (the card's own body with its detail offsets), `default` (the default card's body), and `weight-0`, `weight-1`, `muscle-0`, `muscle-1`, `height-0` and `height-1` (the card with that slider at 0 or 1). `SLIDER=VALUE` sets any phenotype slider of the card's model. Each body is dressed as an export dresses it (`opensculptboy.wearables.fit.dress`).
+- **States.** Rest; the VRM T-pose (`--no-tpose` leaves it out); the card's own pose when it has one; and `--frames` frames (4 by default) of each clip of `--clips` (comma-separated, every clip of the pose library by default, `none` for none). The body and the pieces move by linear blend skinning with the same bone transforms: the body with its own weights, the pieces with the weights of the dressing. In the T-pose both take the weights of the VRM file without the refinement, blended at the pieces' bound points.
+- **Skin through.** A body vertex under a piece's cover mask (taken on that body at rest, see "Covered skin") counts when it lies more than `--tolerance` (2 mm) outside every piece that covers it, within 5 cm of one of them.
+- **Layers through.** A vertex of a lower piece counts when an upper piece covers it (the line along its normal meets the upper piece's visible triangles within 3 cm on either side, on that body at rest) and it lies more than the tolerance outside the upper piece, within 5 cm of it.
+- **Regions.** Each vertex belongs to the region of its strongest bone: `head`, `torso`, `hips`, `upper_arm.L`, `forearm.L`, `hand.L`, `thigh.L`, `shin.L`, `foot.L` and their right sides.
+
+| Gate | Passes when |
+|---|---|
+| `quality` | no worn piece has a quality item of error severity |
+| `skin_rest`, `layers_rest` | no vertex counts at rest on any body |
+| `skin_tpose`, `layers_tpose` | at most `--pose-limit` per cent (1 by default) of the covered vertices count in the T-pose of any body |
+| `skin_clips`, `layers_clips` | at most `--pose-limit` per cent count on any sampled frame |
+
+The report holds `pass`, `failed` (the names of the failed gates), `gates` (each with `pass`, `limit`, `unit`, `value` and `worst`: the `body`, `state`, `frame`, `count`, `share_percent`, `largest_mm`, `region` and `piece`, where a layer fault names `LOWER through UPPER`; a gate without states is `skipped`), `pieces` (each worn piece with its quality summary as in "Catalogue"), `states` (per body and state: `skin` with `showing`, `covered`, `share_percent`, `largest_mm`, `pieces` and `regions`, and `layers` with `cutting`, `covered`, `share_percent`, `largest_mm`, `pairs` and `regions`), `bodies`, `clips`, `notes` and `sheet`.
+
+- **Review sheet.** `--sheet PATH` (by default `CARD.check.png` next to the card; `none` for no sheet) holds one row per test body: the body at rest from the front, the side and the back, then its worst state from the same three views. The skin is drawn in skin colour and each piece in its mean colours, with red dots on skin through and orange dots on layers through; each picture is labelled with the body, the state, the view and the counts, and the title gives the gates. A sheet of a card with a private piece never goes into a checkout of this repository.
+- The errors are `card_not_found`, `invalid_card`, `package_not_found`, `invalid_package`, `unknown_outfit`, `no_pieces`, `bad_option` (an unknown body, clip or slider), `private_in_repository` and `usage`.
+
+## Outfit files
+
+An outfit file `NAME.outfit.json` (format `opensculptboy.outfit/1`) holds an outfit apart from any card, so that it can be shared with its packages. Its JSON Schema is `src/opensculptboy/data/wearables/outfit-1.schema.json` (`opensculptboy.wearables.outfitfile.SCHEMA_PATH`).
+
+```json
+{
+  "format": "opensculptboy.outfit/1",
+  "id": "travel",
+  "label": "Travel clothes",
+  "description": "a linen shirt under a hooded wool cape",
+  "tags": ["travel"],
+  "provenance": "public",
+  "pieces": [
+    {"piece": "shirt", "file": "../wear/shirt.wearable.json", "enabled": true, "overrides": {"layer": 52}},
+    {"piece": "cape", "file": "../wear/cape.wearable.json", "enabled": true}
+  ],
+  "hides": [{"piece": "cape", "target": "shirt", "groups": ["hood"]}],
+  "springs": {"cape": [{"name": "loose", "kind": "auto", "preset": "cape"}]},
+  "credits": ["\"Linen shirt\" by Ada, CC0-1.0"]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id`, `label`, `description`, `tags` | the outfit's id (no `/`, not `none`), its name to show, one line about it and free words |
+| `provenance` | `private` when a piece is private; such a file never goes into a checkout of this repository |
+| `pieces` | each piece's id, its package file relative to the outfit file, `enabled`, and `overrides` of the package's `layer` and `label` |
+| `hides` | rules added to the packages' own: while `piece` shows, the named `groups` of `target` are hidden; `target` is a piece of the outfit by id, else a piece of the card as `OUTFIT/PIECE` or a loose id |
+| `springs` | the spring chains of a piece by its id, in the form of a package's `springs` field, in place of the package's own |
+| `credits` | the credit line of each piece, as the exports write them |
+
+```bash
+opensculptboy wearables outfit export ada.json --outfit travel --out outfits/travel.outfit.json
+opensculptboy wearables add bo.json outfits/travel.outfit.json --activate
+opensculptboy wearables add bo.json outfits/travel.outfit.json --outfit travel2 --dry-run
+```
+
+- `wearables outfit export CARD --outfit ID --out FILE` writes one outfit of a card: the paths relative to the file, `enabled` as the card's overrides leave it, the pieces' settings (below) and the credits; `--label`, `--description` and `--tag` set those fields. An existing file with other contents stays unless `--replace`; the same contents again report `changed: false`; `--dry-run` prints the file in `outfit` and writes nothing.
+- `wearables add CARD FILE.outfit.json` puts the file on a card as the outfit of its id (`--outfit NAME` gives another id, `--label` another label), with the paths relative to the card and the file as the outfit's `source`. Every package is read and checked first, and a rule must name groups that its target has. The same outfit again changes nothing; an outfit of that id with other contents is an error unless `--replace`, which also takes out the card's overrides of the old pieces. `--activate` makes it the worn outfit, and `--dry-run` prints the change.
+- On the card, each piece of an outfit keeps the file's settings: `overrides` (`layer`, `label`), `hides` (the file's rules of that piece, in the form of a package's `hides`) and `springs`. The export applies them to the package when it dresses the card, so a rule of the card works as a rule of the package.
+- The errors are `outfit_not_found`, `invalid_outfit` (the message names the field), `unknown_piece` (a rule or a spring names a piece the outfit lacks), `unknown_group`, `package_not_found`, `invalid_package`, `outfit_exists`, `file_exists`, `unknown_outfit`, `no_pieces`, `bad_option`, `private_in_repository` and `usage`.
+
+## Agents
+
+The agent skill [`skills/outfits/SKILL.md`](../skills/outfits/SKILL.md) gives the workflow from a request in words to a dressed export (catalogue, import or bind, add, check, read the sheet, tune, export), the JSON fields and error codes to act on, the gates, the credits and the provenance rule.
+
 ## Reference wearables
 
 An appearance handoff ([Fit to a reference](reference-fit.md)) may describe what the reference character wears in an `equipment` section. `opensculptboy wearables reference` builds one package per piece for a card fitted to that handoff:
@@ -220,4 +327,4 @@ Every piece whose licence records an attribution, an author, an SPDX id or a sou
 
 ## Checks
 
-`test.test_wearables_import` writes synthetic MakeHuman assets in the test (`test/mhclo_fixtures.py`: a tube around the torso bound to base-mesh triangles with scale references and `delete_verts`, and a patch of `helper-tights` bound vertex by vertex) and checks the header and binding formats, the binding on `base.obj` and on the default body, the helper geometry against the targets on random bodies, the recorded licences (with words after the name) and the credits in a dressed export, an asset in a pack folder with `packs/<pack>.json` and `--pack-json`, bump maps (ramps against the OpenGL convention, a bump-only material with both key names, the strength and `bumpmapIntensity`, a material with a normal map and a bump map, and every texture key mapped or reported), one asset per quality defect (a flipped triangle, missing UVs on a textured material, a DirectX normal map, a missing texture, an alpha map on an opaque material, an oversized and an odd-sized texture), the JSON results and errors, the JSON alone on stdout of commands run in new processes, the card commands with dry runs, repeated runs and the provenance guard, and the packages against the JSON Schema. `test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `test.test_wearables_bind` writes garment files in the test (a tube around the torso in two materials and a ring around the head) and checks `wearables bind`: the package's fields, the round trip on the template, the frame of the default export, a dressed export on two random bodies, the far-from-body warning and refusal, both frames, own weights and the command. `TestGltfReference` holds a dressed case.
+`test.test_wearables_import` writes synthetic MakeHuman assets in the test (`test/mhclo_fixtures.py`: a tube around the torso bound to base-mesh triangles with scale references and `delete_verts`, and a patch of `helper-tights` bound vertex by vertex) and checks the header and binding formats, the binding on `base.obj` and on the default body, the helper geometry against the targets on random bodies, the recorded licences (with words after the name) and the credits in a dressed export, an asset in a pack folder with `packs/<pack>.json` and `--pack-json`, bump maps (ramps against the OpenGL convention, a bump-only material with both key names, the strength and `bumpmapIntensity`, a material with a normal map and a bump map, and every texture key mapped or reported), one asset per quality defect (a flipped triangle, missing UVs on a textured material, a DirectX normal map, a missing texture, an alpha map on an opaque material, an oversized and an odd-sized texture), the JSON results and errors, the JSON alone on stdout of commands run in new processes, the card commands with dry runs, repeated runs and the provenance guard, and the packages against the JSON Schema. `test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `test.test_wearables_bind` writes garment files in the test (a tube around the torso in two materials and a ring around the head) and checks `wearables bind`: the package's fields, the round trip on the template, the frame of the default export, a dressed export on two random bodies, the far-from-body warning and refusal, both frames, own weights and the command. `test.test_outfit_tools` checks the catalogue (the entries, the order, the filters, the colours, the quality summary, assets not yet imported, thumbnails and their cache), the check (the report, a clean outfit that passes, a shell under the skin that fails `skin_rest`, a lower piece outside an upper one that fails `layers_rest`, the exit status, the sheet) and the outfit files (export, schema, a card in another folder, repeated and dry runs, replacement, the settings in the dressing, the coded errors and the provenance guard). `TestGltfReference` holds a dressed case.
