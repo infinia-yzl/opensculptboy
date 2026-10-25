@@ -1141,7 +1141,7 @@ def vrm_spec(
         look_at=look_at,
         head=head,
         meta=meta,
-        credits=list(BASE_CREDITS),
+        credits=list(BASE_CREDITS) + _wear_credits(dressed),
         thumbnail=png,
         extras=extras,
         sparse_targets=version == "1.0",
@@ -1801,6 +1801,15 @@ def _mesh_nodes(spec: VrmSpec) -> dict[int, list[int]]:
     return nodes
 
 
+def _wear_credits(dressed) -> list[str]:
+    """The credit lines of the worn pieces, after the base model's."""
+    if not dressed:
+        return []
+    from opensculptboy.wearables.export import credits
+
+    return [f"Wearable: {line}" for line in credits([p for p in dressed if p.shown])]
+
+
 def credits_text(spec: VrmSpec) -> str:
     """The credits of a file: the base model's, its parts', then those of the metadata."""
     lines = list(spec.credits)
@@ -2149,7 +2158,7 @@ def export_vrm(
     summary = write_vrm(spec, path, budget=budget)
     if "wearables" in spec.extras:
         summary["wearables"] = [
-            p["piece"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
+            p["ref"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
         ]
     if tier is not None:
         summary["tier"] = tier.get("name")

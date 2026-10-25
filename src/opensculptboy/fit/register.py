@@ -388,7 +388,9 @@ class FitResult:
                 "poses": list(self.jaw_share_poses),
             }
         self.character.detail = detail
-        card_path.write_text(json.dumps(self.character.to_dict(), indent=2) + "\n")
+        card_path.write_text(
+            json.dumps(self.character.to_dict(), indent=2) + "\n", encoding="utf-8"
+        )
         return card_path
 
 
@@ -781,7 +783,7 @@ def jaw_share(model) -> np.ndarray:
     )
     rows = [
         line.split()
-        for line in path.read_text().splitlines()
+        for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     ]
     index = np.array([int(r[0]) for r in rows])

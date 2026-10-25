@@ -148,6 +148,51 @@ class TestPresets(unittest.TestCase):
                         )
             self.assertEqual(list(pathlib.Path(folder).iterdir()), [])
 
+    def test_wearables_count_against_the_tier(self):
+        """The triangles, materials and textures of the worn pieces count in the tier's
+        budget, and in the triangle budget of a tier's VRM file."""
+        from unittest import mock
+
+        from opensculptboy.export import budget as budgets
+        from opensculptboy.tiers import tier_budget, wearable_counts
+        from opensculptboy.wearables.export import Dressing
+        from test.wearable_fixtures import PIECES, write_outfit
+
+        with tempfile.TemporaryDirectory() as folder:
+            card = write_outfit(folder)
+            pieces = [make() for make in PIECES]
+            triangles = sum(len(w.garment.triangles) for w in pieces)
+            # the cape hides the tunic's back group
+            tunic = next(w for w in pieces if w.name == "tunic")
+            back = tunic.garment.groups.index("back")
+            hidden = int((tunic.garment.triangle_group == back).sum())
+            counted = tier_budget(card, "low", detail_dir=folder)
+            self.assertEqual(counted["wearables"]["pieces"], 3)
+            self.assertEqual(counted["wearables"]["triangles"], triangles - hidden)
+            self.assertEqual(counted["wearables"]["materials"], 3)
+            self.assertEqual(
+                counted["triangles"], MESH_COUNTS[(0, "full")][0] + triangles - hidden
+            )
+            wardrobe = wearable_counts(card, folder, Dressing(wardrobe=True))
+            self.assertEqual(wardrobe["triangles"], triangles)
+            self.assertEqual(wearable_counts(card, folder, bare=True)["pieces"], 0)
+            self.assertEqual(tier_budget(_card(()), "low")["wearables"]["pieces"], 0)
+            # a budget between the body and the dressed body refuses the dressed file alone
+            limit = MESH_COUNTS[(0, "full")][0] + 10
+            vrm0 = dict(budgets.BUDGETS["vrm0"], triangles=limit)
+            with mock.patch.dict(budgets.BUDGETS, {"vrm0": vrm0}):
+                with self.assertRaisesRegex(
+                    ValueError, "3 wearable pieces .* over the VRM"
+                ):
+                    export_tier(
+                        pathlib.Path(folder) / "x.vrm",
+                        card,
+                        "low",
+                        folder,
+                        version="0.x",
+                    )
+            self.assertFalse((pathlib.Path(folder) / "x.vrm").exists())
+
     def test_material_tiers(self):
         material = {
             "normal": "n.png",

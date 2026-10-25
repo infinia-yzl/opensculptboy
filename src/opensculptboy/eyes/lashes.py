@@ -549,7 +549,13 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
 
 
 # ------------------------------------------------------------------------- reference lashes
-def reference_lashes(parts, posed: np.ndarray, rest: np.ndarray, head: np.ndarray):
+def reference_lashes(
+    parts,
+    posed: np.ndarray,
+    rest: np.ndarray,
+    head: np.ndarray,
+    eyes: dict | None = None,
+):
     """
     The lashes of a reference (``parts``, :class:`~opensculptboy.fit.handoff.HandoffPart` of
     any role; those with the role ``lashes`` count) in the rest frame of a fitted mesh, with
@@ -557,9 +563,12 @@ def reference_lashes(parts, posed: np.ndarray, rest: np.ndarray, head: np.ndarra
     None without lashes. The parts' textures are stacked from the top in the order of the
     parts, at the width of the widest, and their UVs follow them. ``posed`` and ``rest`` are
     the fitted mesh's vertices as the fit placed it on the reference and at rest, and
-    ``head`` the rows of its head (:func:`opensculptboy.teeth.mesh.mouth_rows`). A part
-    whose points lie mostly above the eyes' level (its median above the median of all lash
-    points) is an upper lid's.
+    ``head`` the rows of its head (:func:`opensculptboy.teeth.mesh.mouth_rows`). Each strip of
+    the lashes (a connected piece of a part's triangles) takes its own lid, so that one part
+    can hold the lashes of both lids (:func:`strip_lids`): with ``eyes``, the rows of each
+    eyeball of the fitted mesh by side, a strip whose base lies above the horizontal line
+    through its eye's centre is an upper lid's; without it, a strip whose median lies above
+    the median of all lash points.
     """
     from PIL import Image
 
@@ -597,10 +606,8 @@ def reference_lashes(parts, posed: np.ndarray, rest: np.ndarray, head: np.ndarra
     atlas = np.concatenate(scaled, axis=0)
     total = atlas.shape[0]
     R, t = rigid(posed[head], rest[head])
-    points, normals, uvs, triangles, lids = [], [], [], [], []
+    points, normals, uvs, triangles = [], [], [], []
     count, top = 0, 0
-    heights = np.concatenate([p.vertices[:, 2] for p in lashes])
-    level = float(np.median(heights))
     for p, image in zip(lashes, scaled):
         v = np.asarray(p.vertices, dtype=np.float64)
         n = (
@@ -614,8 +621,6 @@ def reference_lashes(parts, posed: np.ndarray, rest: np.ndarray, head: np.ndarra
         points.append(v @ R.T + t)
         normals.append(n @ R.T)
         triangles.append(np.asarray(p.triangles, dtype=np.int64) + count)
-        lid = UPPER if float(np.median(v[:, 2])) >= level else LOWER
-        lids.append(np.full(len(v), lid))
         count += len(v)
         top += image.shape[0]
     normals = np.concatenate(normals)
@@ -624,14 +629,56 @@ def reference_lashes(parts, posed: np.ndarray, rest: np.ndarray, head: np.ndarra
         float(np.median(p.roughness)) for p in lashes if p.roughness is not None
     ]
     values = {"roughness": round(float(np.median(roughness)), 4)} if roughness else {}
+    points, triangles = np.concatenate(points), np.concatenate(triangles)
+    centres = None
+    if eyes:
+        from opensculptboy.eyes.geometry import fit_sphere
+
+        centres = {side: fit_sphere(rest[rows])[0] for side, rows in eyes.items()}
     data = LashData(
-        np.concatenate(points),
+        points,
         normals,
         np.concatenate(uvs),
-        np.concatenate(triangles),
-        np.concatenate(lids),
+        triangles,
+        strip_lids(points, triangles, centres),
     )
     return data, atlas, values
+
+
+# the base of a lash strip: its points nearest its eye's centre, this share of them (at
+# least one)
+STRIP_BASE = 0.25
+
+
+def strip_lids(points: np.ndarray, triangles: np.ndarray, centres=None) -> np.ndarray:
+    """
+    The lid (:data:`UPPER` or :data:`LOWER`) of each lash point (M, 3) of a card's rest
+    frame, strip by strip (the connected pieces of ``triangles``). With ``centres`` (side to
+    an eye's centre), a strip belongs to the eye whose centre lies nearest its mean, and to
+    the upper lid when its base (:data:`STRIP_BASE`) lies above the horizontal line through
+    that centre; without it, when its median height lies above the median of all points.
+    """
+    from scipy.sparse.csgraph import connected_components
+
+    points = np.asarray(points, dtype=np.float64)
+    graph = _neighbours(np.asarray(triangles, dtype=np.int64), len(points))
+    _, strip = connected_components(graph, directed=False)
+    level = float(np.median(points[:, 2])) if len(points) else 0.0
+    lids = np.full(len(points), LOWER, dtype=np.uint8)
+    for label in np.unique(strip):
+        mine = np.flatnonzero(strip == label)
+        x = points[mine]
+        if centres:
+            centre = min(
+                centres.values(), key=lambda c: float(np.linalg.norm(x.mean(0) - c))
+            )
+            d = np.linalg.norm(x - centre, axis=1)
+            base = x[np.argsort(d)[: max(1, int(round(STRIP_BASE * len(x))))]]
+            upper = float(base[:, 2].mean()) >= float(centre[2])
+        else:
+            upper = float(np.median(x[:, 2])) >= level
+        lids[mine] = UPPER if upper else LOWER
+    return lids
 
 
 # ---------------------------------------------------------------------------- the eye parts

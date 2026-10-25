@@ -979,11 +979,16 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
     lashes = getattr(result.reference, "lash_parts", None)
     if lashes:
         from opensculptboy.eyes.lashes import reference_lashes
+        from opensculptboy.eyes.mesh import eyeball_rows
         from opensculptboy.teeth.mesh import mouth_rows
 
         head, _ = mouth_rows(model, topology)
         found = reference_lashes(
-            lashes, vertices, out["rest_vertices"][0].numpy(), head
+            lashes,
+            vertices,
+            out["rest_vertices"][0].numpy(),
+            head,
+            eyeball_rows(model, topology),
         )
         if found is not None:
             baked.lashes, baked.lash_texture, baked.lash_values = found
@@ -1039,7 +1044,7 @@ def bake_card(
     from opensculptboy.fit.reference import Reference
 
     card_path = pathlib.Path(card_path)
-    character = Character.from_dict(json.loads(card_path.read_text()))
+    character = Character.from_dict(json.loads(card_path.read_text(encoding="utf-8")))
     placement = character.detail.get("fit", {}).get("placement")
     if not placement:
         raise ValueError(f"{card_path} holds no fit placement (detail.fit.placement).")
