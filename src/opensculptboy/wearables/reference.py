@@ -367,12 +367,12 @@ def build_reference_wearables(
     if handoff.is_file():
         handoff = handoff.parent
     check_destination(out / "wearables" / "x.wearable.json", PRIVATE)
-    appearance = json.loads((handoff / "appearance.json").read_text())
+    appearance = json.loads((handoff / "appearance.json").read_text(encoding="utf-8"))
     equipment = appearance.get("equipment")
     if not equipment:
         raise ValueError(f"{handoff}/appearance.json has no equipment section.")
     specs = outfit_specs(equipment, outfit_id, outfit_label)
-    card_data = json.loads(card.read_text())
+    card_data = json.loads(card.read_text(encoding="utf-8"))
     character = Character.from_dict(card_data)
     placement = (character.detail.get("fit") or {}).get("placement")
     if not placement:
@@ -586,7 +586,9 @@ def build_reference_wearables(
     Character.from_dict(new_card)  # validate
     target = out / card.name
     check_destination(target, PRIVATE)
-    target.write_text(json.dumps(new_card, indent=2) + "\n")
+    target.write_text(json.dumps(new_card, indent=2) + "\n", encoding="utf-8")
     report["card"] = str(target)
-    (out / "wearables" / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    (out / "wearables" / "report.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8"
+    )
     return report

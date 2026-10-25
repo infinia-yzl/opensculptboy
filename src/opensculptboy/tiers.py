@@ -577,7 +577,7 @@ def bake_tiers(
             "the card that bake-tiers writes must lie in the folder of the card it reads, "
             "next to the files that both name."
         )
-    character = Character.from_dict(json.loads(card.read_text()))
+    character = Character.from_dict(json.loads(card.read_text(encoding="utf-8")))
     tiers = [get_tier(t) for t in tiers]
     model = character.build_model(dtype=torch.float64)
     with torch.no_grad():
@@ -690,5 +690,5 @@ def bake_tiers(
     if entries:
         material["tiers"] = entries
     character.material = material
-    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n", encoding="utf-8")
     return character, report
