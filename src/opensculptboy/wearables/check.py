@@ -290,10 +290,11 @@ class Partners:
     ``barycentric``), which each pose carries along: the nearest point of the piece ahead
     on the line along the point's normal (turned away from the body) within 3 cm, else the
     nearest point behind it within 3 cm, else the closest point of the piece within 5 cm.
-    ``side`` (+1 or -1) turns the piece's normal at the partner away from the body:
-    the normal of the triangles' winding, turned where it faces the skin at rest, so that a
-    piece wound inside out, or the far side of a double-sided panel, still measures
-    outward."""
+    ``side`` (+1 or -1) turns the piece's normal at the partner outward: for a partner on
+    the line, along the point's own normal, so that at rest a partner ahead holds the
+    point and a partner behind it has the point outside; for a closest point, away from
+    the skin nearest to it. A piece wound inside out, the far side of a double-sided
+    panel, or a fold of a glove between two fingers, still measures outward."""
 
     rows: np.ndarray
     triangle: np.ndarray
@@ -316,6 +317,7 @@ class Partners:
         found = Surface(piece.vertices, tris).closest(points[rows])
         near = found.distance < NEAR
         triangle, barycentric = found.triangle.copy(), found.barycentric.copy()
+        hit = np.zeros(len(rows), bool)
         if directions is not None:
             hit, ray_triangle, ray_barycentric = ray_partners(
                 points[rows], directions, piece.vertices, tris
@@ -331,6 +333,13 @@ class Partners:
         foot = interpolate(piece.vertices, corners, barycentric)
         skin = body.surface.closest(foot)
         outward = body.surface.normal(skin.triangle, skin.barycentric)
+        if directions is not None:
+            # a partner on the line faces along the point's own outward direction: a
+            # partner ahead holds the point, one behind it has the point outside
+            ray = hit[near]
+            outward[ray] = unit_rows(np.asarray(directions, dtype=np.float64))[near][
+                ray
+            ]
         side = np.where(np.einsum("ij,ij->i", n, outward) < 0, -1.0, 1.0)
         return cls(rows[near], triangle, barycentric, side)
 

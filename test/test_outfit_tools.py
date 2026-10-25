@@ -370,6 +370,40 @@ class TestCheck(unittest.TestCase):
         self.assertGreater(rest["skin"]["covered"], 100)
         self.assertEqual(rest["skin"]["showing"], 0)
 
+    def test_partner_on_a_fold_between_two_skins(self):
+        """Two skins facing each other 20 mm apart (two fingers in a glove) and a wall of
+        the piece between them, 8 mm from the upper skin: the lower skin's partner is the
+        wall ahead of it, which holds it, although the skin nearest to the wall is the
+        upper one, which faces the other way."""
+        import types
+
+        from opensculptboy.wearables.check import Partners
+        from opensculptboy.wearables.geometry import Surface
+
+        grid = np.array([[x, y] for x in (-0.05, 0.05) for y in (-0.05, 0.05)])
+
+        def sheet(z, up):
+            vertices = np.column_stack([grid, np.full(4, z)])
+            triangles = np.array([[0, 2, 3], [0, 3, 1]])
+            return vertices, triangles if up else triangles[:, ::-1]
+
+        lower, lower_t = sheet(0.0, True)
+        upper, upper_t = sheet(0.02, False)
+        body = types.SimpleNamespace(
+            surface=Surface(
+                np.concatenate([lower, upper]), np.concatenate([lower_t, upper_t + 4])
+            )
+        )
+        wall, wall_t = sheet(0.012, True)
+        piece = types.SimpleNamespace(vertices=wall, visible_triangles=lambda: wall_t)
+        points = np.array([[0.01, 0.01, 0.0]])
+        partners = Partners.at_rest(
+            points, np.array([0]), piece, body, np.array([[0.0, 0.0, 1.0]])
+        )
+        self.assertEqual(len(partners.rows), 1)
+        signed = partners.signed(points, piece, wall)
+        self.assertAlmostEqual(float(signed[0]), -0.012, places=6)
+
     def test_layers_as_made(self):
         """A strap 8 mm off the skin under a coat 4 mm off it: made apart (on the
         template), the push-out brings the coat over the strap; made together (on one
