@@ -346,7 +346,7 @@ def write_card_eye_poses(card_path, handoff, reference=None) -> pathlib.Path | N
     from opensculptboy.teeth.mesh import mouth_rows
 
     card_path = pathlib.Path(card_path)
-    character = Character.from_dict(json.loads(card_path.read_text()))
+    character = Character.from_dict(json.loads(card_path.read_text(encoding="utf-8")))
     if character.eye_material() is None:
         return None
     known = known_eye_poses(handoff.appearance)
@@ -376,7 +376,9 @@ def write_card_eye_poses(card_path, handoff, reference=None) -> pathlib.Path | N
         material.get("reference_eyes") or {}, poses=path.name
     )
     character.material = material
-    card_path.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    card_path.write_text(
+        json.dumps(character.to_dict(), indent=2) + "\n", encoding="utf-8"
+    )
     return path
 
 

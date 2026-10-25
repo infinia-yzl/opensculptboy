@@ -669,7 +669,7 @@ class Expression:
 
 @functools.lru_cache(maxsize=1)
 def _expression_table() -> dict:
-    with open(DATA_DIR / "expressions.json") as f:
+    with open(DATA_DIR / "expressions.json", encoding="utf-8") as f:
         return json.load(f)
 
 

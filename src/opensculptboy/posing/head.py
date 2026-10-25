@@ -136,7 +136,9 @@ def face_mesh_rest(model, vertices) -> np.ndarray | None:
     None when the topology lacks the mesh's vertices"""
     from anny.paths import get_anny_root_dir
 
-    with open(get_anny_root_dir() / "data" / "keypoints" / "mediapipe.json") as f:
+    with open(
+        get_anny_root_dir() / "data" / "keypoints" / "mediapipe.json", encoding="utf-8"
+    ) as f:
         table = json.load(f)
     base = model.base_mesh_vertex_indices.detach().cpu().numpy()
     lookup = -np.ones(int(base.max()) + 1, np.int64)

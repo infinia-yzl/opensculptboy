@@ -93,8 +93,9 @@ def covered_body_triangles(body, pieces, mesh, rows: int, model_rows: int, detai
 
 
 def summary(pieces, removed: int, dressing: Dressing) -> dict:
-    """The ``wearables`` entry of a file's scene extras."""
-    return {
+    """The ``wearables`` entry of a file's scene extras, with the ``credits`` of the pieces
+    that the file holds (:func:`credits`)."""
+    out = {
         "format": "opensculptboy.wearable/1",
         "outfit": dressing.outfit,
         "wardrobe": bool(dressing.wardrobe),
@@ -102,6 +103,49 @@ def summary(pieces, removed: int, dressing: Dressing) -> dict:
         "removed_body_triangles": int(removed),
         "pieces": [p.extras() for p in pieces],
     }
+    lines = credits([p for p in pieces if p.shown or dressing.wardrobe])
+    if lines:
+        out["credits"] = lines
+    return out
+
+
+def credit_line(wearable) -> str | None:
+    """
+    The credit of a package, whatever its licence: its ``attribution`` as the licence gives
+    it, else a line made of what the licence records (the label, the author, the SPDX id,
+    the source and the design source); None when the licence records none of them. The
+    licences are the user's responsibility: the tools record what they find and credit it.
+    """
+    licence = wearable.licence or {}
+    given = str(licence.get("attribution") or "").strip()
+    if given:
+        return given
+    author, spdx, source, design = (
+        str(licence.get(k) or "").strip()
+        for k in ("author", "spdx", "source", "design_source")
+    )
+    if not (author or spdx or source or design):
+        return None
+    line = f'"{wearable.label or wearable.name}"'
+    if author:
+        line += f" by {author}"
+    for part in (spdx, source):
+        if part:
+            line += f", {part}"
+    if design and design != source:
+        line += f" (design: {design})"
+    return line
+
+
+def credits(pieces) -> list[str]:
+    """The credit lines of the pieces (:func:`credit_line`), each once, in the pieces'
+    order."""
+    out: list[str] = []
+    for piece in pieces:
+        line = credit_line(piece.wearable)
+        if line and line not in out:
+            out.append(line)
+    return out
 
 
 def lowest(pieces, frame: np.ndarray) -> float:
