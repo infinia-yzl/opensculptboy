@@ -40,7 +40,8 @@ GAP = 0.001  # metres between a piece and what lies under it
 DEPTH = 0.03  # metres: a vertex deeper inside a surface than this is left alone
 PUSH_ROUNDS = 3
 FADE_RINGS = 2
-REACH = 0.03  # metres: the line from a lower piece's point to the piece over it
+REACH = 0.06  # metres: the line from a lower piece's point to the piece over it
+FACING = 0.5  # the least cosine between a lower point's normal and the partner's normal
 
 
 def anny_count(model) -> int:
@@ -245,15 +246,21 @@ def _rest_on(wearable: Wearable, home: BodySurface, body: BodySurface):
     return None
 
 
-def _cover_points(vertices, triangles, points, directions, targets):
+def _cover_points(vertices, triangles, points, directions, targets, facing):
     """Move the triangles of a piece so that each point lies under its partner (the point
-    of the triangles on the line along the point's direction, ahead first; found once)
-    by at least its target (metres along the direction): the corners of each partner's
-    triangle move along the direction by their barycentric share, the largest move of
-    each corner wins. Returns the moves (V, 3)."""
+    of the triangles on the line along the point's direction within :data:`REACH`, ahead
+    first; found once, where the piece's normal there, turned away from the body
+    (``facing``, per vertex), faces the same way as the point's) by at least its target
+    (metres along the direction): the corners of each partner's triangle move along the
+    direction by their barycentric share, the largest move of each corner wins. Returns
+    a function of the current vertices that gives the moves (V, 3)."""
     hit, triangle, barycentric, _ = line_partners(
         points, directions, vertices, triangles, REACH
     )
+    normal = unit_rows(
+        np.einsum("nk,nkj->nj", barycentric, facing[triangles[triangle]])
+    )
+    hit &= np.einsum("ij,ij->i", normal, directions) > FACING
     rows = np.flatnonzero(hit)
     corners = triangles[triangle[rows]]
     barycentric = barycentric[rows]
@@ -265,7 +272,7 @@ def _cover_points(vertices, triangles, points, directions, targets):
         foot = np.einsum("nk,nkj->nj", barycentric, current[corners])
         along = np.einsum("ij,ij->i", foot - points, directions)
         need = targets - along
-        bad = (need > 1e-7) & (along > -DEPTH)
+        bad = (need > 1e-7) & (along > -REACH)
         out = np.zeros_like(current)
         if not bad.any():
             return out
@@ -290,15 +297,17 @@ def _push(
     colliders: list[Surface],
     targets: list[np.ndarray],
     covered: list = (),
+    facing: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int, float]:
     """Move vertices outside the colliders by at least their targets (signed metres along
     each collider's normal at the closest point), and move triangles over the points of
     ``covered`` ((points, outward directions, targets) of each lower piece), so that a
-    lower piece denser than this one shows through none of its triangles."""
+    lower piece denser than this one shows through none of its triangles (``facing``: the
+    vertex normals turned away from the body)."""
     start = vertices.copy()
     moved = np.zeros(len(vertices), bool)
     movers = [
-        _cover_points(vertices, triangles, points, directions, target)
+        _cover_points(vertices, triangles, points, directions, target, facing)
         for points, directions, target in covered
     ]
     for final in [False] * PUSH_ROUNDS + [True]:
@@ -424,8 +433,9 @@ def dress(
                         np.where(hit, np.minimum(along, gap), -np.inf),
                     )
                 )
+            facing = _outward(body, vertices, vertex_normals(vertices, triangles))
             vertices, normals, pushed, push_mm = _push(
-                vertices, normals, triangles, colliders, targets, covered
+                vertices, normals, triangles, colliders, targets, covered, facing
             )
             push_mm *= 1000.0
         weights, joints = body_weights(wearable.binding, weight_body, max_influences)

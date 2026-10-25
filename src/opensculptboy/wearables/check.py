@@ -13,7 +13,7 @@ rest, in the T-pose of the VRM export and on sampled frames of the built-in clip
   :func:`opensculptboy.wearables.cover.piece_cover`) that lies more than the tolerance (2 mm)
   outside every piece that covers it;
 - **layers through**: a vertex of a lower piece that an upper piece covers (the line along
-  its normal meets the upper piece within 3 cm on either side, on that body at rest) and that
+  its normal meets the upper piece within 6 cm on either side, on that body at rest) and that
   lies more than the tolerance outside the upper piece, beyond how far it lay outside on the
   binding body of two pieces made together (the relation as made, which the push-out keeps:
   :func:`opensculptboy.wearables.fit.made_together`); the vertices within the relation as
@@ -21,7 +21,8 @@ rest, in the T-pose of the VRM export and on sampled frames of the built-in clip
 
 "Outside" is measured from the vertex's partner on the piece (:class:`Partners`): the
 nearest point of the piece at rest ahead on the line along the vertex's normal turned away
-from the body (within 3 cm), else the nearest point behind it (within 3 cm), else its
+from the body (within 3 cm, 6 cm for a lower piece's vertex), else the nearest point behind
+it (as far), else its
 closest point (within 5 cm; a vertex further away takes no part),
 carried into each pose by the piece's own triangle and barycentric coordinates, along the
 piece's normal there, turned away from the body. A partner keeps each vertex to the part of
@@ -53,7 +54,8 @@ from opensculptboy.wearables.format import PRIVATE, WearableError, check_destina
 FORMAT = "opensculptboy.check/1"
 TOLERANCE = 0.002  # metres outside a piece that count as a fault
 NEAR = 0.05  # metres: a vertex further from the piece than this does not count
-RAY = 0.03  # metres: the reach of the cover test between pieces
+RAY = 0.03  # metres: the reach of a skin vertex's partner on the line along its normal
+LAYER_RAY = 0.06  # metres: the reach of the cover test between pieces
 POSE_LIMIT = 1.0  # per cent of the covered vertices allowed in the T-pose and the clips
 FRAMES = 4  # frames per clip
 BODIES = (
@@ -244,8 +246,9 @@ class Partners:
     """Points of a set of ``rows`` (body or lower-piece vertices) and their partners on a
     piece at rest (``triangle``, an index into the piece's visible triangles, and
     ``barycentric``), which each pose carries along: the nearest point of the piece ahead
-    on the line along the point's normal (turned away from the body) within 3 cm, else the
-    nearest point behind it within 3 cm, else the closest point of the piece within 5 cm.
+    on the line along the point's normal (turned away from the body) within ``reach`` (3 cm,
+    6 cm for a lower piece's vertex), else the nearest point behind it as far, else the
+    closest point of the piece within 5 cm.
     ``side`` (+1 or -1) turns the piece's normal at the partner outward: for a partner on
     the line, along the point's own normal, so that at rest a partner ahead holds the
     point and a partner behind it has the point outside; for a closest point, away from
@@ -258,7 +261,7 @@ class Partners:
     side: np.ndarray
 
     @classmethod
-    def at_rest(cls, points, rows, piece, body, directions=None):
+    def at_rest(cls, points, rows, piece, body, directions=None, reach=RAY):
         from opensculptboy.wearables.geometry import (
             Surface,
             interpolate,
@@ -276,7 +279,7 @@ class Partners:
         hit = np.zeros(len(rows), bool)
         if directions is not None:
             hit, ray_triangle, ray_barycentric = ray_partners(
-                points[rows], directions, piece.vertices, tris
+                points[rows], directions, piece.vertices, tris, reach
             )
             triangle[hit] = ray_triangle[hit]
             barycentric[hit] = ray_barycentric[hit]
@@ -369,11 +372,13 @@ def layout(body, dressed) -> Layout:
             normals *= np.where(np.einsum("ij,ij->i", normals, outward) < 0, -1, 1)[
                 :, None
             ]
-            hit = ray_partners(lower.vertices[rows], normals, upper.vertices, tris)[0]
+            hit = ray_partners(
+                lower.vertices[rows], normals, upper.vertices, tris, LAYER_RAY
+            )[0]
             if not hit.any():
                 continue
             partners = Partners.at_rest(
-                lower.vertices, rows[hit], upper, body, normals[hit]
+                lower.vertices, rows[hit], upper, body, normals[hit], LAYER_RAY
             )
             # the relation as made: how far each vertex lay outside the upper piece on
             # the binding body of two pieces made together, which the push-out keeps

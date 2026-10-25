@@ -362,6 +362,14 @@ class TestCheck(unittest.TestCase):
             wear / "over.wearable.json", shell("over", 0.008, 50, (0.3, 0.1, 0.1))
         )
         cls.dense = card_file(cls.folder, ["bumpy", "over"], "dense.json")
+        write_wearable(
+            wear / "flared.wearable.json",
+            shell("flared", 0.045, 40, (0.8, 0.7, 0.9), False, "under"),
+        )
+        write_wearable(
+            wear / "snug.wearable.json", shell("snug", 0.005, 50, (0.2, 0.3, 0.2))
+        )
+        cls.flared = card_file(cls.folder, ["flared", "snug"], "flared.json")
         cls.clean = card_file(cls.folder, ["tunic", "cape", "circlet"], "clean.json")
         cls.lining = card_file(cls.folder, ["lining", "cape"], "lining.json")
         cls.skin = card_file(cls.folder, ["tight"], "skin.json")
@@ -469,6 +477,18 @@ class TestCheck(unittest.TestCase):
         a shell of the body's own triangles 8 mm off it: the push-out moves the triangles
         of the upper shell over the bulges, so no vertex of the lower shell shows."""
         status, report, _ = self.check(self.dense, "--sheet", "none", "--clips", "none")
+        layers = report["states"][0]["layers"]
+        self.assertGreater(layers["covered"], 300)
+        self.assertEqual(layers["cutting"], 0, report["failed"])
+        self.assertEqual(status, 0, report["failed"])
+
+    def test_flared_lower_piece_under_a_snug_piece(self):
+        """A loose shell 45 mm off the skin under a snug shell 5 mm off it, made apart:
+        the snug shell lies 40 mm inside the loose one, deeper than the vertex push
+        reaches, and the triangle push brings it over the loose shell."""
+        status, report, _ = self.check(
+            self.flared, "--sheet", "none", "--clips", "none", "--no-tpose"
+        )
         layers = report["states"][0]["layers"]
         self.assertGreater(layers["covered"], 300)
         self.assertEqual(layers["cutting"], 0, report["failed"])
