@@ -119,6 +119,26 @@ def _with_eyes(character, value, parser):
     return dataclasses.replace(character, material={**character.material, "eyes": eyes})
 
 
+def _with_lashes(character, value):
+    """The character with the lashes of ``--lashes``: None keeps the card as it is; "off"
+    leaves the lashes out; a weight of :data:`~opensculptboy.material.LASH_WEIGHTS` sets
+    the weight of the card's generic lashes."""
+    if value is None:
+        return character
+    import dataclasses
+
+    material = dict(character.material)
+    if value == "off":
+        material["lashes"] = False
+    else:
+        lashes = material.get("lashes")
+        material["lashes"] = {
+            **(lashes if isinstance(lashes, dict) else {}),
+            "weight": value,
+        }
+    return dataclasses.replace(character, material=material)
+
+
 def _with_teeth(character, value, parser):
     """The character with the teeth of ``--teeth``: None keeps the card as it is; "" turns
     on the teeth of opensculptboy.teeth (the card's, else generic teeth); "off" leaves them
@@ -195,6 +215,7 @@ def _export(args, parser) -> int:
 
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    character = _with_lashes(character, getattr(args, "lashes", None))
     model, morph_targets = None, None  # export_glb builds the model it needs
     if args.morph_targets == "none":
         morph_targets = []
@@ -272,6 +293,7 @@ def _export_vrm(args, parser) -> int:
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    character = _with_lashes(character, getattr(args, "lashes", None))
     dressing = _dressing(args, character, parser)
     if dressing is not None and dressing.wardrobe:
         parser.error("--wardrobe writes .glb files; a VRM file wears one outfit.")
@@ -343,6 +365,7 @@ def _export_tier(args, parser) -> int:
         )
     character = _with_eyes(_load_character(args.character, parser), args.eyes, parser)
     character = _with_teeth(character, args.teeth, parser)
+    character = _with_lashes(character, getattr(args, "lashes", None))
     kwargs = {}
     if is_vrm:
         from opensculptboy.export.vrm import VrmMeta
@@ -1315,6 +1338,13 @@ def main(argv=None) -> int:
         "(the card's material.eyes, else the defaults; a fitted card has them without the "
         "option); FILE, a JSON object of eye values (docs/eyes.md), is laid over them, and "
         "'off' keeps anny's eyeballs",
+    )
+    e.add_argument(
+        "--lashes",
+        choices=("fine", "medium", "full", "off"),
+        help="the weight of generic lashes (docs/eyes.md): fine (the default), medium or "
+        "full, the density, lengths and opacity of their strands; 'off' leaves the lashes "
+        "out",
     )
     e.add_argument(
         "--teeth",

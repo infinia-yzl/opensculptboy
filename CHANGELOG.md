@@ -57,6 +57,7 @@ Highlights:
 
 ### Fixed
 
+- The eyes: a closed eye of a coarse lid (level 0, which VRM 0.x files take within their budget) left gaps of 0.3 to 0.6 mm between the rims; the blink now seals them between the rim's vertices. The upper lashes turned 17 degrees in a squint and a look down by the extra turn of a closing lid; they now keep their angle to the lid margin outside the blinks. A fitted card's iris keeps its detail: the bake writes the eye layout at `--eye-size` (2048 by 1024), and the export moves the iris by Catmull-Rom samples. Generic lashes take a weight (`material.lashes.weight`, `--lashes`: fine, medium or full). See `docs/eyes.md`.
 - Anny splits each quad of its mesh along the shorter diagonal. On many quads of the eyeballs both diagonals have the same length, and rounding decided the split; the rounding depends on the CPU's code path in the BLAS library (MKL). A GitHub runner therefore split 3 quads of each eyeball along the other diagonal, and its GLB exports differed from those of other machines in the triangles and normals of the eyes. Diagonals within a relative 1e-9 of each other now split along b-d on every machine (`DIAGONAL_TIE` in `anny.utils.mesh_utils`, `test/test_quad_split.py`). Cached model data is regenerated automatically (data version bump).
 
 ## v0.6.1 - 2026-09-28

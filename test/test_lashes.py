@@ -18,6 +18,7 @@ import torch
 from PIL import Image
 
 from opensculptboy import Character, export_glb
+from opensculptboy.eyes import blink as B
 from opensculptboy.eyes.lashes import (
     LOWER,
     UPPER,
@@ -27,7 +28,12 @@ from opensculptboy.eyes.lashes import (
     reference_lashes,
 )
 from opensculptboy.eyes.mesh import eyed_mesh
-from opensculptboy.material import EyeMaterial, LashMaterial, check_material
+from opensculptboy.material import (
+    LASH_WEIGHTS,
+    EyeMaterial,
+    LashMaterial,
+    check_material,
+)
 from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 
 
@@ -57,12 +63,41 @@ class TestLashCard(unittest.TestCase):
             {"length_mm": 40},
             {"lower": "yes"},
             {"mesh": 3},
+            {"weight": "heavy"},
+            {"opacity": 0},
             [],
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 check_material({"lashes": bad})
         card = Character(material={"eyes": {}, "lashes": {"curl": 0.3}})
         self.assertEqual(Character.from_dict(card.to_dict()), card)
+
+    def test_weights(self):
+        # the weight sets the generic lashes' density, lengths and opacity, fine by default;
+        # a key of the section overrides its weight's value
+        self.assertEqual(list(LASH_WEIGHTS), ["fine", "medium", "full"])
+        fine = LashMaterial.from_dict({})
+        self.assertEqual(fine.weight, "fine")
+        for weight, values in LASH_WEIGHTS.items():
+            lashes = LashMaterial.from_dict({"weight": weight})
+            for key, value in values.items():
+                self.assertEqual(getattr(lashes, key), value, (weight, key))
+        own = LashMaterial.from_dict({"weight": "medium", "length_mm": 9.0})
+        self.assertEqual((own.length_mm, own.density), (9.0, 1.5))
+        # each weight in turn: more strands, longer, more opaque; the middle lies between
+        order = [LashMaterial.from_dict({"weight": w}) for w in LASH_WEIGHTS]
+        for key in ("density", "length_mm", "lower_length_mm", "opacity"):
+            values = [getattr(lashes, key) for lashes in order]
+            self.assertEqual(values, sorted(set(values)), key)
+        cover = [
+            (generic_texture(lashes)[..., 3] / 255.0)[:, :1024].mean()
+            for lashes in order
+        ]
+        self.assertLess(cover[0] * 1.3, cover[1])
+        self.assertLess(cover[1] * 1.15, cover[2])
+        self.assertEqual(
+            LashMaterial.from_dict({"weight": "full"}).extras()["weight"], "full"
+        )
 
     def test_texture(self):
         image = generic_texture(LashMaterial())
@@ -83,7 +118,13 @@ class TestLashMesh(unittest.TestCase):
     def setUpClass(cls):
         cls.model = Character().build_model(dtype=torch.float64)
         labels = list(cls.model.facial_action_labels)
-        names = ("eyeBlinkLeft", "eyeLookOutLeft", "eyeBlinkRight")
+        names = (
+            "eyeBlinkLeft",
+            "eyeLookOutLeft",
+            "eyeBlinkRight",
+            "eyeSquintLeft",
+            "eyeLookDownLeft",
+        )
         actions = torch.zeros(len(names) + 1, len(labels), dtype=torch.float64)
         for k, name in enumerate(names):
             actions[k + 1, labels.index(name)] = 1.0
@@ -159,20 +200,30 @@ class TestLashMesh(unittest.TestCase):
                 self.assertLess(np.median(shift), 1.0)
 
     def test_closed_eye(self):
-        # a closed eye shows its upper lashes along the lid line, pointing down and out of
-        # the lid, with either eye's blink; half way, they point forward
+        # a closed eye of the files' blinks shows its upper lashes along the lid line,
+        # pointing forward and out of the lid, with either eye's blink, and half way
         from scipy.spatial import cKDTree
 
         from opensculptboy.export.body import vertex_normals
 
         skin_tris = self.eyed.triangles[: int(self.eyed.kept.sum())]
         skin_rows = np.unique(skin_tris)
+        names = ["eyeBlinkLeft", "eyeBlinkRight"]
+        shaped, blinks = B.blink_offsets(
+            self.eyed, self.rest, np.stack([self.targets[n] for n in names]), names
+        )
+        full = B.blink_lash_offsets(
+            self.eyed, blinks, self.rest, self.eyed.targets(shaped)
+        )
+        at_rest = self.eyed.vertices(self.rest)
 
         for action, side in (("eyeBlinkLeft", "L"), ("eyeBlinkRight", "R")):
+            row, extra = blinks.rows[side], blinks.inbetween_rows[side]
             for weight in (0.5, 1.0):
                 with self.subTest(action=action, weight=weight):
-                    x = self.rest + weight * self.targets[action]
-                    moved = self.eyed.vertices(x)
+                    tent = 1.0 - abs(2.0 * weight - 1.0)
+                    x = self.rest + weight * shaped[row] + tent * shaped[extra]
+                    moved = at_rest + weight * full[row] + tent * full[extra]
                     normals = vertex_normals(x, skin_tris)
                     tree = cKDTree(x[skin_rows])
                     frame = self.eyed.frames[side]
@@ -182,17 +233,44 @@ class TestLashMesh(unittest.TestCase):
                             continue
                         local = frame.to_local(moved[rows])
                         tips, roots = p.uvs[:, 1] > 0.9, p.uvs[:, 1] < 0.1
-                        drop = np.median(local[tips, 1]) - np.median(local[roots, 1])
                         ahead = np.median(local[tips, 2]) - np.median(local[roots, 2])
                         self.assertGreater(ahead, 0.15)  # out, in front of the lid
-                        if weight == 1.0:
-                            self.assertLess(drop, -0.1)  # down
                         # the outer half of each lash lies outside the skin
                         outer = moved[rows][p.uvs[:, 1] > 0.5]
                         _, near = tree.query(outer)
                         near = skin_rows[near]
                         side_of = ((outer - x[near]) * normals[near]).sum(1)
                         self.assertGreater((side_of > 0).mean(), 0.95)
+
+    def test_squint_and_look_down(self):
+        # a squint and a look down move the upper lid without rolling its edge: the lashes
+        # turn with the margin's frame alone (the blinks set their own turn); measured as
+        # the angle between each lash's offset from its root and that offset at rest turned
+        # by the margin's frame, over the points 2 mm or more from their roots (the lashes'
+        # clearance of the skin may tilt a few of them)
+        for action in ("eyeSquintLeft", "eyeLookDownLeft"):
+            d = self.targets[action]
+            offsets = self.eyed.targets(d[None])[0]
+            for p, rows in self._lashes():
+                if p.side != "L" or p.lid != UPPER:
+                    continue
+                f = p.follow
+                x1 = (self.rest + d)[f.rows]
+                turn = np.einsum(
+                    "mij,mkj->mik",
+                    f._frames(x1, f.tangent, f.across),
+                    f._frames(f.rest, f.tangent, f.across),
+                )
+                v0 = p.rest - f.root @ f.rest
+                v1 = p.rest + offsets[rows] - f.root @ x1
+                w = np.einsum("mij,mj->mi", turn, v0)
+                far = np.linalg.norm(v0, axis=1) > 0.002
+                cos = (w * v1).sum(1) / (
+                    np.linalg.norm(w, axis=1) * np.linalg.norm(v1, axis=1)
+                )
+                angle = np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))[far]
+                with self.subTest(action=action):
+                    self.assertLess(np.median(angle), 0.5)
 
     def test_eye_turn(self):
         # a turn of the eye leaves the lashes on their lids (the lids barely move)
@@ -393,6 +471,26 @@ class TestLashFiles(unittest.TestCase):
             g["materials"][p["material"]]["name"]: p
             for p in g["meshes"][0]["primitives"]
         }
+
+    def test_command_weight(self):
+        # --lashes sets the generic lashes' weight, and "off" leaves them out
+        import contextlib
+
+        from opensculptboy.cli import main
+
+        out = self.folder / "medium.glb"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(["export", str(out), "--eyes", "--lashes", "medium"]), 0
+            )
+        g = GLB(out).json
+        extras = g["scenes"][0]["extras"]["opensculptboy"]["eyes"]["lashes"]
+        self.assertEqual(extras["weight"], "medium")
+        self.assertEqual(extras["opacity"], LASH_WEIGHTS["medium"]["opacity"])
+        off = self.folder / "off.glb"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["export", str(off), "--eyes", "--lashes", "off"]), 0)
+        self.assertNotIn("lashes", self._materials(GLB(off)))
 
     def test_glb(self):
         path = self.folder / "lashes.glb"

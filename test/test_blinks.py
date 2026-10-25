@@ -44,9 +44,10 @@ CROSSING_MM = 2.5
 CLIPPING_PAIRS = 20
 # the files' tolerances (mm): float32 positions and the welds of the files' split vertices
 EYE_MM = 0.02
-# a closed eye's margins meet: the widest opening left between them (mm), toward the
-# corners where the turn that brings the rims together fades out
-CLOSED_OPENING_MM = 0.5
+# a closed eye's margins meet: the widest opening left between them (mm), 2 mm or more from
+# the corners; the rims of a coarse lid (level 0, in VRM 0.x files within their budget) are
+# sealed between their vertices as well
+CLOSED_OPENING_MM = 0.05
 # lash points may lie this deep (mm) inside the lids in a blink, as the roots of the lashes
 # that a closing lid covers (the lashes of a reference character reach 0.95 mm)
 LASH_DEPTH_MM = 1.5
@@ -54,8 +55,10 @@ LASH_DEPTH_MM = 1.5
 # shell, out of sight under the rim of the lid
 LASH_EYE_MM = 0.2
 # the upper lashes stay out of the lids: LASH_DEPTH_MM covers the lower lashes that the
-# closed upper lid hides, and the upper lashes reach 0.09 mm on anny's default character
-UPPER_LASH_DEPTH_MM = 0.2
+# closed upper lid hides, and the upper lashes reach 0.25 mm on anny's default character, at
+# their roots 4 to 5 mm from the inner corner, where the sealed rim of its coarse upper lid
+# presses on the lower lid
+UPPER_LASH_DEPTH_MM = 0.3
 # a closed eye's upper lashes lie under its lower lashes by at most this much (mm; 1.15 mm on
 # anny's default character)
 LASH_ORDER_MM = 1.2

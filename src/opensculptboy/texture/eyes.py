@@ -87,6 +87,10 @@ def to_eye_uvs(uvs: np.ndarray, box) -> np.ndarray:
 # most this angle (degrees)
 LAYOUT_REACH = 0.004
 LAYOUT_SUPERSAMPLE = 3
+# the layout's size (texels) by default: 2048 by 1024 holds a reference's iris at the detail of
+# its own texture (a 1024 by 512 layout lost a fifth of the iris's gradient energy and half of
+# its detail finer than a quarter of a millimetre)
+LAYOUT_SIZE = (2048, 1024)
 MAX_GAZE_TURN = 15.0
 
 
@@ -159,7 +163,7 @@ def bake_eye_layout(target, frames: dict, size=None, gaze: bool = True):
         _shading_normals,
     )
 
-    size = tex.EYE_TEXTURE_SIZE if size is None else size
+    size = LAYOUT_SIZE if size is None else size
     w, h = size
     rays = _intersector(target.vertices, target.triangles)
     k = LAYOUT_SUPERSAMPLE

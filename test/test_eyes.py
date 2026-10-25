@@ -410,6 +410,36 @@ class TestTexture(unittest.TestCase):
         np.testing.assert_allclose(uv[:, 0], (u + 0.5) / w, atol=1e-9)
         np.testing.assert_allclose(uv[:, 1], 1 - (v + 0.5) / h, atol=1e-9)
 
+    def test_fit_keeps_fine_detail(self):
+        # a baked iris of fine fibres (about four texels a period), off the gaze by half a
+        # texel, keeps its detail when it moves onto the gaze: the gradient energy of the
+        # iris against that of the same iris drawn on the gaze (bilinear samples kept 0.82)
+        size = (1024, 512)
+        s, phi, left = tex.texel_polar(size)
+        x, y = s * np.cos(phi), s * np.sin(phi)
+
+        def iris(offset):
+            out = np.zeros(s.shape + (3,))
+            for half, (ox, oy) in ((left, offset), (~left, (-offset[0], offset[1]))):
+                r, a = np.hypot(x - ox, y - oy), np.arctan2(y - oy, x - ox)
+                fibres = 0.04 + 0.06 * (1 + np.cos(90 * a) * np.cos(40 * r))
+                value = np.where(r < 0.12, 0.01, np.where(r < 0.36, fibres, 0.6))
+                out[half] = value[half][:, None]
+            return out
+
+        def energy(image):
+            gy, gx = np.gradient(image[..., 1])
+            ring = left & (s > 0.18) & (s < 0.32)
+            return float(np.sqrt((gx**2 + gy**2)[ring].mean()))
+
+        texel = 1.0 / (0.5 * tex.FRONT_SHARE * size[1])
+        eye = EyeMaterial(pupil_mm=2 * 0.12 * 12, iris_mm=2 * 0.36 * 12)
+        fitted, found = tex.fit_baked_iris(
+            iris((0.5 * texel, -0.3 * texel)), eye, {"L": 12.0, "R": 12.0}
+        )
+        self.assertEqual(fitted.shape, (512, 1024, 3))
+        self.assertGreater(energy(fitted) / energy(iris((0.0, 0.0))), 0.92)
+
     def test_procedural_eye(self):
         eye = EyeMaterial(pupil_mm=3.5, iris_color=[0.05, 0.1, 0.2])
         pixels = tex.procedural_eye_pixels(eye, {"L": 12.0, "R": 12.0})
@@ -1101,13 +1131,14 @@ class TestEyeLayoutBake(unittest.TestCase):
         )
         frames = {"L": geometry.EyeFrame("L", centre, radius, axes)}
         colour, normal, out_axes = bake_eye_layout(target, frames)
-        self.assertEqual(colour.shape, (512, 1024, 3))
-        self.assertEqual(normal.shape, (512, 1024, 3))
+        # the layout holds a reference's iris at the detail of its texture
+        self.assertEqual(colour.shape, (1024, 2048, 3))
+        self.assertEqual(normal.shape, (1024, 2048, 3))
         # the gaze turned toward the reference's pupil, within a degree
         turn = np.degrees(np.arccos(np.clip(out_axes["L"][:, 2] @ gaze[:, 2], -1, 1)))
         self.assertLess(turn, 1.0)
         # and the pupil sits on the gaze of the baked layout, with the iris round about it
-        s, phi_, left = tex.texel_polar()
+        s, phi_, left = tex.texel_polar((2048, 1024))
         hit = tex.find_iris(tex.linear(colour[left]), s[left], phi_[left])
         self.assertIsNotNone(hit)
         self.assertLess(np.hypot(*hit[0]), 0.02)
@@ -1133,7 +1164,8 @@ class TestEyeLayoutBake(unittest.TestCase):
             part_offsets=np.array([0, n, 2 * n]),
         )
         frames = {"L": geometry.EyeFrame("L", centre, radius + 0.0005, gaze)}
-        colour, _, _ = bake_eye_layout(target, frames, gaze=False)
+        colour, _, _ = bake_eye_layout(target, frames, size=(1024, 512), gaze=False)
+        s, phi_, left = tex.texel_polar((1024, 512))
         ring = left & (s > np.sin(np.radians(45))) & (s < np.sin(np.radians(55)))
         self.assertGreater(float(colour[ring].min()), 200)
 
