@@ -56,6 +56,12 @@ WHOLE = ("eyes", "lashes")
 # the visibility of a vertex counts from this floor, so hidden surfaces keep some weight
 VISIBILITY_FLOOR = 0.1
 VIEW_SIZE = 384
+# whole small parts of the wearables that go when the budget asks: parts of this many
+# triangles or fewer; before the reduction, when it asks for less than HIDDEN_RATIO of the
+# triangles, the parts of HIDDEN_PART triangles or fewer that no view sees
+THIN_PART = 16
+HIDDEN_PART = 64
+HIDDEN_RATIO = 0.35
 # morph targets whose shapes join the cost of the body's reduction (the largest movers)
 SHAPES = 6
 
@@ -289,6 +295,24 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
         }
     free = ~np.isin(groups, list(fixed))
     target = max(int(limit) - fixed_total, 0)
+    hidden = 0
+    wearable_groups = {g for g, piece in enumerate(pieces) if piece.kind == "wearable"}
+    if free.sum() * HIDDEN_RATIO > target:  # a tight budget: the parts no view sees go
+        rows = np.flatnonzero(free)
+        keep = _thin_parts(
+            positions,
+            T[rows],
+            groups[rows],
+            rows,
+            seen,
+            importance,
+            wearable_groups,
+            0,
+            HIDDEN_PART,
+            hidden_only=True,
+        )
+        free[rows[~keep]] = False
+        hidden = int((~keep).sum())
     floor_total = sum(floors.values())
     run = {"passes": 0, "stopped": "target"}
     if fixed_total > limit:
@@ -358,6 +382,7 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
                 "stopped": r.stopped,
                 "runs": attempt + 1,
                 "thinned_triangles": thinned,
+                "hidden_triangles": hidden,
             }
         else:
             out_t, out_l, out_g, out_o = (
@@ -411,16 +436,28 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
 
 
 def _thin_parts(
-    positions, T, groups, origin, seen, importance, wearable_groups, excess
+    positions,
+    T,
+    groups,
+    origin,
+    seen,
+    importance,
+    wearable_groups,
+    excess,
+    max_size: int | None = None,
+    hidden_only: bool = False,
 ):
     """A mask of the triangles to keep after removing whole small parts (connected parts of
-    :data:`~opensculptboy.export.decimate.MIN_PART` triangles or fewer) of the wearable groups,
-    those that the views see least first (their seen pixels times their importance), until
-    ``excess`` triangles are gone (or none is left)."""
-    from opensculptboy.export.decimate import MIN_PART, _components, weld
+    ``max_size`` triangles or fewer: :data:`THIN_PART`) of the wearable groups, those that the
+    views see least first (their seen pixels times their importance), until ``excess``
+    triangles are gone (or none is left); ``hidden_only`` removes every such part that no view
+    sees, whatever ``excess``."""
+    from opensculptboy.export.decimate import _components, weld
+
+    max_size = THIN_PART if max_size is None else max_size
 
     keep = np.ones(len(T), bool)
-    if excess <= 0 or len(T) == 0:
+    if (excess <= 0 and not hidden_only) or len(T) == 0:
         return keep
     wid = weld(positions)
     W = int(wid.max(initial=-1)) + 1
@@ -429,12 +466,15 @@ def _thin_parts(
     b = np.concatenate([Tw[:, 1], Tw[:, 2]])
     part = _components(W, a, b)[Tw[:, 0]]
     size = np.bincount(part, minlength=W)[part]
-    small = (size <= MIN_PART) & np.isin(groups, sorted(wearable_groups))
+    small = (size <= max_size) & np.isin(groups, sorted(wearable_groups))
     if not small.any():
         return keep
     score_t = seen[origin] * importance[T].mean(1)
     score = np.bincount(part[small], weights=score_t[small], minlength=W)
     parts = np.unique(part[small])
+    if hidden_only:
+        keep[np.isin(part, parts[score[parts] <= 0]) & small] = False
+        return keep
     order = parts[np.argsort(score[parts], kind="stable")]
     count = np.bincount(part[small], minlength=W)[order]
     take = order[: int(np.searchsorted(np.cumsum(count), excess)) + 1]
