@@ -28,7 +28,12 @@ from opensculptboy.eyes.lashes import (
     reference_lashes,
 )
 from opensculptboy.eyes.mesh import eyed_mesh
-from opensculptboy.material import EyeMaterial, LashMaterial, check_material
+from opensculptboy.material import (
+    LASH_WEIGHTS,
+    EyeMaterial,
+    LashMaterial,
+    check_material,
+)
 from test.gltf_reader import GLB, evaluate_nodes, structure_errors
 
 
@@ -58,12 +63,41 @@ class TestLashCard(unittest.TestCase):
             {"length_mm": 40},
             {"lower": "yes"},
             {"mesh": 3},
+            {"weight": "heavy"},
+            {"opacity": 0},
             [],
         ):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 check_material({"lashes": bad})
         card = Character(material={"eyes": {}, "lashes": {"curl": 0.3}})
         self.assertEqual(Character.from_dict(card.to_dict()), card)
+
+    def test_weights(self):
+        # the weight sets the generic lashes' density, lengths and opacity, fine by default;
+        # a key of the section overrides its weight's value
+        self.assertEqual(list(LASH_WEIGHTS), ["fine", "medium", "full"])
+        fine = LashMaterial.from_dict({})
+        self.assertEqual(fine.weight, "fine")
+        for weight, values in LASH_WEIGHTS.items():
+            lashes = LashMaterial.from_dict({"weight": weight})
+            for key, value in values.items():
+                self.assertEqual(getattr(lashes, key), value, (weight, key))
+        own = LashMaterial.from_dict({"weight": "medium", "length_mm": 9.0})
+        self.assertEqual((own.length_mm, own.density), (9.0, 1.5))
+        # each weight in turn: more strands, longer, more opaque; the middle lies between
+        order = [LashMaterial.from_dict({"weight": w}) for w in LASH_WEIGHTS]
+        for key in ("density", "length_mm", "lower_length_mm", "opacity"):
+            values = [getattr(lashes, key) for lashes in order]
+            self.assertEqual(values, sorted(set(values)), key)
+        cover = [
+            (generic_texture(lashes)[..., 3] / 255.0)[:, :1024].mean()
+            for lashes in order
+        ]
+        self.assertLess(cover[0] * 1.3, cover[1])
+        self.assertLess(cover[1] * 1.15, cover[2])
+        self.assertEqual(
+            LashMaterial.from_dict({"weight": "full"}).extras()["weight"], "full"
+        )
 
     def test_texture(self):
         image = generic_texture(LashMaterial())
@@ -437,6 +471,26 @@ class TestLashFiles(unittest.TestCase):
             g["materials"][p["material"]]["name"]: p
             for p in g["meshes"][0]["primitives"]
         }
+
+    def test_command_weight(self):
+        # --lashes sets the generic lashes' weight, and "off" leaves them out
+        import contextlib
+
+        from opensculptboy.cli import main
+
+        out = self.folder / "medium.glb"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(["export", str(out), "--eyes", "--lashes", "medium"]), 0
+            )
+        g = GLB(out).json
+        extras = g["scenes"][0]["extras"]["opensculptboy"]["eyes"]["lashes"]
+        self.assertEqual(extras["weight"], "medium")
+        self.assertEqual(extras["opacity"], LASH_WEIGHTS["medium"]["opacity"])
+        off = self.folder / "off.glb"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["export", str(off), "--eyes", "--lashes", "off"]), 0)
+        self.assertNotIn("lashes", self._materials(GLB(off)))
 
     def test_glb(self):
         path = self.folder / "lashes.glb"

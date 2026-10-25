@@ -443,7 +443,9 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
     bottom edge (the root, v = 0) toward the top (the tip) in ``settings.color``, each slanting
     a little and curving; the alpha falls to nothing at the tips. The left half holds the upper
     lashes' strands and the right half the lower lashes', fewer, finer and lighter
-    (:data:`GENERIC_LOWER`).
+    (:data:`GENERIC_LOWER`). ``settings.density`` sets the number of strands, and
+    ``settings.opacity`` scales each strand's alpha before it is clipped to 1, so that above
+    1 its opaque core widens.
     """
     from opensculptboy.eyes.texture import srgb
 
@@ -467,7 +469,7 @@ def generic_texture(settings, size=GENERIC_TEXTURE) -> np.ndarray:
             taper = width * (1.0 - 0.85 * along)
             strand = np.clip(1.0 - dx / np.maximum(taper, 0.3), 0.0, 1.0)
             strand *= (v <= reach) * (1.0 - along**3)
-            alpha = np.maximum(alpha, strand)
+            alpha = np.maximum(alpha, np.clip(settings.opacity * strand, 0.0, 1.0))
         halves.append(alpha * opacity)
     alpha = np.concatenate(halves, 1)
     colour = np.empty((h, w, 3))

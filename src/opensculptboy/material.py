@@ -633,15 +633,29 @@ LASH_DEFAULTS = {
     #                the bake writes, opensculptboy.eyes.lashes.LashData), relative to the card
     "base_color": None,  # their texture (RGBA), relative to the card
     "color": [0.018, 0.011, 0.007],  # generic lashes: a dark brown
+    "weight": "fine",  # generic lashes: a row of LASH_WEIGHTS, which sets the four below
     "length_mm": 6.5,  # generic upper lashes at their longest
     "lower": True,  # generic lashes on the lower lids too
     "lower_length_mm": 2.5,
     "curl": 0.45,  # how far the generic lashes curl away from the eye, a share of their length
     "density": 1.0,  # the share of the generic texture's strands
+    "opacity": 1.0,  # the gain of each generic strand's alpha (above 1, a wider opaque core)
     "roughness": 1.0,  # a matt strand: a shiny card reads grey at a grazing angle
     "seed": 0,  # of the generic strands
 }
 LASH_SOURCES = ("auto", "reference", "generic")
+# the weights of the generic lashes: the defaults of their density, lengths (mm) and opacity;
+# a key of the card's section overrides its weight's value
+LASH_WEIGHTS = {
+    "fine": {"density": 1.0, "length_mm": 6.5, "lower_length_mm": 2.5, "opacity": 1.0},
+    "medium": {
+        "density": 1.5,
+        "length_mm": 7.2,
+        "lower_length_mm": 3.0,
+        "opacity": 1.3,
+    },
+    "full": {"density": 2.0, "length_mm": 8.0, "lower_length_mm": 3.5, "opacity": 1.6},
+}
 
 
 @dataclasses.dataclass
@@ -655,18 +669,21 @@ class LashMaterial:
     color: list = dataclasses.field(
         default_factory=lambda: list(LASH_DEFAULTS["color"])
     )
+    weight: str = "fine"
     length_mm: float = 6.5
     lower: bool = True
     lower_length_mm: float = 2.5
     curl: float = 0.45
     density: float = 1.0
+    opacity: float = 1.0
     roughness: float = 1.0
     seed: int = 0
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "LashMaterial":
         data = check_lashes(dict(data or {}))
-        values = {**LASH_DEFAULTS, **data}
+        weight = data.get("weight", LASH_DEFAULTS["weight"])
+        values = {**LASH_DEFAULTS, **LASH_WEIGHTS[weight], **data}
         source = values["source"]
         if source == "auto":
             source = "reference" if values["mesh"] else "generic"
@@ -682,8 +699,11 @@ class LashMaterial:
         if self.source == "generic":
             out.update(
                 color=[float(c) for c in self.color],
+                weight=self.weight,
                 length_mm=float(self.length_mm),
                 lower=bool(self.lower),
+                density=float(self.density),
+                opacity=float(self.opacity),
             )
         return out
 
@@ -701,6 +721,10 @@ def check_lashes(data: dict) -> dict:
         raise ValueError(
             f"lashes source must be one of {list(LASH_SOURCES)} (got {data['source']!r})."
         )
+    if data.get("weight", "fine") not in LASH_WEIGHTS:
+        raise ValueError(
+            f"lashes weight must be one of {list(LASH_WEIGHTS)} (got {data['weight']!r})."
+        )
     for key in ("mesh", "base_color"):
         if data.get(key) is not None and not isinstance(data[key], str):
             raise ValueError(f"lashes {key} must be a path.")
@@ -711,6 +735,7 @@ def check_lashes(data: dict) -> dict:
         ("lower_length_mm", 0.5, 15.0),
         ("curl", 0.0, 1.0),
         ("density", 0.05, 3.0),
+        ("opacity", 0.1, 3.0),
         ("roughness", 0.0, 1.0),
     ):
         if key in data:
