@@ -62,7 +62,7 @@ The summary lists the pieces of the file under `pieces` (`opensculptboy.export.p
 
 A dressed character of 146,806 triangles, 34 materials and 4096 px textures (4 wearable pieces) fits VRM 1.0 at 70,000 triangles and 7 materials with every tile at its native size, and VRM 0.x at 32,000 triangles, 8 materials and 2048 px textures. The skin of that character holds 116 joints, so spring joints for the wearables (a later version) have 12 joints of room under the VRM 0.x budget of 128, plus the joints that weight no vertex, which the fit takes out of the skin; the fit does not merge or remove weighted joints.
 
-Limits of the fit: the reduction places no new vertices, so a very tight budget flattens curved pieces into fewer, larger triangles before the floors give way; the parts that no view sees are judged in the T-pose, so a part that a pose reveals (under a cloak that swings) may be gone; only the wearables' materials join atlases; the normal maps need Embree to be baked again, and without it the reduced pieces keep their maps as they are; on a 16-core PC the fit of that character takes about 80 s.
+Limits of the fit: the reduction places no new vertices, so a very tight budget flattens curved pieces into fewer, larger triangles before the floors give way; the parts that no view sees are judged in the T-pose, so a part that a pose reveals (under a cloak that swings) may be gone; only the wearables' materials join atlases; the normal maps need Embree to be baked again, and without it the reduced pieces keep their maps as they are; the fit of that character takes about 80 s with 16 threads.
 
 ## Testing
 
