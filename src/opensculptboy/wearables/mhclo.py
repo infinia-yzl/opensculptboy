@@ -60,25 +60,32 @@ DEFAULT_LAYER = 50  # MakeHuman's z_depth when a file gives none
 # The distance of the .obj from its binding's place above which the report notes it.
 SOURCE_OFFSET_MM = 5.0
 
-# Words of an asset's name and tags that name a slot, in the order they are tried.
+# Words of an asset's name and tags that name a slot, in the order they are tried. The
+# names of MakeHuman's own clothes and of its community's asset packs (shirts01, hats01)
+# check them (test_slot_words). "tube" is left out ("tube socks"): a tube top is a top.
 SLOT_WORDS = {
     "head": "hat cap helmet hood beanie crown tiara bonnet headband beret turban headscarf "
-    "headwear",
-    "face": "glasses spectacles sunglasses mask goggles eyepatch",
-    "neck": "scarf necklace collar choker bowtie necktie",
-    "hands": "glove gloves gauntlet gauntlets mitten mittens",
+    "headwear fedora sombrero stetson",
+    "face": "glasses spectacles sunglasses mask goggles eyepatch monocle veil",
+    "neck": "scarf necklace collar choker bowtie necktie cravat pendant amulet",
+    "hands": "glove gloves gauntlet gauntlets mitten mittens mitts",
     "feet": "shoe shoes boot boots sandal sandals sneaker sneakers heels slipper slippers "
-    "sock socks loafers flats footwear",
+    "sock socks loafers flats footwear pumps trainers flipflops clogs moccasins",
     "under": "underwear underpants undies knickers bra panties briefs boxer boxers "
-    "lingerie thong undershirt bikini",
+    "lingerie thong undershirt bikini bralette swimsuit swimwear",
     "cloak": "cape cloak poncho mantle",
     "legs": "pants trousers jeans shorts skirt leggings tights stockings pantyhose bottom "
-    "bottoms kilt",
+    "bottoms kilt capris chinos joggers culottes sarong",
     "torso": "shirt tshirt top blouse sweater jumper hoodie jacket coat vest dress suit "
-    "tunic robe gown jumpsuit overall overalls fullbody uniform cardigan",
+    "tunic robe gown jumpsuit overall overalls fullbody uniform cardigan tank halter "
+    "turtleneck camisole cami bodice corset polo tee crop blazer waistcoat parka anorak "
+    "kimono leotard bodysuit romper tuxedo",
     "arms": "sleeve sleeves bracer bracers armlet",
-    "accessory": "belt bag ring bracelet earring earrings watch jewelry jewellery",
+    "accessory": "belt bag ring bracelet earring earrings watch jewelry jewellery backpack "
+    "purse",
 }
+# Words that name a slot only when no word of SLOT_WORDS does ("short sleeves").
+WEAK_SLOT_WORDS = {"short": "legs"}
 _LOOSE_WORDS = {"clothes", "clothing", "female", "male", "makehuman", "mh", "proxy"}
 
 
@@ -973,7 +980,31 @@ def infer_slot(name: str, tags) -> tuple[str | None, str | None]:
         if found:
             key = max(found, key=len)  # the first of the longest, in the table's order
             return table[key], f"{key!r} in the word {word!r}"
+    for word in words:
+        if word in WEAK_SLOT_WORDS:
+            return WEAK_SLOT_WORDS[word], f"the word {word!r}"
     return None, None
+
+
+def slot_of(asset: MhcloAsset, path, pack: PackEntry | None = None):
+    """(slot, reason) of an asset, or (None, the sources tried): from the words of its name
+    and tags (:func:`infer_slot`), else its folder name, its file stem and its pack's
+    category, in this order."""
+    path = pathlib.Path(path)
+    sources = [(asset.name or path.stem, asset.tags, None)]
+    sources.append((path.parent.name, [], "the folder name"))
+    sources.append((path.stem, [], "the file name"))
+    if pack is not None and pack.get("category"):
+        sources.append(("", pack.category_tags(), "the pack's category"))
+    for text, tags, where in sources:
+        slot, reason = infer_slot(text, tags)
+        if slot is not None:
+            return slot, reason if where is None else f"{reason} of {where}"
+    tried = [f"the name {asset.name or path.stem!r}", f"the tags {asset.tags}"]
+    tried += [f"the folder name {path.parent.name!r}", f"the file name {path.stem!r}"]
+    if pack is not None and pack.get("category"):
+        tried.append(f"the pack's category {pack.get('category')!r}")
+    return None, ", ".join(tried)
 
 
 def evaluate_binding(asset: MhcloAsset, h: np.ndarray) -> np.ndarray:
@@ -1140,11 +1171,10 @@ def import_mhclo(
             "Export the asset again with MakeClothes or MPFB2.",
         )
     if slot is None:
-        slot, reason = infer_slot(asset.name or stem, asset.tags)
+        slot, reason = slot_of(asset, path, pack)
         if slot is None:
             raise MhcloError(
-                f"{path}: no slot from the name {asset.name or stem!r} and the tags "
-                f"{asset.tags}.",
+                f"{path}: no slot from {reason}.",
                 "unknown_slot",
                 f"Pass --slot with one of {', '.join(SLOTS)}.",
             )

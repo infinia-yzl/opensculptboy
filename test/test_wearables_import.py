@@ -237,13 +237,21 @@ class TestFormat(unittest.TestCase):
             "under": "underwear female_underwear01 underpants briefs bra sportsbra "
             "panties boxer",
             "feet": "socks kneesocks boots",
-            "legs": "stockings tights fishnettights pantyhose jeans",
+            "legs": "stockings tights fishnettights pantyhose jeans short01 jeans01 "
+            "shorts02 short_skirt",
             "hands": "gloves glove mittens",
-            "head": "hat hats tophat helmet hood",
+            "head": "hat hats tophat helmet hood aethelraed_unraed_cloche_hat "
+            "grinsegold_uncle_joshis_hat joepal_xmas_cap jujube_newsboy_cap fedora01",
             "cloak": "cape cloak hooded_cloak capes",
             "neck": "scarf scarves",
             "face": "glasses sunglasses mask facemask",
-            "torso": "hoodedjacket zebra_dress tshirtlong",
+            "torso": "hoodedjacket zebra_dress tshirtlong tank halter turtleneck "
+            "camisole cami bodice sweater jumper polo tee blouse vest corset tube_top "
+            "tubetop crop hoodie cardigan tunic shirt top Tank_Keyhole_Neck "
+            "Turtleneck_Halter elvs_crude_t-shirt_male namuhekam_male_polo_shirt "
+            "skalldyrssuppe_tube_top_funky_colors toigo_bodice-style_top crop_top "
+            "toigo_camisole_top toigo_fisherman_sweater toigo_keyhole_tank_top "
+            "short_sleeved_shirt",
             "accessory": "bracelet",
         }
         for slot, names in cases.items():
@@ -460,6 +468,53 @@ class TestImport(unittest.TestCase):
         write_pack(root, "shirts99", {"toigo_basic_tee": {"license": "CC0 1.0"}})
         (_, report), _ = imported(root / "clothes" / "toigo_basic_tee", "T-shirt_basic")
         self.assertNotIn("licence_mismatch", codes(report))
+
+    def test_slot_from_the_folder_the_file_and_the_pack(self):
+        """An asset whose name and tags name no slot takes it from its folder name, its file
+        stem, then its pack's category, as the items of a real pack without tag lines."""
+        root = self.folder / "slots"
+        write_pack(
+            root,
+            "tops",
+            {
+                "toigo_keyhole_tank_top": {},
+                "toigo_turtleneck_halter_top": {},
+                "maker_plain_item": {"category": "Shirt/T-shirt/Sweater"},
+            },
+        )
+        cases = (
+            ("toigo_keyhole_tank_top", "Tank_Keyhole_Neck", "the word 'tank'"),
+            (
+                "toigo_turtleneck_halter_top",
+                "Turtleneck_Halter",
+                "the word 'turtleneck'",
+            ),
+            ("maker_plain_item", "Model_A", "the pack's category"),
+        )
+        for folder, name, reason in cases:
+            with self.subTest(name=name):
+                (wearable, report), _ = imported(
+                    root / "clothes" / folder, name, tags=(), makeclothes=True
+                )
+                self.assertEqual(wearable.slot, "torso")
+                self.assertIn(reason, report["slot_from"])
+        (wearable, report), _ = imported(
+            self.folder / "toigo_tube_top", "Model_B", tags=()
+        )
+        self.assertEqual(wearable.slot, "torso")
+        self.assertIn("the folder name", report["slot_from"])
+        path = write_asset(self.folder / "model_c", "keyhole_vest", tags=())
+        text = path.read_text().replace("name keyhole_vest", "name Model_C")
+        path.write_text(text)
+        wearable, report = import_mhclo(
+            path, template_body(), Character(), template_model()
+        )
+        self.assertEqual(wearable.slot, "torso")
+        self.assertIn("the file name", report["slot_from"])
+        path = write_asset(self.folder / "model_d", "model_d", tags=())
+        status, result, _ = run(["wearables", "import-mhclo", str(path), "--dry-run"])
+        self.assertEqual((status, result["error"]["code"]), (1, "unknown_slot"))
+        self.assertIn("folder", result["error"]["message"])
 
     def test_pack_json_option(self):
         """--pack-json names the pack file, found by the file stem as well; a file that lists
