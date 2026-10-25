@@ -18,6 +18,7 @@ import { icon } from './icons.ts';
 import { isPhone, makeSegment, WIDE, type Segment } from './segments.ts';
 import { helpSheet } from './shortcuts.ts';
 import { stageSections } from './stage_ui.ts';
+import { wearablesSection } from './wearables_ui.ts';
 import { makeStats, type Stats } from './stats.ts';
 import { toast } from './toast.ts';
 
@@ -111,6 +112,7 @@ export function initUI(app: App): UI {
     { id: 'face', label: 'Face', icon: 'face', key: 'f', el: cs.face },
     { id: 'hair', label: 'Hair', icon: 'hair', key: 'h', el: cs.hair },
     { id: 'skin', label: 'Skin & eyes', icon: 'skin', key: 'e', el: cs.skin },
+    { id: 'wear', label: 'Wearables', icon: 'wear', key: 'w', el: wearablesSection(app) },
   ], layout);
   const right: Segment = makeSegment('right', 'Stage', [
     { id: 'pose', label: 'Pose', icon: 'pose', key: 'p', el: ss.pose },

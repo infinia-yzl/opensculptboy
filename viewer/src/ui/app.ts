@@ -57,6 +57,8 @@ export interface App {
   raceShare(phenotype: Record<string, number>, name: string): number;
   stature(): number;                 // metres, of the current body standing
   bodyTiming(): { ms: number; total: number; steps: Record<string, number> };
+  // the wardrobe: a card's outfits and wearable packages from the user's own files (wearables/view.ts)
+  wardrobe(): import('../wearables/view.ts').Wardrobe | null;
 
   // the hair
   hairSpecs(): any[];

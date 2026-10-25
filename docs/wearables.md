@@ -133,6 +133,10 @@ Loose parts of a piece (a cape, a skirt, a long hem) swing on chains of extra jo
 - **Colliders.** A sphere inside the head and capsules on the neck, the chest, the shoulders, the spine, the hips, the upper and lower legs and the upper arms, fitted inside the skin of each character. The neck, the chest and the shoulders take the ends, quantiles and spans of the viewer's hair colliders. Each joint's hit radius stays within its clearance from the colliders at rest, so a chain rests where the garment was made.
 - **Off.** `--springs off` (or `Dressing(springs=False)`) leaves every piece on the body's bones.
 
+## In the viewer
+
+The viewer page dresses a character in the outfits of its card, from the user's own files, with the same bindings, skin weights, push-out, hides rules and covered skin ([Web viewer](viewer.md#wearables)).
+
 ## Make a wearable
 
 `opensculptboy wearables bind` turns a garment modelled in Blender (or any tool that writes GLB files) on the body of a card into a package.
