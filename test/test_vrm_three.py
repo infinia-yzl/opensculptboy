@@ -22,6 +22,10 @@ Playwright), and the tests check what three-vrm makes of the file:
 The Khronos glTF validator (the gltf-validator package) must report no error in either file; the
 test prints its warnings.
 
+``TestThreeVrmNormalMaps`` loads the files of a card whose cape has a normal map in both
+versions: every MToon material links and draws (three-vrm's MToon vertex shader writes no
+``vTangent``, so a primitive with vertex tangents and a normal map fails to link).
+
 The page is bundled at test time with the viewer's esbuild, so three-vrm never enters the viewer
 page. The checks need the viewer's node packages (``cd viewer && npm ci``), Playwright and
 Chromium; each check skips with its reason when one is missing.
@@ -464,6 +468,110 @@ class TestThreeVrm0(_ThreeVrm, unittest.TestCase):
         hand, _ = rotation_angle(rest[1], rolled[1])
         self.assertAlmostEqual(hand, 90.0, delta=0.5)
         self.assertLess(twist, 0.5)
+
+
+def page_results(files: dict[str, pathlib.Path], script: str) -> dict[str, dict]:
+    """Load each VRM file in the page (Playwright and Chromium, as ``_ThreeVrm`` does) and
+    evaluate ``script`` on it; returns the result per name, with the page's errors."""
+    from playwright.sync_api import sync_playwright
+
+    out = page_dir()
+    args = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+    results = {}
+    with sync_playwright() as p:
+        kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
+        try:
+            browser = p.chromium.launch(args=args, **kw)
+        except Exception as error:  # no browser for Playwright
+            raise unittest.SkipTest(f"Chromium does not start: {error}")
+        try:
+            for name, path in files.items():
+                shutil.copy(path, out / name)
+                tab = browser.new_page(viewport=dict(width=320, height=320))
+                errors = []
+                tab.on("pageerror", lambda e: errors.append(str(e)))
+
+                def serve(route):
+                    file = out / route.request.url[len(ORIGIN) :].split("?")[0]
+                    if file.is_file():
+                        kind = CONTENT_TYPES.get(
+                            file.suffix, "application/octet-stream"
+                        )
+                        route.fulfill(path=str(file), content_type=kind)
+                    else:
+                        route.fulfill(status=404, body="")
+
+                tab.route(ORIGIN + "**", serve)
+                tab.goto(f"{ORIGIN}index.html?vrm={name}")
+                tab.wait_for_function("window.__VRM_READY === true", timeout=600_000)
+                error = tab.evaluate("() => window.__VRM_ERROR || null")
+                if error:
+                    raise AssertionError(f"three-vrm could not load {name}: {error}")
+                results[name] = dict(tab.evaluate(script), page_errors=errors)
+                tab.close()
+        finally:
+            browser.close()
+    return results
+
+
+@local_only("Playwright, Chromium and the viewer's node packages (three-vrm)")
+class TestThreeVrmNormalMaps(unittest.TestCase):
+    """A dressed card whose skin and cape have normal maps (test.wearable_fixtures), both versions:
+    every MToon material links and draws, and the normal-mapped materials take three-vrm's
+    tangent frame from the UVs (no vertex tangents, the normal scale's y flipped as
+    GLTFLoader does for glTF normal maps without tangents)."""
+
+    @classmethod
+    def setUpClass(cls):
+        reason = missing_page_tools()
+        if reason:
+            raise unittest.SkipTest(reason)
+        from opensculptboy.export.vrm import export_vrm
+        from test.wearable_fixtures import bump_normal_map, write_outfit
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        folder = pathlib.Path(cls.tmp.name)
+        card = write_outfit(folder, normal_map=True)
+        cls.files = {}
+        for version in ("1.0", "0.x"):
+            name = f"normal_map_{version}.vrm"
+            export_vrm(
+                folder / name,
+                card,
+                author="test",
+                version=version,
+                detail_dir=folder,
+                refine_weights=False,
+                textures={"normal": bump_normal_map(256)},
+            )
+            cls.files[name] = folder / name
+        cls.results = page_results(
+            cls.files,
+            "() => ({frame: window.vrmRender(), maps: window.vrmNormalMaps()})",
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_every_material_links_and_draws(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                self.assertEqual(result["page_errors"], [])
+                frame = result["frame"]
+                self.assertEqual(frame["failedPrograms"], [])
+                self.assertEqual(frame["glError"], 0)
+                self.assertGreater(frame["covered"], 0.02)
+
+    def test_normal_maps_take_the_frame_from_the_uvs(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                capes = [m for m in result["maps"] if "cape" in m["mesh"]]
+                self.assertTrue(capes, "the cape has no normal map")
+                self.assertGreater(len(result["maps"]), len(capes), "the skin has none")
+                for m in result["maps"]:
+                    self.assertFalse(m["tangent"], m["mesh"])
+                    self.assertLess(m["normalScale"][1], 0, m["mesh"])
 
 
 def validate(paths: list[pathlib.Path]) -> list[dict]:
