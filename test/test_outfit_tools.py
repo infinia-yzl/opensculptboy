@@ -67,17 +67,24 @@ def shell(
     inner=None,
     body_kind="anny-template",
     rigid=False,
+    narrower=0,
 ) -> Wearable:
     """A shell of anny's torso ``offset`` metres off the skin (negative: under it), with the
     skin under it as its cover mask when ``covers``; ``inside_out`` winds its triangles
     toward the body. ``inner`` adds an inner wall that many metres off the skin, wound
     toward the body and three rings narrower (the two walls of a boot or a glove). ``body_kind`` names the binding
     body (``card``: bound on a card's own body, as pieces made together are); ``rigid``
-    binds the shell to the chest bone."""
+    binds the shell to the chest bone; ``narrower`` takes that many rings off the
+    region."""
     from opensculptboy.wearables import bind_rigid
 
     body = template_body()
-    vertices, triangles, rows = _region_shell(body, torso_mask(body), offset)
+    region = torso_mask(body)
+    for _ in range(narrower):
+        border = np.zeros(len(body.vertices), bool)
+        border[body.triangles[(~region[body.triangles]).any(1)].ravel()] = True
+        region &= ~border
+    vertices, triangles, rows = _region_shell(body, region, offset)
     if inside_out:
         triangles = triangles[:, ::-1]
     if inner is not None:  # three rings narrower, so that the outer wall covers it
@@ -364,7 +371,7 @@ class TestCheck(unittest.TestCase):
         cls.dense = card_file(cls.folder, ["bumpy", "over"], "dense.json")
         write_wearable(
             wear / "flared.wearable.json",
-            shell("flared", 0.045, 40, (0.8, 0.7, 0.9), False, "under"),
+            shell("flared", 0.045, 40, (0.8, 0.7, 0.9), False, "under", narrower=4),
         )
         write_wearable(
             wear / "snug.wearable.json", shell("snug", 0.005, 50, (0.2, 0.3, 0.2))
@@ -483,9 +490,9 @@ class TestCheck(unittest.TestCase):
         self.assertEqual(status, 0, report["failed"])
 
     def test_flared_lower_piece_under_a_snug_piece(self):
-        """A loose shell 45 mm off the skin under a snug shell 5 mm off it, made apart:
-        the snug shell lies 40 mm inside the loose one, deeper than the vertex push
-        reaches, and the triangle push brings it over the loose shell."""
+        """A loose shell 45 mm off the skin under a wider snug shell 5 mm off it, made
+        apart: the snug shell lies 40 mm inside the loose one, deeper than the vertex
+        push reaches, and the triangle push brings it over the loose shell."""
         status, report, _ = self.check(
             self.flared, "--sheet", "none", "--clips", "none", "--no-tpose"
         )
