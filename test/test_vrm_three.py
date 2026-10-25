@@ -27,6 +27,10 @@ test prints its warnings.
 chains rest within 5 cm of their shape, and when the hips move on at 1.25 m/s, a walk, the
 tails lag 0.1 to 0.25 m behind their place on the figure.
 
+``TestThreeVrmNormalMaps`` loads the files of a card whose cape has a normal map in both
+versions: every MToon material links and draws (three-vrm's MToon vertex shader writes no
+``vTangent``, so a primitive with vertex tangents and a normal map fails to link).
+
 The page is bundled at test time with the viewer's esbuild, so three-vrm never enters the viewer
 page. The checks need the viewer's node packages (``cd viewer && npm ci``), Playwright and
 Chromium; each check skips with its reason when one is missing.
@@ -586,6 +590,66 @@ class TestThreeVrmSprings(unittest.TestCase):
         for report in validate(list(self.files.values())):
             errors = [m for m in report["messages"] if m["severity"] == ERROR]
             self.assertEqual(errors[:20], [], report["file"])
+
+
+@local_only("Playwright, Chromium and the viewer's node packages (three-vrm)")
+class TestThreeVrmNormalMaps(unittest.TestCase):
+    """A dressed card whose skin and cape have normal maps (test.wearable_fixtures), both versions:
+    every MToon material links and draws, and the normal-mapped materials take three-vrm's
+    tangent frame from the UVs (no vertex tangents, the normal scale's y flipped as
+    GLTFLoader does for glTF normal maps without tangents)."""
+
+    @classmethod
+    def setUpClass(cls):
+        reason = missing_page_tools()
+        if reason:
+            raise unittest.SkipTest(reason)
+        from opensculptboy.export.vrm import export_vrm
+        from test.wearable_fixtures import bump_normal_map, write_outfit
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        folder = pathlib.Path(cls.tmp.name)
+        card = write_outfit(folder, normal_map=True)
+        cls.files = {}
+        for version in ("1.0", "0.x"):
+            name = f"normal_map_{version}.vrm"
+            export_vrm(
+                folder / name,
+                card,
+                author="test",
+                version=version,
+                detail_dir=folder,
+                refine_weights=False,
+                textures={"normal": bump_normal_map(256)},
+            )
+            cls.files[name] = folder / name
+        cls.results = page_results(
+            cls.files,
+            "() => ({frame: window.vrmRender(), maps: window.vrmNormalMaps()})",
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_every_material_links_and_draws(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                self.assertEqual(result["page_errors"], [])
+                frame = result["frame"]
+                self.assertEqual(frame["failedPrograms"], [])
+                self.assertEqual(frame["glError"], 0)
+                self.assertGreater(frame["covered"], 0.02)
+
+    def test_normal_maps_take_the_frame_from_the_uvs(self):
+        for name, result in self.results.items():
+            with self.subTest(name):
+                capes = [m for m in result["maps"] if "cape" in m["mesh"]]
+                self.assertTrue(capes, "the cape has no normal map")
+                self.assertGreater(len(result["maps"]), len(capes), "the skin has none")
+                for m in result["maps"]:
+                    self.assertFalse(m["tangent"], m["mesh"])
+                    self.assertLess(m["normalScale"][1], 0, m["mesh"])
 
 
 def validate(paths: list[pathlib.Path]) -> list[dict]:

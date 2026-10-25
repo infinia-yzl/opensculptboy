@@ -16,11 +16,14 @@
 //                                     pose; returns the rotations of the glTF nodes ``nodes``
 //   vrmVertices(mesh, prim, indices)  the world positions of vertices of a glTF mesh primitive,
 //                                     skinned and morphed as the GPU draws them
-//   vrmRender()                       draws one frame; returns the draw calls and the covered share
+//   vrmRender()                       draws one frame; returns the draw calls, the covered share and
+//                                     the shader programs that fail to link
 //   vrmSprings(frames, speed)         runs the spring bones: the figure rests for ``frames`` frames of
 //                                     1/60 s, then its hips move forward at ``speed`` m/s for as many;
 //                                     returns the joints, the colliders and the largest move (m) of a
 //                                     chain's tail from its place on the figure in each phase
+//   vrmNormalMaps()                   the materials with a normal map: the mesh's name, whether its
+//                                     geometry has vertex tangents, and the normal scale
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMHumanBoneList, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm';
@@ -163,7 +166,9 @@ function vrmRender() {
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
   let covered = 0;
   for (let i = 0; i < pixels.length; i += 4) if (pixels[i] + pixels[i + 1] + pixels[i + 2] > 0) covered++;
-  return { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, covered: covered / (width * height), glError: error };
+  const programs: any[] = (renderer.info as any).programs ?? [];
+  const failed = programs.filter((p) => p.diagnostics && !p.diagnostics.runnable).map((p) => p.name);
+  return { calls: renderer.info.render.calls, triangles: renderer.info.render.triangles, covered: covered / (width * height), glError: error, failedPrograms: failed };
 }
 
 function vrmSprings(frames: number, speed: number) {
@@ -205,7 +210,21 @@ function vrmSprings(frames: number, speed: number) {
   return { joints: joints.length, colliders: manager.colliders.length, tails: tails.length, still, moving };
 }
 
-Object.assign(window, { vrmLoad, vrmInfo, vrmLookAt, vrmExpression, vrmRoll, vrmVertices, vrmRender, vrmSprings });
+function vrmNormalMaps() {
+  const v = current();
+  const found: { mesh: string; tangent: boolean; normalScale: number[] }[] = [];
+  v.scene.traverse((object: any) => {
+    if (!object.isMesh) return;
+    const materials = Array.isArray(object.material) ? object.material : [object.material];
+    for (const m of materials) {
+      if (!m || !m.normalMap) continue;
+      found.push({ mesh: object.name, tangent: !!object.geometry.attributes.tangent, normalScale: m.normalScale.toArray() });
+    }
+  });
+  return found;
+}
+
+Object.assign(window, { vrmLoad, vrmInfo, vrmLookAt, vrmExpression, vrmRoll, vrmVertices, vrmRender, vrmSprings, vrmNormalMaps });
 
 const url = new URLSearchParams(location.search).get('vrm') ?? (window as any).__VRM_URL;
 if (url) {

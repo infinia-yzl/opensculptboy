@@ -386,6 +386,17 @@ def _check_primitive_targets(doc: dict, problems: _Problems) -> None:
             )
 
 
+def _check_primitive_tangents(doc: dict, problems: _Problems) -> None:
+    """MToon primitives carry no TANGENT: three-vrm's MToon vertex shader writes no vTangent,
+    so a primitive with vertex tangents and a normal map fails to link."""
+    for m, mesh in enumerate(doc.get("meshes", [])):
+        for p, primitive in enumerate(mesh.get("primitives", [])):
+            if "TANGENT" in primitive.get("attributes", {}):
+                problems.add(
+                    f"meshes[{m}].primitives[{p}]", "TANGENT in a VRM primitive"
+                )
+
+
 def _check_humanoid(
     doc: dict, bones: dict[str, int], version: str, path: str, problems: _Problems
 ) -> None:
@@ -511,6 +522,7 @@ def check_vrm1(doc: dict) -> list[str]:
     meshes = doc.get("meshes", [])
     targets = _target_counts(doc)
     _check_primitive_targets(doc, problems)
+    _check_primitive_tangents(doc, problems)
 
     human = vrm.get("humanoid", {}).get("humanBones", {})
     bones = {name: entry.get("node") for name, entry in human.items()}
@@ -618,6 +630,7 @@ def check_vrm0(doc: dict) -> list[str]:
     textures = len(doc.get("textures", []))
     targets = _target_counts(doc)
     _check_primitive_targets(doc, problems)
+    _check_primitive_tangents(doc, problems)
 
     def enum(path: str, key: str, value) -> None:
         if value not in VRM0_ENUMS[key]:

@@ -222,10 +222,7 @@ def vrm_piece_meshes(pieces, rebind, frame: np.ndarray, transforms=None) -> list
             targets=[],
             dropped_weight=0.0,
         )
-        if garment.uvs is not None and any(
-            "normal" in m.textures for m in garment.materials
-        ):
-            mesh.add_tangents()
+        # no TANGENT, as for the body (opensculptboy.export.vrm): MToon takes its own frame
         out.append((piece, mesh))
     return out
 

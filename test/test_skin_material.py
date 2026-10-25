@@ -318,8 +318,9 @@ class TestExports(unittest.TestCase):
                             "head_normal",
                         ],
                     )
+                    # MToon takes the normal maps' frame from the UVs (docs/vrm.md)
                     primitive = g["meshes"][0]["primitives"][0]
-                    self.assertIn("TANGENT", primitive["attributes"])
+                    self.assertNotIn("TANGENT", primitive["attributes"])
                     if version == "1.0":
                         mtoon = g["materials"][0]["extensions"]["VRMC_materials_mtoon"]
                         np.testing.assert_allclose(
