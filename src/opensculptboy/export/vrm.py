@@ -2084,12 +2084,12 @@ def _vrm0_extension(spec: VrmSpec, texture: int | None, properties: list) -> dic
     }
 
 
-def _spring_joint(spec: VrmSpec, chain, node: int, hit: float) -> dict:
+def _spring_joint(spec: VrmSpec, chain, node: int, hit: float, stiffness) -> dict:
     s = chain.settings
     return {
         "node": int(node),
         "hitRadius": round(float(hit), 6),
-        "stiffness": float(s.stiffness),
+        "stiffness": round(float(stiffness), 6),
         "gravityPower": float(s.gravity_power),
         "gravityDir": [
             round(float(x), 6) for x in spec.frame @ np.array(s.gravity_dir)
@@ -2137,8 +2137,12 @@ def _vrm1_springs(spec: VrmSpec) -> dict:
             {
                 "name": chain.name,
                 "joints": [
-                    _spring_joint(spec, chain, n, h)
-                    for n, h in zip(chain_nodes, chain.hit_radii)
+                    _spring_joint(spec, chain, n, h, k)
+                    for n, h, k in zip(
+                        chain_nodes,
+                        chain.hit_radii,
+                        chain.settings.joint_stiffness(chain.count),
+                    )
                 ],
                 "colliderGroups": [
                     g for g, (name, _) in enumerate(groups) if name in chain.colliders
@@ -2202,7 +2206,10 @@ def _vrm0_springs(spec: VrmSpec) -> dict:
             gravity = spec.frame @ np.array(s.gravity_dir)
             bone_groups[key] = {
                 "comment": f"{chain.piece}.{chain.spring}",
-                "stiffiness": float(s.stiffness),
+                # one stiffness per group: the mean of the joints that turn
+                "stiffiness": round(
+                    float(np.mean(s.joint_stiffness(chain.count)[:-1])), 6
+                ),
                 "gravityPower": float(s.gravity_power),
                 "gravityDir": vector(np.round(gravity, 6)),
                 "dragForce": float(s.drag_force),

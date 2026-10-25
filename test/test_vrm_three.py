@@ -24,7 +24,8 @@ test prints its warnings.
 
 ``TestThreeVrmSprings`` loads the files of a card with a synthetic long cape and skirt
 (test.wearable_fixtures) in both versions: three-vrm builds every spring joint and collider, the
-chains rest within 5 cm of their shape, and they swing when the hips move on.
+chains rest within 5 cm of their shape, and when the hips move on at 1.25 m/s, a walk, the
+tails lag 0.1 to 0.25 m behind their place on the figure.
 
 The page is bundled at test time with the viewer's esbuild, so three-vrm never enters the viewer
 page. The checks need the viewer's node packages (``cd viewer && npm ci``), Playwright and
@@ -544,7 +545,7 @@ class TestThreeVrmSprings(unittest.TestCase):
             cls.docs[name] = GLB(folder / name).json
         cls.results = page_results(
             cls.files,
-            "() => Object.assign(window.vrmSprings(60, 2.0), "
+            "() => Object.assign(window.vrmSprings(60, 1.25), "
             "{info: window.__VRM_INFO.springJoints})",
         )
 
@@ -578,7 +579,8 @@ class TestThreeVrmSprings(unittest.TestCase):
         for name, result in self.results.items():
             with self.subTest(name):
                 self.assertLess(result["still"], 0.05)
-                self.assertGreater(result["moving"], 0.3)
+                self.assertGreater(result["moving"], 0.1)
+                self.assertLess(result["moving"], 0.25)
 
     def test_validator(self):
         for report in validate(list(self.files.values())):

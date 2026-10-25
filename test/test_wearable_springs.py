@@ -331,10 +331,10 @@ def _vrm1_sim(doc):
         chains.append(
             dict(
                 positions=np.array([at(j["node"]) for j in joints]),
-                stiffness=joints[0]["stiffness"],
-                gravity_power=joints[0]["gravityPower"],
+                stiffness=np.array([j["stiffness"] for j in joints]),
+                gravity_power=np.array([j["gravityPower"] for j in joints]),
                 gravity_dir=np.array(joints[0]["gravityDir"]),
-                drag_force=joints[0]["dragForce"],
+                drag_force=np.array([j["dragForce"] for j in joints]),
                 hit_radii=np.array([j["hitRadius"] for j in joints]),
                 name=spring["name"],
             )
@@ -513,10 +513,44 @@ class TestSpringFiles(unittest.TestCase):
                 cape_swing = max(moved[k] for k in cape)
                 hem_swing = max(moved[k] for k in hem)
         self.assertLess(swing["rest"], 0.04)
-        self.assertGreater(cape_swing, 0.3)
-        self.assertGreater(hem_swing, 0.1)
+        self.assertGreater(cape_swing, 0.15)
+        self.assertGreater(hem_swing, 0.05)
         self.assertGreater(swing["turn"], 0.1)
         self.assertGreater(worst, -0.005)
+
+    def test_walk_lag_and_settle(self):
+        """The VRM spring update on the VRM 1.0 file in a walk: the chains hang at rest
+        within 3 cm of their shape, in a walk at 1.25 m/s the cape's tails lag 0.1 to
+        0.25 m behind their place at rest (the skirt's at most 0.25 m), and within 0.5 s of
+        the stop every tail is back within 3 cm of where it hung before the walk."""
+        sim, chains, _ = _vrm1_sim(self.vrm["1.0"][2].json)
+        rest = [c["positions"][-1] for c in chains]
+        kinds = {
+            kind: [k for k, c in enumerate(chains) if kind in c["name"]]
+            for kind in ("long_cape", "skirt")
+        }
+        M, dt = np.eye(4), 1.0 / 60.0
+        hang, lag, settle, before = 0.0, {"long_cape": 0.0, "skirt": 0.0}, 0.0, None
+        for step in range(60 + 120 + 60):
+            walking = 60 <= step < 180
+            M[2, 3] += (1.25 if walking else 0.0) * dt  # the figure faces +Z
+            sim.step(dt, M)
+            tails = np.array([j[-1] for j in sim.joints()]) - M[:3, 3]
+            if step < 60:
+                hang = max(hang, float(np.linalg.norm(tails - rest, axis=1).max()))
+                before = tails.copy()
+            elif walking and step >= 150:  # the last half second of the walk
+                for kind, rows in kinds.items():
+                    d = np.linalg.norm(tails[rows] - np.array(rest)[rows], axis=1)
+                    lag[kind] = max(lag[kind], float(d.max()))
+            elif not walking:
+                if np.linalg.norm(tails - before, axis=1).max() > 0.03:
+                    settle = (step - 179) * dt
+        self.assertLess(hang, 0.03)
+        self.assertGreater(lag["long_cape"], 0.1)
+        self.assertLess(lag["long_cape"], 0.25)
+        self.assertLess(lag["skirt"], 0.25)
+        self.assertLessEqual(settle, 0.5)
 
     def test_springs_off(self):
         path = self.folder / "still.glb"

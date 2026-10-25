@@ -96,7 +96,7 @@ Loose parts of a piece (a cape, a skirt, a long hem) swing on chains of extra jo
 | `name` | the spring's name, distinct within the package |
 | `kind` | `auto` (the default) or `chain` (the default when `points` is given) |
 | `preset` | `cape`, `skirt` or `hem`; by default `cape` for the `cloak` slot, `skirt` for `legs` and `under`, `hem` for the others |
-| `settings` | `stiffness`, `gravity_power`, `gravity_dir` (glTF axes), `drag_force` and `hit_radius` (metres), in place of the preset's |
+| `settings` | `stiffness`, `stiffness_top`, `gravity_power`, `gravity_dir` (glTF axes), `drag_force` and `hit_radius` (metres), in place of the preset's |
 | `groups` | the garment groups of the spring (every group by default) |
 | `columns`, `joints` | the chains of an `auto` spring and the joints of each, the tail included (cape 5, skirt 8, hem 3; 4 joints) |
 | `points` | a `chain` spring's joints, in metres and glTF axes, on the binding body at rest |
@@ -104,11 +104,13 @@ Loose parts of a piece (a cape, a skirt, a long hem) swing on chains of extra jo
 | `colliders` | the collider groups that the chains hit: `head`, `torso`, `legs`, `arms` (all by default) |
 | `gap`, `hang`, `reach` | the loose test of an `auto` spring (2.5 cm from the skin, 3 cm below the closest skin point) and an authored chain's reach over the garment (15 cm) |
 
-| Preset | Stiffness | Gravity | Drag | Hit radius |
+| Preset | Stiffness | Top | Gravity | Drag | Hit radius |
 |---|---|---|---|---|
-| `cape` | 0.8 | 0.3 | 0.45 | 4 cm |
-| `skirt` | 1.4 | 0.1 | 0.5 | 3 cm |
-| `hem` | 1.0 | 0.2 | 0.5 | 2 cm |
+| `cape` | 4 | 2 | 0.6 | 0.5 | 4 cm |
+| `skirt` | 3 | 2 | 0.3 | 0.5 | 3 cm |
+| `hem` | 3 | 2 | 0.4 | 0.5 | 2 cm |
+
+- **Settings along a chain.** The stiffness of the first joint is `stiffness_top` times the preset's, and it falls evenly to the preset's at the last joint that turns, so the top follows the body and the hem swings. Each joint pulls toward its rest direction in its parent's frame, so the lag of the joints adds up down a chain: with the VRMC_springBone default stiffness of 1, a long cape streams back by most of its length in a walk. With the presets the VRM spring update gives the synthetic long cape a tail lag of about 0.18 m in a walk at 1.25 m/s (0.28 m at 2 m/s), and it settles within 0.1 s of a stop; the gravity holds a chain within 3 cm of its shape at rest. A VRM 0.x bone group takes one stiffness, the mean of its joints'.
 
 - **Auto chains.** A vertex is loose when it lies more than `gap` from the skin or more than `hang` below its closest skin point. The columns share the loose vertices by their azimuth around the body's vertical axis: all around for a skirt, across the back for a cape. Each column runs from the top of its loose vertices (the median of three neighbouring columns' tops) to the lowest vertex of its band, its last joint the tail.
 - **Authored chains.** On another body each point moves with the six garment vertices nearest to it on the binding body.
@@ -142,4 +144,4 @@ Every piece whose licence records an attribution, an author, an SPDX id or a sou
 
 ## Checks
 
-`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `TestGltfReference` holds a dressed case. `test.test_wearable_springs` checks the springs of a synthetic long cape and skirt: the entries, the chain structure, the weights and the attachment at the top, the colliders, the GLB and VRM files of both versions within their budgets and schemas, and four seconds of the VRM spring update (`SpringSim`) in which the pieces swing and stay outside the body's capsules.
+`test.test_wearables` uses synthetic garments only (`test/wearable_fixtures.py`: a tunic, a rigid circlet and a cape that hides the tunic's back): the package round trip and the provenance guard, garments that return to their own vertices on the template, ten random bodies on which no covered skin lies more than 2 mm outside the tunic, the push-out between a rigid plate and a coat, the card's outfits with slot replacement, overrides and hides rules, the GLB, wardrobe and VRM files of both versions, the command, and reference wearables built from a synthetic reference character in both forms of the `equipment` section. `TestGltfReference` holds a dressed case. `test.test_wearable_springs` checks the springs of a synthetic long cape and skirt: the entries, the chain structure, the weights and the attachment at the top, the colliders, the GLB and VRM files of both versions within their budgets and schemas, four seconds of the VRM spring update (`SpringSim`) in which the pieces swing and stay outside the body's capsules, and a walk at 1.25 m/s in which the cape's tails lag 0.1 to 0.25 m and every tail settles within 0.5 s of the stop.

@@ -48,7 +48,14 @@ class SpringWarning(UserWarning):
 
 
 KINDS = ("auto", "chain")
-SETTING_KEYS = ("stiffness", "gravity_power", "gravity_dir", "drag_force", "hit_radius")
+SETTING_KEYS = (
+    "stiffness",
+    "stiffness_top",
+    "gravity_power",
+    "gravity_dir",
+    "drag_force",
+    "hit_radius",
+)
 SPEC_KEYS = {
     "name",
     "kind",
@@ -97,6 +104,8 @@ CLOAK_ROOTS = tuple(b for b in TORSO if not b.startswith(("neck", "head", "shoul
 class SpringSettings:
     """
     The spring of a chain in VRM terms: ``stiffness`` (the pull toward the rest direction),
+    ``stiffness_top`` (the factor of the stiffness at the first joint, which falls evenly to
+    1 at the last joint that turns, so that the top follows the body and the hem swings),
     ``gravity_power``, ``gravity_dir`` (a unit vector in Anny's frame), ``drag_force`` (0 to
     1) and ``hit_radius`` (metres, the joints' collision spheres).
     """
@@ -106,11 +115,19 @@ class SpringSettings:
     gravity_dir: tuple = (0.0, 0.0, -1.0)
     drag_force: float = 0.5
     hit_radius: float = 0.02
+    stiffness_top: float = 1.0
+
+    def joint_stiffness(self, count: int) -> np.ndarray:
+        """(count,) the stiffness of each joint of a chain of ``count`` joints (the tail
+        takes the last value; it drives no segment)."""
+        turning = np.linspace(self.stiffness_top, 1.0, max(count - 1, 1))
+        return self.stiffness * np.r_[turning, turning[-1]][:count]
 
     def json(self) -> dict:
         """The settings as a package writes them (``gravity_dir`` in glTF axes)."""
         return {
             "stiffness": float(self.stiffness),
+            "stiffness_top": float(self.stiffness_top),
             "gravity_power": float(self.gravity_power),
             "gravity_dir": [
                 round(float(x), 6) for x in ANNY_TO_GLTF @ np.array(self.gravity_dir)
@@ -120,13 +137,16 @@ class SpringSettings:
         }
 
 
-# Defaults for the kinds of loose garment. The gravity stays low against the stiffness, so
-# that a chain at rest sags a few centimetres at most below the shape it was made in (about
-# 3 cm at the hem of test_wearable_springs' long cape and skirt).
+# Defaults for the kinds of loose garment, measured with the VRM spring update on
+# test_wearable_springs' long cape and skirt (TestSpringResponse): at rest a chain hangs
+# within a few centimetres of the shape it was made in; in a walk at 1.25 m/s its tail lags
+# 0.1 to 0.25 m; and after a stop it settles within 0.5 s. A stiffness of 1, the
+# VRMC_springBone default, lets a chain stream back by most of its length in a walk, since
+# the pull toward the rest direction of each joint adds up down the chain.
 PRESETS = {
-    "cape": SpringSettings(0.8, 0.3, (0.0, 0.0, -1.0), 0.45, 0.04),
-    "skirt": SpringSettings(1.4, 0.1, (0.0, 0.0, -1.0), 0.5, 0.03),
-    "hem": SpringSettings(1.0, 0.2, (0.0, 0.0, -1.0), 0.5, 0.02),
+    "cape": SpringSettings(4.0, 0.6, (0.0, 0.0, -1.0), 0.5, 0.04, stiffness_top=2.0),
+    "skirt": SpringSettings(3.0, 0.3, (0.0, 0.0, -1.0), 0.5, 0.03, stiffness_top=2.0),
+    "hem": SpringSettings(3.0, 0.4, (0.0, 0.0, -1.0), 0.5, 0.02, stiffness_top=2.0),
 }
 SLOT_PRESETS = {"cloak": "cape", "legs": "skirt", "under": "skirt"}
 # The bone that the chains of a preset hang from when the spring names none (else the
@@ -898,7 +918,10 @@ class SpringSim:
 
     Args:
         chains: per chain, a dict of ``positions`` (n, 3) at rest, ``stiffness``,
-            ``gravity_power``, ``gravity_dir`` (3,), ``drag_force`` and ``hit_radii`` (n,).
+            ``gravity_power``, ``gravity_dir`` (3,), ``drag_force`` and ``hit_radii`` (n,);
+            the stiffness, the gravity power and the drag force are numbers or (n,) per
+            joint, as a VRM 1.0 file writes them (joint k drives the segment from it to
+            joint k + 1).
         colliders: (m, 7) the colliders at rest (two ends and a radius).
     """
 
@@ -908,6 +931,10 @@ class SpringSim:
         for c in self.chains:
             p = np.asarray(c["positions"], dtype=np.float64)
             c["positions"] = p
+            for key in ("stiffness", "gravity_power", "drag_force"):
+                c[key] = np.broadcast_to(
+                    np.asarray(c[key], dtype=np.float64), (len(p),)
+                ).copy()
             c["lengths"] = np.linalg.norm(np.diff(p, axis=0), axis=1)
             c["rest_dirs"] = unit_rows(np.diff(p, axis=0))
             c["tails"] = p[1:].copy()
@@ -938,9 +965,9 @@ class SpringSim:
                 target = Q @ c["rest_dirs"][k]
                 nxt = (
                     cur
-                    + (cur - prev) * (1.0 - c["drag_force"])
-                    + dt * c["stiffness"] * target
-                    + dt * c["gravity_power"] * g
+                    + (cur - prev) * (1.0 - c["drag_force"][k])
+                    + dt * c["stiffness"][k] * target
+                    + dt * c["gravity_power"][k] * g
                 )
                 nxt = head + unit_rows((nxt - head)[None])[0] * c["lengths"][k]
                 radius = float(c["hit_radii"][k])
