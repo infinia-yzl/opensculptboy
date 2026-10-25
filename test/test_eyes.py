@@ -1013,6 +1013,35 @@ class TestExports(unittest.TestCase):
         card = glb.json["scenes"][0]["extras"]["opensculptboy"]["character"]
         self.assertEqual(card["material"]["eyes"]["iris_color"], [0.1, 0.2, 0.1])
 
+    def test_command_off(self):
+        # --eyes off keeps anny's own eyeballs for a card whose reference eyes turn the
+        # eyes on
+        import contextlib
+        import io
+
+        from opensculptboy.cli import main
+
+        fitted = Character(material={"reference_eyes": {"cornea_radius_mm": 7.6}})
+        self.assertIsNotNone(fitted.eye_material())
+        path = self.folder / "fitted.json"
+        path.write_text(json.dumps(fitted.to_dict()), encoding="utf-8")
+        out = self.folder / "off.glb"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(["export", str(out), "--character", str(path), "--eyes", "off"]), 0
+            )
+        glb = GLB(out)
+        self.assertEqual(sorted(self._materials(glb)), ["skin"])
+        extras = glb.json["scenes"][0]["extras"]["opensculptboy"]
+        self.assertNotIn("eyes", extras)
+        self.assertIs(extras["character"]["material"]["eyes"], False)
+        # anny's eyeball triangles stay in the skin
+        from opensculptboy.export.body import triangulated_faces
+
+        triangles, _ = triangulated_faces(Character().build_model())
+        prim = glb.json["meshes"][0]["primitives"][0]
+        self.assertEqual(glb.accessor(prim["indices"]).size, triangles.size)
+
 
 def _has_embree() -> bool:
     try:
