@@ -8,7 +8,7 @@
 // skin under the pieces. The body is any frame that is a similarity of Anny's (the page's frame: Y up, scaled by the
 // authoring rig's scale), and `unit` gives its length of one metre. No DOM and no three.js: a worker can run it.
 
-import { adjacency, frames, norm3, rayHits, Surface, unitRows, vertexNormals, vertexScales, type F64, type I32 } from './geometry.ts';
+import { adjacency, frames, norm3, QUERY_SLICE, rayHitsSteps, runSteps, Surface, unitRows, vertexNormals, vertexScales, type F64, type I32, type Steps } from './geometry.ts';
 import type { Wearable } from './package.ts';
 
 export const GAP = 0.001;        // metres between a piece and what lies under it
@@ -214,12 +214,12 @@ function fade(D: F64, moved: Uint8Array, T: I32): F64 {
   return out;
 }
 
-function pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], unit: number) {
+function* pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], unit: number, slice: number) {
   const start = V.slice(), n = V.length / 3, moved = new Uint8Array(n);
   for (let round = 0; round <= PUSH_ROUNDS; round++) {
-    colliders.forEach((surface, c) => {
+    for (let c = 0; c < colliders.length; c++) {
       // a vertex farther than DEPTH from every triangle never moves, so its query may stop early
-      const { signed, found, normal } = surface.signedDistance(V, DEPTH * unit), target = targets[c];
+      const { signed, found, normal } = yield* colliders[c].signedDistanceSteps(V, DEPTH * unit, slice), target = targets[c];
       for (let i = 0; i < n; i++) {
         if (signed[i] < target[i] - 1e-7 * unit && found.distance[i] < DEPTH * unit) {
           const d = target[i] - signed[i];
@@ -227,12 +227,14 @@ function pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], u
           moved[i] = 1;
         }
       }
-    });
+      yield;
+    }
     if (round < PUSH_ROUNDS) {
       const D = new Float64Array(V.length);
       for (let i = 0; i < V.length; i++) D[i] = V[i] - start[i];
       const F = fade(D, moved, T);
       for (let i = 0; i < V.length; i++) V[i] = start[i] + F[i];
+      yield;
     }
   }
   const shift = new Float64Array(n);
@@ -293,12 +295,19 @@ export class DressCache {
   weights = new Map<Wearable, { source: F64; weights: Float32Array; joints: Uint16Array }>();
 }
 
-export interface DressOptions { push?: boolean; gap?: number; cache?: DressCache; timing?: Record<string, number> }
+// `slice`: the garment vertices per slice of a closest-point query in dressSteps
+export interface DressOptions { push?: boolean; gap?: number; cache?: DressCache; timing?: Record<string, number>; slice?: number }
 
 // evaluate the worn pieces on a body from the lowest layer up (opensculptboy.wearables.fit.dress); pieces that do not
 // show are evaluated without a push
 export function dress(body: BodySurface, pieces: WornPiece[], opts: DressOptions = {}): DressedPiece[] {
+  return runSteps(dressSteps(body, pieces, opts));
+}
+// the same dress in steps that yield between slices of the work (the page runs them between frames); the slices change
+// no number of the result. With steps, the times of `timing` include the waits between the slices.
+export function* dressSteps(body: BodySurface, pieces: WornPiece[], opts: DressOptions = {}): Steps<DressedPiece[]> {
   const push = opts.push !== false, unit = body.unit, gap = (opts.gap ?? GAP) * unit, cache = opts.cache || new DressCache();
+  const slice = opts.slice ?? QUERY_SLICE;
   const timing = opts.timing || {};
   const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
   const order = pieces.map((_, i) => i).sort((a, b) => pieces[a].wearable.layer - pieces[b].wearable.layer || a - b);
@@ -308,13 +317,14 @@ export function dress(body: BodySurface, pieces: WornPiece[], opts: DressOptions
     let t0 = now();
     let { vertices, normals } = evaluate(w, body);
     timing.evaluate = (timing.evaluate || 0) + now() - t0;
+    yield;
     let pushed = 0, pushMm = 0;
     if (push && worn.shown && w.binding.method === 'surface') {
       t0 = now();
       let h = cache.homes.get(w);
       if (!h) {
         const home = body.withVertices(fromAnny(body.frame, w.binding.bodyVertices, body.n)), hv = evaluate(w, home).vertices;
-        const sd = home.surface.signedDistance(hv).signed;
+        const sd = (yield* home.surface.signedDistanceSteps(hv, Infinity, slice)).signed;
         h = { home, vertices: hv, target: sd.map((x) => Math.min(x, gap)), lower: new Map() };
         cache.homes.set(w, h);
       }
@@ -329,13 +339,13 @@ export function dress(body: BodySurface, pieces: WornPiece[], opts: DressOptions
         if (!target) {
           const lh = restOn(lower.wearable, h.home, body);
           target = lh
-            ? new Surface(lh.vertices, tris, lh.normals).signedDistance(h.vertices).signed.map((x) => Math.min(x, gap))
+            ? (yield* new Surface(lh.vertices, tris, lh.normals).signedDistanceSteps(h.vertices, Infinity, slice)).signed.map((x) => Math.min(x, gap))
             : new Float64Array(h.vertices.length / 3).fill(gap);   // the relation on the binding body is unknown
           if (lower.wearable.binding.method === 'surface' || !sameRows(h.home.vertices, body.vertices)) h.lower.set(key, target);
         }
         targets.push(target);
       }
-      const r = pushOut(vertices, normals, w.garment.triangles, colliders, targets, unit);
+      const r = yield* pushOut(vertices, normals, w.garment.triangles, colliders, targets, unit, slice);
       vertices = r.vertices; normals = r.normals; pushed = r.pushed; pushMm = r.pushMm;
       timing.push = (timing.push || 0) + now() - t0;
     }
@@ -353,25 +363,35 @@ export function dress(body: BodySurface, pieces: WornPiece[], opts: DressOptions
 
 // ------------------------------------------------------------------ covered skin
 export function rayCover(body: BodySurface, piece: DressedPiece, reach = RAY_REACH): Uint8Array {
-  return rayHits(body.vertices, body.normals, piece.vertices, visibleTriangles(piece, true), reach * body.unit);
+  return runSteps(rayCoverSteps(body, piece, reach));
+}
+function rayCoverSteps(body: BodySurface, piece: DressedPiece, reach = RAY_REACH): Steps<Uint8Array> {
+  return rayHitsSteps(body.vertices, body.normals, piece.vertices, visibleTriangles(piece, true), reach * body.unit);
 }
 // the cover mask of a dressed piece on the body's rows (opensculptboy.wearables.cover.piece_cover)
 export function pieceCover(body: BodySurface, piece: DressedPiece): Uint8Array {
+  return runSteps(pieceCoverSteps(body, piece));
+}
+function* pieceCoverSteps(body: BodySurface, piece: DressedPiece): Steps<Uint8Array> {
   const w = piece.wearable, n = body.n;
-  if (!w.covers) return rayCover(body, piece);
+  if (!w.covers) return yield* rayCoverSteps(body, piece);
   const mask = w.covers.slice(0, n);
   for (const [group, extra] of Object.entries(w.groupCovers)) if (!piece.hiddenGroups.includes(group)) for (let i = 0; i < n; i++) mask[i] |= extra[i];
   const hidden = piece.hiddenGroups.filter((g) => !(g in w.groupCovers));
   if (w.coverRay || hidden.length) {
-    const ray = rayCover(body, piece, w.coverRay ? RAY_REACH : 2 * RAY_REACH);
+    const ray = yield* rayCoverSteps(body, piece, w.coverRay ? RAY_REACH : 2 * RAY_REACH);
     for (let i = 0; i < n; i++) mask[i] &= ray[i];
   }
   return mask;
 }
 export function outfitCover(body: BodySurface, pieces: DressedPiece[]): Uint8Array {
+  return runSteps(outfitCoverSteps(body, pieces));
+}
+// the same mask in steps, one per piece
+export function* outfitCoverSteps(body: BodySurface, pieces: DressedPiece[]): Steps<Uint8Array> {
   const mask = new Uint8Array(body.n);
-  for (const p of pieces) if (p.shown) { const m = pieceCover(body, p); for (let i = 0; i < body.n; i++) mask[i] |= m[i]; }
+  for (const p of pieces) if (p.shown) { const m = yield* pieceCoverSteps(body, p); for (let i = 0; i < body.n; i++) mask[i] |= m[i]; yield; }
   return mask;
 }
 
-export { vertexScales };
+export { runSteps, vertexScales, type Steps };

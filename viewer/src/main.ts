@@ -1016,11 +1016,12 @@ function initWardrobe() {
     THREE, scene, opaque,
     skeleton: () => RIG.skel,
     uniforms: U,
+    depth: depthMat,
     envDefines: () => ENV_DEFINES,
     toMRT,
     body: () => ({ coarse: BODY.anny.coarse, joints: BODY.anny.joints, nBody: BODY.anny.nBody, quads: BODY.anny.quads, coarseSkin: BODY.anny.coarseSkin,
       bones: RIG.bones.map((b: any) => b.name), frame: { scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset },
-      fine: (mask: Float32Array) => BODY.anny.sub.apply(mask, 1), geometry: BODY.geo }),
+      subdivision: BODY.anny.sub, geometry: BODY.geo }),
     // a card's offsets and sliders build the body on the page, so that the dress that follows sees the card's body;
     // the worker keeps the offsets for the slider edits after it
     setBodyOffsets: (o: Float32Array | null) => {

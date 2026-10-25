@@ -4,16 +4,17 @@
 // The wardrobe of the page: a character card with its outfits and wearable packages from the user's own files,
 // dressed on the current body (dress.ts) and drawn as meshes skinned by the page's rig, so that the pieces follow
 // the poses and clips. A slider edit moves the pieces at once (the bindings and the skin weights); the push-out and
-// the covered skin follow when the sliders rest. The body's triangles under the shown pieces leave its index buffer.
+// the covered skin follow when the sliders rest, in slices of at most SLICE_MS between frames, so that the page keeps
+// drawing. The body's triangles under the shown pieces leave its index buffer.
 // Nothing of the user's files is stored or sent: the packages live in this page's memory until it closes.
 
 import type * as THREE_NS from 'three';
-import { BodySurface, DressCache, dress, estimatedPose, outfitCover, visibleTriangles, type DressedPiece, type Frame, type WornPiece } from './dress.ts';
+import { BodySurface, DressCache, dress, dressSteps, estimatedPose, outfitCoverSteps, runSteps, visibleTriangles, type DressedPiece, type Frame, type Steps, type WornPiece } from './dress.ts';
 import { dirname, FileSet, type PickedFile } from './files.ts';
 import { readSafetensors, readWearable, type Material, type Wearable } from './package.ts';
-import { GARMENT_FS, GARMENT_VS } from './shading.ts';
+import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from './shading.ts';
 import { skinTriangles } from './skin.ts';
-import { NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
+import { cardOutfit, NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
 
 // what the wardrobe needs from the renderer (main.ts)
 export interface WardrobeHost {
@@ -22,19 +23,31 @@ export interface WardrobeHost {
   opaque: any[];
   skeleton(): THREE_NS.Skeleton;
   uniforms: Record<string, any>;
+  depth: THREE_NS.ShaderMaterial;                        // the page's material of the shadow maps
   envDefines(): Record<string, string>;
   toMRT(fs: string): string;
   body(): { coarse: Float32Array; joints: Float32Array; nBody: number; quads: Uint32Array; coarseSkin: Uint8Array; bones: string[]; frame: Frame;
-    fine(mask: Float32Array): Float32Array; geometry: THREE_NS.BufferGeometry };
+    subdivision: { ops: SparseRows[] }; geometry: THREE_NS.BufferGeometry };   // the body's subdivision, coarse to fine
   setBodyOffsets(offsets: Float32Array | null): void;   // the card's level-0 detail offsets in the page's frame (nBody * 3)
   applyCard(card: any): void;                            // the card's sliders and face into the look
   changed(): void;                                       // a new picture: shadows and accumulation
 }
 
+export interface SparseRows { rows: number; start: Uint32Array; index: Uint32Array; value: Float32Array }
 export interface PieceRow { ref: string; piece: string; outfit: string | null; label: string; slot: string; layer: number; shown: boolean;
   hiddenGroups: string[]; groups: string[]; provenance: string; pushed: number; pushMm: number; vertices: number }
 
 const SETTLE_MS = 250;   // the push-out and the covered skin follow a slider edit after this rest
+const SLICE_MS = 8;      // the longest run of the settled dress on the main thread before it yields to the browser
+const INDEX_SLICE = 32768;   // body triangles per slice of the covered skin's index, and fine rows per slice of its mask
+
+// a task soon after the current one, without the clamp of nested timeouts
+function soon(f: () => void) {
+  if (typeof MessageChannel === 'undefined') { setTimeout(f, 0); return; }
+  const c = new MessageChannel();
+  c.port1.onmessage = () => { c.port1.close(); f(); };
+  c.port2.postMessage(0);
+}
 
 export class Wardrobe {
   host: WardrobeHost;
@@ -44,12 +57,13 @@ export class Wardrobe {
   pieces: DressedPiece[] = []; worn: WornRef[] = [];
   notes: string[] = [];
   timing: Record<string, number> = {};
-  private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; hidden: string; weights: Float32Array | null }>();
+  private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; depth: any[]; hidden: string; weights: Float32Array | null }>();
   private cache = new DressCache();
   private skin: Int32Array | null = null; private weights: Float64Array | null = null; private indices: Int32Array | null = null;
-  private bodyIndex: Uint32Array | null = null;
+  private bodyIndex: Uint32Array | null = null; private indexScratch: Uint32Array | null = null;
   private textures = new Map<string, THREE_NS.Texture>();
   private settle: any = null;
+  private job = 0; private jobs = 0;   // the settled dress in flight (its number, 0 for none) and the count of them
   listeners: (() => void)[] = [];
 
   constructor(host: WardrobeHost) { this.host = host; }
@@ -97,7 +111,7 @@ export class Wardrobe {
     card.wearables = (card.wearables || []).filter((w: any) => ok(w.file, w.id || String(w.file).split('/').pop()!.split('.')[0]));
     const refs = this.refsOf(card);
     for (const k of Object.keys(card.wearable_overrides || {})) {
-      try { resolveRef(k, refs, card.active_outfit || null); } catch (e) { delete card.wearable_overrides[k]; notes.push(`override ${k}: no such piece`); }
+      try { resolveRef(k, refs, cardOutfit(card)); } catch (e) { delete card.wearable_overrides[k]; notes.push(`override ${k}: no such piece`); }
     }
     if ((card.local_changes && Object.keys(card.local_changes).length)) notes.push('the card\'s local changes are not shown in the page');
     // the level-0 offsets of the card's detail layer
@@ -108,10 +122,10 @@ export class Wardrobe {
       catch (err: any) { notes.push(`detail level 0: ${err.message || err}`); }
     }
     if ((card.detail?.levels || []).some((l: any) => Number(l.subdiv) > 0)) notes.push('the page shows level 0 of the card\'s detail layer');
-    clearTimeout(this.settle); this.settle = null;
+    this.cancel();
     this.clearMeshes();
     this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes;
-    this.outfit = card.active_outfit && card.active_outfit !== NO_OUTFIT ? card.active_outfit : (card.outfits?.[0]?.id ?? null);
+    this.outfit = cardOutfit(card);   // a card that names no outfit wears none, as in an export
     this.show = []; this.hide = []; this.cache = new DressCache(); this.worn = []; this.pieces = [];
     this.host.setBodyOffsets(offsets);
     if (card.phenotype || card.face_shapes) this.host.applyCard(card);
@@ -135,7 +149,7 @@ export class Wardrobe {
   }
 
   unload() {
-    clearTimeout(this.settle); this.settle = null;
+    this.cancel();
     this.clearMeshes();
     // the dress cache holds the packages (their garments and texture bytes) by reference
     this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.cache = new DressCache();
@@ -183,45 +197,91 @@ export class Wardrobe {
       pose: (bone, _body, w) => estimatedPose(w, surface, J.subarray(bone * 3, bone * 3 + 3)) });
     return surface;
   }
-  // the pieces again: a new choice or a new card (with the push-out and the covered skin)
+  // the pieces again: a new choice or a new card; the push-out and the covered skin follow in slices
   redress() {
     if (!this.card) return;
+    this.cancel();
     try { this.worn = wornPieces(this.card, (r) => this.info(r), this.choices()); }
     catch (e: any) { this.notes = [...this.notes, e.message || String(e)]; this.worn = []; }
-    this.dressNow(true);
+    this.dressNow();
+    this.settleNow();
   }
   // the body changed: the pieces follow at once, the push-out and the covered skin when the sliders rest
   bodyChanged() {
     if (!this.card || !this.worn.length) return;
-    this.dressNow(false);
-    clearTimeout(this.settle);
-    this.settle = setTimeout(() => { this.settle = null; this.dressNow(true); }, SETTLE_MS);
+    this.cancel();
+    this.dressNow();
+    this.settle = setTimeout(() => { this.settle = null; this.settleNow(); }, SETTLE_MS);
   }
-  private dressNow(full: boolean) {
+  private cancel() { clearTimeout(this.settle); this.settle = null; this.job = 0; }
+  private wornWearables(): WornPiece[] { return this.worn.map((p) => ({ ...p, wearable: this.packages.get(p.ref)! })); }
+  // the bindings and the skin weights alone, at once
+  private dressNow() {
     const t0 = performance.now(), timing: Record<string, number> = {};
-    const body = this.bodySurface();
-    const worn: WornPiece[] = this.worn.map((p) => ({ ...p, wearable: this.packages.get(p.ref)! }));
-    this.pieces = dress(body, worn, { push: full, cache: this.cache, timing });
+    this.pieces = dress(this.bodySurface(), this.wornWearables(), { push: false, cache: this.cache, timing });
     const t1 = performance.now();
     this.upload();
     timing.upload = performance.now() - t1;
-    if (full) {
-      const t2 = performance.now();
-      this.cover = this.keepSkin ? null : outfitCover(body, this.pieces);
-      timing.cover = performance.now() - t2;
-      const t3 = performance.now();
-      this.applyCover();
-      timing['body index'] = performance.now() - t3;
-    }
     timing.total = performance.now() - t0;
+    this.setTiming(timing, false);
+    this.host.changed(); this.notify();
+  }
+  // the push-out and the covered skin: steps run in slices of SLICE_MS, each its own task, so that the browser draws
+  // frames between them; a new body or choice drops the steps in flight. The pieces, their push-out and the covered
+  // skin show together when the last step ends.
+  private settleNow() {
+    const id = this.job = ++this.jobs, steps = this.settleSteps(), started = performance.now();
+    const stat = { slices: 0, longest: 0, work: 0 };
+    const run = () => {
+      if (this.job !== id) return;
+      const t0 = performance.now();
+      let r: IteratorResult<void, Record<string, number>>;
+      try { do r = steps.next(); while (!r.done && performance.now() - t0 < SLICE_MS); }
+      catch (e: any) { this.job = 0; this.notes = [...this.notes, e.message || String(e)]; this.notify(); return; }
+      const ms = performance.now() - t0;
+      stat.slices++; stat.work += ms; stat.longest = Math.max(stat.longest, ms);
+      if (!r.done) { soon(run); return; }
+      this.job = 0;
+      const timing = r.value;
+      timing.total = performance.now() - started;   // from the first slice to the last, with the frames between them
+      timing.work = stat.work; timing.slices = stat.slices; timing['longest slice'] = stat.longest;
+      this.setTiming(timing, true);
+      this.host.changed(); this.notify();
+    };
+    soon(run);
+  }
+  private *settleSteps(): Steps<Record<string, number>> {
+    const timing: Record<string, number> = {}, body = this.bodySurface();
+    // the body's surface, its scales and its grid, each in a step of its own
+    const surface = body.surface;
+    yield;
+    void body.scales;
+    yield;
+    void surface.grid;
+    yield;
+    const pieces = yield* dressSteps(body, this.wornWearables(), { push: true, cache: this.cache, timing });
+    let t = performance.now();
+    const cover = yield* outfitCoverSteps(body, pieces);
+    timing.cover = performance.now() - t;
+    t = performance.now();
+    const index = yield* this.coverIndex(cover);
+    timing['body index'] = performance.now() - t;
+    t = performance.now();
+    this.pieces = pieces; this.cover = cover;
+    this.upload(true);
+    this.setBodyIndex(index);
+    timing.upload = performance.now() - t;
+    return timing;
+  }
+  private setTiming(timing: Record<string, number>, full: boolean) {
     this.timing = Object.fromEntries(Object.entries(timing).map(([k, v]) => [k, Math.round(v * 10) / 10]));
     (this.timing as any).full = full;
-    this.host.changed(); this.notify();
   }
   private cover: Uint8Array | null = null;
 
   // ---------------------------------------------------------------- meshes
-  private upload() {
+  // the dressed pieces into their meshes; `settled` also renews the tangents of the normal maps for the new body
+  private upload(settled = false) {
     const keep = new Set(this.pieces.map((p) => p.ref));
     for (const [ref, m] of this.meshes) {
       if (m.wearable !== this.packages.get(ref)) this.dropMesh(ref);
@@ -233,6 +293,10 @@ export class Wardrobe {
       const at = m.geo.attributes as any;
       at.position.array.set(p.vertices); at.position.needsUpdate = true;
       at.normal.array.set(p.normals); at.normal.needsUpdate = true;
+      if (settled && at.gTangent) {
+        const g = p.wearable.garment;
+        at.gTangent.array.set(tangents(p.vertices, p.normals, g.uvs!, g.triangles)); at.gTangent.needsUpdate = true;
+      }
       if (m.weights !== p.weights) {   // the same weights after a slider edit (DressCache)
         at.skinIndex.array.set(p.joints); at.skinIndex.needsUpdate = true;
         at.skinWeight.array.set(p.weights); at.skinWeight.needsUpdate = true;
@@ -254,11 +318,13 @@ export class Wardrobe {
     if (g.uvs && g.materials.some((mt) => mt.textures.normal)) geo.setAttribute('gTangent', new T.BufferAttribute(tangents(p.vertices, p.normals, g.uvs, g.triangles), 4));
     geo.setIndex(new T.BufferAttribute(n < 65536 ? new Uint16Array(g.triangles.length) : new Uint32Array(g.triangles.length), 1));
     const materials = g.materials.map((mt) => this.material(mt, geo));
+    // the shadow maps: the page's depth material for opaque materials, a cut at the alpha cutoff for the others
+    const depth = g.materials.map((mt, i) => (mt.alphaMode === 'MASK' || mt.alphaMode === 'BLEND' ? this.depthMaterial(mt, materials[i]) : this.host.depth));
     const mesh = new T.SkinnedMesh(geo, materials);
     mesh.bind(this.host.skeleton(), new T.Matrix4());
-    mesh.frustumCulled = false; mesh.name = p.ref;
+    mesh.frustumCulled = false; mesh.name = p.ref; mesh.userData.depthMat = depth;
     this.host.scene.add(mesh); this.host.opaque.push(mesh);
-    const m = { mesh, geo, wearable: w, materials, hidden: '\u0000', weights: null as Float32Array | null };
+    const m = { mesh, geo, wearable: w, materials, depth, hidden: '\u0000', weights: null as Float32Array | null };
     this.meshes.set(p.ref, m);
     return m;
   }
@@ -301,6 +367,16 @@ export class Wardrobe {
       glslVersion: T.GLSL3, blending: T.NoBlending, side: mt.doubleSided ? T.DoubleSide : T.FrontSide,
     });
   }
+  // the depth of a masked or blended material in the shadow maps: its fragments at or above the alpha cutoff (a masked
+  // material's own, BLEND_SHADOW_CUTOFF for a blended one), with the base colour's alpha and texture of the material
+  private depthMaterial(mt: Material, shown: any) {
+    const T = this.host.THREE, defines: Record<string, any> = Object.assign({}, this.host.depth.defines);
+    if (shown.defines.HAS_MAP !== undefined) defines.HAS_MAP = '';
+    return new T.ShaderMaterial({
+      uniforms: { uBase: shown.uniforms.uBase, uMap: shown.uniforms.uMap, uCutoff: { value: mt.alphaMode === 'MASK' ? mt.alphaCutoff : BLEND_SHADOW_CUTOFF } },
+      vertexShader: GARMENT_DEPTH_VS, fragmentShader: GARMENT_DEPTH_FS, defines, side: T.DoubleSide,
+    });
+  }
   private texture(t: { bytes: Uint8Array; mime: string }, srgb: boolean): THREE_NS.Texture {
     // one texture per image content: a hash of every byte (a few sampled bytes match for images of one size)
     const T = this.host.THREE, key = `${srgb}:${t.bytes.byteLength}:${contentHash(t.bytes)}`;
@@ -322,6 +398,7 @@ export class Wardrobe {
     const i = this.host.opaque.indexOf(m.mesh);
     if (i >= 0) this.host.opaque.splice(i, 1);
     m.geo.dispose(); m.materials.forEach((x) => x.dispose());
+    m.depth.forEach((x) => { if (x !== this.host.depth) x.dispose(); });
     this.meshes.delete(ref);
   }
   private clearMeshes() {
@@ -333,21 +410,45 @@ export class Wardrobe {
   // ---------------------------------------------------------------- the covered skin
   // the body's triangles whose three corners lie under a shown piece move to the end of the index buffer, and the
   // draw range leaves them out (a fine vertex is covered where all the coarse vertices under it are)
-  private applyCover() {
-    const geo = this.host.body().geometry, idx = geo.index!, A = idx.array as Uint32Array;
-    if (!this.bodyIndex) this.bodyIndex = A.slice();
-    const I = this.bodyIndex, n = this.host.body().nBody;
-    if (this.keepSkin || !this.cover || !this.cover.some((x) => x)) { A.set(I); geo.setDrawRange(0, Infinity); idx.needsUpdate = true; return; }
-    const mask = new Float32Array(n);
-    for (let i = 0; i < n; i++) mask[i] = this.cover[i];
-    const fine = this.host.body().fine(mask);
-    let k = 0, e = I.length;
-    for (let t = 0; t < I.length; t += 3) {
-      const a = I[t], b = I[t + 1], c = I[t + 2];
-      if (fine[a] > 0.9999 && fine[b] > 0.9999 && fine[c] > 0.9999) { e -= 3; A[e] = a; A[e + 1] = b; A[e + 2] = c; }
-      else { A[k++] = a; A[k++] = b; A[k++] = c; }
+  private applyCover() { this.setBodyIndex(runSteps(this.coverIndex(this.cover))); }
+  private get restIndex(): Uint32Array {
+    return this.bodyIndex || (this.bodyIndex = (this.host.body().geometry.index!.array as Uint32Array).slice());
+  }
+  // the body's index with the covered triangles at its end and the count of the others, or null for the whole body
+  private *coverIndex(cover: Uint8Array | null): Steps<{ index: Uint32Array; count: number } | null> {
+    if (this.keepSkin || !cover || !cover.some((x) => x)) return null;
+    const I = this.restIndex, n = this.host.body().nBody, mask = new Float32Array(n);
+    for (let i = 0; i < n; i++) mask[i] = cover[i];
+    // the mask on the fine body, level by level: y = A x for each sparse operator, as the subdivision computes it
+    let fine = mask;
+    for (const op of this.host.body().subdivision.ops) {
+      const y = new Float32Array(op.rows), { start, index, value } = op;
+      for (let r0 = 0; r0 < op.rows; r0 += INDEX_SLICE) {
+        yield;
+        for (let r = r0, r1 = Math.min(op.rows, r0 + INDEX_SLICE); r < r1; r++) {
+          let a = 0;
+          for (let e = start[r]; e < start[r + 1]; e++) a += value[e] * fine[index[e]];
+          y[r] = a;
+        }
+      }
+      fine = y;
     }
-    geo.setDrawRange(0, k);
+    const out = this.indexScratch || (this.indexScratch = new Uint32Array(I.length));   // read only by setBodyIndex
+    let k = 0, e = I.length;
+    for (let t0 = 0; t0 < I.length; t0 += INDEX_SLICE * 3) {
+      yield;
+      for (let t = t0, t1 = Math.min(I.length, t0 + INDEX_SLICE * 3); t < t1; t += 3) {
+        const a = I[t], b = I[t + 1], c = I[t + 2];
+        if (fine[a] > 0.9999 && fine[b] > 0.9999 && fine[c] > 0.9999) { e -= 3; out[e] = a; out[e + 1] = b; out[e + 2] = c; }
+        else { out[k++] = a; out[k++] = b; out[k++] = c; }
+      }
+    }
+    return { index: out, count: k };
+  }
+  private setBodyIndex(r: { index: Uint32Array; count: number } | null) {
+    const geo = this.host.body().geometry, idx = geo.index!, A = idx.array as Uint32Array;
+    if (r) { A.set(r.index); geo.setDrawRange(0, r.count); }
+    else { A.set(this.restIndex); geo.setDrawRange(0, Infinity); }
     idx.needsUpdate = true;
   }
   private restoreBody() {

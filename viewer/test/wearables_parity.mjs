@@ -10,7 +10,7 @@ import path from 'path';
 import { BodySurface, dress, estimatedPose, IDENTITY_FRAME, outfitCover } from '../src/wearables/dress.ts';
 import { readWearable } from '../src/wearables/package.ts';
 import { skinTriangles } from '../src/wearables/skin.ts';
-import { wornPieces } from '../src/wearables/wardrobe.ts';
+import { cardOutfit, wornPieces } from '../src/wearables/wardrobe.ts';
 
 const dir = process.argv[2];
 const inp = JSON.parse(fs.readFileSync(path.join(dir, 'input.json')));
@@ -52,13 +52,23 @@ for (const c of inp.cases) {
   const info = {};
   for (const e of [...(card.outfits || []).flatMap((x) => (x.pieces || []).map((p) => ({ ref: `${x.id}/${p.piece}`, file: p.file }))),
     ...(card.wearables || []).map((w) => ({ ref: w.id, file: w.file }))]) info[e.ref] = await load(inp.folder, e.file);
-  const worn = wornPieces(card, (ref) => info[ref], c.choices || {}).map((p) => ({ ...p, wearable: info[p.ref] }));
+  // the outfit that the page wears for the card (wearables/view.ts)
+  const worn = wornPieces(card, (ref) => info[ref], { outfit: cardOutfit(card), ...(c.choices || {}) }).map((p) => ({ ...p, wearable: info[p.ref] }));
   if (c.estimate) surface.pose = (bone, b, wearable) => estimatedPose(wearable, b, exact(bone).t);
   const t0 = performance.now(), timing = {};
   const dressed = dress(surface, worn, { push: c.push !== false, timing });
   const ms = performance.now() - t0, t1 = performance.now();
   const cover = outfitCover(surface, dressed);
   const coverMs = performance.now() - t1;
+  // the same dress in slices of 7 vertices (as the page runs it between frames) gives the same numbers
+  const sliced = dress(surface, worn, { push: c.push !== false, slice: 7 });
+  let slicedDifference = 0;
+  dressed.forEach((p, k) => {
+    const q = sliced[k];
+    if (q.pushed !== p.pushed) slicedDifference = Infinity;
+    for (let i = 0; i < p.vertices.length; i++)
+      slicedDifference = Math.max(slicedDifference, Math.abs(p.vertices[i] - q.vertices[i]), Math.abs(p.normals[i] - q.normals[i]));
+  });
   const pieces = dressed.map((p, k) => {
     const name = `${c.name}_${k}`;
     write(`${name}_vertices.f64`, p.vertices); write(`${name}_normals.f64`, p.normals);
@@ -66,6 +76,6 @@ for (const c of inp.cases) {
     return { ref: p.ref, shown: p.shown, hidden_groups: p.hiddenGroups, pushed: p.pushed, push_mm: p.pushMm, file: name };
   });
   write(`${c.name}_cover.u8`, cover);
-  report.cases.push({ name: c.name, pieces, ms, cover_ms: coverMs, timing });
+  report.cases.push({ name: c.name, pieces, ms, cover_ms: coverMs, timing, sliced_difference: slicedDifference });
 }
 fs.writeFileSync(path.join(dir, 'output.json'), JSON.stringify(report, null, 1));

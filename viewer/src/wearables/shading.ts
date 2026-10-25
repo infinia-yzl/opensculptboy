@@ -4,7 +4,8 @@
 // The shader of the garments: glTF's metallic-roughness materials (base colour, metallic-roughness, normal, occlusion
 // and emissive textures) under the page's key, rim and environment lights, with the key light's soft shadows. A
 // masked material cuts at its alpha cutoff; a blended one drops each fragment with the chance of its transparency, so
-// that the page's progressive accumulation averages it.
+// that the page's progressive accumulation averages it. In the shadow maps a masked material cuts at its alpha cutoff
+// and a blended one at BLEND_SHADOW_CUTOFF (GARMENT_DEPTH_FS), since the page draws the shadow maps once per change.
 
 import { GLSL_COMMON, SKIN_GLSL } from '../shading.ts';
 
@@ -23,6 +24,33 @@ void main() {
   vT = vec4(1.0, 0.0, 0.0, 1.0);
 #endif
   gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+// the alpha below which a fragment of a blended material casts no shadow
+export const BLEND_SHADOW_CUTOFF = 0.5;
+
+// the shadow maps of a masked or blended garment material: the depth of the fragments at or above the cutoff, packed
+// as the page's depth material packs it (SHADOW_PACKED where the page has no float render targets)
+export const GARMENT_DEPTH_VS = /* glsl */`
+${SKIN_GLSL}
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * (skinMat() * vec4(position, 1.0)); }`;
+
+export const GARMENT_DEPTH_FS = /* glsl */`
+#include <packing>
+uniform vec4 uBase; uniform float uCutoff; uniform sampler2D uMap;
+varying vec2 vUv;
+void main() {
+  float a = uBase.a;
+#ifdef HAS_MAP
+  a *= texture2D(uMap, vUv).a;
+#endif
+  if (a < uCutoff) discard;
+#ifdef SHADOW_PACKED
+  gl_FragColor = packDepthToRGBA(gl_FragCoord.z);
+#else
+  gl_FragColor = vec4(gl_FragCoord.z, 0.0, 0.0, 1.0);
+#endif
 }`;
 
 export const GARMENT_FS = /* glsl */`
