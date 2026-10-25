@@ -205,10 +205,45 @@ class TestLashMesh(unittest.TestCase):
         indices = self.model.vertex_bone_indices.numpy()
         w, i = self.eyed.skin_weights(weights, indices)
         head = list(self.model.bone_labels).index("head")
+        # the lid margins of the file's mesh, as the eyed mesh finds them
+        from opensculptboy.export.body import triangulated_faces, vertex_normals
+        from opensculptboy.eyes.lashes import lid_margins
+        from opensculptboy.eyes.mesh import eyeball_rows
+
+        triangles, _ = triangulated_faces(self.model)
+        on_eye = np.zeros(len(self.rest), bool)
+        for r in eyeball_rows(self.model).values():
+            on_eye[r] = True
+        skin_tris = triangles[~on_eye[triangles].all(1)]
+        used = np.zeros(len(self.rest), bool)
+        used[skin_tris] = True
+        normals = vertex_normals(self.rest, skin_tris)
+        bones = int(indices.max()) + 1
+        dense = np.zeros((len(self.rest), bones))
+        np.add.at(
+            dense,
+            (np.repeat(np.arange(len(self.rest)), indices.shape[1]), indices.ravel()),
+            weights.ravel(),
+        )
         for p, rows in self._lashes():
+            frame = self.eyed.frames[p.side]
+            margins = lid_margins(frame, self.rest, normals, used & ~on_eye, skin_tris)
             np.testing.assert_allclose(w[rows].sum(1), 1.0, atol=1e-9)
-            # the lashes take the weights of their lid's margin, mostly the head's
-            self.assertTrue((i[rows][:, 0] == head).all() or (w[rows] > 0).any())
+            # each lash's root lies on its own lid's margin: the rows its weights blend
+            upper = frame.to_local(p.rest)[:, 1].mean() > 0
+            margin = margins[UPPER if upper else LOWER].rows
+            roots = p.anchors[(p.blend > 1e-12).any(0)]
+            self.assertTrue(np.isin(roots, margin).all())
+            # the lashes take the weights of their roots on the margin (the strongest
+            # bones, renormalised), mostly the head's
+            mixed = p.blend @ dense[p.anchors]
+            got = np.zeros_like(mixed)
+            np.add.at(got, (np.arange(len(got))[:, None], i[rows]), w[rows])
+            for k in range(len(mixed)):
+                strongest = np.argsort(-mixed[k], kind="stable")[: w.shape[1]]
+                want = np.zeros(bones)
+                want[strongest] = mixed[k, strongest] / mixed[k, strongest].sum()
+                np.testing.assert_allclose(got[k], want, atol=1e-9)
             self.assertGreater(float((w[rows] * (i[rows] == head)).sum(1).mean()), 0.5)
 
 
