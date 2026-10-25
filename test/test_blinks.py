@@ -797,6 +797,128 @@ class TestReferenceClosedEye(unittest.TestCase):
         self.assertIsNone(card_eye_poses(Character(material={"eyes": {}})))
 
 
+class TestConvertedPoses(unittest.TestCase):
+    """``opensculptboy convert`` carries a card's eye poses and mouth poses to the other
+    mesh with the row maps of its detail offsets, so the converted card blinks."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+        rest, _, targets = anny_blinks()
+        cls.rest = rest
+        # the reference's blink of each eye: anny's own blink, as rows of anny's level 0
+        cls.offsets = np.stack([targets["L"], targets["R"]])
+        lashes = np.zeros((2, 5, 3))
+        EyePoses(("close_l", "close_r"), cls.offsets, {}, lashes).save(
+            cls.folder / "card.eye_poses.safetensors"
+        )
+        card = Character(
+            name="converted",
+            material={
+                "eyes": {},
+                "reference_eyes": {"poses": "card.eye_poses.safetensors"},
+            },
+        )
+        cls.source = cls.folder / "card.json"
+        cls.source.write_text(json.dumps(card.to_dict()), encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _export(self, card_path) -> FileEyes:
+        card = Character.from_dict(json.loads(card_path.read_text(encoding="utf-8")))
+        path = card_path.with_suffix(".glb")
+        export_glb(path, card, detail_dir=card_path.parent)
+        g = GLB(path).json
+        blinks = g["scenes"][0]["extras"]["opensculptboy"]["eyes"]["blinks"]
+        for side in ("L", "R"):
+            self.assertEqual(blinks[B.BLINK_TARGETS[side]]["source"], "reference")
+        return FileEyes(path)
+
+    def _check_blink(self, eyes: FileEyes):
+        for side, other in (("L", "R"), ("R", "L")):
+            weights = stage_weights((side,), 1.0, True)
+            with self.subTest(side=side):
+                closed = eyes.measure(weights, side)
+                self.assertLessEqual(closed["opening_mm"], CLOSED_OPENING_MM)
+                self.assertEqual(closed["folded_triangles"], 0)
+                self.assertGreater(eyes.measure(weights, other)["opening_mm"], 5.0)
+
+    def test_round_trip(self):
+        from opensculptboy.topology.convert import LevelCorrespondence, convert_card
+
+        sculpt = self.folder / "sculpt" / "card.json"
+        summary = convert_card(self.source, sculpt, "sculpt")
+        self.assertEqual(summary["eye_poses"], "card.eye_poses.safetensors")
+        card = Character.from_dict(json.loads(sculpt.read_text(encoding="utf-8")))
+        poses = card_eye_poses(card, sculpt.parent)
+        c = LevelCorrespondence(0, self.rest)
+        self.assertEqual(poses.offsets.shape[1], len(c.sculpt_to_anny))
+        shared = c.sculpt_to_anny >= 0
+        np.testing.assert_allclose(
+            poses.offsets[:, shared],
+            self.offsets[:, c.sculpt_to_anny[shared]],
+            atol=1e-6,
+        )
+        self.assertEqual(poses.lashes.shape, (2, 5, 3))  # rows of the lashes, kept
+        self._check_blink(self._export(sculpt))
+
+        back = self.folder / "back" / "card.json"
+        convert_card(sculpt, back, "anny")
+        card = Character.from_dict(json.loads(back.read_text(encoding="utf-8")))
+        poses = card_eye_poses(card, back.parent)
+        self.assertEqual(poses.offsets.shape[1], len(self.rest))
+        same = c.anny_to_sculpt >= 0
+        np.testing.assert_allclose(
+            poses.offsets[:, same], self.offsets[:, same], atol=1e-6
+        )
+        self._check_blink(self._export(back))
+
+    def test_mouth_poses(self):
+        # the mouth's skin offsets (rows of level 0) and a level's corrections (rows of
+        # that level) go to the other mesh; the inner mouth's points stay
+        from opensculptboy.detail.subdivision import level
+        from opensculptboy.mouth.poses import MouthPoses
+        from opensculptboy.topology.convert import (
+            LevelCorrespondence,
+            convert_mouth_poses,
+        )
+
+        rng = np.random.default_rng(3)
+        n1 = level("anny", 1).vertex_count
+        rows = np.sort(rng.choice(n1, 400, replace=False))
+        poses = MouthPoses(
+            ("aa",),
+            rng.normal(0, 1e-3, (1, len(self.rest), 3)),
+            rng.normal(0, 1e-3, (1, 7, 3)),
+            {},
+            {1: (rows, rng.normal(0, 1e-3, (1, len(rows), 3)))},
+        )
+        source = self.folder / "m.mouth_poses.safetensors"
+        target = self.folder / "m_sculpt.mouth_poses.safetensors"
+        poses.save(source)
+        cache = {k: LevelCorrespondence(k, self.rest) for k in (0, 1)}
+        convert_mouth_poses(source, target, "sculpt", cache.__getitem__)
+        out = MouthPoses.load(target)
+        c0, c1 = cache[0], cache[1]
+        shared = c0.sculpt_to_anny >= 0
+        self.assertEqual(out.skin.shape[1], len(c0.sculpt_to_anny))
+        np.testing.assert_allclose(
+            out.skin[:, shared], poses.skin[:, c0.sculpt_to_anny[shared]], atol=1e-6
+        )
+        np.testing.assert_allclose(out.inner, poses.inner, atol=1e-6)
+        full = np.zeros((n1, 3))
+        full[rows] = poses.levels[1][1][0]
+        got = np.zeros((len(c1.sculpt_to_anny), 3))
+        got[out.levels[1][0]] = out.levels[1][1][0]
+        known = c1.sculpt_to_anny >= 0
+        np.testing.assert_allclose(
+            got[known], full[c1.sculpt_to_anny[known]], atol=1e-6
+        )
+
+
 def _rotation(axis, angle):
     k = np.array(
         [[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]]

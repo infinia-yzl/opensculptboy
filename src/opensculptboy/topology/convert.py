@@ -263,6 +263,67 @@ def convert_offsets(
         return save_offsets(target, converted, subdiv, topology, extra)
 
 
+def _carry(correspondence, field, to_sculpt: bool) -> np.ndarray:
+    """A field (P, V, ...) of P poses on a level carried to the other mesh: (P, V', ...)."""
+    field = np.moveaxis(np.asarray(field, dtype=np.float64), 0, 1)
+    if to_sculpt:
+        out = correspondence.to_sculpt(field)
+    else:
+        out = correspondence.to_anny(field)
+    return np.moveaxis(out, 1, 0)
+
+
+def convert_eye_poses(
+    source, target, topology: str, correspondence=None
+) -> pathlib.Path:
+    """
+    Write the eye poses file ``source`` (:class:`~opensculptboy.eyes.poses.EyePoses`, whose
+    offsets hold the rows of level 0 of the card's mesh) as a file of ``topology`` at
+    ``target``: each pose's offsets carried as a field of level 0 (``correspondence``, the
+    :class:`LevelCorrespondence` of level 0; None keeps them, for the same mesh). The lashes'
+    offsets hold the rows of the card's lashes and stay as they are.
+    """
+    from opensculptboy.eyes.poses import EyePoses
+    from opensculptboy.topology.sculpt import is_sculpt
+
+    poses = EyePoses.load(source)
+    if correspondence is not None:
+        poses.offsets = _carry(correspondence, poses.offsets, is_sculpt(topology))
+    poses.save(target)
+    return pathlib.Path(target)
+
+
+def convert_mouth_poses(
+    source, target, topology: str, correspondence=None
+) -> pathlib.Path:
+    """
+    Write the mouth poses file ``source`` (:class:`~opensculptboy.mouth.poses.MouthPoses`)
+    as a file of ``topology`` at ``target``: the skin offsets carried as a field of level 0
+    and each detail level's corrections as a field of that level (``correspondence``, a
+    function of the level to its :class:`LevelCorrespondence`; None keeps them, for the same
+    mesh). The points of the inner mouth stay as they are.
+    """
+    from opensculptboy.mouth.poses import MouthPoses
+    from opensculptboy.topology.sculpt import is_sculpt
+
+    poses = MouthPoses.load(source)
+    if correspondence is not None:
+        to_sculpt = is_sculpt(topology)
+        poses.skin = _carry(correspondence(0), poses.skin, to_sculpt)
+        levels = {}
+        for subdiv, (rows, values) in poses.levels.items():
+            c = correspondence(subdiv)
+            count = len(c.anny_to_sculpt) if to_sculpt else len(c.sculpt_to_anny)
+            full = np.zeros((len(values), count, 3))
+            full[:, rows] = values
+            moved = _carry(c, full, to_sculpt)
+            kept = np.flatnonzero(np.abs(moved).max(axis=(0, 2)) > 0.0)
+            levels[subdiv] = (kept, moved[:, kept])
+        poses.levels = levels
+    poses.save(target)
+    return pathlib.Path(target)
+
+
 CARD_TOPOLOGIES = ("anny", "sculpt")
 
 
@@ -308,10 +369,13 @@ def convert_card(
     at ``target``: the same parameters, its detail offsets converted level by level
     (:func:`convert_offsets`, written next to the new card as ``<card>.detail<N>.safetensors``)
     and the ear tile's UVs of its skin material converted as a field of their level (UVs whose
-    transfer touches a vertex off the ears are left off them). The textures stay on anny's atlas,
-    which ``sculpt`` keeps, and the other files of the card are named from the new card's
-    folder. With ``body`` (the default), the closest points of the transfer are taken on the
-    card's own rest body, else on anny's default body. Returns a summary.
+    transfer touches a vertex off the ears are left off them), and the reference's eye poses
+    (``material.reference_eyes.poses``) and mouth poses (``material.mouth.poses``) carried with
+    the same row maps (:func:`convert_eye_poses`, :func:`convert_mouth_poses`, written next to
+    the new card). The textures stay on anny's atlas, which ``sculpt`` keeps, and the other
+    files of the card are named from the new card's folder. With ``body`` (the default), the
+    closest points of the transfer are taken on the card's own rest body, else on anny's
+    default body. Returns a summary.
     """
     import json
 
@@ -333,8 +397,20 @@ def convert_card(
     source_dir, target_dir = source.resolve().parent, target.resolve().parent
     target_dir.mkdir(parents=True, exist_ok=True)
     stem = target.name[: -len(target.suffix)] if target.suffix else target.name
-    vertices = _card_rest(character) if body and character.detail else None
+    material_in = character.material or {}
+    eye_poses = (material_in.get("reference_eyes") or {}).get("poses")
+    mouth_poses = (material_in.get("mouth") or {}).get("poses")
+    carried = character.detail or eye_poses or mouth_poses
+    vertices = _card_rest(character) if body and carried else None
     same = is_sculpt(character.topology) == is_sculpt(topology)
+    correspondences: dict = {}
+
+    def correspondence(subdiv: int) -> LevelCorrespondence:
+        if subdiv not in correspondences:
+            with use_sculpt_data(data):
+                correspondences[subdiv] = LevelCorrespondence(subdiv, vertices, data)
+        return correspondences[subdiv]
+
     summary = {"card": str(target), "from": character.topology, "to": topology}
     detail = dict(character.detail)
     if detail:
@@ -366,6 +442,24 @@ def convert_card(
             EarUVs(uv, table.subdiv).save(target_dir / name, topology)
         material["ears"] = dict(material["ears"], uvs=name)
         summary["ear_uvs"] = name
+    for section, kind, name in (
+        ("reference_eyes", "eye_poses", eye_poses),
+        ("mouth", "mouth_poses", mouth_poses),
+    ):
+        if not name:
+            continue
+        path = pathlib.Path(name)
+        path = path if path.is_absolute() else source_dir / path
+        out_name = f"{stem}.{kind}.safetensors"
+        with use_sculpt_data(data):
+            if kind == "eye_poses":
+                c = None if same else correspondence(0)
+                convert_eye_poses(path, target_dir / out_name, topology, c)
+            else:
+                c = None if same else correspondence
+                convert_mouth_poses(path, target_dir / out_name, topology, c)
+        material[section] = dict(material[section], poses=out_name)
+        summary[kind] = out_name
     import dataclasses
 
     converted = dataclasses.replace(

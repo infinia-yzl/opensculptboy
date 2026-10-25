@@ -1082,9 +1082,9 @@ def main(argv=None) -> int:
         "convert",
         help="convert a character card between the anny and sculpt meshes",
         description="Write a character card on another mesh (anny or sculpt): the same "
-        "parameters, its detail offsets and ear tile UVs converted level by level and "
-        "written next to the new card; the textures stay on anny's atlas. See "
-        "docs/sculpt-topology.md.",
+        "parameters, its detail offsets, ear tile UVs, eye poses and mouth poses converted "
+        "level by level and written next to the new card; the textures stay on anny's "
+        "atlas. See docs/sculpt-topology.md.",
     )
     c.add_argument("card", help="the character card (JSON) to convert")
     c.add_argument(
