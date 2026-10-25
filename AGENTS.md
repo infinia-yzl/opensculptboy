@@ -94,7 +94,9 @@ uv run --extra viewer python -m unittest test.test_budget_tiers                 
 uv run opensculptboy export out.glb --character card.json --outfit travel --hide cape   # an outfit with single pieces hidden (docs/wearables.md)
 uv run opensculptboy export out.glb --character card.json --wardrobe                   # every piece of every outfit as its own node
 uv run opensculptboy wearables reference handoff/ --card card.json --out folder/       # reference wearables (private packages, outside the repository)
+uv run opensculptboy wearables bind garment.glb --out wear/tunic --slot torso --licence CC0-1.0 --design-source TEXT   # a garment modelled on the default body (export base.glb) as a package; --rigid BONE, --weights own, --groups-from, --covers, --hides, --body card.json
 uv run python -m unittest test.test_wearables                                          # the wearables with synthetic garments: format, provenance, binding, fit gate, outfits, files
+uv run python -m unittest test.test_wearables_bind                                     # wearables bind with synthetic garment files: fields, round trip, frame, dressed bodies, licence, far vertices, command
 ```
 
 ### Face calibration

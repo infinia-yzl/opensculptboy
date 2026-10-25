@@ -31,7 +31,7 @@ PROVENANCES = (PUBLIC, PRIVATE)
 SLOTS = ("head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloak")
 SLOTS += ("under", "accessory")
 METHODS = ("surface", "rigid")
-BODIES = ("anny-template", "reference")
+BODIES = ("anny-template", "card", "reference")
 LICENCE_KEYS = ("spdx", "author", "source", "design_source", "attribution")
 
 

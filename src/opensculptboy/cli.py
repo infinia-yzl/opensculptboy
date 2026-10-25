@@ -20,6 +20,8 @@ The ``opensculptboy`` command.
     opensculptboy export me_wardrobe.glb --character me.json --wardrobe   # every piece a node
     opensculptboy wearables list --character me.json # the card's outfits and pieces
     opensculptboy wearables reference handoff/ --card me.json --out dressed/   # reference wear
+    opensculptboy wearables bind tunic.glb --out wear/tunic --slot torso --licence CC0-1.0 \
+        --design-source "my own design"              # a garment modelled on the default body
 """
 
 from __future__ import annotations
@@ -728,6 +730,8 @@ def _wearables(args, parser) -> int:
         }
         print(json.dumps(listing, indent=2))
         return 0
+    if args.wearables_command == "bind":
+        return _wearables_bind(args, parser)
     from opensculptboy.wearables.format import ProvenanceError
     from opensculptboy.wearables.reference import build_reference_wearables
 
@@ -742,6 +746,85 @@ def _wearables(args, parser) -> int:
         )
     except (OSError, ValueError, ProvenanceError) as error:
         parser.error(_one_line(error))
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def _wearables_bind(args, parser) -> int:
+    import torch
+
+    from opensculptboy.wearables.fit import card_body
+    from opensculptboy.wearables.format import (
+        PUBLIC,
+        ProvenanceError,
+        check_destination,
+        package_paths,
+        write_wearable,
+    )
+    from opensculptboy.wearables.make import make_wearable, round_trip
+
+    paths = package_paths(args.out)
+    name = args.name or paths["stem"].name
+    licence = {
+        "spdx": args.licence,
+        "author": args.author,
+        "source": args.source,
+        "design_source": args.design_source,
+    }
+    if args.provenance == PUBLIC:
+        missing = [
+            flag
+            for flag, key in (
+                ("--licence", "spdx"),
+                ("--design-source", "design_source"),
+            )
+            if not licence[key]
+        ]
+        if missing:
+            parser.error(
+                f"a public wearable needs {' and '.join(missing)} (an SPDX licence id and "
+                "where the design comes from); a garment from someone else's files is "
+                "--provenance private."
+            )
+    try:
+        check_destination(paths["json"], args.provenance)
+    except ProvenanceError as error:
+        parser.error(_one_line(error))
+    character = _load_character(args.body, parser)
+    detail_dir = _detail_dir(args.body)
+    print("binding to the body ...", file=sys.stderr)
+    body = card_body(character, character.build_model(dtype=torch.float64), detail_dir)
+    extras = {"source": "opensculptboy wearables bind"}
+    if args.body:
+        extras["body_card"] = pathlib.Path(args.body).name
+    try:
+        wearable, report = make_wearable(
+            args.garment,
+            body,
+            name,
+            args.slot,
+            args.layer,
+            label=args.label,
+            rigid=args.rigid,
+            weights=args.weights,
+            groups_from=args.groups_from,
+            covers=args.covers,
+            hides=args.hides,
+            licence=licence,
+            provenance=args.provenance,
+            body_kind="card" if args.body else "anny-template",
+            frame=args.frame,
+            max_distance=args.max_distance / 1000.0,
+            extras=extras,
+        )
+        vertices = wearable.garment.vertices.copy()
+        path = write_wearable(paths["json"], wearable)
+        report["round_trip_mm_max"] = round_trip(path, body, vertices)
+    except (OSError, ValueError, ProvenanceError) as error:
+        parser.error(_one_line(error))
+    report["package"] = str(path)
+    for warning in report["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
     print(json.dumps(report, indent=2))
     return 0
 
@@ -1140,7 +1223,7 @@ def main(argv=None) -> int:
 
     wear = sub.add_parser(
         "wearables",
-        help="list a card's outfits, or build reference wearables from a handoff",
+        help="list a card's outfits, bind a garment, or build reference wearables",
     )
     wear_sub = wear.add_subparsers(dest="wearables_command", required=True)
     wl = wear_sub.add_parser("list", help="print a card's outfits and pieces")
@@ -1160,6 +1243,92 @@ def main(argv=None) -> int:
         "--outfit-id", help="the id of the outfit of a section without outfits"
     )
     wr.add_argument("--outfit-label", help="its label")
+    from opensculptboy.wearables.format import PROVENANCES, SLOTS
+    from opensculptboy.wearables.make import COVERS, FRAMES, GROUPS_FROM, MAX_DISTANCE
+
+    wb = wear_sub.add_parser(
+        "bind",
+        help="make a wearable package from a garment modelled on the default body",
+        description="Bind the garment meshes of a GLB file to a body and write the "
+        "package OUT.wearable.json, OUT.glb and OUT.binding.safetensors. The garment "
+        "sits on the body of 'opensculptboy export base.glb' at rest (metres, glTF axes, "
+        "the body on the floor or centred); see docs/wearables.md, 'Make a wearable'.",
+    )
+    wb.add_argument("garment", help="the garment as a GLB file")
+    wb.add_argument("--out", required=True, help="the package's stem, e.g. wear/tunic")
+    wb.add_argument("--slot", required=True, choices=SLOTS, help="the piece's slot")
+    wb.add_argument(
+        "--layer",
+        type=int,
+        default=50,
+        help="0 (skin) to 100 (outermost); torso 50, cloaks 80 (default 50)",
+    )
+    wb.add_argument("--name", help="the package's name (default: the stem of --out)")
+    wb.add_argument("--label", help="the name to show (default: the name)")
+    wb.add_argument(
+        "--rigid",
+        metavar="BONE",
+        help="bind every vertex to one bone (a circlet, a buckle); else surface binding",
+    )
+    wb.add_argument(
+        "--weights",
+        choices=("body", "own"),
+        default="body",
+        help="body: the body's skin weights at the bound points (default); own: the "
+        "file's JOINTS_0 and WEIGHTS_0, by joint name",
+    )
+    wb.add_argument(
+        "--groups-from",
+        choices=GROUPS_FROM,
+        default="materials",
+        help="name the groups by material (default), by mesh node, or by the 'group' "
+        "of the extras of the primitive, mesh or node",
+    )
+    wb.add_argument(
+        "--covers",
+        choices=COVERS,
+        default="auto",
+        help="auto: the skin under each group by a ray test, kept where the dressed "
+        "piece meets the ray (default); none: the piece covers no skin",
+    )
+    wb.add_argument(
+        "--hides",
+        action="append",
+        metavar="PIECE:GROUP,...",
+        help="groups of other pieces to hide while this one shows (repeatable)",
+    )
+    wb.add_argument("--licence", metavar="SPDX", help="the SPDX licence id")
+    wb.add_argument("--author", help="the author of the garment")
+    wb.add_argument("--source", help="where the garment's files come from (a URL)")
+    wb.add_argument("--design-source", help="where the design comes from")
+    wb.add_argument(
+        "--provenance",
+        choices=PROVENANCES,
+        default="public",
+        help="public (needs --licence and --design-source) or private (never inside "
+        "the repository)",
+    )
+    wb.add_argument(
+        "--body",
+        metavar="CARD",
+        help="bind to the body of this card (default: the default card)",
+    )
+    wb.add_argument(
+        "--frame",
+        choices=FRAMES,
+        default="auto",
+        help="floor: the body stands on the floor, as an export shows at its default "
+        "pose; centred: the body at Anny's origin (the export's bind pose, or "
+        "--no-ground); auto: whichever puts the garment nearer the skin (default)",
+    )
+    wb.add_argument(
+        "--max-distance",
+        type=float,
+        default=MAX_DISTANCE * 1000,
+        metavar="MM",
+        help="refuse a garment whose median distance from the skin (the nearest vertex "
+        f"for --rigid) exceeds this (default {MAX_DISTANCE * 1000:.0f})",
+    )
 
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
