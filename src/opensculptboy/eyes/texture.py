@@ -284,6 +284,36 @@ def _fill(values: np.ndarray, covered: np.ndarray) -> np.ndarray:
     return values[iy, ix]
 
 
+def _cubic(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Catmull-Rom samples of an image (H, W, D) at pixel coordinates (texel centres at
+    integers), clamped to the edges: a resampling that keeps the fine detail which bilinear
+    samples at a fraction of a texel average away."""
+    h, w = image.shape[:2]
+    x = np.clip(x, 0, w - 1)
+    y = np.clip(y, 0, h - 1)
+    x0, y0 = np.floor(x).astype(int), np.floor(y).astype(int)
+
+    def weights(t):
+        t2, t3 = t * t, t * t * t
+        return (
+            0.5 * (-t3 + 2 * t2 - t),
+            0.5 * (3 * t3 - 5 * t2 + 2),
+            0.5 * (-3 * t3 + 4 * t2 + t),
+            0.5 * (t3 - t2),
+        )
+
+    wx, wy = weights(x - x0), weights(y - y0)
+    out = np.zeros(x.shape + image.shape[2:])
+    for j in range(4):
+        yy = np.clip(y0 + j - 1, 0, h - 1)
+        row = np.zeros_like(out)
+        for i in range(4):
+            xx = np.clip(x0 + i - 1, 0, w - 1)
+            row += wx[i][..., None] * image[yy, xx]
+        out += wy[j][..., None] * row
+    return out
+
+
 def _bilinear(image: np.ndarray, x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Bilinear samples of an image (H, W, D) at pixel coordinates (texel centres at
     integers), clamped to the edges."""
@@ -456,7 +486,7 @@ def fit_baked_iris(
     image: np.ndarray,
     eye,
     radii=None,
-    size: tuple[int, int] = EYE_TEXTURE_SIZE,
+    size: tuple[int, int] | None = None,
     normals: np.ndarray | None = None,
 ):
     """
@@ -470,7 +500,11 @@ def fit_baked_iris(
     when neither eye shows an iris, and the procedural eye replaces both). With ``normals``
     (H, W, 3, the baked eye's normals in the layout, :func:`carry_baked_normals`), they move
     with the texels and come back as a third value (flat where the procedural eye stands in).
+    The colours move by Catmull-Rom samples (:func:`_cubic`), which keep the iris's fine
+    detail; ``size`` is the image's own by default.
     """
+    if size is None:
+        size = (image.shape[1], image.shape[0])
     s, phi, left = texel_polar(size)
     w, h = size
     eye = _sized(eye)
@@ -514,7 +548,7 @@ def fit_baked_iris(
         ps = np.arctan2(y, x)
         uv = polar_to_uv(np.stack([np.minimum(rs, 1.95), ps], 1), side)
         px, py = uv[:, 0] * w - 0.5, (1.0 - uv[:, 1]) * h - 0.5
-        sample = _bilinear(image, px, py)
+        sample = np.clip(_cubic(image, px, py), 0.0, 1.0)
         if bent is not None:
             # the normals move as directions: their components about the gaze turn from
             # the source texel's angle to the target's (near the pupil's centre a shift of
@@ -660,7 +694,7 @@ def carry_baked_normals(
 
 
 def encode_normals(
-    bent: np.ndarray, surfaces: list, size: tuple[int, int] = EYE_TEXTURE_SIZE
+    bent: np.ndarray, surfaces: list, size: tuple[int, int] | None = None
 ) -> np.ndarray:
     """
     A tangent-space normal map (H, W, 3, 8-bit) of the eye texture's layout for the normals
@@ -669,8 +703,10 @@ def encode_normals(
     (M, 4, the bitangent's sign in w) in the eye's frame (gaze +Z). Texels that no surface
     covers are flat. Triangles that reach far behind the eye (to its back pole, where the
     layout folds and a fan of triangles spans the whole square) are left out, as in
-    :func:`rasterise_uvs`.
+    :func:`rasterise_uvs`. ``size`` is that of ``bent`` by default.
     """
+    if size is None:
+        size = (bent.shape[1], bent.shape[0])
     w, h = size
     out = np.zeros((h, w, 3))
     out[...] = [0.5, 0.5, 1.0]

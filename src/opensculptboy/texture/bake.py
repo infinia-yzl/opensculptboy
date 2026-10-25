@@ -965,7 +965,8 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
             centre, radius = geometry.fit_sphere(vertices[rows])
             rest_axes = geometry.eye_frame(side, rest[rows]).axes
             frames[side] = geometry.EyeFrame(side, centre, radius, turn @ rest_axes)
-        layout = bake_eye_layout(eye_target, frames)
+        width = int(kwargs.get("eye_size", 2048))
+        layout = bake_eye_layout(eye_target, frames, size=(width, width // 2))
         if layout is not None:
             baked.eye_layout, baked.eye_layout_normal, axes = layout
             # the gaze of each eye in the card's rest frame
