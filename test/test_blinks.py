@@ -56,7 +56,12 @@ LASH_EYE_MM = 0.2
 # the upper lashes stay out of the lids: LASH_DEPTH_MM covers the lower lashes that the
 # closed upper lid hides, and the upper lashes reach 0.09 mm on anny's default character
 UPPER_LASH_DEPTH_MM = 0.2
+# a closed eye's upper lashes lie under its lower lashes by at most this much (mm; 1.15 mm on
+# anny's default character)
+LASH_ORDER_MM = 1.2
 CASES = {"left": ("L",), "right": ("R",), "both": ("L", "R")}
+# the base of a lash strip in a file: this share of its points, those nearest the eye's centre
+STRIP_BASE = 0.25
 
 _TMP = tempfile.TemporaryDirectory()
 CARD = Character(name="blinks", material={"eyes": {}})
@@ -147,18 +152,16 @@ class FileEyes:
                 surface = B.EyeSurface(sv, st[:, ::-1])
             lids = B.eye_lids(frame, welded, wt, used)
             lash = np.unique(of_side(lash_t, side))
-            # each strip or card of the lashes belongs to the lid whose margin it nears most
+            # each strip or card of the lashes belongs to the upper lid when its base (the
+            # points nearest the eye's centre) lies above the eye's horizontal line: the
+            # strip's nearest point to a margin lies at an eye corner, where both lids meet
             upper = np.zeros(len(lash), bool)
             for label in np.unique(lash_label[lash]):
                 mine = lash_label[lash] == label
-                pts = rest[lash[mine]]
-                du = np.linalg.norm(
-                    pts[:, None] - welded[lids.upper][None], axis=2
-                ).min()
-                dl = np.linalg.norm(
-                    pts[:, None] - welded[lids.lower][None], axis=2
-                ).min()
-                upper[mine] = du < dl
+                local = frame.to_local(rest[lash[mine]])
+                d = np.linalg.norm(local, axis=1)
+                base = np.argsort(d)[: max(1, round(STRIP_BASE * len(d)))]
+                upper[mine] = local[base, 1].mean() > 0.0
             self.eyes[side] = (lids, surface, lash, upper)
 
     def crack_mm(self, weights: dict) -> float:
@@ -404,6 +407,13 @@ class TestAnnyBlink(unittest.TestCase):
 class TestBlinkFiles(unittest.TestCase):
     def _check(self, kind, inbetween):
         eyes = file_eyes(kind)
+        g = eyes.glb.json
+        extras = g.get("scenes", [{}])[0].get("extras", {}).get("opensculptboy", {})
+        recorded = extras.get("eyes", {}).get("blinks", {})
+        for side in ("L", "R"):
+            upper = eyes.eyes[side][3]
+            # the reader finds the lashes of both lids
+            self.assertTrue(0 < upper.sum() < len(upper))
         for case, sides in CASES.items():
             for t in STAGES:
                 weights = stage_weights(sides, t, inbetween)
@@ -421,6 +431,15 @@ class TestBlinkFiles(unittest.TestCase):
                         self.assertLessEqual(m["lash_mm"], LASH_DEPTH_MM)
                         if t == 1.0:
                             self.assertLessEqual(m["opening_mm"], CLOSED_OPENING_MM)
+                            self.assertLessEqual(m["lash_order_mm"], LASH_ORDER_MM)
+                            # as the export measured it on its own mesh
+                            own = recorded.get(B.BLINK_TARGETS[side])
+                            if own is not None:
+                                self.assertAlmostEqual(
+                                    m["lash_order_mm"],
+                                    own["measures"]["1"]["lash_order_mm"],
+                                    delta=0.01,
+                                )
             # the other eye stays open in a blink of one eye
             if len(sides) == 1:
                 other = "R" if sides[0] == "L" else "L"
@@ -472,6 +491,44 @@ class TestBlinkFiles(unittest.TestCase):
                 self.assertFalse(
                     [n for n in eyes.names if n.endswith(B.INBETWEEN_SUFFIX)]
                 )
+
+    def test_vrm_lashes_need_an_unturned_head(self):
+        # the blink targets' lash offsets go into the T-pose targets in the rest frame:
+        # the rebind leaves the lid margins unturned on anny's default character, and a
+        # turn of the head refuses the export
+        from types import SimpleNamespace
+        from unittest import mock
+
+        from opensculptboy.export import vrm
+
+        turns = []
+        check = vrm.check_lash_rebind
+
+        def measured(linear, eyed):
+            turns.append(vrm.lash_rebind_turn(linear, eyed))
+            return check(linear, eyed)
+
+        with mock.patch.object(vrm, "check_lash_rebind", measured):
+            vrm.export_vrm(
+                pathlib.Path(_TMP.name) / "rebind.vrm",
+                CARD,
+                author="OpenSculptBoy tests",
+            )
+        self.assertEqual(len(turns), 1)
+        self.assertLess(turns[0], 1e-3)
+        # a stand-in mesh whose lashes follow rows 0 to 9, under a rebind that turns them
+        follow = SimpleNamespace(rows=np.arange(10))
+        eyed = SimpleNamespace(parts=[SimpleNamespace(name="lashes", follow=follow)])
+        linear = np.tile(np.eye(3), (20, 1, 1))
+        vrm.check_lash_rebind(linear, eyed)
+        vrm.check_lash_rebind(None, eyed)
+        linear[3] = _rotation(np.array([1.0, 0.0, 0.0]), np.radians(2.0))
+        self.assertAlmostEqual(vrm.lash_rebind_turn(linear, eyed), 2.0, places=6)
+        with self.assertRaisesRegex(ValueError, "turns the head by 2.000 degrees"):
+            vrm.check_lash_rebind(linear, eyed)
+        linear[3] = np.eye(3)
+        linear[15] = _rotation(np.array([1.0, 0.0, 0.0]), np.radians(2.0))
+        vrm.check_lash_rebind(linear, eyed)  # a row the lashes do not follow
 
     def test_cards_without_eyes_keep_anny_blink(self):
         # the blink shaping comes with the eyes; other cards export as before
@@ -591,7 +648,9 @@ class TestReferenceClosedEye(unittest.TestCase):
                     },
                 },
             }
-            (folder / "appearance.json").write_text(json.dumps(appearance))
+            (folder / "appearance.json").write_text(
+                json.dumps(appearance), encoding="utf-8"
+            )
             handoff = load_handoff(folder)
             reference = Reference.from_handoff(handoff)
             from opensculptboy.eyes.mesh import eyeball_rows
@@ -795,6 +854,128 @@ class TestReferenceClosedEye(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 check_material({"reference_eyes": bad})
         self.assertIsNone(card_eye_poses(Character(material={"eyes": {}})))
+
+
+class TestConvertedPoses(unittest.TestCase):
+    """``opensculptboy convert`` carries a card's eye poses and mouth poses to the other
+    mesh with the row maps of its detail offsets, so the converted card blinks."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+        rest, _, targets = anny_blinks()
+        cls.rest = rest
+        # the reference's blink of each eye: anny's own blink, as rows of anny's level 0
+        cls.offsets = np.stack([targets["L"], targets["R"]])
+        lashes = np.zeros((2, 5, 3))
+        EyePoses(("close_l", "close_r"), cls.offsets, {}, lashes).save(
+            cls.folder / "card.eye_poses.safetensors"
+        )
+        card = Character(
+            name="converted",
+            material={
+                "eyes": {},
+                "reference_eyes": {"poses": "card.eye_poses.safetensors"},
+            },
+        )
+        cls.source = cls.folder / "card.json"
+        cls.source.write_text(json.dumps(card.to_dict()), encoding="utf-8")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def _export(self, card_path) -> FileEyes:
+        card = Character.from_dict(json.loads(card_path.read_text(encoding="utf-8")))
+        path = card_path.with_suffix(".glb")
+        export_glb(path, card, detail_dir=card_path.parent)
+        g = GLB(path).json
+        blinks = g["scenes"][0]["extras"]["opensculptboy"]["eyes"]["blinks"]
+        for side in ("L", "R"):
+            self.assertEqual(blinks[B.BLINK_TARGETS[side]]["source"], "reference")
+        return FileEyes(path)
+
+    def _check_blink(self, eyes: FileEyes):
+        for side, other in (("L", "R"), ("R", "L")):
+            weights = stage_weights((side,), 1.0, True)
+            with self.subTest(side=side):
+                closed = eyes.measure(weights, side)
+                self.assertLessEqual(closed["opening_mm"], CLOSED_OPENING_MM)
+                self.assertEqual(closed["folded_triangles"], 0)
+                self.assertGreater(eyes.measure(weights, other)["opening_mm"], 5.0)
+
+    def test_round_trip(self):
+        from opensculptboy.topology.convert import LevelCorrespondence, convert_card
+
+        sculpt = self.folder / "sculpt" / "card.json"
+        summary = convert_card(self.source, sculpt, "sculpt")
+        self.assertEqual(summary["eye_poses"], "card.eye_poses.safetensors")
+        card = Character.from_dict(json.loads(sculpt.read_text(encoding="utf-8")))
+        poses = card_eye_poses(card, sculpt.parent)
+        c = LevelCorrespondence(0, self.rest)
+        self.assertEqual(poses.offsets.shape[1], len(c.sculpt_to_anny))
+        shared = c.sculpt_to_anny >= 0
+        np.testing.assert_allclose(
+            poses.offsets[:, shared],
+            self.offsets[:, c.sculpt_to_anny[shared]],
+            atol=1e-6,
+        )
+        self.assertEqual(poses.lashes.shape, (2, 5, 3))  # rows of the lashes, kept
+        self._check_blink(self._export(sculpt))
+
+        back = self.folder / "back" / "card.json"
+        convert_card(sculpt, back, "anny")
+        card = Character.from_dict(json.loads(back.read_text(encoding="utf-8")))
+        poses = card_eye_poses(card, back.parent)
+        self.assertEqual(poses.offsets.shape[1], len(self.rest))
+        same = c.anny_to_sculpt >= 0
+        np.testing.assert_allclose(
+            poses.offsets[:, same], self.offsets[:, same], atol=1e-6
+        )
+        self._check_blink(self._export(back))
+
+    def test_mouth_poses(self):
+        # the mouth's skin offsets (rows of level 0) and a level's corrections (rows of
+        # that level) go to the other mesh; the inner mouth's points stay
+        from opensculptboy.detail.subdivision import level
+        from opensculptboy.mouth.poses import MouthPoses
+        from opensculptboy.topology.convert import (
+            LevelCorrespondence,
+            convert_mouth_poses,
+        )
+
+        rng = np.random.default_rng(3)
+        n1 = level("anny", 1).vertex_count
+        rows = np.sort(rng.choice(n1, 400, replace=False))
+        poses = MouthPoses(
+            ("aa",),
+            rng.normal(0, 1e-3, (1, len(self.rest), 3)),
+            rng.normal(0, 1e-3, (1, 7, 3)),
+            {},
+            {1: (rows, rng.normal(0, 1e-3, (1, len(rows), 3)))},
+        )
+        source = self.folder / "m.mouth_poses.safetensors"
+        target = self.folder / "m_sculpt.mouth_poses.safetensors"
+        poses.save(source)
+        cache = {k: LevelCorrespondence(k, self.rest) for k in (0, 1)}
+        convert_mouth_poses(source, target, "sculpt", cache.__getitem__)
+        out = MouthPoses.load(target)
+        c0, c1 = cache[0], cache[1]
+        shared = c0.sculpt_to_anny >= 0
+        self.assertEqual(out.skin.shape[1], len(c0.sculpt_to_anny))
+        np.testing.assert_allclose(
+            out.skin[:, shared], poses.skin[:, c0.sculpt_to_anny[shared]], atol=1e-6
+        )
+        np.testing.assert_allclose(out.inner, poses.inner, atol=1e-6)
+        full = np.zeros((n1, 3))
+        full[rows] = poses.levels[1][1][0]
+        got = np.zeros((len(c1.sculpt_to_anny), 3))
+        got[out.levels[1][0]] = out.levels[1][1][0]
+        known = c1.sculpt_to_anny >= 0
+        np.testing.assert_allclose(
+            got[known], full[c1.sculpt_to_anny[known]], atol=1e-6
+        )
 
 
 def _rotation(axis, angle):

@@ -205,10 +205,45 @@ class TestLashMesh(unittest.TestCase):
         indices = self.model.vertex_bone_indices.numpy()
         w, i = self.eyed.skin_weights(weights, indices)
         head = list(self.model.bone_labels).index("head")
+        # the lid margins of the file's mesh, as the eyed mesh finds them
+        from opensculptboy.export.body import triangulated_faces, vertex_normals
+        from opensculptboy.eyes.lashes import lid_margins
+        from opensculptboy.eyes.mesh import eyeball_rows
+
+        triangles, _ = triangulated_faces(self.model)
+        on_eye = np.zeros(len(self.rest), bool)
+        for r in eyeball_rows(self.model).values():
+            on_eye[r] = True
+        skin_tris = triangles[~on_eye[triangles].all(1)]
+        used = np.zeros(len(self.rest), bool)
+        used[skin_tris] = True
+        normals = vertex_normals(self.rest, skin_tris)
+        bones = int(indices.max()) + 1
+        dense = np.zeros((len(self.rest), bones))
+        np.add.at(
+            dense,
+            (np.repeat(np.arange(len(self.rest)), indices.shape[1]), indices.ravel()),
+            weights.ravel(),
+        )
         for p, rows in self._lashes():
+            frame = self.eyed.frames[p.side]
+            margins = lid_margins(frame, self.rest, normals, used & ~on_eye, skin_tris)
             np.testing.assert_allclose(w[rows].sum(1), 1.0, atol=1e-9)
-            # the lashes take the weights of their lid's margin, mostly the head's
-            self.assertTrue((i[rows][:, 0] == head).all() or (w[rows] > 0).any())
+            # each lash's root lies on its own lid's margin: the rows its weights blend
+            upper = frame.to_local(p.rest)[:, 1].mean() > 0
+            margin = margins[UPPER if upper else LOWER].rows
+            roots = p.anchors[(p.blend > 1e-12).any(0)]
+            self.assertTrue(np.isin(roots, margin).all())
+            # the lashes take the weights of their roots on the margin (the strongest
+            # bones, renormalised), mostly the head's
+            mixed = p.blend @ dense[p.anchors]
+            got = np.zeros_like(mixed)
+            np.add.at(got, (np.arange(len(got))[:, None], i[rows]), w[rows])
+            for k in range(len(mixed)):
+                strongest = np.argsort(-mixed[k], kind="stable")[: w.shape[1]]
+                want = np.zeros(bones)
+                want[strongest] = mixed[k, strongest] / mixed[k, strongest].sum()
+                np.testing.assert_allclose(got[k], want, atol=1e-9)
             self.assertGreater(float((w[rows] * (i[rows] == head)).sum(1).mean()), 0.5)
 
 
@@ -258,6 +293,67 @@ class TestReferenceLashes(unittest.TestCase):
         np.testing.assert_allclose(data.uvs[3:, 1], [2 / 3, 2 / 3, 0.0], atol=1e-9)
         self.assertEqual(values, {})
         self.assertIsNone(reference_lashes(parts[2:], posed, rest, np.arange(40)))
+
+    def test_one_mesh_with_both_lids(self):
+        # one lash part holds the upper and the lower strips of both eyes: each strip takes
+        # the lid on its side of the horizontal line through its eye's centre, whatever the
+        # part's median, so the lower lashes follow the lower lid
+        from opensculptboy.fit.handoff import HandoffPart
+
+        rng = np.random.default_rng(2)
+        sphere = rng.normal(size=(60, 3))
+        sphere = 0.012 * sphere / np.linalg.norm(sphere, axis=1, keepdims=True)
+        centres = {
+            "L": np.array([0.032, -0.07, 1.6]),
+            "R": np.array([-0.032, -0.07, 1.6]),
+        }
+        head = rng.normal(scale=0.05, size=(40, 3)) + [0.0, 0.0, 1.6]
+        rest = np.concatenate([head, sphere + centres["L"], sphere + centres["R"]])
+        eyes = {"L": np.arange(40, 100), "R": np.arange(100, 160)}
+
+        def strip(centre, up, count):
+            # a row of cards along a lid: roots on the lid, tips away from the eye
+            x = np.linspace(-0.012, 0.012, count)
+            root = np.stack(
+                [
+                    centre[0] + x,
+                    np.full(count, centre[1] - 0.011),
+                    np.full(count, centre[2] + up * 0.005),
+                ],
+                1,
+            )
+            tip = root + [0.0, -0.004, up * 0.006]
+            v = np.concatenate([root, tip])
+            k = np.arange(count - 1)
+            t = np.concatenate(
+                [
+                    np.stack([k, k + 1, k + count], 1),
+                    np.stack([k + 1, k + count + 1, k + count], 1),
+                ]
+            )
+            return v, t
+
+        pieces = [
+            strip(centres["L"], 1.0, 24),
+            strip(centres["L"], -1.0, 8),
+            strip(centres["R"], 1.0, 24),
+            strip(centres["R"], -1.0, 8),
+        ]
+        v, t, lid, count = [], [], [], 0
+        for k, (pv, pt) in enumerate(pieces):
+            v.append(pv)
+            t.append(pt + count)
+            lid += [UPPER if k % 2 == 0 else LOWER] * len(pv)
+            count += len(pv)
+        v, t = np.concatenate(v), np.concatenate(t)
+        uv = np.zeros((len(v), 2))
+        image = np.full((8, 8, 4), 255, np.uint8)
+        parts = [HandoffPart("lashes", "lashes", v, t, uv, image)]
+        data, _, _ = reference_lashes(parts, rest, rest, np.arange(40), eyes)
+        np.testing.assert_array_equal(data.lid, lid)
+        # without the eyes, each strip still takes its own lid
+        data, _, _ = reference_lashes(parts, rest, rest, np.arange(40))
+        np.testing.assert_array_equal(data.lid, lid)
 
     def test_file(self):
         data = LashData(
