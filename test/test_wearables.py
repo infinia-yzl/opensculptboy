@@ -10,6 +10,7 @@ built from a synthetic reference character with a clothing part.
 """
 
 import contextlib
+import dataclasses
 import io
 import json
 import pathlib
@@ -399,6 +400,9 @@ class TestDressedFiles(unittest.TestCase):
         extras = glb.json["scenes"][0]["extras"]["opensculptboy"]["wearables"]
         tunic_extras = next(p for p in extras["pieces"] if p["piece"] == "tunic")
         self.assertEqual(tunic_extras["ref"], "test_outfit/tunic")
+        # a CC0 piece is credited as any other piece with licence information
+        self.assertIn(TUNIC_CREDIT, extras["credits"])
+        self.assertEqual(len(extras["credits"]), 3)
         self.assertEqual(tunic_extras["hidden_groups"], ["back"])
         # the file's skinned pieces sit where the fit put them, on the floor
         dressed = dress(template_body(), worn_pieces(self.card, self.folder))
@@ -548,6 +552,13 @@ class TestDressedFiles(unittest.TestCase):
                 self.assertEqual(check(glb.json), [])
                 names = [m["name"] for m in glb.json["meshes"]]
                 self.assertIn("test_outfit/cape", names)
+                if version == "1.0":
+                    text = glb.json["extensions"]["VRMC_vrm"]["meta"][
+                        "thirdPartyLicenses"
+                    ]
+                else:
+                    text = glb.json["extensions"]["VRM"]["meta"]["reference"]
+                self.assertIn("Wearable: " + TUNIC_CREDIT, text)
 
     def test_command(self):
         from opensculptboy.cli import main
@@ -600,6 +611,36 @@ def hidden(node: dict) -> bool:
 def _last_json(text: str):
     """The JSON object that a command printed last (warp may print its module loads first)."""
     return json.loads(text[text.index("{\n") :])
+
+
+TUNIC_CREDIT = (
+    '"tunic" by OpenSculptBoy tests, CC0-1.0, test/wearable_fixtures.py '
+    "(design: synthetic test garment, made in the test)"
+)
+
+
+class TestCredits(unittest.TestCase):
+    def test_credit_lines(self):
+        """Every piece with licence, author or source information gets a credit line,
+        whatever its licence; an attribution line stands as given."""
+        from opensculptboy.wearables.export import credit_line
+
+        w = tunic()
+        self.assertEqual(credit_line(w), TUNIC_CREDIT)
+        for licence, expected in (
+            ({"spdx": "AGPL-3.0-only"}, '"tunic", AGPL-3.0-only'),
+            ({"author": "Ada"}, '"tunic" by Ada'),
+            ({"source": "https://example.org/t"}, '"tunic", https://example.org/t'),
+            (
+                {"spdx": "CC-BY-4.0", "attribution": "Tunic by Ada (CC BY 4.0)"},
+                "Tunic by Ada (CC BY 4.0)",
+            ),
+            ({}, None),
+        ):
+            with self.subTest(licence=licence):
+                self.assertEqual(
+                    credit_line(dataclasses.replace(w, licence=licence)), expected
+                )
 
 
 def glb_json_wearables(path):
