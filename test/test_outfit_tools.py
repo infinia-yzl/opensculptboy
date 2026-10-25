@@ -71,7 +71,7 @@ def shell(
     """A shell of anny's torso ``offset`` metres off the skin (negative: under it), with the
     skin under it as its cover mask when ``covers``; ``inside_out`` winds its triangles
     toward the body. ``inner`` adds an inner wall that many metres off the skin, wound
-    toward the body (the two walls of a boot or a glove). ``body_kind`` names the binding
+    toward the body and three rings narrower (the two walls of a boot or a glove). ``body_kind`` names the binding
     body (``card``: bound on a card's own body, as pieces made together are); ``rigid``
     binds the shell to the chest bone."""
     from opensculptboy.wearables import bind_rigid
@@ -80,8 +80,13 @@ def shell(
     vertices, triangles, rows = _region_shell(body, torso_mask(body), offset)
     if inside_out:
         triangles = triangles[:, ::-1]
-    if inner is not None:
-        wall, wall_triangles, _ = _region_shell(body, torso_mask(body), inner)
+    if inner is not None:  # three rings narrower, so that the outer wall covers it
+        region = torso_mask(body)
+        for _ in range(3):
+            border = np.zeros(len(body.vertices), bool)
+            border[body.triangles[(~region[body.triangles]).any(1)].ravel()] = True
+            region &= ~border
+        wall, wall_triangles, _ = _region_shell(body, region, inner)
         triangles = np.concatenate([triangles, wall_triangles[:, ::-1] + len(vertices)])
         vertices = np.concatenate([vertices, wall])
     garment = Garment(vertices, triangles, materials=[Material(name, colour, 0.0, 0.9)])
