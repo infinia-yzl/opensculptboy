@@ -15,7 +15,9 @@ The fixes: degenerate triangles and unused vertices are removed, duplicate verti
 position, UV and normal) are merged, duplicate triangles (the same three vertices in the same
 turn) are removed, triangles wound against their neighbours are turned
 over, missing normals are computed (weighted by the angle of each corner, welded by
-position, so that UV seams and material borders stay smooth), and a normal map in DirectX
+position, so that UV seams and material borders stay smooth; parts that face into the body
+are turned over, and a triangle wound against the normals around it takes corners of its
+own, so that the normals agree with every triangle), and a normal map in DirectX
 convention gets its green channel flipped (``normal_green``). The packages and the exports
 write MikkTSpace tangents for every material with a normal map.
 """
@@ -356,6 +358,112 @@ def angle_weighted_normals(
     return out / np.where(length > 0, length, 1.0)
 
 
+def _against(vertices, triangles, normals) -> np.ndarray:
+    """(T,) the triangles wound against their vertex normals: the face normal of the winding
+    and the sum of the corners' normals point to opposite sides."""
+    v, t = vertices, triangles
+    face = np.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]])
+    return np.einsum("ij,ij->i", face, normals[t].sum(axis=1)) < 0
+
+
+def _inward_parts(garment: Garment, weld_id: np.ndarray, body) -> np.ndarray:
+    """(T,) the triangles of the parts (connected by position) whose winding faces into the
+    body: the area-weighted face normals of the part point toward the closest skin points."""
+    v, t = garment.vertices, garment.triangles
+    found = body.surface.closest(v)
+    outward = v - found.point
+    length = np.linalg.norm(outward, axis=1, keepdims=True)
+    near = length[:, 0] < 1e-4
+    bn = body.normals[body.triangles[found.triangle]]
+    bn = np.einsum("nk,nkd->nd", found.barycentric, bn)
+    outward = np.where(near[:, None], bn, outward / np.maximum(length, 1e-12))
+    face = np.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]])
+    score = np.einsum("ij,ij->i", face, outward[t].mean(axis=1))
+    labels = _components(int(weld_id.max(initial=-1)) + 1, weld_id[t])[weld_id[t[:, 0]]]
+    inward = np.zeros(len(t), bool)
+    for label in np.unique(labels):
+        rows = labels == label
+        if score[rows].sum() < 0:
+            inward |= rows
+    return inward
+
+
+ROUNDS = 4  # rounds of splitting the triangles that disagree with the computed normals
+
+
+def compute_normals(
+    garment: Garment, quality: Quality, weld_id: np.ndarray, body=None
+) -> np.ndarray:
+    """
+    Normals for a garment without them, which agree with the winding of every triangle and
+    face away from the body. With ``body``, the parts that face into it are turned over
+    first. The normals are weighted by angle and welded by position, so that UV seams and
+    material borders stay smooth. A triangle wound against its corners' normals (a fold, or
+    a flap joined to the rest by a non-manifold edge, which the winding fix cannot reach)
+    then takes corners of its own, with its own normal (a hard edge), and the normals are
+    computed again until every triangle agrees; its winding and UVs stay as they are.
+    Returns the old index of each vertex of the garment (``garment`` changes in place).
+    """
+    if body is not None and len(garment.triangles):
+        inward = _inward_parts(garment, weld_id, body)
+        if inward.any():
+            garment.triangles[inward] = garment.triangles[inward][:, ::-1]
+            quality.fix(
+                "parts_turned_outward",
+                f"{int(inward.sum())} triangles of parts that faced into the body turned "
+                "over, so that the computed normals face away from it",
+                "Export the garment with its normals to keep a part that faces the body "
+                "on purpose (an inner lining).",
+                count=int(inward.sum()),
+            )
+    source = np.arange(len(garment.vertices))
+    weld = np.asarray(weld_id, dtype=np.int64).copy()
+    normals = angle_weighted_normals(garment.vertices, garment.triangles, weld)
+    split = 0
+    for _ in range(ROUNDS):
+        against = np.flatnonzero(_against(garment.vertices, garment.triangles, normals))
+        if not len(against):
+            break
+        corners = garment.triangles[against].reshape(-1)
+        fresh = len(garment.vertices) + np.arange(len(corners))
+        garment.vertices = np.concatenate([garment.vertices, garment.vertices[corners]])
+        if garment.uvs is not None:
+            garment.uvs = np.concatenate([garment.uvs, garment.uvs[corners]])
+        source = np.concatenate([source, source[corners]])
+        weld = np.concatenate(
+            [weld, weld.max(initial=-1) + 1 + np.arange(len(corners))]
+        )
+        garment.triangles[against] = fresh.reshape(-1, 3)
+        normals = angle_weighted_normals(garment.vertices, garment.triangles, weld)
+        split += len(against)
+    garment.normals = normals
+    used = np.unique(garment.triangles)
+    if len(used) < len(garment.vertices):  # corners that only split triangles held
+        remap = np.full(len(garment.vertices), -1, np.int64)
+        remap[used] = np.arange(len(used))
+        garment.triangles = remap[garment.triangles]
+        garment.vertices = garment.vertices[used]
+        garment.normals = garment.normals[used]
+        if garment.uvs is not None:
+            garment.uvs = garment.uvs[used]
+        source = source[used]
+    if split:
+        quality.fix(
+            "normals_split",
+            f"{split} triangles wound against the normals around them (folds, or flaps "
+            "joined by non-manifold edges) take corners of their own with their own "
+            "normals",
+            count=split,
+        )
+    quality.fix(
+        "normals_computed",
+        "the file has no normals; computed from the triangles, weighted by angle, "
+        "smooth across UV seams and material borders, agreeing with the winding of "
+        "every triangle",
+    )
+    return source
+
+
 def check_normals(
     garment: Garment,
     quality: Quality,
@@ -364,81 +472,58 @@ def check_normals(
     flipped: np.ndarray,
     body=None,
 ) -> None:
-    """Compute missing normals; report hard edges, normals against the winding and parts
-    that face into the body."""
+    """Compute missing normals (:func:`compute_normals`); then report hard edges, normals
+    against the winding and parts that face into the body, for the file's normals and the
+    computed ones alike. Returns the old index of each vertex (the computed normals may
+    split vertices), or None when the vertices stay as they are."""
+    source = None
     if not normals_from_file:
-        garment.normals = angle_weighted_normals(
-            garment.vertices, garment.triangles, weld_id
+        source = compute_normals(garment, quality, weld_id, body)
+        weld_id = weld_ids(garment.vertices)
+    groups = np.zeros((int(weld_id.max(initial=-1)) + 1, 3))
+    np.add.at(groups, weld_id, garment.normals)
+    count = np.bincount(weld_id).astype(np.float64)
+    mean = groups[weld_id] / count[weld_id, None]
+    spread = np.einsum("ij,ij->i", mean, garment.normals) / np.maximum(
+        np.linalg.norm(mean, axis=1), 1e-12
+    )
+    hard = int(((count[weld_id] > 1) & (spread < 0.95)).sum())
+    if hard:
+        quality.add(
+            "hard_edges",
+            "info",
+            f"{hard} split vertices carry differing normals (hard edges); kept",
+            "Smooth the normals at UV seams and material borders in the modelling "
+            "tool if those edges should look round.",
+            count=hard,
         )
-        quality.fix(
-            "normals_computed",
-            "the file has no normals; computed from the triangles, weighted by angle, "
-            "smooth across UV seams and material borders",
+    against = int(_against(garment.vertices, garment.triangles, garment.normals).sum())
+    if against:
+        quality.add(
+            "normals_against_winding",
+            "warning",
+            f"{against} triangles are wound against their vertex normals",
+            "Recalculate the normals outside in the modelling tool, or export "
+            "without normals to have them computed.",
+            count=against,
         )
-    else:
-        if flipped.any():
-            # the triangles turned over keep the file's normals: they agree with them now
-            pass
-        groups = np.zeros((int(weld_id.max(initial=-1)) + 1, 3))
-        np.add.at(groups, weld_id, garment.normals)
-        count = np.bincount(weld_id).astype(np.float64)
-        mean = groups[weld_id] / count[weld_id, None]
-        spread = np.einsum("ij,ij->i", mean, garment.normals) / np.maximum(
-            np.linalg.norm(mean, axis=1), 1e-12
-        )
-        hard = int(((count[weld_id] > 1) & (spread < 0.95)).sum())
-        if hard:
-            quality.add(
-                "hard_edges",
-                "info",
-                f"{hard} split vertices carry differing normals (hard edges); kept",
-                "Smooth the normals at UV seams and material borders in the modelling "
-                "tool if those edges should look round.",
-                count=hard,
-            )
-        v, t = garment.vertices, garment.triangles
-        face = np.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]])
-        corner = garment.normals[t].sum(axis=1)
-        against = int((np.einsum("ij,ij->i", face, corner) < 0).sum())
-        if against:
-            quality.add(
-                "normals_against_winding",
-                "warning",
-                f"{against} triangles are wound against their vertex normals",
-                "Recalculate the normals outside in the modelling tool, or export "
-                "without normals to have them computed.",
-                count=against,
-            )
     if body is not None and len(garment.triangles):
-        found = body.surface.closest(garment.vertices)
-        outward = garment.vertices - found.point
-        length = np.linalg.norm(outward, axis=1, keepdims=True)
-        near = length[:, 0] < 1e-4
-        bn = body.normals[body.triangles[found.triangle]]
-        bn = np.einsum("nk,nkd->nd", found.barycentric, bn)
-        outward = np.where(near[:, None], bn, outward / np.maximum(length, 1e-12))
-        v, t = garment.vertices, garment.triangles
-        face = np.cross(v[t[:, 1]] - v[t[:, 0]], v[t[:, 2]] - v[t[:, 0]])
-        score = np.einsum("ij,ij->i", face, outward[t].mean(axis=1))
-        labels = _components(int(weld_id.max(initial=-1)) + 1, weld_id[t])[
-            weld_id[t[:, 0]]
-        ]
-        inward_parts = 0
-        inward_triangles = 0
-        for label in np.unique(labels):
-            rows = labels == label
-            if score[rows].sum() < 0:
-                inward_parts += 1
-                inward_triangles += int(rows.sum())
-        if inward_parts:
+        inward = _inward_parts(garment, weld_id, body)
+        if inward.any():
+            t = garment.triangles
+            labels = _components(int(weld_id.max(initial=-1)) + 1, weld_id[t])[
+                weld_id[t[:, 0]]
+            ]
+            parts = len(np.unique(labels[inward]))
             quality.add(
                 "part_faces_inward",
                 "warning",
-                f"{inward_parts} parts ({inward_triangles} triangles) face into the body",
+                f"{parts} parts ({int(inward.sum())} triangles) face into the body",
                 "Flip the normals of those parts in the modelling tool, unless they are an "
                 "inner lining.",
-                count=inward_parts,
+                count=parts,
             )
+    return source
 
 
 # -- UVs --------------------------------------------------------------------------------
@@ -944,7 +1029,10 @@ def check_garment(
     weld_id = weld_ids(garment.vertices)
     check_topology(garment, quality, weld_id)
     flipped = fix_winding(garment, quality, weld_id)
-    check_normals(garment, quality, weld_id, normals_from_file, flipped, body)
+    source = check_normals(garment, quality, weld_id, normals_from_file, flipped, body)
+    if source is not None:  # split vertices
+        rows = rows[source]
+        weld_id = weld_ids(garment.vertices)
     check_uvs(garment, quality, weld_id)
     check_materials(garment, quality, texture_limit, normal_green)
     check_tangents(garment, quality)
