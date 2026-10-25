@@ -656,6 +656,56 @@ class TestCardCommands(unittest.TestCase):
             [p.ref for p in worn_pieces(after, self.folder)], ["travel/tunic"]
         )
 
+    def test_card_with_non_ascii_text_under_an_ascii_locale(self):
+        """``wearables add`` reads and writes a UTF-8 card with non-ASCII text in a process
+        whose locale encoding is ASCII (C locale, no UTF-8 mode, no locale coercion)."""
+        import os
+        import subprocess
+        import sys
+
+        name = "Caf" + chr(0xE9) + " " + chr(0x2014) + " " + chr(0x65C5) + chr(0x306E)
+        card = self.folder / "non_ascii.json"
+        data = Character(name=name).to_dict()
+        card.write_bytes(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        tunic = self.folder / "wear" / "tunic.wearable.json"
+        code = (
+            "import locale, sys\n"
+            "from opensculptboy.cli import main\n"
+            "if 'utf' in locale.getpreferredencoding(False).lower().replace('-', ''):\n"
+            "    print('SKIP'); sys.exit(0)\n"
+            "sys.exit(main(['wearables', 'add', sys.argv[1], sys.argv[2]]))\n"
+        )
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("LC_", "PYTHONIOENCODING", "PYTHONUTF8"))
+        }
+        env.update(
+            LC_ALL="C",
+            LANG="C",
+            PYTHONCOERCECLOCALE="0",
+            PYTHONUTF8="0",
+            PYTHONPATH=os.pathsep.join(
+                [str(ROOT / "src"), str(ROOT), env.get("PYTHONPATH", "")]
+            ),
+        )
+        result = subprocess.run(
+            [sys.executable, "-X", "utf8=0", "-c", code, str(card), str(tunic)],
+            capture_output=True,
+            env=env,
+            cwd=ROOT,
+            timeout=600,
+        )
+        out = result.stdout.decode("utf-8", "replace")
+        if out.startswith("SKIP"):
+            self.skipTest("the locale encoding stays UTF-8 here")
+        self.assertEqual(
+            result.returncode, 0, result.stderr.decode("utf-8", "replace")[-3000:]
+        )
+        written = json.loads(card.read_bytes().decode("utf-8"))
+        self.assertEqual(written["name"], name)
+        self.assertEqual(written["wearables"][0]["file"], "wear/tunic.wearable.json")
+
     def test_private_package_never_goes_on_a_card_in_the_repository(self):
         w = circlet()
         w.provenance = PRIVATE

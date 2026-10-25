@@ -46,7 +46,7 @@ def _read_card(path) -> tuple[pathlib.Path, dict]:
 
     path = pathlib.Path(path)
     try:
-        raw = json.loads(path.read_text())
+        raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise CardError(
             f"{path}: no such card.",
@@ -94,7 +94,7 @@ def _finish(path: pathlib.Path, before: dict, after: dict, result: dict, dry_run
         }
     )
     if changed and not dry_run:
-        path.write_text(json.dumps(after, indent=2) + "\n")
+        path.write_text(json.dumps(after, indent=2) + "\n", encoding="utf-8")
     return result
 
 
