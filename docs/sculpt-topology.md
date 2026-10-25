@@ -2,7 +2,7 @@
 
 `sculpt` is OpenSculptBoy's own version of Anny's mesh: Anny's mesh with patches where Anny's surface follows a detailed character poorly. The shipped file holds one patch, at the inner corner of each eye. A second patch, at the root of the outer ear, builds and is tested, and stays off until its detail levels are as smooth as Anny's around the ear.
 
-Every part of Anny keeps working on `sculpt`: the phenotypes, local changes, face shapes, facial actions, the rig and its skin weights, the landmarks, the detail levels, the texture bake, the glTF and VRM exports and the reference fit. A card made on `anny` loads on `sculpt` with the same parameters, and `opensculptboy convert` carries a card between both meshes.
+Every part of Anny keeps working on `sculpt`: the phenotypes, local changes, face shapes, facial actions, the rig and its skin weights, the landmarks, the detail levels, the texture bake, the glTF and VRM exports and the reference fit. A card made on `anny` loads on `sculpt` with the same parameters, and `opensculptboy convert` carries a card between both meshes, its detail offsets, ear UVs, eye poses and mouth poses included.
 
 ```bash
 opensculptboy fit handoff/ --out card.json --topology sculpt          # fit the sculpt mesh
@@ -43,7 +43,7 @@ Limits: a full blink folds the corner under the closed lids, as it folds Anny's 
 
 - `opensculptboy.topology.patch`: `Patch`, `blend_rows`, `validate_patch`, `check_symmetry`.
 - `opensculptboy.topology.sculpt`: `compose`, `read_sculpt_data`, `sculpt_data` and `use_sculpt_data` (for tests), `sculpt_model_data`, `sculpt_model`, `build_model`.
-- `opensculptboy.topology.convert`: `to_sculpt`, `to_anny`, `convert_offsets` and `convert_card` (`opensculptboy convert`), which carry vertex fields, detail offsets and the ear UVs between both meshes.
+- `opensculptboy.topology.convert`: `to_sculpt`, `to_anny`, `convert_offsets`, `convert_eye_poses`, `convert_mouth_poses` and `convert_card` (`opensculptboy convert`), which carry vertex fields, detail offsets, the ear UVs and a reference's eye and mouth poses between both meshes.
 - `opensculptboy.topology.lookup`: base-mesh tables, patch labels and the ear root line on a sculpt model, which the fit, the measures and the VRM export use.
 
 `test.test_sculpt_topology` and `test.test_sculpt_downstream` guard the format, the exact rows, the meshes, the UVs, the detail levels, the GLB and VRM files, a synthetic fit on `sculpt` and the converter. The web viewer keeps Anny's mesh.

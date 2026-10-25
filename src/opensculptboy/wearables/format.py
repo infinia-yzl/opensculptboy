@@ -342,7 +342,9 @@ def write_wearable(path: str | pathlib.Path, wearable: Wearable) -> pathlib.Path
         arrays[f"covers:{group}"] = np.asarray(mask, dtype=np.uint8)
     save_file(arrays, str(paths["binding"]), metadata={"format": FORMAT})
     _write_geometry(paths["glb"], wearable)
-    paths["json"].write_text(json.dumps(wearable.description(stem), indent=2) + "\n")
+    paths["json"].write_text(
+        json.dumps(wearable.description(stem), indent=2) + "\n", encoding="utf-8"
+    )
     return paths["json"]
 
 
@@ -351,7 +353,7 @@ def read_wearable(path: str | pathlib.Path) -> Wearable:
     from safetensors.numpy import load_file
 
     paths = package_paths(path)
-    data = json.loads(paths["json"].read_text())
+    data = json.loads(paths["json"].read_text(encoding="utf-8"))
     if data.get("format") != FORMAT:
         raise ValueError(
             f"{paths['json']}: format {data.get('format')!r}; this version reads {FORMAT}."

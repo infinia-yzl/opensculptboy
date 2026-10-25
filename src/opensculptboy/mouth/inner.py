@@ -239,7 +239,7 @@ def fitted_meshes(card_path, reference, subdiv: int | None = None):
     from opensculptboy.detail import DetailModel, character_offsets
 
     card_path = pathlib.Path(card_path)
-    character = Character.from_dict(json.loads(card_path.read_text()))
+    character = Character.from_dict(json.loads(card_path.read_text(encoding="utf-8")))
     placement = character.detail.get("fit", {}).get("placement")
     if not placement:
         raise ValueError(f"{card_path} holds no fit placement (detail.fit.placement).")
