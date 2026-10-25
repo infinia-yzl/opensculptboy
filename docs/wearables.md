@@ -220,7 +220,7 @@ opensculptboy wearables catalogue wear/ --mhclo packs/                     # and
 | `groups`, `vertices`, `triangles`, `materials` | the garment's groups and counts |
 | `binding`, `weights`, `hides` | the binding's body and method, the weights and the hides rules |
 | `licence` | `spdx`, `declared`, `author`, `source` and `credit`, the line that the exports write (null without one) |
-| `quality` | the checks of "Quality" run on the package as it stands: `errors`, `warnings`, `infos`, the `codes` of each severity and the error and warning `items`; `--no-quality` leaves them out |
+| `quality` | the checks of "Quality" run on the package as it stands: `errors`, `warnings`, `infos`, the `codes` of each severity and the error and warning `items`; the package holds the fixes of its import, and its normals count as the file's, so normals that the import computed are also tested against the winding (`normals_against_winding`); `--no-quality` leaves them out |
 | `thumbnail` | the path of `NAME.thumb.png` next to the package, or null |
 
 - **Filters.** `--slot` keeps the slots named (repeatable or comma-separated), `--tag` keeps the pieces with every tag named, and `--query` keeps the pieces whose name, label, tags or description hold every word; a word of more than three letters that ends in `s` also matches without it (`shirts` finds `shirt`). `count` gives the entries kept and `total` the entries found.
