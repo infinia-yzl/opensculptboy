@@ -936,6 +936,7 @@ function initWardrobe() {
     THREE, scene, opaque,
     skeleton: () => RIG.skel,
     uniforms: U,
+    depth: depthMat,
     envDefines: () => ENV_DEFINES,
     toMRT,
     body: () => ({ coarse: BODY.anny.coarse, joints: BODY.anny.joints, nBody: BODY.anny.nBody, quads: BODY.anny.quads, coarseSkin: BODY.anny.coarseSkin,

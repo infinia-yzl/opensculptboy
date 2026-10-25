@@ -12,7 +12,7 @@ import type * as THREE_NS from 'three';
 import { BodySurface, DressCache, dress, dressSteps, estimatedPose, outfitCoverSteps, runSteps, visibleTriangles, type DressedPiece, type Frame, type Steps, type WornPiece } from './dress.ts';
 import { dirname, FileSet, type PickedFile } from './files.ts';
 import { readSafetensors, readWearable, type Material, type Wearable } from './package.ts';
-import { GARMENT_FS, GARMENT_VS } from './shading.ts';
+import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from './shading.ts';
 import { skinTriangles } from './skin.ts';
 import { cardOutfit, NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
 
@@ -23,6 +23,7 @@ export interface WardrobeHost {
   opaque: any[];
   skeleton(): THREE_NS.Skeleton;
   uniforms: Record<string, any>;
+  depth: THREE_NS.ShaderMaterial;                        // the page's material of the shadow maps
   envDefines(): Record<string, string>;
   toMRT(fs: string): string;
   body(): { coarse: Float32Array; joints: Float32Array; nBody: number; quads: Uint32Array; coarseSkin: Uint8Array; bones: string[]; frame: Frame;
@@ -56,7 +57,7 @@ export class Wardrobe {
   pieces: DressedPiece[] = []; worn: WornRef[] = [];
   notes: string[] = [];
   timing: Record<string, number> = {};
-  private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; hidden: string; weights: Float32Array | null }>();
+  private meshes = new Map<string, { mesh: any; geo: THREE_NS.BufferGeometry; wearable: Wearable; materials: any[]; depth: any[]; hidden: string; weights: Float32Array | null }>();
   private cache = new DressCache();
   private skin: Int32Array | null = null; private weights: Float64Array | null = null; private indices: Int32Array | null = null;
   private bodyIndex: Uint32Array | null = null; private indexScratch: Uint32Array | null = null;
@@ -317,11 +318,13 @@ export class Wardrobe {
     if (g.uvs && g.materials.some((mt) => mt.textures.normal)) geo.setAttribute('gTangent', new T.BufferAttribute(tangents(p.vertices, p.normals, g.uvs, g.triangles), 4));
     geo.setIndex(new T.BufferAttribute(n < 65536 ? new Uint16Array(g.triangles.length) : new Uint32Array(g.triangles.length), 1));
     const materials = g.materials.map((mt) => this.material(mt, geo));
+    // the shadow maps: the page's depth material for opaque materials, a cut at the alpha cutoff for the others
+    const depth = g.materials.map((mt, i) => (mt.alphaMode === 'MASK' || mt.alphaMode === 'BLEND' ? this.depthMaterial(mt, materials[i]) : this.host.depth));
     const mesh = new T.SkinnedMesh(geo, materials);
     mesh.bind(this.host.skeleton(), new T.Matrix4());
-    mesh.frustumCulled = false; mesh.name = p.ref;
+    mesh.frustumCulled = false; mesh.name = p.ref; mesh.userData.depthMat = depth;
     this.host.scene.add(mesh); this.host.opaque.push(mesh);
-    const m = { mesh, geo, wearable: w, materials, hidden: '\u0000', weights: null as Float32Array | null };
+    const m = { mesh, geo, wearable: w, materials, depth, hidden: '\u0000', weights: null as Float32Array | null };
     this.meshes.set(p.ref, m);
     return m;
   }
@@ -364,6 +367,16 @@ export class Wardrobe {
       glslVersion: T.GLSL3, blending: T.NoBlending, side: mt.doubleSided ? T.DoubleSide : T.FrontSide,
     });
   }
+  // the depth of a masked or blended material in the shadow maps: its fragments at or above the alpha cutoff (a masked
+  // material's own, BLEND_SHADOW_CUTOFF for a blended one), with the base colour's alpha and texture of the material
+  private depthMaterial(mt: Material, shown: any) {
+    const T = this.host.THREE, defines: Record<string, any> = Object.assign({}, this.host.depth.defines);
+    if (shown.defines.HAS_MAP !== undefined) defines.HAS_MAP = '';
+    return new T.ShaderMaterial({
+      uniforms: { uBase: shown.uniforms.uBase, uMap: shown.uniforms.uMap, uCutoff: { value: mt.alphaMode === 'MASK' ? mt.alphaCutoff : BLEND_SHADOW_CUTOFF } },
+      vertexShader: GARMENT_DEPTH_VS, fragmentShader: GARMENT_DEPTH_FS, defines, side: T.DoubleSide,
+    });
+  }
   private texture(t: { bytes: Uint8Array; mime: string }, srgb: boolean): THREE_NS.Texture {
     // one texture per image content: a hash of every byte (a few sampled bytes match for images of one size)
     const T = this.host.THREE, key = `${srgb}:${t.bytes.byteLength}:${contentHash(t.bytes)}`;
@@ -385,6 +398,7 @@ export class Wardrobe {
     const i = this.host.opaque.indexOf(m.mesh);
     if (i >= 0) this.host.opaque.splice(i, 1);
     m.geo.dispose(); m.materials.forEach((x) => x.dispose());
+    m.depth.forEach((x) => { if (x !== this.host.depth) x.dispose(); });
     this.meshes.delete(ref);
   }
   private clearMeshes() {
