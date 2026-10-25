@@ -43,7 +43,7 @@ import numpy as np
 PRIORITIES = {"body": 1.0, "teeth": 0.5, "mouth": 0.5, "wearable": 1.0}
 REGION_FACTORS = {
     "body": {"face": 9.0, "hands": 4.0},
-    "wearable": {"face": 2.0, "hands": 1.5},
+    "wearable": {"face": 4.0, "hands": 1.5},
 }
 # the share of its triangles that each kind of piece keeps at least: the larger of a fixed
 # share and a multiple of the file's own share (the budget over the triangles), so the body

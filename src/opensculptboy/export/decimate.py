@@ -24,6 +24,7 @@ The mesh is the vertex data of a glTF primitive: vertices split at UV seams and 
   kept vertex (the squared distance times the area that moves), in the rest shape and in each
   of the given morph target shapes, scaled by the removed vertex's importance; feature edges
   add planes along their lines;
+- a connected part of two triangles or fewer (a card, a gem) stays, so no part vanishes;
 - a collapse is refused when it breaks the link condition (it would join two sheets), turns a
   triangle by more than 60 degrees, flips or collapses a UV triangle, or makes a sliver.
 
@@ -55,6 +56,8 @@ LENGTH_WEIGHT = 1e-3
 # each pass takes collapses up to this quantile of the cheapest collapse of every vertex, in
 # rounds of independent sets
 PASS_QUANTILE = 0.5
+# a connected part of this many triangles or fewer stays whole
+MIN_PART = 2
 MIS_ROUNDS = 4
 
 
@@ -388,6 +391,11 @@ def decimate(
             E.hi[E.feature], minlength=W
         )
         vlock = lock_w | nonmanifold | frozen | (nfeat == 1) | (nfeat > 2)
+        # a small part (a fur card, a strap, a gem) keeps its last triangles: the vertices of
+        # a connected part of MIN_PART triangles or fewer stay
+        part = _components(W, E.lo, E.hi)
+        part_size = np.bincount(part[Tw[:, 0]], minlength=W)
+        vlock |= part_size[part] <= MIN_PART
 
         # candidates: each edge in both directions, u -> v
         m = len(E.lo)

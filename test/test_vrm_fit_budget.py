@@ -151,6 +151,20 @@ class TestDecimate(unittest.TestCase):
         np.testing.assert_allclose(P[both, 0], 0.5, atol=1e-12)
         np.testing.assert_array_equal(r.labels, labels[r.origin])
 
+    def test_small_parts_stay(self):
+        """Cards of two triangles (fur, feathers) keep their triangles."""
+        P, T = [], []
+        for k in range(50):
+            o, b = np.array([k * 0.05, 0.0, 0.0]), len(P)
+            P += [o, o + [0.01, 0, 0], o + [0.01, 0.03, 0], o + [0, 0.03, 0]]
+            T += [[b, b + 1, b + 2], [b, b + 2, b + 3]]
+        G, GT = grid(12)
+        P = np.concatenate([np.array(P), G + [0, 1, 0]])
+        T = np.concatenate([np.array(T), GT + 200])
+        r = decimate(P, T, 120)
+        self.assertEqual(int((r.triangles < 200).all(1).sum()), 100)
+        self.assertLess(len(r.triangles), len(T))
+
     def test_shapes_join_the_cost(self):
         P, T = grid(24)
         offset = np.zeros_like(P)
