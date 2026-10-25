@@ -229,58 +229,14 @@ def _visible_rows(piece) -> np.ndarray:
 def ray_partners(origins, directions, vertices, triangles, reach: float = RAY):
     """The partner of each origin on the line along its direction, within ``reach`` on
     either side: the nearest point of the triangles ahead of the origin, else the nearest
-    point behind it: (hit (N,), triangle (N,), barycentric (N, 3)), Moller-Trumbore on the
-    triangles near each origin. With the direction turned away from the body, a point
-    between two walls of a piece (the sole and the upper of a boot, the two sides of a
-    glove) takes the outer wall, so that it counts as under the piece."""
-    from scipy.spatial import cKDTree
+    point behind it: (hit (N,), triangle (N,), barycentric (N, 3))
+    (:func:`opensculptboy.wearables.geometry.line_partners`). With the direction turned
+    away from the body, a point between two walls of a piece (the sole and the upper of a
+    boot, the two sides of a glove) takes the outer wall, so that it counts as under the
+    piece."""
+    from opensculptboy.wearables.geometry import line_partners
 
-    from opensculptboy.wearables.geometry import unit_rows
-
-    origins = np.asarray(origins, dtype=np.float64)
-    directions = unit_rows(np.asarray(directions, dtype=np.float64))
-    count = len(origins)
-    best = np.full(count, np.inf)
-    triangle = np.zeros(count, np.int64)
-    barycentric = np.zeros((count, 3))
-    if not len(triangles) or not count:
-        return np.isfinite(best), triangle, barycentric
-    corners = vertices[triangles]
-    centroids = corners.mean(axis=1)
-    radius = float(np.linalg.norm(corners - centroids[:, None], axis=2).max())
-    near = cKDTree(centroids).query_ball_point(origins, reach + radius)
-    rows = np.repeat(np.arange(count), [len(n) for n in near])
-    if not len(rows):
-        return np.isfinite(best), triangle, barycentric
-    cols = np.concatenate([np.asarray(n, dtype=np.int64) for n in near])
-    for start in range(0, len(rows), 400_000):
-        r, c = rows[start : start + 400_000], cols[start : start + 400_000]
-        a, b, cc = (corners[c, i] for i in range(3))
-        d = directions[r]
-        e1, e2 = b - a, cc - a
-        p = np.cross(d, e2)
-        det = np.einsum("ij,ij->i", e1, p)
-        ok = np.abs(det) > 1e-14
-        inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
-        s = origins[r] - a
-        u = np.einsum("ij,ij->i", s, p) * inv
-        q = np.cross(s, e1)
-        v = np.einsum("ij,ij->i", d, q) * inv
-        along = np.einsum("ij,ij->i", e2, q) * inv
-        # the rank of a hit: the distance ahead of the origin, or the reach plus the
-        # distance behind it, so that every hit ahead ranks before every hit behind
-        t = np.where(along >= 0.0, along, reach - along)
-        good = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (np.abs(along) <= reach)
-        k = np.flatnonzero(good)
-        k = k[np.lexsort((c[k], t[k], r[k]))]  # per origin, the best hit first
-        first = np.ones(len(k), bool)
-        first[1:] = r[k][1:] != r[k][:-1]
-        k = k[first]
-        k = k[t[k] < best[r[k]]]  # nearer than a hit of an earlier chunk
-        best[r[k]] = t[k]
-        triangle[r[k]] = c[k]
-        barycentric[r[k]] = np.stack([1.0 - u[k] - v[k], u[k], v[k]], axis=1)
-    return np.isfinite(best), triangle, barycentric
+    return line_partners(origins, directions, vertices, triangles, reach)[:3]
 
 
 @dataclasses.dataclass
