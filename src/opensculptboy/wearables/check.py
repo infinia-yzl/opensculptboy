@@ -675,8 +675,8 @@ def _meshes(lay, body, body_vertices, piece_vertices):
 def _summary(entry) -> str:
     skin, layers = entry["skin"], entry["layers"]
     return (
-        f"skin {skin['showing']} ({skin['share_percent']:g}%), "
-        f"layers {layers['cutting']} ({layers['share_percent']:g}%)"
+        f"skin {skin['showing']} ({skin['share_percent']:.1f}%), "
+        f"layers {layers['cutting']} ({layers['share_percent']:.1f}%)"
     )
 
 
@@ -684,6 +684,14 @@ def _state_name(entry) -> str:
     if entry["state"] in ("rest", "tpose", "pose"):
         return entry["state"]
     return f"{entry['state']} frame {entry['frame']}"
+
+
+def _sample(points: np.ndarray, most: int = 300) -> np.ndarray:
+    """At most ``most`` of the points, evenly spread over their order, so that the marks of
+    a large fault leave the cloth under them in sight."""
+    if len(points) <= most:
+        return points
+    return points[np.linspace(0, len(points) - 1, most).astype(int)]
 
 
 def review_sheet(report, views, character, tile=(200, 320)) -> bytes:
@@ -698,18 +706,18 @@ def review_sheet(report, views, character, tile=(200, 320)) -> bytes:
         for entry, body_v, piece_v, marks in (rest, worst):
             meshes = _meshes(lay, body, body_v, piece_v)
             markers = [
-                Marker(marks["skin"], SKIN_MARK, 2.5),
-                Marker(marks["layers"], LAYER_MARK, 2.5),
+                Marker(_sample(marks["skin"]), SKIN_MARK, 2.0),
+                Marker(_sample(marks["layers"]), LAYER_MARK, 2.0),
             ]
             for view in ("front", "side", "back"):
                 image = draw(meshes, VIEWS[view], size=tile, markers=markers)
-                tag = "rest" if entry is rest[0] else "worst"
+                tag = "" if entry is rest[0] else "worst: "
                 row.append(
                     labelled(
                         image,
                         [
-                            f"{name} - {_state_name(entry)} - {view}",
-                            f"{tag}: {_summary(entry)}",
+                            f"{name} - {tag}{_state_name(entry)} - {view}",
+                            _summary(entry),
                         ],
                         colour=(160, 20, 20)
                         if entry["skin"]["showing"] or entry["layers"]["cutting"]
@@ -725,7 +733,8 @@ def review_sheet(report, views, character, tile=(200, 320)) -> bytes:
         f"{'PASS' if report['pass'] else 'FAIL'}",
         gates,
         f"red: skin more than {report['tolerance_mm']:g} mm outside its piece; orange: a "
-        f"lower piece more than {report['tolerance_mm']:g} mm outside an upper piece",
+        f"lower piece more than {report['tolerance_mm']:g} mm outside an upper piece "
+        "(at most 300 dots of each)",
         "each row: rest (front, side, back), then the body's worst state (front, side, "
         "back)",
     ]

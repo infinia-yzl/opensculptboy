@@ -250,7 +250,7 @@ opensculptboy wearables check ada.json --bodies card,default --clips walk --fram
 | `quality` | no worn piece has a quality item of error severity |
 | `skin_rest`, `layers_rest` | no vertex counts at rest on any body |
 | `skin_tpose`, `layers_tpose` | at most `--pose-limit` per cent (1 by default) of the covered vertices count in the T-pose of any body |
-| `skin_clips`, `layers_clips` | at most `--pose-limit` per cent count on any sampled frame |
+| `skin_clips`, `layers_clips` | at most `--pose-limit` per cent count on any sampled frame, and in the card's own pose |
 
 The report holds `pass`, `failed` (the names of the failed gates), `gates` (each with `pass`, `limit`, `unit`, `value` and `worst`: the `body`, `state`, `frame`, `count`, `share_percent`, `largest_mm`, `region` and `piece`, where a layer fault names `LOWER through UPPER`; a gate without states is `skipped`), `pieces` (each worn piece with its quality summary as in "Catalogue"), `states` (per body and state: `skin` with `showing`, `covered`, `share_percent`, `largest_mm`, `pieces` and `regions`, and `layers` with `cutting`, `covered`, `share_percent`, `largest_mm`, `pairs` and `regions`), `bodies`, `clips`, `notes` and `sheet`.
 
