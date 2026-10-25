@@ -13,8 +13,8 @@ underwear).
 
 :func:`build_reference_wearables` turns every piece into a wearable package:
 
-1. each clothing vertex finds its closest point on the reference's skin, and that point its
-   closest point on the fitted card's skin, posed and placed as the fit left it on the
+1. each clothing vertex finds its closest point on the reference's skin (every skin part of
+   the handoff), and that point its closest point on the fitted card's skin, posed and placed as the fit left it on the
    reference (the fit's correspondence);
 2. the card's skin weights at those points, smoothed over the piece (so that neighbouring
    vertices blend the same bones and a cloak moves as one sheet), become the piece's own
@@ -266,7 +266,7 @@ class _Replica:
 
 
 class _Skin:
-    """The reference's skin primitives that the cover entries name, as one surface."""
+    """The reference's skin primitives (``(node, primitive)`` keys) as one surface."""
 
     def __init__(self, replica: _Replica, keys):
         self.keys = list(dict.fromkeys(keys))
@@ -307,6 +307,48 @@ def _cover_keys(specs) -> list:
             add(piece.covered)
             for _, covered in piece.covered_groups:
                 add(covered)
+    return keys
+
+
+def _skin_keys(replica: _Replica, appearance: dict, specs) -> list:
+    """The ``(node, primitive)`` of every skin part of the handoff: the triangle primitives
+    whose role (:func:`opensculptboy.fit.handoff.part_role`, as the fit reads them) is skin,
+    without the clothing objects of the equipment."""
+    from opensculptboy.fit.handoff import (
+        _find_entry,
+        _material_entries,
+        _part_entries,
+        part_role,
+    )
+
+    entries = _part_entries(appearance.get("parts"))
+    materials = _material_entries(appearance.get("materials"))
+    clothing = {
+        (obj.node, int(index))
+        for outfit in specs
+        for piece in outfit.pieces
+        for obj in piece.objects
+        for index, _ in obj.primitives
+    }
+    document = replica.rig.document
+    keys = []
+    for name, n in replica.rig.names.items():
+        node = replica.rig.nodes[n]
+        if "mesh" not in node:
+            continue
+        mesh = document["meshes"][node["mesh"]]
+        mesh_name = mesh.get("name") or name
+        entry = _find_entry(entries, name, mesh_name)
+        part = name if name in entries else mesh_name
+        for k, primitive in enumerate(mesh.get("primitives", [])):
+            if (name, k) in clothing or primitive.get("mode", 4) != 4:
+                continue
+            material = None
+            if "material" in primitive:
+                material = document["materials"][primitive["material"]].get("name")
+            role = part_role(part, entry, material, materials.get(material))
+            if role == "skin":
+                keys.append((name, k))
     return keys
 
 
@@ -401,7 +443,15 @@ def build_reference_wearables(
         rest_body.bone_labels,
     )
     replica = _Replica(handoff / "replica.glb")
-    skin = _Skin(replica, _cover_keys(specs))
+    # the clothing matches against every skin part: first the primitives that the cover
+    # entries name, then the other skin parts of the handoff
+    keys = _cover_keys(specs) + _skin_keys(replica, appearance, specs)
+    if not keys:
+        raise ValueError(
+            f"{handoff}: replica.glb has no skin part to match the clothing against "
+            "(see the parts' roles in appearance.json)."
+        )
+    skin = _Skin(replica, keys)
     log(f"skin: {len(skin.keys)} primitives, {skin.triangle_count} triangles")
     # the skin triangle of the reference under each card vertex (for the cover masks)
     under = skin.surface.closest(posed[: len(rest_body.vertices)]).triangle

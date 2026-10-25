@@ -599,10 +599,13 @@ def names_index(glb, name):
     return [n.get("name") for n in glb.json["nodes"]].index(name)
 
 
-def _write_reference(v6: bool):
+def _write_reference(v6: bool, covered: str = "named"):
     """A synthetic reference character: anny's default body posed and placed, as its skin,
     and a shirt (an offset shell of the posed torso, in two groups) and a cloak panel as
     clothing; and the card fitted to it (the same body, with the pose and the placement).
+    ``covered`` is ``"named"`` (the pieces name the covered skin), ``"none"`` (no piece names
+    covered skin) or ``"split"`` (the skin in two parts, a torso part that the cover entries
+    name and a part of the rest, and a band around the left thigh as a third piece).
     Returns (handoff folder, card path, the shirt's posed vertices)."""
     import torch
 
@@ -678,19 +681,31 @@ def _write_reference(v6: bool):
             {"name": name, "mesh": mesh, "extras": {"part": "clothing"}}
         )
 
-    nodes = [
-        node("skin_body", posed, [(0, triangles)], skin_material),
+    torso_tris = keep[triangles].all(1)
+    if covered == "split":
+        nodes = [
+            node("skin_body", posed, [(0, triangles[torso_tris])], skin_material),
+            node("skin_rest", posed, [(0, triangles[~torso_tris])], skin_material),
+        ]
+        covered_tris = np.arange(int(torso_tris.sum())).tolist()
+        band_rows, band_tris = _thigh_band(body, triangles)
+        band = posed[band_rows] + 0.008 * normals[band_rows]
+    else:
+        nodes = [node("skin_body", posed, [(0, triangles)], skin_material)]
+        covered_tris = np.flatnonzero(torso_tris).tolist()
+    nodes += [
         node("shirt", shirt, [(0, shirt_tris[~back]), (5, shirt_tris[back])], cloth),
         node("cloak", cloak, [(0, np.array([[0, 2, 1], [0, 3, 2]]))], cloth),
     ]
+    if covered == "split":
+        nodes.append(node("band", band, [(0, band_tris)], cloth))
     _ = png_bytes
     doc.scene_nodes = nodes
     folder = pathlib.Path(tempfile.mkdtemp())
     handoff = folder / "handoff"
     handoff.mkdir()
     doc.write(handoff / "replica.glb")
-    covered_tris = np.flatnonzero(keep[triangles].all(1)).tolist()
-    covered = {
+    cover = {
         "body": [
             {
                 "mesh": "skin_body",
@@ -719,7 +734,7 @@ def _write_reference(v6: bool):
                             "layer": 50,
                             "objects": [shirt_obj],
                             "hides": [],
-                            "covered": covered,
+                            "covered": cover,
                         },
                         {
                             "piece": "travel.cloak",
@@ -745,13 +760,33 @@ def _write_reference(v6: bool):
         equipment = {
             "objects": [shirt_obj, cloak_obj],
             "hides": [{"by": "cloak C1", "object": "shirt", "mask": "0x20"}],
-            "covered": covered,
+            "covered": cover,
             "source": {"look": "Travel"},
         }
+    if covered == "split":
+        band_obj = {"name": "band", "slot": "legs", "layer": 30, "node": "band"}
+        if v6:
+            band_obj["primitives"] = [{"index": 0, "group": 0}]
+            equipment["outfits"][0]["pieces"].append(
+                {
+                    "piece": "travel.band",
+                    "slot": "legs",
+                    "layer": 30,
+                    "objects": [band_obj],
+                    "hides": [],
+                }
+            )
+        else:
+            band_obj["primitives"] = [0]
+            equipment["objects"].append(band_obj)
+    if covered == "none":
+        _drop_covered(equipment)
     appearance = {
         "format": "test",
         "parts": {
             "skin_body": {"role": "skin"},
+            "skin_rest": {"role": "skin"},
+            "band": {"role": "clothing"},
             "shirt": {"role": "clothing"},
             "cloak": {"role": "clothing"},
         },
@@ -765,6 +800,29 @@ def _write_reference(v6: bool):
     card_path.parent.mkdir()
     card_path.write_text(json.dumps(card.to_dict()))
     return handoff, card_path, shirt
+
+
+def _thigh_band(body, triangles):
+    """The rows and triangles (renumbered) of a band of the skin around the left thigh."""
+    v = body.vertices
+    low, h = float(v[:, 2].min()), float(np.ptp(v[:, 2]))
+    keep = (v[:, 2] > low + 0.33 * h) & (v[:, 2] < low + 0.40 * h) & (v[:, 0] > 0.02)
+    tris = triangles[keep[triangles].all(1)]
+    rows = np.unique(tris)
+    remap = np.full(len(v), -1)
+    remap[rows] = np.arange(len(rows))
+    return rows, remap[tris]
+
+
+def _drop_covered(value):
+    """Remove every ``covered`` field of an equipment section, in place."""
+    if isinstance(value, dict):
+        value.pop("covered", None)
+        for item in value.values():
+            _drop_covered(item)
+    elif isinstance(value, list):
+        for item in value:
+            _drop_covered(item)
 
 
 class TestReferenceWearables(unittest.TestCase):
@@ -813,6 +871,40 @@ class TestReferenceWearables(unittest.TestCase):
                 glb = GLB(path)
                 self.assertEqual(structure_errors(glb), [])
                 self.assertTrue(PRIVATE_MARK.search(path.read_bytes()))
+
+    def test_skin_without_cover_entries(self):
+        """A handoff whose pieces name no covered skin builds, and the clothing matches
+        against every skin part of the handoff: a thigh band binds to the thigh although
+        the cover entries name only the torso part."""
+        from opensculptboy.wearables.reference import build_reference_wearables
+
+        body = template_body()
+        v = body.vertices
+        low, h = float(v[:, 2].min()), float(np.ptp(v[:, 2]))
+        for v6, covered in ((False, "none"), (True, "split")):
+            with self.subTest(v6=v6, covered=covered):
+                handoff, card_path, _ = _write_reference(v6, covered)
+                out = handoff.parent / "dressed"
+                report = build_reference_wearables(
+                    handoff, card_path, out, log=lambda m: None
+                )
+                pieces = {p["piece"]: p for p in report["outfits"][0]["pieces"]}
+                self.assertLess(pieces["shirt"]["round_trip_mm_max"], 0.01)
+                self.assertLess(pieces["shirt"]["skin_to_card_mm_p95"], 0.01)
+                card = Character.from_dict(
+                    json.loads((out / "card.json").read_text(encoding="utf-8"))
+                )
+                by_ref = {p.ref: p for p in worn_pieces(card, out)}
+                if covered == "none":
+                    self.assertIsNone(by_ref["travel/shirt"].wearable.covers)
+                    continue
+                self.assertGreater(
+                    int(by_ref["travel/shirt"].wearable.covers.sum()), 300
+                )
+                self.assertLess(pieces["band"]["gear_to_skin_mm_p95"], 9.0)
+                corners = by_ref["travel/band"].wearable.binding.corners
+                z = v[corners.ravel(), 2]
+                self.assertLess(float(z.max()), low + 0.45 * h)
 
 
 if __name__ == "__main__":
