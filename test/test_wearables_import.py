@@ -86,6 +86,9 @@ ASSET_KEYS = {
     "delete_verts",
     "description",
     "makeclothes",
+    "with_normal_map",
+    "bump",
+    "material_lines",
 }
 
 
@@ -706,6 +709,176 @@ class TestMaterial(unittest.TestCase):
         items = [i for i in quality.items if i.code == "deprecated_key"]
         self.assertEqual(len(items), 1)
         self.assertIn("diffuseIntensity and specularIntensity", items[0].message)
+
+
+class TestBumpMaps(unittest.TestCase):
+    """A MakeHuman bump map (a height map) becomes a tangent-space normal map in the OpenGL
+    convention when the material has no normal map; every texture key of a .mhmat file is
+    mapped or reported."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def items(self, report, code):
+        return [i for i in report["quality"]["items"] if i["code"] == code]
+
+    def test_ramps_tilt_the_normal_away_from_the_rise(self):
+        """Heights that rise to the right give a normal that leans left (red below 128);
+        heights that rise up the image give one that leans down (green below 128), as the
+        OpenGL convention of glTF reads it."""
+        from PIL import Image
+
+        from opensculptboy.wearables.mhclo import bump_to_normal
+
+        size = 32
+        for axis, channel in ((1, 0), (0, 1)):
+            ramp = np.linspace(0, 1, size)
+            if axis == 0:
+                ramp = ramp[::-1]  # rows run down: rising up the image
+            grey = np.broadcast_to(ramp if axis == 1 else ramp[:, None], (size, size))
+            out = io.BytesIO()
+            Image.fromarray((grey * 255).astype(np.uint8), "L").save(out, format="PNG")
+            with self.subTest(axis=axis):
+                rgb = np.asarray(
+                    Image.open(io.BytesIO(bump_to_normal(out.getvalue(), 2.0)))
+                )
+                inner = rgb[4:-4, 4:-4].astype(float)
+                self.assertLess(inner[..., channel].max(), 128)
+                self.assertTrue(np.allclose(inner[..., 1 - channel], 128, atol=1))
+                self.assertGreater(inner[..., 2].min(), 200)
+                slope = 2.0 / (size - 1)  # the strength times the rise per texel
+                expected = 127.5 - 127.5 * slope / np.sqrt(1 + slope**2)
+                self.assertAlmostEqual(
+                    float(np.median(inner[..., channel])), expected, delta=1.5
+                )
+
+    def test_bump_only_material(self):
+        from PIL import Image
+
+        from opensculptboy.wearables.mhclo import DEFAULT_BUMP_STRENGTH
+        from opensculptboy.wearables.quality import green_convention
+
+        for key in ("bumpTexture", "bumpmapTexture"):
+            with self.subTest(key=key):
+                (wearable, report), _ = imported(
+                    self.folder, f"bump_{key}", with_normal_map=False, bump=key
+                )
+                [item] = self.items(report, "bump_converted")
+                self.assertTrue(item["fixed"])
+                self.assertEqual(item["slot"], key)
+                self.assertEqual(item["value"], DEFAULT_BUMP_STRENGTH)
+                self.assertEqual(self.items(report, "map_dropped"), [])
+                normal = wearable.garment.materials[0].textures["normal"]
+                self.assertGreater(
+                    green_convention(Image.open(io.BytesIO(normal))), 0.5
+                )
+                self.assertNotIn("normal_green_flipped", codes(report))
+                self.assertEqual(
+                    wearable.extras["mhclo"]["bump_strength"], item["value"]
+                )
+        # the strength and MakeHuman's bumpmapIntensity scale the relief
+        (strong, report), _ = imported(
+            self.folder,
+            "bump_strong",
+            with_normal_map=False,
+            bump="bumpTexture",
+            material_lines=["bumpmapIntensity 0.5"],
+            bump_strength=6.0,
+        )
+        self.assertEqual(self.items(report, "bump_converted")[0]["value"], 3.0)
+        tilt = [
+            np.abs(
+                np.asarray(
+                    Image.open(io.BytesIO(w.garment.materials[0].textures["normal"]))
+                )[..., :2].astype(float)
+                - 127.5
+            ).mean()
+            for w in (wearable, strong)
+        ]
+        self.assertGreater(tilt[1], tilt[0] * 1.2)
+        # --normal-green flip acts on the file's normal maps only
+        (flipped, report), _ = imported(
+            self.folder,
+            "bump_flip",
+            with_normal_map=False,
+            bump="bumpTexture",
+            normal_green="flip",
+        )
+        self.assertNotIn("normal_green_flipped", codes(report))
+        path = write_asset(
+            self.folder, "bump_cli", with_normal_map=False, bump="bumpTexture"
+        )
+        status, result, _ = run(
+            [
+                "wearables",
+                "import-mhclo",
+                str(path),
+                "--dry-run",
+                "--bump-strength",
+                "3",
+            ]
+        )
+        self.assertEqual(status, 0, result)
+        self.assertEqual(self.items(result, "bump_converted")[0]["value"], 3.0)
+        status, result, _ = run(
+            [
+                "wearables",
+                "import-mhclo",
+                str(path),
+                "--dry-run",
+                "--bump-strength",
+                "0",
+            ]
+        )
+        self.assertEqual((status, result["error"]["code"]), (1, "bad_option"))
+
+    def test_normal_map_and_bump_map(self):
+        """A material with a normal map keeps it, and its bump map is reported dropped, as
+        MakeHuman draws the normal map alone."""
+        (wearable, report), path = imported(self.folder, "both", bump="bumpTexture")
+        file_map = (path.parent / "both_normal.png").read_bytes()
+        self.assertEqual(wearable.garment.materials[0].textures["normal"], file_map)
+        self.assertNotIn("bump_converted", codes(report))
+        [item] = self.items(report, "map_dropped")
+        self.assertEqual(item["slot"], "bumpTexture")
+        self.assertIn("normal map", item["message"])
+
+    def test_every_texture_key_is_mapped_or_reported(self):
+        lines = [
+            "specularmapTexture both_spec.png",
+            "displacementmapTexture both_disp.png",
+            "litsphereTexture litspheres/skinmat_african.png",
+            "someFutureTexture other.png",
+        ]
+        (_, report), _ = imported(self.folder, "keys", material_lines=lines)
+        dropped = {i["slot"] for i in self.items(report, "map_dropped")}
+        self.assertEqual(
+            dropped,
+            {
+                "specularmapTexture",
+                "displacementmapTexture",
+                "litsphereTexture",
+                "someFutureTexture",
+            },
+        )
+        # a bump map that MakeHuman leaves off (shaderConfig bump false) is dropped
+        (_, report), _ = imported(
+            self.folder,
+            "bump_off",
+            with_normal_map=False,
+            bump="bumpTexture",
+            material_lines=["shaderConfig bump false"],
+        )
+        self.assertNotIn("bump_converted", codes(report))
+        self.assertEqual(
+            [i["slot"] for i in self.items(report, "map_dropped")], ["bumpTexture"]
+        )
 
 
 class TestQuality(unittest.TestCase):

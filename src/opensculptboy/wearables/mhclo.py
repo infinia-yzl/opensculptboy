@@ -752,13 +752,60 @@ def _find_texture(folder: pathlib.Path, value: str) -> pathlib.Path:
     return folder / path
 
 
+# The relief of a converted bump map: a texel one step from black to white rises this many
+# texel widths (before MakeHuman's bumpmapIntensity).
+DEFAULT_BUMP_STRENGTH = 2.0
+# The texture keys of a .mhmat file that become glTF slots; every other key that ends in
+# "Texture" is reported dropped. MakeHuman 1.x reads bumpmapTexture; packs write bumpTexture.
+TEXTURE_KEYS = {
+    "diffuseTexture": "base_color",
+    "normalmapTexture": "normal",
+    "aomapTexture": "occlusion",
+}
+BUMP_KEYS = ("bumpmapTexture", "bumpTexture")
+_DROPPED_WHY = {
+    "specularmapTexture": "the specular map",
+    "displacementmapTexture": "the displacement map",
+    "litsphereTexture": "the litsphere texture (MakeHuman's own shading)",
+}
+
+
+def bump_to_normal(data: bytes, strength: float = DEFAULT_BUMP_STRENGTH) -> bytes:
+    """
+    A tangent-space normal map (PNG, RGB) from a height map (grey; white is high): the
+    normal of the surface ``z = strength * h(x, y)`` in texel units, with ``h`` in [0, 1]
+    and the central differences wrapped at the borders (textures tile). The map follows
+    the OpenGL convention of glTF and MakeHuman: red points right (+u) and green up the
+    image (+v), so a rise to the right gives red below 128.
+    """
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(data))
+    if image.mode in ("I", "I;16", "I;16B", "I;16L", "F"):
+        h = np.asarray(image, dtype=np.float64)
+        top = 65535.0 if image.mode != "F" else max(float(h.max()), 1.0)
+        h = h / top
+    else:
+        h = np.asarray(image.convert("L"), dtype=np.float64) / 255.0
+    dx = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) / 2.0
+    d_up = (np.roll(h, 1, axis=0) - np.roll(h, -1, axis=0)) / 2.0  # rows run down
+    n = np.stack([-strength * dx, -strength * d_up, np.ones_like(h)], axis=-1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    rgb = np.clip(np.floor((n * 0.5 + 0.5) * 255.0 + 0.5), 0, 255).astype(np.uint8)
+    out = io.BytesIO()
+    Image.fromarray(rgb, "RGB").save(out, format="PNG")
+    return out.getvalue()
+
+
 ROUGHNESS_FORMULA = (
     "roughnessFactor = clamp(1 - shininess, 0.04, 1), and 1 when specularColor is 0; a "
     "'roughness' key of the .mhmat file wins"
 )
 
 
-def read_mhmat(path, fallback_name: str, quality) -> Material:
+def read_mhmat(
+    path, fallback_name: str, quality, bump_strength: float = DEFAULT_BUMP_STRENGTH
+) -> Material:
     """
     A glTF PBR material from a ``.mhmat`` file, with the mapping in ``quality``:
     ``diffuseColor`` (sRGB, made linear) and ``diffuseTexture`` give the base colour,
@@ -768,8 +815,13 @@ def read_mhmat(path, fallback_name: str, quality) -> Material:
     gives BLEND, or MASK (cutoff 0.5) with ``alphaToCoverage`` or for an alpha map on an
     opaque material; ``backfaceCull false`` gives a double-sided material;
     ``normalmapTexture`` with ``normalmapIntensity`` the normal map, ``aomapTexture`` the
-    occlusion and ``emissiveColor`` the emission. Specular, bump and displacement maps have
-    no glTF PBR slot and are dropped with an item each. MakeHuman's material reader
+    occlusion and ``emissiveColor`` the emission. A bump map (``bumpmapTexture``, or
+    ``bumpTexture`` as the packs write it) becomes the normal map (:func:`bump_to_normal`,
+    ``bump_strength`` times ``bumpmapIntensity``) when the material has no normal map and
+    ``shaderConfig bump`` is not false, as MakeHuman draws it; else it is dropped. Every
+    other texture key (specular, displacement and litsphere maps and any key that ends in
+    ``Texture``) has no glTF PBR slot and is dropped. Each dropped map has an item
+    (``map_dropped``). MakeHuman's material reader
     (``shared/material.py``) ignores ``diffuseIntensity`` and ``specularIntensity`` as
     deprecated keys and draws the colours as they are; the import does the same and reports
     the keys with an item.
@@ -787,9 +839,13 @@ def read_mhmat(path, fallback_name: str, quality) -> Material:
         return Material(fallback_name)
     folder = path.parent
     values: dict[str, str] = {}
+    shader_config: dict[str, bool] = {}
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         words = line.split()
         if not words or words[0].startswith("#") or words[0].startswith("//"):
+            continue
+        if words[0] == "shaderConfig" and len(words) >= 3:
+            shader_config[words[1]] = words[2].lower() in ("true", "1", "yes")
             continue
         values[words[0]] = " ".join(words[1:])
 
@@ -859,15 +915,61 @@ def read_mhmat(path, fallback_name: str, quality) -> Material:
     if transparent:
         material.alpha_mode = "MASK" if flag("alphaToCoverage") else "BLEND"
     textures = {}
-    for key, slot in (
-        ("diffuseTexture", "base_color"),
-        ("normalmapTexture", "normal"),
-        ("aomapTexture", "occlusion"),
-    ):
+    for key, slot in TEXTURE_KEYS.items():
         if values.get(key):
             data = _image(_find_texture(folder, values[key]), quality, name, slot)
             if data is not None:
                 textures[slot] = data
+    dropped: list[tuple[str, str]] = []  # (key, why)
+    for key in BUMP_KEYS:
+        if not values.get(key):
+            continue
+        file = pathlib.Path(values[key]).name
+        if values.get("normalmapTexture"):
+            dropped.append(
+                (
+                    key,
+                    f"the bump map ({file}) beside a normal map, which MakeHuman draws "
+                    "alone; dropped",
+                )
+            )
+        elif shader_config.get("bump") is False:
+            dropped.append(
+                (
+                    key,
+                    f"the bump map ({file}) is off (shaderConfig bump false); dropped",
+                )
+            )
+        elif "normal" in textures:
+            dropped.append((key, f"a second bump map ({file}); dropped"))
+        else:
+            data = _image(_find_texture(folder, values[key]), quality, name, "bump")
+            if data is None:
+                continue
+            intensity = float(np.clip(number("bumpmapIntensity", 1.0), 0.0, 1.0))
+            strength = round(float(bump_strength) * intensity, 6)
+            try:
+                textures["normal"] = bump_to_normal(data, strength)
+            except Exception:  # noqa: BLE001 - an unreadable map is reported, never raised
+                quality.add(
+                    "texture_unreadable",
+                    "warning",
+                    f"{name}: the bump map {file} is not a readable image; left out",
+                    "Save the bump map as a grey PNG.",
+                    material=name,
+                    slot=key,
+                )
+                continue
+            quality.fix(
+                "bump_converted",
+                f"{name}: the bump map {file} (a height map) became a tangent-space normal "
+                f"map, OpenGL convention, strength {strength:g} (a step from black to "
+                "white rises that many texels)",
+                "Pass --bump-strength to change the relief.",
+                material=name,
+                slot=key,
+                value=strength,
+            )
     if values.get("transparencymapTexture"):
         mask = _image(
             _find_texture(folder, values["transparencymapTexture"]),
@@ -906,21 +1008,23 @@ def read_mhmat(path, fallback_name: str, quality) -> Material:
         )
     if "normal" in textures:
         material.normal_scale = number("normalmapIntensity", 1.0)
-    for key, what in (
-        ("specularmapTexture", "specular map"),
-        ("bumpmapTexture", "bump map"),
-        ("displacementmapTexture", "displacement map"),
-    ):
-        if values.get(key):
-            quality.add(
-                "map_dropped",
-                "info",
-                f"{name}: the {what} ({pathlib.Path(values[key]).name}) has no glTF PBR "
-                "slot; dropped",
-                "Bake it into the normal map or a metallic-roughness map.",
-                material=name,
-                slot=key,
-            )
+    used = {*TEXTURE_KEYS, *BUMP_KEYS, "transparencymapTexture"}
+    for key, value in values.items():
+        if key in used or not key.lower().endswith("texture") or not value:
+            continue
+        what = _DROPPED_WHY.get(key, f"the {key} map")
+        dropped.append(
+            (key, f"{what} ({pathlib.Path(value).name}) has no glTF PBR slot; dropped")
+        )
+    for key, why in dropped:
+        quality.add(
+            "map_dropped",
+            "info",
+            f"{name}: {why}",
+            "Bake it into the normal map or a metallic-roughness map.",
+            material=name,
+            slot=key,
+        )
     material.textures = textures
     return material
 
@@ -1081,6 +1185,7 @@ def import_mhclo(
     normal_green: str = "auto",
     accept_quality: bool = False,
     pack_json=None,
+    bump_strength: float | None = None,
 ) -> tuple[object, dict]:
     """
     A wearable package from a MakeHuman clothes asset, bound to ``body`` (the
@@ -1092,6 +1197,7 @@ def import_mhclo(
     one (:func:`find_pack_entry`). The pack entry gives the description (``description``
     replaces it), the author, the source URL, the original author and source, the category
     as tags and the pack's licence, recorded apart from the file's (``licence.pack``).
+    ``bump_strength`` sets the relief of a converted bump map (:data:`DEFAULT_BUMP_STRENGTH`).
     The garment goes through :func:`opensculptboy.wearables.quality.check_garment`
     (``texture_limit``, ``normal_green``); an error-severity item raises
     :class:`~opensculptboy.wearables.quality.QualityError` unless ``accept_quality``.
@@ -1214,7 +1320,18 @@ def import_mhclo(
             "binding_mismatch",
             "Export the mesh again.",
         )
-    material = read_mhmat(asset.material, name, quality)
+    if bump_strength is None:
+        bump_strength = DEFAULT_BUMP_STRENGTH
+    if not np.isfinite(bump_strength) or bump_strength <= 0:
+        raise MhcloError(
+            f"The bump strength must be above 0; got {bump_strength}.",
+            "bad_option",
+            "Pass --bump-strength with a number above 0, for example 2.",
+        )
+    material = read_mhmat(asset.material, name, quality, bump_strength)
+    converted = [i for i in quality.items if i.code == "bump_converted"]
+    if converted and normal_green == "flip":
+        normal_green = "auto"  # the converted map is OpenGL; flip acts on a file's map
     # the binding on the binding body, in MakeHuman's frame
     needed = referenced(asset)
     to_mh = np.linalg.inv(MH_TO_ANNY)
@@ -1312,6 +1429,7 @@ def import_mhclo(
                 "uuid": asset.uuid,
                 "declared_licence": asset.licence,
                 "z_depth": asset.z_depth,
+                **({"bump_strength": converted[0].value} if converted else {}),
                 **(
                     {"pack": {"file": pack.file.name, "item": pack.item}}
                     if pack is not None

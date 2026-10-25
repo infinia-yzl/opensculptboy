@@ -959,6 +959,7 @@ def _import_report(args) -> dict:
         normal_green=args.normal_green,
         accept_quality=args.accept_quality,
         pack_json=args.pack_json,
+        bump_strength=args.bump_strength,
     )
     if args.dry_run:  # the checks and the binding, without the files
         return {
@@ -1582,7 +1583,16 @@ def main(argv=None) -> int:
         help="the asset pack's JSON file (packs/<pack>.json) with the item's metadata "
         "(default: found above the .mhclo, in the folder that holds clothes/ and packs/)",
     )
-    from opensculptboy.wearables.mhclo import IMPORT_COVERS
+    from opensculptboy.wearables.mhclo import DEFAULT_BUMP_STRENGTH, IMPORT_COVERS
+
+    wi.add_argument(
+        "--bump-strength",
+        type=float,
+        metavar="TEXELS",
+        help="the relief of a bump map converted to a normal map: a step from black to "
+        f"white rises this many texels (default {DEFAULT_BUMP_STRENGTH:g}, times the "
+        "material's bumpmapIntensity)",
+    )
 
     wi.add_argument(
         "--covers",

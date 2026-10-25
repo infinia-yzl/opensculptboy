@@ -59,6 +59,18 @@ def normal_map(size=128, directx=False) -> bytes:
     return out.getvalue()
 
 
+def height_map(size=128) -> bytes:
+    """A grey height map of round bumps (white is high), as MakeHuman's bump maps."""
+    from PIL import Image
+
+    y, x = np.mgrid[0:size, 0:size] / size
+    height = 0.5 + 0.25 * np.sin(6 * np.pi * x) * np.sin(4 * np.pi * y)
+    grey = np.clip(height * 255 + 0.5, 0, 255).astype(np.uint8)
+    out = io.BytesIO()
+    Image.fromarray(grey, "L").save(out, format="PNG")
+    return out.getvalue()
+
+
 def template_skin():
     """Anny's template skin (base.obj in Anny's frame) and the base-mesh index of each row."""
     model = template_model()
@@ -102,6 +114,9 @@ def write_asset(
     delete_verts=True,
     description="A synthetic shirt for the tests",
     makeclothes=False,
+    with_normal_map=True,
+    bump=None,
+    material_lines=(),
 ) -> pathlib.Path:
     """Write ``name.mhclo``, ``name.obj``, ``name.mhmat`` and textures into ``folder`` and
     return the ``.mhclo`` path. ``helper`` writes the helper-tights patch instead of the
@@ -175,8 +190,15 @@ def write_asset(
             if missing_texture
             else f"diffuseTexture {name}_diffuse.png"
         )
-        (folder / f"{name}_normal.png").write_bytes(normal_map(128, directx))
-        mat.append(f"normalmapTexture {name}_normal.png")
+        if with_normal_map:
+            (folder / f"{name}_normal.png").write_bytes(normal_map(128, directx))
+            mat += [f"normalmapTexture {name}_normal.png", "shaderConfig normal true"]
+    if (
+        bump
+    ):  # the key of the bump map: bumpTexture as the real packs, or bumpmapTexture
+        (folder / f"{name}-bump.png").write_bytes(height_map(128))
+        mat += [f"{bump} {name}-bump.png", "shaderConfig bump true"]
+    mat += list(material_lines)
     if alpha_map_opaque:
         (folder / f"{name}_alpha.png").write_bytes(png(64, "L", 128))
         mat.append(f"transparencymapTexture {name}_alpha.png")
