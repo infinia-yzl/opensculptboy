@@ -98,7 +98,8 @@ def draw(
     triangles = np.concatenate(
         [np.asarray(m.triangles, np.int64) + s for m, s in zip(meshes, starts)]
     )
-    colours = np.concatenate([m.triangle_colours() for m in meshes])
+    # a floor under the colours, so that the light still shows the shape of black cloth
+    colours = 24.0 + 0.9 * np.concatenate([m.triangle_colours() for m in meshes])
     points = vertices if frame_points is None else np.asarray(frame_points)
     s, ox, oy = _frame(points, view, size, margin)
     xy, depth = view.project(vertices)

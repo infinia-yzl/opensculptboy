@@ -11,10 +11,16 @@ rest, in the T-pose of the VRM export and on sampled frames of the built-in clip
 
 - **skin through**: a body vertex under a piece's cover mask (taken on that body at rest,
   :func:`opensculptboy.wearables.cover.piece_cover`) that lies more than the tolerance (2 mm)
-  outside every piece that covers it and within 5 cm of one of them;
+  outside every piece that covers it;
 - **layers through**: a vertex of a lower piece that an upper piece covers (the line along
   its normal meets the upper piece within 3 cm on either side, on that body at rest) and that
-  lies more than the tolerance outside the upper piece, within 5 cm of it.
+  lies more than the tolerance outside the upper piece.
+
+"Outside" is measured from the vertex's partner on the piece: its closest point at rest
+(within 5 cm; a vertex further away takes no part), carried into each pose by the piece's
+own triangle and barycentric coordinates, along the piece's normal there. A partner keeps
+each vertex to the part of the piece above it, so that an arm against the torso is measured
+against its sleeve and never against the side of the shirt.
 
 The body and the pieces move by linear blend skinning with one set of bone transforms: the
 body with its own skin weights, the pieces with the weights of the dressing; in the T-pose
@@ -213,39 +219,75 @@ def _visible_rows(piece) -> np.ndarray:
     return np.unique(piece.visible_triangles())
 
 
-def _surface(vertices, piece):
-    from opensculptboy.wearables.geometry import Surface
+@dataclasses.dataclass
+class Partners:
+    """Points of a set of ``rows`` (body or lower-piece vertices) and their partners on a
+    piece: the closest point of the piece's visible triangles at rest (``triangle``, an index
+    into those triangles, and ``barycentric``), which each pose carries along."""
 
-    return Surface(vertices, piece.visible_triangles())
+    rows: np.ndarray
+    triangle: np.ndarray
+    barycentric: np.ndarray
+
+    @classmethod
+    def at_rest(cls, points, rows, piece):
+        from opensculptboy.wearables.geometry import Surface
+
+        tris = piece.visible_triangles()
+        if not len(rows) or not len(tris):
+            return cls(np.zeros(0, np.int64), np.zeros(0, np.int64), np.zeros((0, 3)))
+        found = Surface(piece.vertices, tris).closest(points[rows])
+        near = found.distance < NEAR
+        return cls(rows[near], found.triangle[near], found.barycentric[near])
+
+    def signed(self, points, piece, piece_vertices) -> np.ndarray:
+        """The signed distance of each point (``points[rows]``) from its partner, along the
+        piece's normal there, with the piece at ``piece_vertices``."""
+        from opensculptboy.wearables.geometry import (
+            interpolate,
+            unit_rows,
+            vertex_normals,
+        )
+
+        tris = piece.visible_triangles()
+        corners = tris[self.triangle]
+        foot = interpolate(piece_vertices, corners, self.barycentric)
+        normals = vertex_normals(piece_vertices, tris)
+        n = unit_rows(interpolate(normals, corners, self.barycentric))
+        return np.einsum("ij,ij->i", points[self.rows] - foot, n)
 
 
 @dataclasses.dataclass
 class Layout:
-    """What one body's measures need from the rest: the shown pieces, the cover masks, the
-    covered vertices of each pair of layers, and the regions."""
+    """What one body's measures need from the rest: the shown pieces, the covered body
+    vertices of each piece with their partners, the covered vertices of each pair of
+    layers with theirs, and the regions."""
 
     body: object
     pieces: list
-    masks: list  # (N,) bool per piece
-    pairs: list  # (upper index, lower index, rows of the lower piece)
+    covers: list  # Partners of the body vertices under each piece
+    pairs: list  # (upper index, lower index, Partners of the lower piece's vertices)
     body_regions: np.ndarray
     piece_regions: list
 
     @property
     def covered(self) -> np.ndarray:
         mask = np.zeros(len(self.body.vertices), bool)
-        for m in self.masks:
-            mask |= m
+        for partners in self.covers:
+            mask[partners.rows] = True
         return mask
 
 
 def layout(body, dressed) -> Layout:
-    """The masks and pairs of a dressed body at rest (see the module documentation)."""
+    """The covers and pairs of a dressed body at rest (see the module documentation)."""
     from opensculptboy.wearables.cover import piece_cover
     from opensculptboy.wearables.geometry import ray_hits, vertex_normals
 
     pieces = [p for p in dressed if p.shown]
-    masks = [piece_cover(body, p) for p in pieces]
+    covers = [
+        Partners.at_rest(body.vertices, np.flatnonzero(piece_cover(body, p)), p)
+        for p in pieces
+    ]
     pairs = []
     for u, upper in enumerate(pieces):
         tris = upper.visible_triangles()
@@ -262,11 +304,11 @@ def layout(body, dressed) -> Layout:
             hit = ray_hits(origins, normals, upper.vertices, tris, RAY)
             hit |= ray_hits(origins, -normals, upper.vertices, tris, RAY)
             if hit.any():
-                pairs.append((u, k, rows[hit]))
+                pairs.append((u, k, Partners.at_rest(lower.vertices, rows[hit], upper)))
     return Layout(
         body,
         pieces,
-        masks,
+        covers,
         pairs,
         _regions(body.weights, body.indices, body.bone_labels),
         [_regions(p.weights, p.joints, body.bone_labels) for p in pieces],
@@ -287,15 +329,13 @@ def measure(lay: Layout, body_vertices, piece_vertices, tolerance=TOLERANCE):
     holds = np.zeros(len(body_vertices), bool)
     largest = np.zeros(len(body_vertices))
     per_piece = {}
-    surfaces = [_surface(v, p) for v, p in zip(piece_vertices, lay.pieces)]
-    for piece, surface, mask in zip(lay.pieces, surfaces, lay.masks):
-        rows = np.flatnonzero(mask)
-        if not len(rows) or not len(surface.triangles):
+    for piece, vertices, partners in zip(lay.pieces, piece_vertices, lay.covers):
+        rows = partners.rows
+        if not len(rows):
             continue
-        signed, found, _ = surface.signed_distance(body_vertices[rows])
-        near = found.distance < NEAR
-        outside = near & (signed > tolerance)
-        holds[rows[near & ~outside]] = True
+        signed = partners.signed(body_vertices, piece, vertices)
+        outside = signed > tolerance
+        holds[rows[~outside]] = True
         showing[rows[outside]] = True
         largest[rows[outside]] = np.maximum(largest[rows[outside]], signed[outside])
         if outside.any():
@@ -313,10 +353,11 @@ def measure(lay: Layout, body_vertices, piece_vertices, tolerance=TOLERANCE):
     cut_points, cut_regions, per_pair = [], [], {}
     cutting = covered_pairs = 0
     worst_mm = 0.0
-    for u, k, rows in lay.pairs:
+    for u, k, partners in lay.pairs:
         upper, lower = lay.pieces[u], lay.pieces[k]
-        signed, found, _ = surfaces[u].signed_distance(piece_vertices[k][rows])
-        bad = (found.distance < NEAR) & (signed > tolerance)
+        rows = partners.rows
+        signed = partners.signed(piece_vertices[k], upper, piece_vertices[u])
+        bad = signed > tolerance
         covered_pairs += len(rows)
         if bad.any():
             cutting += int(bad.sum())
