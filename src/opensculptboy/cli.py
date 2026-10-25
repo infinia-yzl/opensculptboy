@@ -22,12 +22,18 @@ The ``opensculptboy`` command.
     opensculptboy wearables reference handoff/ --card me.json --out dressed/   # reference wear
     opensculptboy wearables bind tunic.glb --out wear/tunic --slot torso --licence CC0-1.0 \
         --design-source "my own design"              # a garment modelled on the default body
+    opensculptboy wearables import-mhclo shirt.mhclo --out wear/shirt   # MakeHuman clothes
+    opensculptboy wearables add me.json wear/shirt.wearable.json --outfit casual --activate
+    opensculptboy wearables remove me.json casual/shirt --dry-run
+    opensculptboy wearables outfit me.json --activate casual
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import pathlib
 import sys
 import warnings
@@ -211,7 +217,7 @@ def _export(args, parser) -> int:
         if dressing is None:
             raise
         parser.error(_one_line(error))
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -276,7 +282,7 @@ def _export_vrm(args, parser) -> int:
             parser.error(message)
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -382,7 +388,7 @@ def _export_tier(args, parser) -> int:
             parser.error(message)
         print(f"opensculptboy export: {message}", file=sys.stderr)
         return code
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -403,7 +409,7 @@ def _bake_tiers(args, parser) -> int:
         )
     except (OSError, ValueError) as error:
         parser.error(_one_line(error))
-    print(json.dumps(report, indent=2))
+    _result(report)
     return 0
 
 
@@ -414,7 +420,7 @@ def _portraits(args, parser) -> int:
     written = write_portraits(
         args.out, character, args.size, detail_dir=_detail_dir(args.character)
     )
-    print(json.dumps(written, indent=2))
+    _result(written)
     return 0
 
 
@@ -439,7 +445,7 @@ def _pose(args) -> int:
     if args.card:
         text = json.dumps(character.to_dict(), indent=2)
         if args.card == "-":
-            print(text)
+            _result(text)
         else:
             pathlib.Path(args.card).write_text(text + "\n", encoding="utf-8")
             written.append(args.card)
@@ -536,7 +542,7 @@ def _fit(args, parser) -> int:
     }
     if textures:
         summary["textures"] = textures
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -673,12 +679,7 @@ def _bake(args, parser) -> int:
     if "mouth" in (character.material or {}):
         _write_mouth_poses(out, handoff)
     _write_eye_poses(out, handoff)
-    print(
-        json.dumps(
-            {"card": str(out), "covered": round(baked.covered_share, 4), **textures},
-            indent=2,
-        )
-    )
+    _result({"card": str(out), "covered": round(baked.covered_share, 4), **textures})
     return 0
 
 
@@ -692,7 +693,7 @@ def _convert(args, parser) -> int:
         summary = convert_card(args.card, out, args.to, body=not args.default_body)
     except (OSError, ValueError, KeyError) as error:
         parser.error(f"{args.card}: {_one_line(error)}")
-    print(json.dumps(summary, indent=2))
+    _result(summary)
     return 0
 
 
@@ -728,10 +729,14 @@ def _wearables(args, parser) -> int:
                 for p in pieces
             ],
         }
-        print(json.dumps(listing, indent=2))
+        _result(listing)
         return 0
     if args.wearables_command == "bind":
         return _wearables_bind(args, parser)
+    if args.wearables_command == "import-mhclo":
+        return _wearables_import(args)
+    if args.wearables_command in ("add", "remove", "outfit"):
+        return _wearables_card(args)
     from opensculptboy.wearables.format import ProvenanceError
     from opensculptboy.wearables.reference import build_reference_wearables
 
@@ -746,7 +751,7 @@ def _wearables(args, parser) -> int:
         )
     except (OSError, ValueError, ProvenanceError) as error:
         parser.error(_one_line(error))
-    print(json.dumps(report, indent=2))
+    _result(report)
     return 0
 
 
@@ -755,7 +760,6 @@ def _wearables_bind(args, parser) -> int:
 
     from opensculptboy.wearables.fit import card_body
     from opensculptboy.wearables.format import (
-        PUBLIC,
         ProvenanceError,
         check_destination,
         package_paths,
@@ -771,21 +775,6 @@ def _wearables_bind(args, parser) -> int:
         "source": args.source,
         "design_source": args.design_source,
     }
-    if args.provenance == PUBLIC:
-        missing = [
-            flag
-            for flag, key in (
-                ("--licence", "spdx"),
-                ("--design-source", "design_source"),
-            )
-            if not licence[key]
-        ]
-        if missing:
-            parser.error(
-                f"a public wearable needs {' and '.join(missing)} (an SPDX licence id and "
-                "where the design comes from); a garment from someone else's files is "
-                "--provenance private."
-            )
     try:
         check_destination(paths["json"], args.provenance)
     except ProvenanceError as error:
@@ -816,6 +805,11 @@ def _wearables_bind(args, parser) -> int:
             frame=args.frame,
             max_distance=args.max_distance / 1000.0,
             extras=extras,
+            tags=args.tag or (),
+            description=args.description or "",
+            texture_limit=args.texture_limit,
+            normal_green=args.normal_green,
+            accept_quality=args.accept_quality,
         )
         vertices = wearable.garment.vertices.copy()
         path = write_wearable(paths["json"], wearable)
@@ -825,8 +819,256 @@ def _wearables_bind(args, parser) -> int:
     report["package"] = str(path)
     for warning in report["warnings"]:
         print(f"warning: {warning}", file=sys.stderr)
-    print(json.dumps(report, indent=2))
+    _print_quality(report.get("quality"))
+    _result(report)
     return 0
+
+
+def _print_quality(quality) -> None:
+    """The warning- and error-severity quality items on the error stream."""
+    for item in (quality or {}).get("items", []):
+        if item["severity"] != "info":
+            print(
+                f"{item['severity']}: [{item['code']}] {item['message']}",
+                file=sys.stderr,
+            )
+
+
+# The wearables commands whose results and errors are JSON on stdout.
+JSON_COMMANDS = ("import-mhclo", "add", "remove", "outfit")
+
+# The results of the running command, printed on stdout when it ends (_results_alone).
+_RESULTS: list[str] | None = None
+
+
+def _result(value) -> None:
+    """Print a command's result on stdout: a JSON value (indented), or text. While a command
+    runs inside :func:`_results_alone`, the result waits for the command's end."""
+    text = value if isinstance(value, str) else json.dumps(value, indent=2)
+    if _RESULTS is None:
+        print(text)
+    else:
+        _RESULTS.append(text)
+
+
+def _flush_native() -> None:
+    """Flush the C library's stdout buffer (native code that prints with printf)."""
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).fflush(None)
+    except Exception:  # noqa: BLE001 - a platform without it has nothing to flush
+        pass
+
+
+@contextlib.contextmanager
+def _results_alone():
+    """
+    Keep stdout for the command's results (:func:`_result`): while the command runs,
+    everything else written to stdout goes to stderr, from Python (``print``, as Warp's
+    start-up lines and module loads) and from native code (file descriptor 1); the results
+    follow on stdout when the command ends, also when it fails.
+    """
+    global _RESULTS
+    target = sys.stdout
+    saved = None
+    for stream in (target, sys.__stdout__):
+        try:
+            stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
+    _flush_native()
+    try:
+        saved = os.dup(1)
+        os.dup2(2, 1)
+    except OSError:
+        saved = None
+    _RESULTS = []
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        results, _RESULTS = _RESULTS, None
+        for stream in (sys.__stdout__, sys.stderr):
+            try:
+                stream.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
+        _flush_native()
+        if saved is not None:
+            os.dup2(saved, 1)
+            os.close(saved)
+        for text in results:
+            print(text, file=target)
+        try:
+            target.flush()
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+# The hints of the errors that carry none of their own.
+_ERROR_HINTS = {
+    "file_error": "Check that the path exists and can be read and written.",
+    "invalid_input": "Check the files and the options; --help lists the options.",
+    "internal_error": (
+        "An unexpected error: report it with the command line and this message."
+    ),
+}
+
+
+def _json_error(error: BaseException, command: str, internal: bool = False) -> int:
+    """Print a failed command's JSON result (``code``, ``message``, ``hint``); returns 1, or
+    2 for an unexpected error (``internal``, code ``internal_error``)."""
+    from opensculptboy.wearables.format import WearableError
+
+    if internal:
+        code, hint = "internal_error", ""
+    else:
+        code = (
+            getattr(error, "code", None) if isinstance(error, WearableError) else None
+        )
+        code = code or ("file_error" if isinstance(error, OSError) else "invalid_input")
+        hint = getattr(error, "hint", "") if isinstance(error, WearableError) else ""
+    hint = hint or _ERROR_HINTS.get(code, _ERROR_HINTS["invalid_input"])
+    message = _one_line(error)
+    if internal:
+        message = f"{type(error).__name__}: {message}"
+    _result(
+        {
+            "ok": False,
+            "command": command,
+            "error": {"code": code, "message": message, "hint": hint},
+        }
+    )
+    print(f"error: [{code}] {message}", file=sys.stderr)
+    return 2 if internal else 1
+
+
+def _json_usage(parser, command: str):
+    """Make a subcommand's usage errors JSON results (code ``usage``) on stdout."""
+
+    def error(message):
+        _result(
+            {
+                "ok": False,
+                "command": command,
+                "error": {
+                    "code": "usage",
+                    "message": message,
+                    "hint": f"See 'opensculptboy {command} --help'.",
+                },
+            }
+        )
+        print(f"{parser.prog}: error: {message}", file=sys.stderr)
+        raise SystemExit(2)
+
+    parser.error = error
+
+
+def _wearables_import(args) -> int:
+    command = "wearables import-mhclo"
+    try:
+        report = _import_report(args)
+    except (OSError, ValueError, KeyError) as error:
+        return _json_error(error, command)
+    except Exception as error:  # one JSON error for every failure, never a traceback
+        return _json_error(error, command, internal=True)
+    report = {"ok": True, "command": command, **report}
+    for warning in report["warnings"]:
+        print(f"warning: {warning}", file=sys.stderr)
+    _print_quality(report.get("quality"))
+    _result(report)
+    return 0
+
+
+def _import_report(args) -> dict:
+    import torch
+
+    from opensculptboy.wearables.fit import card_body
+    from opensculptboy.wearables.format import package_paths, write_wearable
+    from opensculptboy.wearables.make import round_trip
+    from opensculptboy.wearables.mhclo import import_mhclo
+
+    source = pathlib.Path(args.mhclo)
+    paths = package_paths(args.out or str(source.with_suffix("")))
+    character = Character()
+    model = character.build_model(dtype=torch.float64)
+    print("binding to the default body ...", file=sys.stderr)
+    body = card_body(character, model)
+    wearable, report = import_mhclo(
+        source,
+        body,
+        character,
+        model,
+        slot=args.slot,
+        layer=args.layer,
+        name=args.name,
+        label=args.label,
+        tags=args.tag or (),
+        description=args.description,
+        author=args.author,
+        source=args.source,
+        covers=args.covers,
+        hides=args.hides,
+        max_distance=None if args.max_distance is None else args.max_distance / 1000,
+        texture_limit=args.texture_limit,
+        normal_green=args.normal_green,
+        accept_quality=args.accept_quality,
+        pack_json=args.pack_json,
+        bump_strength=args.bump_strength,
+    )
+    if args.dry_run:  # the checks and the binding, without the files
+        return {
+            "package": str(paths["json"]),
+            "dry_run": True,
+            "written": False,
+            **report,
+        }
+    vertices = wearable.garment.vertices.copy()
+    path = write_wearable(paths["json"], wearable)
+    report["round_trip_mm_max"] = round_trip(path, body, vertices)
+    return {"package": str(path), "dry_run": False, "written": True, **report}
+
+
+def _wearables_card(args) -> int:
+    from opensculptboy.wearables import cardedit
+
+    command = f"wearables {args.wearables_command}"
+    try:
+        result = _card_change(args, cardedit)
+    except (OSError, ValueError, KeyError) as error:
+        return _json_error(error, command)
+    except Exception as error:  # one JSON error for every failure, never a traceback
+        return _json_error(error, command, internal=True)
+    for warning in result.get("warnings", []):
+        print(f"warning: {warning}", file=sys.stderr)
+    _result(result)
+    return 0
+
+
+def _card_change(args, cardedit) -> dict:
+    if args.wearables_command == "add":
+        return cardedit.add_pieces(
+            args.card,
+            args.packages,
+            outfit=args.outfit,
+            label=args.label,
+            activate=args.activate,
+            loose=args.loose,
+            replace=args.replace,
+            dry_run=args.dry_run,
+        )
+    if args.wearables_command == "remove":
+        if not args.refs and args.outfit is None:
+            raise cardedit.CardError(
+                "Nothing to remove.",
+                "bad_option",
+                "Name pieces as OUTFIT/PIECE or loose ids, or pass --outfit NAME.",
+            )
+        return cardedit.remove_pieces(
+            args.card, args.refs, outfit=args.outfit, dry_run=args.dry_run
+        )
+    return cardedit.activate_outfit(args.card, args.activate, dry_run=args.dry_run)
 
 
 def _names(args) -> int:
@@ -848,6 +1090,40 @@ def _names(args) -> int:
         names = getattr(model, attribute)
     print("\n".join(names))
     return 0
+
+
+def _package_options(p) -> None:
+    p.add_argument(
+        "--tag",
+        action="append",
+        metavar="WORDS",
+        help="free words for the package (repeatable, or comma-separated)",
+    )
+    p.add_argument("--description", help="one line about the package")
+
+
+def _quality_options(p) -> None:
+    from opensculptboy.wearables.quality import NORMAL_GREEN, TEXTURE_LIMIT
+
+    p.add_argument(
+        "--accept-quality",
+        action="store_true",
+        help="write the package even with error-severity quality items",
+    )
+    p.add_argument(
+        "--texture-limit",
+        type=int,
+        default=TEXTURE_LIMIT,
+        metavar="PIXELS",
+        help=f"the largest texture side without a warning (default {TEXTURE_LIMIT})",
+    )
+    p.add_argument(
+        "--normal-green",
+        choices=NORMAL_GREEN,
+        default="auto",
+        help="the normal map's green channel: auto flips a DirectX map to OpenGL "
+        "(default), keep leaves it, flip always flips",
+    )
 
 
 def main(argv=None) -> int:
@@ -1223,7 +1499,8 @@ def main(argv=None) -> int:
 
     wear = sub.add_parser(
         "wearables",
-        help="list a card's outfits, bind a garment, or build reference wearables",
+        help="list and change a card's outfits, bind a garment, import MakeHuman clothes, "
+        "or build reference wearables",
     )
     wear_sub = wear.add_subparsers(dest="wearables_command", required=True)
     wl = wear_sub.add_parser("list", help="print a card's outfits and pieces")
@@ -1297,7 +1574,7 @@ def main(argv=None) -> int:
         metavar="PIECE:GROUP,...",
         help="groups of other pieces to hide while this one shows (repeatable)",
     )
-    wb.add_argument("--licence", metavar="SPDX", help="the SPDX licence id")
+    wb.add_argument("--licence", metavar="SPDX", help="the SPDX licence id, recorded")
     wb.add_argument("--author", help="the author of the garment")
     wb.add_argument("--source", help="where the garment's files come from (a URL)")
     wb.add_argument("--design-source", help="where the design comes from")
@@ -1305,9 +1582,11 @@ def main(argv=None) -> int:
         "--provenance",
         choices=PROVENANCES,
         default="public",
-        help="public (needs --licence and --design-source) or private (never inside "
-        "the repository)",
+        help="public, or private (made from someone's own files; never inside the "
+        "repository)",
     )
+    _package_options(wb)
+    _quality_options(wb)
     wb.add_argument(
         "--body",
         metavar="CARD",
@@ -1330,6 +1609,121 @@ def main(argv=None) -> int:
         f"for --rigid) exceeds this (default {MAX_DISTANCE * 1000:.0f})",
     )
 
+    wi = wear_sub.add_parser(
+        "import-mhclo",
+        help="make a wearable package from a MakeHuman clothes asset (.mhclo)",
+        description="Read a MakeHuman clothes asset (the .mhclo file, its .obj mesh and "
+        "its .mhmat material with the textures), bind it to the default body and write "
+        "the package OUT.wearable.json, OUT.glb and OUT.binding.safetensors. Prints one "
+        "JSON result; see docs/wearables.md, 'Free outfits'.",
+    )
+    wi.add_argument("mhclo", help="the .mhclo file")
+    wi.add_argument(
+        "--out",
+        help="the package's stem, e.g. wear/shirt (default: next to the .mhclo)",
+    )
+    wi.add_argument(
+        "--slot", help=f"the piece's slot ({', '.join(SLOTS)}); default: from the name"
+    )
+    wi.add_argument(
+        "--layer", type=int, help="0 (skin) to 100 (outermost); default: the z_depth"
+    )
+    wi.add_argument("--name", help="the package's name (default: the asset's name)")
+    wi.add_argument("--label", help="the name to show (default: the asset's name)")
+    wi.add_argument("--author", help="the author, in place of the header's")
+    wi.add_argument("--source", help="where the asset comes from (a URL)")
+    wi.add_argument(
+        "--pack-json",
+        metavar="FILE",
+        help="the asset pack's JSON file (packs/<pack>.json) with the item's metadata "
+        "(default: found above the .mhclo, in the folder that holds clothes/ and packs/)",
+    )
+    from opensculptboy.wearables.mhclo import DEFAULT_BUMP_STRENGTH, IMPORT_COVERS
+
+    wi.add_argument(
+        "--bump-strength",
+        type=float,
+        metavar="TEXELS",
+        help="the relief of a bump map converted to a normal map: a step from black to "
+        f"white rises this many texels (default {DEFAULT_BUMP_STRENGTH:g}, times the "
+        "material's bumpmapIntensity)",
+    )
+
+    wi.add_argument(
+        "--covers",
+        choices=IMPORT_COVERS,
+        default="auto",
+        help="auto: the skin under delete_verts, else a ray test (default); ray: the ray "
+        "test; none: no covered skin",
+    )
+    wi.add_argument(
+        "--hides",
+        action="append",
+        metavar="PIECE:GROUP,...",
+        help="groups of other pieces to hide while this one shows (repeatable)",
+    )
+    wi.add_argument(
+        "--max-distance",
+        type=float,
+        metavar="MM",
+        help=f"refuse a garment whose median distance from the skin exceeds this "
+        f"(default {MAX_DISTANCE * 1000:.0f})",
+    )
+    wi.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="check and bind the asset, print the result and write no files",
+    )
+    _package_options(wi)
+    _quality_options(wi)
+    _json_usage(wi, "wearables import-mhclo")
+
+    wa = wear_sub.add_parser(
+        "add",
+        help="put wearable packages on a card, in an outfit or as loose pieces",
+        description="Add packages to an outfit of a card (created when missing) or as "
+        "loose pieces, with paths relative to the card. An older card is raised to "
+        "schema 4; the card's other fields stay as they are. Prints one JSON result.",
+    )
+    wa.add_argument("card", help="the character card (JSON)")
+    wa.add_argument("packages", nargs="+", help="the packages' .wearable.json files")
+    wa.add_argument("--outfit", help="the outfit to add to (created when missing)")
+    wa.add_argument("--label", help="the label of a new outfit")
+    wa.add_argument(
+        "--activate", action="store_true", help="make --outfit the worn one"
+    )
+    wa.add_argument("--loose", action="store_true", help="add as loose pieces")
+    wa.add_argument(
+        "--replace",
+        action="store_true",
+        help="replace a piece of the same id, and the pieces of the same slot",
+    )
+    wa.add_argument("--dry-run", action="store_true", help="print the change only")
+    _json_usage(wa, "wearables add")
+    wd = wear_sub.add_parser(
+        "remove",
+        help="take pieces or an outfit off a card",
+        description="Take pieces off a card by reference (OUTFIT/PIECE, a loose id, or a "
+        "piece of the worn outfit), or a whole outfit with --outfit. Prints one JSON "
+        "result.",
+    )
+    wd.add_argument("card", help="the character card (JSON)")
+    wd.add_argument("refs", nargs="*", help="the pieces to take off")
+    wd.add_argument("--outfit", help="take this whole outfit off")
+    wd.add_argument("--dry-run", action="store_true", help="print the change only")
+    _json_usage(wd, "wearables remove")
+    wo = wear_sub.add_parser(
+        "outfit",
+        help="choose the worn outfit of a card",
+        description="Set the card's active_outfit. Prints one JSON result.",
+    )
+    wo.add_argument("card", help="the character card (JSON)")
+    wo.add_argument(
+        "--activate", required=True, metavar="NAME", help="the outfit, or 'none'"
+    )
+    wo.add_argument("--dry-run", action="store_true", help="print the change only")
+    _json_usage(wo, "wearables outfit")
+
     n = sub.add_parser("names", help="list parameter, pose and clip names")
     n.add_argument(
         "kind",
@@ -1347,9 +1741,19 @@ def main(argv=None) -> int:
     )
     v.add_argument("rest", nargs=argparse.REMAINDER)
 
+    words = sys.argv[1:] if argv is None else list(argv)
+    if words[:1] == ["wearables"] and words[1:2] and words[1] in JSON_COMMANDS:
+        _json_usage(parser, f"wearables {words[1]}")  # unknown options at the top level
     args = parser.parse_args(argv)
+    if args.command in ("names", "viewer"):  # text for people, printed as it comes
+        return _run(args, e, wear, f, b, c, t, q)
+    with _results_alone():
+        return _run(args, e, wear, f, b, c, t, q)
+
+
+def _run(args, e, wear, f, b, c, t, q) -> int:
     if args.command == "character":
-        print(json.dumps(Character().to_dict(), indent=2))
+        _result(Character().to_dict())
         return 0
     if args.command == "export":
         return _export(args, e)

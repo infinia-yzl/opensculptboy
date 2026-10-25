@@ -5,8 +5,8 @@ Checks of ``opensculptboy wearables bind`` (``opensculptboy.wearables.make``,
 docs/wearables.md, "Make a wearable") with synthetic garment files written by the test: a
 tube around the torso in two materials and a ring around the head, in the frame of an export
 of the default card. The checks cover the package's fields, the round trip on the template,
-a dressed export on two random bodies, the licence refusal, the far-from-body warning and
-refusal, own skin weights, and the command end to end.
+a dressed export on two random bodies, the licence block as given, the far-from-body warning
+and refusal, own skin weights, and the command end to end.
 """
 
 import contextlib
@@ -334,10 +334,6 @@ class TestBind(unittest.TestCase):
                 self.assertGreater(gaps["covered"], 300)
                 self.assertLess(gaps["outside"], 0.01 * gaps["covered"], gaps)
 
-    def test_public_package_needs_a_licence(self):
-        with self.assertRaisesRegex(ValueError, "licence"):
-            make_wearable(self.ring_path, self.body, "ring", "head", 60, rigid="head")
-
     def test_far_vertices_warn_and_a_garment_off_the_body_fails(self):
         from scipy.spatial import cKDTree
 
@@ -411,11 +407,6 @@ class TestBindCommand(unittest.TestCase):
             out = folder / "wear" / "tube"
             args = ["wearables", "bind", str(garment), "--out", str(out)]
             args += ["--slot", "torso", "--layer", "50", "--label", "Tube"]
-            err = io.StringIO()
-            with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
-                main(args)  # a public package without a licence
-            self.assertIn("--licence and --design-source", err.getvalue())
-            self.assertFalse(out.with_suffix(".wearable.json").exists())
             with (
                 contextlib.redirect_stderr(io.StringIO()),
                 self.assertRaises(SystemExit),
@@ -424,7 +415,8 @@ class TestBindCommand(unittest.TestCase):
             printed = io.StringIO()
             extra = ["--licence", "CC0-1.0", "--author", "tests"]
             extra += ["--design-source", "synthetic", "--groups-from", "extras"]
-            extra += ["--hides", "cape:back"]
+            extra += ["--hides", "cape:back", "--tag", "Tube, test", "--tag", "linen"]
+            extra += ["--description", "A tube around the torso."]
             with (
                 contextlib.redirect_stdout(printed),
                 contextlib.redirect_stderr(io.StringIO()),
@@ -436,11 +428,15 @@ class TestBindCommand(unittest.TestCase):
             self.assertEqual(report["groups"], ["front", "back"])
             self.assertLess(report["round_trip_mm_max"], 1e-6)
             self.assertGreater(report["covered_skin_vertices"], 300)
+            self.assertEqual(report["quality"]["errors"], 0)
+            self.assertIn("counts", [i["code"] for i in report["quality"]["items"]])
             description = json.loads(
                 (folder / "wear" / "tube.wearable.json").read_text()
             )
             self.assertEqual(description["label"], "Tube")
             self.assertEqual(description["licence"]["author"], "tests")
+            self.assertEqual(description["tags"], ["tube", "test", "linen"])
+            self.assertEqual(description["description"], "A tube around the torso.")
             self.assertEqual(
                 description["hides"], [{"piece": "cape", "groups": ["back"]}]
             )

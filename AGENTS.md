@@ -94,9 +94,12 @@ uv run --extra viewer python -m unittest test.test_budget_tiers                 
 uv run opensculptboy export out.glb --character card.json --outfit travel --hide cape   # an outfit with single pieces hidden (docs/wearables.md)
 uv run opensculptboy export out.glb --character card.json --wardrobe                   # every piece of every outfit as its own node
 uv run opensculptboy wearables reference handoff/ --card card.json --out folder/       # reference wearables (private packages, outside the repository)
-uv run opensculptboy wearables bind garment.glb --out wear/tunic --slot torso --licence CC0-1.0 --design-source TEXT   # a garment modelled on the default body (export base.glb) as a package; --rigid BONE, --weights own, --groups-from, --covers, --hides, --body card.json
+uv run opensculptboy wearables bind garment.glb --out wear/tunic --slot torso --licence CC0-1.0 --design-source TEXT   # a garment modelled on the default body (export base.glb) as a package; --rigid BONE, --weights own, --groups-from, --covers, --hides, --body card.json, --tag, --description, --accept-quality
+uv run opensculptboy wearables import-mhclo shirt.mhclo --out wear/shirt               # a MakeHuman clothes asset (.mhclo, .obj, .mhmat) as a package; --slot, --layer, --tag, --pack-json, --bump-strength, --covers, --normal-green, --texture-limit, --accept-quality, --dry-run; one JSON result
+uv run opensculptboy wearables add card.json wear/shirt.wearable.json --outfit casual --activate   # packages into an outfit or as loose pieces (--loose, --replace, --dry-run); remove and outfit --activate NAME
+uv run python -m unittest test.test_wearables_import                                   # import-mhclo, the quality checks and the card commands with synthetic MakeHuman assets, the package schema
 uv run python -m unittest test.test_wearables                                          # the wearables with synthetic garments: format, provenance, binding, fit gate, outfits, files
-uv run python -m unittest test.test_wearables_bind                                     # wearables bind with synthetic garment files: fields, round trip, frame, dressed bodies, licence, far vertices, command
+uv run python -m unittest test.test_wearables_bind                                     # wearables bind with synthetic garment files: fields, round trip, frame, dressed bodies, far vertices, quality, command
 ```
 
 ### Face calibration
@@ -180,7 +183,7 @@ uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and 
 | Teeth | `opensculptboy/teeth/` | The reference's teeth or a generic set, appended after the body mesh ([docs/teeth.md](docs/teeth.md)) |
 | Mouth | `opensculptboy/mouth/`, `fit/lips.py` | The `anny-mouth` rig, `jawOpen` as a jaw turn and corrective, a reference's inner mouth, sealed lips, the jaw's weights and mouth poses as targets; `test_mouth_rig` holds `MEASURED_ANGLE` and `MEASURED_EXPLAINED` ([docs/mouth.md](docs/mouth.md)) |
 | Sculpt topology | `opensculptboy/topology/` | Anny's mesh with append-only patches (the eye corner on; the ear root off), built into `data/topology/sculpt.safetensors`, and the card converter ([docs/sculpt-topology.md](docs/sculpt-topology.md)) |
-| Wearables | `opensculptboy/wearables/` | Wearable packages (`opensculptboy.wearable/1`, with a `provenance` guard), surface and rigid binding to Anny's template, the fit with layers and push-out, cover masks, outfits with slot replacement and hides rules, dressed GLB, wardrobe and VRM files, and reference wearables from a handoff's `equipment`; `TestNoPrivatePackages` fails on any private package under `src/` or `test/data/` ([docs/wearables.md](docs/wearables.md)) |
+| Wearables | `opensculptboy/wearables/` | Wearable packages (`opensculptboy.wearable/1`, JSON Schema in `data/wearables/`, with a `provenance` guard), MakeHuman clothes import (`mhclo.py`, `basemesh.py`: base-mesh rows that Anny lacks come from the MPFB2 targets), quality checks and safe fixes (`quality.py`), card changes (`cardedit.py`), surface and rigid binding to Anny's template, the fit with layers and push-out, cover masks, outfits with slot replacement and hides rules, dressed GLB, wardrobe and VRM files, and reference wearables from a handoff's `equipment`; `TestNoPrivatePackages` fails on any private package under `src/` or `test/data/` ([docs/wearables.md](docs/wearables.md)) |
 | Character card | `opensculptboy/character.py` | `Character`, the JSON card that every export reads and stores in its scene extras ([docs/character-card.md](docs/character-card.md)) |
 
 ### Phenotype System

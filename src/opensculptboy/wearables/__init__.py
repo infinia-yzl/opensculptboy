@@ -19,7 +19,13 @@ Wearables: clothes, footwear, headgear, capes and accessories that fit any Anny 
 - :mod:`~opensculptboy.wearables.make`: a package from a garment modelled on a body
   (``opensculptboy wearables bind``);
 - :mod:`~opensculptboy.wearables.reference`: reference wearables, built from the
-  ``equipment`` section of an appearance handoff and carried onto a fitted card.
+  ``equipment`` section of an appearance handoff and carried onto a fitted card;
+- :mod:`~opensculptboy.wearables.mhclo`: MakeHuman clothes assets as packages
+  (``opensculptboy wearables import-mhclo``), with :mod:`~opensculptboy.wearables.basemesh`
+  for MakeHuman's base mesh on a card's body;
+- :mod:`~opensculptboy.wearables.quality`: the quality checks and safe fixes of a garment;
+- :mod:`~opensculptboy.wearables.cardedit`: changes to a card's wardrobe
+  (``wearables add``, ``remove`` and ``outfit``).
 """
 
 from opensculptboy.wearables.bind import (
@@ -38,6 +44,7 @@ from opensculptboy.wearables.format import (
     Material,
     ProvenanceError,
     Wearable,
+    WearableError,
     check_destination,
     read_wearable,
     write_wearable,
@@ -56,6 +63,7 @@ __all__ = [
     "Material",
     "ProvenanceError",
     "Wearable",
+    "WearableError",
     "WornPiece",
     "bind_rigid",
     "bind_surface",
