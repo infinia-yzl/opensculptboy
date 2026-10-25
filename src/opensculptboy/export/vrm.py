@@ -2000,7 +2000,7 @@ def export_vrm(
     summary = write_vrm(spec, path, budget=budget)
     if "wearables" in spec.extras:
         summary["wearables"] = [
-            p["piece"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
+            p["ref"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
         ]
     if tier is not None:
         summary["tier"] = tier.get("name")

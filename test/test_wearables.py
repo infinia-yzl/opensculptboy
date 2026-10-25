@@ -398,6 +398,7 @@ class TestDressedFiles(unittest.TestCase):
         self.assertGreater(summary["removed_body_triangles"], 300)
         extras = glb.json["scenes"][0]["extras"]["opensculptboy"]["wearables"]
         tunic_extras = next(p for p in extras["pieces"] if p["piece"] == "tunic")
+        self.assertEqual(tunic_extras["ref"], "test_outfit/tunic")
         self.assertEqual(tunic_extras["hidden_groups"], ["back"])
         # the file's skinned pieces sit where the fit put them, on the floor
         dressed = dress(template_body(), worn_pieces(self.card, self.folder))
@@ -535,7 +536,13 @@ class TestDressedFiles(unittest.TestCase):
                     version=version,
                     detail_dir=self.folder,
                 )
-                self.assertEqual(summary["wearables"], ["tunic", "circlet", "cape"])
+                refs = ["test_outfit/tunic", "test_outfit/circlet", "test_outfit/cape"]
+                self.assertEqual(summary["wearables"], refs)
+                pieces = glb_json_wearables(path)["pieces"]
+                self.assertEqual([p["ref"] for p in pieces], refs)
+                self.assertEqual(
+                    [p["piece"] for p in pieces], ["tunic", "circlet", "cape"]
+                )
                 glb = GLB(path)
                 self.assertEqual(structure_errors(glb), [])
                 self.assertEqual(check(glb.json), [])
@@ -593,6 +600,11 @@ def hidden(node: dict) -> bool:
 def _last_json(text: str):
     """The JSON object that a command printed last (warp may print its module loads first)."""
     return json.loads(text[text.index("{\n") :])
+
+
+def glb_json_wearables(path):
+    """The ``wearables`` entry of the scene extras of a GLB or VRM file."""
+    return GLB(path).json["scenes"][0]["extras"]["opensculptboy"]["wearables"]
 
 
 def names_index(glb, name):
