@@ -525,7 +525,7 @@ def export_tier(
         version = kwargs.pop("version", tier.vrm_version)
         target = "vrm1" if version in ("1.0", "1") else "vrm0"
         limit = budgets.BUDGETS[target]
-        if kwargs.get("budget", "warn") != "off":
+        if kwargs.get("budget", "warn") != "off" and not kwargs.get("fit_budget"):
             wear = wearable_counts(character, detail_dir, dressing, bare)
             triangles = MESH_COUNTS[mesh][0] + wear["triangles"]
             worn = f" with {wear['pieces']} wearable pieces" if wear["pieces"] else ""
@@ -533,7 +533,7 @@ def export_tier(
                 raise ValueError(
                     f"the {tier.name} tier{worn} has {triangles:,} triangles, over the "
                     f"{budgets.LABELS[target]} budget of {limit['triangles']:,}: write a "
-                    ".glb file, wear fewer pieces, or use the "
+                    ".glb file, wear fewer pieces, fit it with --fit-budget, or use the "
                     + ("medium or low tier." if target == "vrm1" else "low tier.")
                 )
     images = tier_textures(character, tier, detail_dir, format)
