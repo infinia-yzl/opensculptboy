@@ -31,12 +31,53 @@ PROVENANCES = (PUBLIC, PRIVATE)
 SLOTS = ("head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloak")
 SLOTS += ("under", "accessory")
 METHODS = ("surface", "rigid")
-BODIES = ("anny-template", "reference")
-LICENCE_KEYS = ("spdx", "author", "source", "design_source", "attribution")
+BODIES = ("anny-template", "card", "reference")
+LICENCE_KEYS = (
+    "spdx",
+    "declared",
+    "text",
+    "author",
+    "source",
+    "original_author",
+    "original_source",
+    "design_source",
+    "attribution",
+    "pack",
+)
+# The JSON Schema of a package's .wearable.json description.
+SCHEMA_PATH = (
+    pathlib.Path(__file__).resolve().parent.parent
+    / "data"
+    / "wearables"
+    / "wearable-1.schema.json"
+)
 
 
-class ProvenanceError(ValueError):
+class WearableError(ValueError):
+    """
+    A wearable that cannot be made, read or listed as asked. ``code`` is a stable word for
+    programs (for example ``too_far_from_skin``, ``unknown_slot``, ``malformed_obj``) and
+    ``hint`` says what to change.
+    """
+
+    code = "invalid_wearable"
+    hint = ""
+
+    def __init__(self, message: str, code: str | None = None, hint: str | None = None):
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+        if hint is not None:
+            self.hint = hint
+
+
+class ProvenanceError(WearableError):
     """A private package aimed at a place where private packages never go."""
+
+    code = "private_in_repository"
+    hint = (
+        "Write the package and the card into a folder outside the repository checkout."
+    )
 
 
 @dataclasses.dataclass
@@ -181,6 +222,8 @@ class Wearable:
     also meets the dressed piece (for masks made on another body, and for open pieces such as
     laced boots whose mask spans the gaps).
     ``springs`` and ``constraints`` are kept for the VRM export (none are written yet).
+    ``tags`` are free words that describe the piece ("shirt", "long sleeves", "linen") and
+    ``description`` is one line of text about it.
     """
 
     name: str
@@ -198,6 +241,8 @@ class Wearable:
     springs: list = dataclasses.field(default_factory=list)
     constraints: list = dataclasses.field(default_factory=list)
     label: str | None = None
+    tags: list = dataclasses.field(default_factory=list)
+    description: str = ""
     extras: dict = dataclasses.field(default_factory=dict)
 
     def check(self) -> None:
@@ -206,16 +251,23 @@ class Wearable:
                 f"provenance must be one of {PROVENANCES}; got {self.provenance!r}."
             )
         if self.slot not in SLOTS:
-            raise ValueError(f"Unknown slot {self.slot!r}; the slots are {SLOTS}.")
+            raise WearableError(
+                f"Unknown slot {self.slot!r}; the slots are {SLOTS}.",
+                "unknown_slot",
+                f"Use one of {', '.join(SLOTS)}.",
+            )
         if not 0 <= int(self.layer) <= 100:
             raise ValueError(f"layer must lie in 0..100; got {self.layer!r}.")
-        if self.provenance == PUBLIC:
-            missing = [k for k in ("spdx", "design_source") if not self.licence.get(k)]
-            if missing:
-                raise ValueError(
-                    f"A public wearable needs a licence with {missing} (the keys are "
-                    f"{LICENCE_KEYS})."
-                )
+        if not isinstance(self.licence, dict):
+            raise ValueError("licence must be a JSON object.")
+        if not isinstance(self.tags, list) or not all(
+            isinstance(t, str) and t.strip() for t in self.tags
+        ):
+            raise ValueError(
+                f"tags must be a list of non-empty words; got {self.tags!r}."
+            )
+        if not isinstance(self.description, str) or "\n" in self.description:
+            raise ValueError("description must be one line of text.")
         if self.binding.method not in METHODS:
             raise ValueError(f"Unknown binding method {self.binding.method!r}.")
         if self.binding.body not in BODIES:
@@ -245,7 +297,8 @@ class Wearable:
                 raise ValueError(f"The groups of a hides rule are names: {rule!r}.")
         self.garment.check()
 
-    def description(self, stem: str) -> dict[str, Any]:
+    def document(self, stem: str) -> dict[str, Any]:
+        """The package's ``.wearable.json`` description for the file stem ``stem``."""
         binding = {
             "body": self.binding.body,
             "method": self.binding.method,
@@ -259,6 +312,8 @@ class Wearable:
             "format": FORMAT,
             "name": self.name,
             "label": self.label or self.name,
+            "description": self.description,
+            "tags": list(self.tags),
             "slot": self.slot,
             "layer": int(self.layer),
             "provenance": self.provenance,
@@ -338,7 +393,7 @@ def write_wearable(path: str | pathlib.Path, wearable: Wearable) -> pathlib.Path
     save_file(arrays, str(paths["binding"]), metadata={"format": FORMAT})
     _write_geometry(paths["glb"], wearable)
     paths["json"].write_text(
-        json.dumps(wearable.description(stem), indent=2) + "\n", encoding="utf-8"
+        json.dumps(wearable.document(stem), indent=2) + "\n", encoding="utf-8"
     )
     return paths["json"]
 
@@ -382,6 +437,8 @@ def read_wearable(path: str | pathlib.Path) -> Wearable:
     wearable = Wearable(
         name=data["name"],
         label=data.get("label"),
+        tags=list(data.get("tags") or []),
+        description=data.get("description") or "",
         slot=data["slot"],
         layer=int(data["layer"]),
         garment=garment,
@@ -431,6 +488,12 @@ def _write_geometry(path: pathlib.Path, wearable: Wearable) -> None:
         attributes["TEXCOORD_0"] = doc.accessor(
             np.asarray(garment.uvs, dtype=np.float32), ARRAY_BUFFER
         )
+        if any("normal" in m.textures for m in garment.materials):
+            from opensculptboy.wearables.gltf import garment_tangents
+
+            t = garment_tangents(garment.vertices, garment.normals, garment)
+            t[:, :3] = t[:, :3] @ ANNY_TO_GLTF.T.astype(np.float32)
+            attributes["TANGENT"] = doc.accessor(t.astype(np.float32), ARRAY_BUFFER)
     materials = add_materials(doc, garment.materials)
     primitives = []
     for g, group in enumerate(garment.groups):

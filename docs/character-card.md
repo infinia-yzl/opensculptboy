@@ -33,7 +33,7 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `pose` | a still pose: `"bones"` maps bone names to unit quaternions (x, y, z, w) relative to the parent, and `"root"` moves the root bone (metres); an empty pose is the rest pose |
 | `detail` | the detail layer of a fitted character |
 | `material` | the skin, eyes, teeth, inner mouth and tiers |
-| `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`) and the one worn ([Wearables](wearables.md)) |
+| `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`, with optional `description`, `tags`, `source` and per-piece `overrides`, `hides` and `springs`) and the one worn ([Wearables](wearables.md)) |
 | `wearables` | loose pieces: `{"id", "file", "enabled"}`, each file a wearable package |
 | `wearable_overrides` | single pieces switched on or off: `{"<outfit>/<piece>": {"enabled": false}}` |
 
