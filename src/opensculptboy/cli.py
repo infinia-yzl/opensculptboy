@@ -958,6 +958,7 @@ def _import_report(args) -> dict:
         texture_limit=args.texture_limit,
         normal_green=args.normal_green,
         accept_quality=args.accept_quality,
+        pack_json=args.pack_json,
     )
     if args.dry_run:  # the checks and the binding, without the files
         return {
@@ -1575,6 +1576,12 @@ def main(argv=None) -> int:
     wi.add_argument("--label", help="the name to show (default: the asset's name)")
     wi.add_argument("--author", help="the author, in place of the header's")
     wi.add_argument("--source", help="where the asset comes from (a URL)")
+    wi.add_argument(
+        "--pack-json",
+        metavar="FILE",
+        help="the asset pack's JSON file (packs/<pack>.json) with the item's metadata "
+        "(default: found above the .mhclo, in the folder that holds clothes/ and packs/)",
+    )
     from opensculptboy.wearables.mhclo import IMPORT_COVERS
 
     wi.add_argument(

@@ -23,8 +23,25 @@
         "text": {"type": "string"},
         "author": {"type": "string"},
         "source": {"type": "string"},
+        "original_author": {"type": "string"},
+        "original_source": {"type": "string"},
         "design_source": {"type": "string"},
-        "attribution": {"type": "string"}
+        "attribution": {"type": "string"},
+        "pack": {
+          "type": "object",
+          "description": "The licence and credits of the asset pack's entry, apart from the file's.",
+          "properties": {
+            "file": {"type": "string"},
+            "item": {"type": "string"},
+            "spdx": {"type": ["string", "null"]},
+            "declared": {"type": "string"},
+            "text": {"type": "string"},
+            "author": {"type": "string"},
+            "source": {"type": "string"},
+            "original_author": {"type": "string"},
+            "original_source": {"type": "string"}
+          }
+        }
       }
     },
     "geometry": {"type": "string", "pattern": "\\.glb$"},

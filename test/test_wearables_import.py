@@ -32,7 +32,7 @@ from opensculptboy.wearables.mhclo import (
 )
 from opensculptboy.wearables.quality import QualityError
 from test.gltf_reader import GLB, structure_errors
-from test.mhclo_fixtures import write_asset
+from test.mhclo_fixtures import write_asset, write_pack
 from test.wearable_fixtures import circlet, template_body, template_model, write_outfit
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -85,6 +85,7 @@ ASSET_KEYS = {
     "helper",
     "delete_verts",
     "description",
+    "makeclothes",
 }
 
 
@@ -399,6 +400,118 @@ class TestImport(unittest.TestCase):
                     self.assertIn(licence, line)
         self.assertIn("attribution", self.tights.licence)
         self.assertIn("by OpenSculptBoy tests", self.tights.licence["attribution"])
+
+    def test_pack_metadata(self):
+        """An asset in a pack folder (clothes/<item>/ and packs/<pack>.json) takes the pack
+        entry of its folder name: the description, the author, the source URL, the original
+        author and source, the category as tags and the pack's licence apart from the
+        file's, with an info item when the two licences differ."""
+        root = self.folder / "pack"
+        write_pack(
+            root,
+            "shirts99",
+            {
+                "toigo_basic_tee": {
+                    "license": "CC-BY",
+                    "author": "Pack Author",
+                    "original_author": "First Maker",
+                    "original_source": "https://example.org/first",
+                }
+            },
+        )
+        (wearable, report), path = imported(
+            root / "clothes" / "toigo_basic_tee",
+            "T-shirt_basic",
+            makeclothes=True,
+            tags=("t-shirt",),
+        )
+        self.assertEqual(report["pack"]["item"], "toigo_basic_tee")
+        self.assertEqual(
+            wearable.description, "The pack's description of toigo_basic_tee"
+        )
+        self.assertEqual(wearable.tags, ["t-shirt", "shirt", "sweater"])
+        licence = wearable.licence
+        self.assertEqual(licence["spdx"], "CC0-1.0")  # the file's licence first
+        self.assertEqual(licence["pack"]["spdx"], "CC-BY-4.0")
+        self.assertEqual(licence["pack"]["file"], "shirts99.json")
+        self.assertEqual(
+            licence["source"], "https://example.org/assets/toigo_basic_tee"
+        )
+        self.assertEqual(licence["author"], "OpenSculptBoy tests and Pack Author")
+        self.assertEqual(licence["original_author"], "First Maker")
+        self.assertIn(
+            "; original by First Maker (https://example.org/first)",
+            licence["attribution"],
+        )
+        self.assertIn("licence_mismatch", codes(report))
+        validate(self, wearable.document("tee"))
+        # the pack's description wins over the header's; a file without a licence takes
+        # the pack's (--description wins over both: test_pack_json_option)
+        (wearable, report), _ = imported(
+            root / "clothes" / "toigo_basic_tee", "T-shirt_basic", licence=None
+        )
+        self.assertEqual(
+            wearable.description, "The pack's description of toigo_basic_tee"
+        )
+        self.assertEqual(wearable.licence["spdx"], "CC-BY-4.0")
+        self.assertEqual(wearable.licence["declared"], "CC-BY")
+        self.assertNotIn("licence_mismatch", codes(report))
+        # the same licence in both: no item
+        write_pack(root, "shirts99", {"toigo_basic_tee": {"license": "CC0 1.0"}})
+        (_, report), _ = imported(root / "clothes" / "toigo_basic_tee", "T-shirt_basic")
+        self.assertNotIn("licence_mismatch", codes(report))
+
+    def test_pack_json_option(self):
+        """--pack-json names the pack file, found by the file stem as well; a file that lists
+        neither gives a warning item."""
+        folder = self.folder / "loose_pack"
+        path = write_asset(folder / "anywhere", "tee", tags=("t-shirt",))
+        pack = write_pack(folder / "meta", "other", {"tee": {"category": "Top"}})
+        status, result, _ = run(
+            [
+                "wearables",
+                "import-mhclo",
+                str(path),
+                "--dry-run",
+                "--pack-json",
+                str(pack),
+            ]
+        )
+        self.assertEqual(status, 0, result)
+        self.assertEqual(result["pack"]["item"], "tee")
+        self.assertIn("top", result["tags"])
+        self.assertEqual(result["description"], "The pack's description of tee")
+        status, result, _ = run(
+            [
+                "wearables",
+                "import-mhclo",
+                str(path),
+                "--dry-run",
+                "--pack-json",
+                str(pack),
+            ]
+            + ["--description", "Mine"]
+        )
+        self.assertEqual(result["description"], "Mine")
+        empty = write_pack(folder / "meta", "empty", {"else": {}})
+        status, result, _ = run(
+            [
+                "wearables",
+                "import-mhclo",
+                str(path),
+                "--dry-run",
+                "--pack-json",
+                str(empty),
+            ]
+        )
+        self.assertEqual(status, 0, result)
+        self.assertIsNone(result["pack"])
+        self.assertIn("pack_item_missing", codes(result))
+        status, result, _ = run(
+            ["wearables", "import-mhclo", str(path), "--dry-run", "--pack-json"]
+            + [str(folder / "none.json")]
+        )
+        self.assertEqual((status, result["error"]["code"]), (1, "file_not_found"))
 
     def test_dressed_export_carries_the_credits(self):
         card = Character(

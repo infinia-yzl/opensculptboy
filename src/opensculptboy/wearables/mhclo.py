@@ -420,43 +420,200 @@ def spdx_of(text: str | None) -> str | None:
     return None
 
 
+# -- the pack metadata -------------------------------------------------------------------
+
+# The fields of a pack JSON entry that the import reads.
+PACK_FIELDS = (
+    "description",
+    "author",
+    "source",
+    "original_author",
+    "original_source",
+    "category",
+    "license",
+)
+# The folder levels above the .mhclo file that the search for packs/*.json walks.
+PACK_SEARCH_LEVELS = 4
+
+
+@dataclasses.dataclass
+class PackEntry:
+    """An asset's entry in a pack JSON file (``packs/<pack>.json`` of a MakeHuman asset
+    pack, an object keyed by the item's folder name): ``file`` the JSON file, ``item`` the
+    key and ``fields`` the text values of :data:`PACK_FIELDS` that the entry gives."""
+
+    file: pathlib.Path
+    item: str
+    fields: dict
+
+    def get(self, key: str) -> str | None:
+        return self.fields.get(key)
+
+    def category_tags(self) -> list[str]:
+        """The pack's category as tags: ``Shirt/T-shirt/Sweater`` gives ``shirt``,
+        ``t-shirt`` and ``sweater``."""
+        text = self.get("category") or ""
+        return [
+            t for t in (" ".join(w.split()) for w in re.split(r"[/,;|]", text)) if t
+        ]
+
+
+def _pack_items(path: pathlib.Path) -> dict:
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        raise MhcloError(
+            f"{path}: {error.strerror or error}",
+            "file_not_found",
+            "Name an existing pack JSON file (packs/<pack>.json of the asset pack).",
+        ) from error
+    except ValueError as error:
+        raise MhcloError(
+            f"{path}: not a JSON file ({error}).",
+            "malformed_pack",
+            "Name the pack JSON file of the asset pack (packs/<pack>.json).",
+        ) from error
+    if not isinstance(data, dict):
+        raise MhcloError(
+            f"{path}: a pack JSON file holds an object keyed by item folder names.",
+            "malformed_pack",
+            "Name the pack JSON file of the asset pack (packs/<pack>.json).",
+        )
+    return data
+
+
+def _entry(path: pathlib.Path, items: dict, keys) -> PackEntry | None:
+    for key in keys:
+        value = items.get(key)
+        if isinstance(value, dict):
+            fields = {
+                k: " ".join(str(value[k]).split())
+                for k in PACK_FIELDS
+                if isinstance(value.get(k), (str, int, float)) and str(value[k]).strip()
+            }
+            return PackEntry(path, key, fields)
+    return None
+
+
+def pack_files(mhclo: pathlib.Path) -> list[pathlib.Path]:
+    """The pack JSON files of the asset pack that holds ``mhclo``: the ``packs/*.json``
+    files of the first folder above it that holds both ``clothes/`` and ``packs/``, within
+    :data:`PACK_SEARCH_LEVELS` levels."""
+    folder = pathlib.Path(mhclo).resolve().parent
+    for parent in [folder, *folder.parents][: PACK_SEARCH_LEVELS + 1]:
+        if (parent / "clothes").is_dir() and (parent / "packs").is_dir():
+            return sorted((parent / "packs").glob("*.json"))
+    return []
+
+
+def find_pack_entry(mhclo, pack_json=None) -> tuple[PackEntry | None, list[str]]:
+    """The entry of the asset ``mhclo`` in a pack JSON file, found by its folder name or
+    its file stem, and notes on what the search skipped. ``pack_json`` names the file;
+    without it, the search reads :func:`pack_files`. Returns (None, notes) without one."""
+    mhclo = pathlib.Path(mhclo)
+    keys = list(dict.fromkeys([mhclo.parent.name, mhclo.stem]))
+    if pack_json is not None:
+        path = pathlib.Path(pack_json)
+        entry = _entry(path, _pack_items(path), keys)
+        notes = [] if entry else [f"{path.name} lists none of {keys}"]
+        return entry, notes
+    notes = []
+    for path in pack_files(mhclo):
+        try:
+            items = _pack_items(path)
+        except MhcloError as error:
+            notes.append(f"pack file skipped: {error}")
+            continue
+        entry = _entry(path, items, keys)
+        if entry is not None:
+            return entry, notes
+    return None, notes
+
+
+def _same_licence(a: str | None, b: str | None) -> bool:
+    sa, sb = spdx_of(a), spdx_of(b)
+    if sa and sb:
+        return sa == sb
+    na, nb = licence_name(a), licence_name(b)
+    return (na or "").casefold() == (nb or "").casefold()
+
+
 def licence_block(
     asset: MhcloAsset,
     label: str,
     *,
     author: str | None = None,
     source: str | None = None,
+    pack: PackEntry | None = None,
 ) -> dict:
     """
-    The licence block of a package from an asset's header, as found: ``spdx`` (the SPDX id
-    of :func:`spdx_of`, else None), ``declared`` (the licence name of the header,
-    :func:`licence_name`), ``text`` (the header's licence text as written), ``author``,
-    ``source`` (``source`` or the header's homepage), ``design_source`` and an
-    ``attribution`` line that the exports carry, whatever the licence, when the header names
-    a licence, an author or a source. ``author`` replaces the header's author. The tools
-    record the licence and write the credit; choosing assets and following their licences
-    is the user's responsibility.
+    The licence block of a package from an asset's header and its pack entry, as found:
+    ``spdx`` (the SPDX id of :func:`spdx_of`, else None), ``declared`` (the licence name,
+    :func:`licence_name`), ``text`` (the licence text as written), ``author``, ``source``,
+    ``original_author``, ``original_source``, ``design_source``, ``pack`` (the pack entry's
+    licence and credits, apart from the file's) and an ``attribution`` line that the exports
+    carry, whatever the licence, when the block names a licence, an author or a source.
+
+    The file's licence comes first, and the pack's licence stands in for a file without
+    one. ``author`` replaces the header's and the pack's authors; else the line credits the
+    header's author and the pack's author when they differ. ``source`` replaces the pack
+    entry's source URL, which comes before the header's homepage. The tools record the
+    licence and write the credit; choosing assets and following their licences is the
+    user's responsibility.
     """
-    declared = licence_name(asset.licence)
-    author = author or asset.author
-    source = source or asset.homepage
+    pack_fields = pack.fields if pack is not None else {}
+    text = asset.licence or pack_fields.get("license")
+    declared = licence_name(text)
+    authors = [author] if author else [asset.author, pack_fields.get("author")]
+    authors = [a for a in dict.fromkeys(a for a in authors if a)]
+    source = source or pack_fields.get("source") or asset.homepage
+    original = pack_fields.get("original_author")
+    original_source = pack_fields.get("original_source")
     name = asset.name or asset.path.stem
     design = f"MakeHuman clothes asset '{name}'" + (
         f" ({asset.uuid})" if asset.uuid else ""
     )
     block = {
-        "spdx": spdx_of(asset.licence),
+        "spdx": spdx_of(text),
         "declared": declared,
-        "text": asset.licence,
-        "author": author,
+        "text": text,
+        "author": " and ".join(authors) or None,
         "source": source,
+        "original_author": original,
+        "original_source": original_source,
         "design_source": design,
     }
-    if declared or author or source:
-        credit = f"'{label}'" + (f" by {author}" if author else "")
+    if pack is not None:
+        entry = {
+            "file": pack.file.name,
+            "item": pack.item,
+            "spdx": spdx_of(pack_fields.get("license")),
+            "declared": licence_name(pack_fields.get("license")),
+            "text": pack_fields.get("license"),
+            "author": pack_fields.get("author"),
+            "source": pack_fields.get("source"),
+            "original_author": original,
+            "original_source": original_source,
+        }
+        block["pack"] = {k: v for k, v in entry.items() if v or k == "spdx"}
+    if declared or authors or source:
+        credit = f"'{label}'" + (f" by {block['author']}" if authors else "")
         credit += f", {declared}" if declared else ""
-        block["attribution"] = credit + (f", from {source}" if source else "")
+        credit += f", from {source}" if source else ""
+        if original and original not in authors:
+            credit += f"; original by {original}"
+            credit += f" ({original_source})" if original_source else ""
+        block["attribution"] = credit
     return {k: v for k, v in block.items() if v or k == "spdx"}
+
+
+def licence_differs(asset: MhcloAsset, pack: PackEntry | None) -> bool:
+    """True when both the file and its pack entry name a licence and the two differ (by
+    SPDX id when both have one, else by name)."""
+    other = pack.get("license") if pack is not None else None
+    return bool(asset.licence and other) and not _same_licence(asset.licence, other)
 
 
 # -- the mesh and the material ----------------------------------------------------------
@@ -892,6 +1049,7 @@ def import_mhclo(
     texture_limit: int | None = None,
     normal_green: str = "auto",
     accept_quality: bool = False,
+    pack_json=None,
 ) -> tuple[object, dict]:
     """
     A wearable package from a MakeHuman clothes asset, bound to ``body`` (the
@@ -899,6 +1057,10 @@ def import_mhclo(
 
     ``covers``: ``auto`` takes the skin under ``delete_verts`` when the file lists any, else
     the ray test of ``wearables bind``; ``ray`` always the ray test; ``none`` no covered skin.
+    ``pack_json`` names the pack JSON file of the asset pack; without it the import looks for
+    one (:func:`find_pack_entry`). The pack entry gives the description (``description``
+    replaces it), the author, the source URL, the original author and source, the category
+    as tags and the pack's licence, recorded apart from the file's (``licence.pack``).
     The garment goes through :func:`opensculptboy.wearables.quality.check_garment`
     (``texture_limit``, ``normal_green``); an error-severity item raises
     :class:`~opensculptboy.wearables.quality.QualityError` unless ``accept_quality``.
@@ -933,7 +1095,26 @@ def import_mhclo(
         name or re.sub(r"[^A-Za-z0-9_.-]+", "_", asset.name or stem).strip("_") or stem
     )
     label = label or (asset.name or name).replace("_", " ")
-    licence = licence_block(asset, label, author=author, source=source)
+    pack, pack_notes = find_pack_entry(path, pack_json)
+    warnings += pack_notes
+    if pack_json is not None and pack is None:
+        quality.add(
+            "pack_item_missing",
+            "warning",
+            f"{pathlib.Path(pack_json).name} lists neither the folder name nor the file "
+            f"stem of {pathlib.Path(path).name}; the pack's metadata is left out",
+            "Name the pack JSON file that lists the asset, or leave out --pack-json.",
+        )
+    licence = licence_block(asset, label, author=author, source=source, pack=pack)
+    if licence_differs(asset, pack):
+        quality.add(
+            "licence_mismatch",
+            "info",
+            f"the file's licence {licence_name(asset.licence)!r} and the pack's "
+            f"{licence_name(pack.get('license'))!r} differ; both are recorded (licence and "
+            "licence.pack)",
+            "Check both licences; the package credits the file's licence.",
+        )
     provenance = PUBLIC
     if asset.basemesh and asset.basemesh.lower() not in ("hm08",):
         raise MhcloError(
@@ -1070,8 +1251,11 @@ def import_mhclo(
         if group.startswith("helper-") and np.isin(used, members).any()
     }
     target_vertices = int(from_targets[asset.refs].any(axis=1).sum())
-    all_tags = clean_tags([*asset.tags, *tags])
-    text = description if description is not None else (asset.description or "")
+    pack_tags = pack.category_tags() if pack is not None else []
+    all_tags = clean_tags([*asset.tags, *pack_tags, *tags])
+    text = description
+    if text is None:
+        text = (pack.get("description") if pack else None) or asset.description or ""
     if not text:
         text = f"{label}, a MakeHuman clothes asset" + (
             f" by {licence['author']}" if licence.get("author") else ""
@@ -1098,6 +1282,11 @@ def import_mhclo(
                 "uuid": asset.uuid,
                 "declared_licence": asset.licence,
                 "z_depth": asset.z_depth,
+                **(
+                    {"pack": {"file": pack.file.name, "item": pack.item}}
+                    if pack is not None
+                    else {}
+                ),
             },
         },
         tags=all_tags,
@@ -1110,6 +1299,9 @@ def import_mhclo(
             "licence": dict(wearable.licence),
             "provenance": provenance,
             "slot_from": reason,
+            "pack": None
+            if pack is None
+            else {"file": str(pack.file), "item": pack.item, **pack.fields},
             "mhclo": {
                 "name": asset.name,
                 "uuid": asset.uuid,

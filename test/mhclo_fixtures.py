@@ -6,11 +6,14 @@ tube around the torso bound to the triangles of the base mesh (three indices, we
 offset per vertex, with scale references), and a patch of the ``helper-tights`` geometry
 bound vertex by vertex (single-index bindings), each with an ``.obj`` mesh and an ``.mhmat``
 material with small textures. The defects of the quality tests are options of the writers.
+``makeclothes`` writes the header as MakeClothes exports it, and :func:`write_pack` writes the
+folder layout of a MakeHuman asset pack (``clothes/<item>/`` and ``packs/<pack>.json``).
 """
 
 from __future__ import annotations
 
 import io
+import json
 import pathlib
 
 import numpy as np
@@ -98,6 +101,7 @@ def write_asset(
     helper=False,
     delete_verts=True,
     description="A synthetic shirt for the tests",
+    makeclothes=False,
 ) -> pathlib.Path:
     """Write ``name.mhclo``, ``name.obj``, ``name.mhmat`` and textures into ``folder`` and
     return the ``.mhclo`` path. ``helper`` writes the helper-tights patch instead of the
@@ -177,24 +181,30 @@ def write_asset(
         (folder / f"{name}_alpha.png").write_bytes(png(64, "L", 128))
         mat.append(f"transparencymapTexture {name}_alpha.png")
     (folder / f"{name}.mhmat").write_text("\n".join(mat) + "\n")
-    head = ["# Synthetic clothes asset written by the OpenSculptBoy tests"]
+    if makeclothes:  # the order of MakeClothes' header, without a description
+        head = ["# Exported from MakeClothes (TM)"]
+    else:
+        head = ["# Synthetic clothes asset written by the OpenSculptBoy tests"]
     if author:
         head.append(f"# author {author}")
     if licence:
         head.append(f"# license {licence}")
     head.append("# homepage https://example.org/tests")
-    head += [
-        "basemesh hm08",
-        f"name {name}",
-        f"uuid 00000000-0000-4000-8000-{count:012d}",
-    ]
-    head += [f"tag {t}" for t in tags]
-    if description:
-        head.append(f"description {description}")
-    head += [f"obj_file {name}.obj", f"material {name}.mhmat"]
-    if z_depth is not None:
-        head.append(f"z_depth {z_depth}")
-    head += scale_lines
+    uuid = f"uuid 00000000-0000-4000-8000-{count:012d}"
+    if makeclothes:
+        head += [uuid, "basemesh hm08"] + [f"tag {t}" for t in tags]
+        head += [f"name {name}", f"obj_file {name}.obj"] + scale_lines
+        head += [f"z_depth {z_depth if z_depth is not None else 50}", "max_pole 5"]
+        head += [f"material {name}.mhmat"]
+    else:
+        head += ["basemesh hm08", f"name {name}", uuid]
+        head += [f"tag {t}" for t in tags]
+        if description:
+            head.append(f"description {description}")
+        head += [f"obj_file {name}.obj", f"material {name}.mhmat"]
+        if z_depth is not None:
+            head.append(f"z_depth {z_depth}")
+        head += scale_lines
     head += ["verts 0"] + lines
     if delete_verts and deleted:
         ranges, start = [], deleted[0]
@@ -211,6 +221,36 @@ def write_asset(
         ]
     path = folder / f"{name}.mhclo"
     path.write_text("\n".join(head) + "\n")
+    return path
+
+
+def write_pack(root, pack: str, items: dict) -> pathlib.Path:
+    """Write ``root/packs/<pack>.json``, the metadata file of a MakeHuman asset pack: an
+    object keyed by item folder name, each entry with the fields of the real files (author,
+    category, changed, created, description, license, original_author, original_source,
+    source, thumbnail, type). Each value of ``items`` replaces the defaults of its entry."""
+    root = pathlib.Path(root)
+    (root / "packs").mkdir(parents=True, exist_ok=True)
+    (root / "clothes").mkdir(parents=True, exist_ok=True)
+    data = {}
+    for item, fields in items.items():
+        entry = {
+            "author": "pack tests",
+            "category": "Shirt/T-shirt/Sweater",
+            "changed": "2020-01-01",
+            "created": "2019-01-01",
+            "description": f"The pack's description of {item}",
+            "license": "CC0",
+            "original_author": "",
+            "original_source": "",
+            "source": f"https://example.org/assets/{item}",
+            "thumbnail": f"https://example.org/assets/{item}.thumb.png",
+            "type": "clothes",
+        }
+        entry.update(fields)
+        data[item] = entry
+    path = root / "packs" / f"{pack}.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return path
 
 

@@ -38,8 +38,11 @@ LICENCE_KEYS = (
     "text",
     "author",
     "source",
+    "original_author",
+    "original_source",
     "design_source",
     "attribution",
+    "pack",
 )
 # The JSON Schema of a package's .wearable.json description.
 SCHEMA_PATH = (
