@@ -12,6 +12,15 @@ export type I32 = Int32Array;
 
 // candidate triangles per query point (opensculptboy.wearables.geometry.CANDIDATES)
 export const CANDIDATES = 24;
+// query points per slice of a sliced closest-point query
+export const QUERY_SLICE = 128;
+
+// a computation in steps: it yields between slices of its work, so that the page can run it between frames
+// (wearables/view.ts); runSteps runs every step at once
+export type Steps<T> = Generator<void, T, void>;
+export function runSteps<T>(steps: Steps<T>): T {
+  for (;;) { const r = steps.next(); if (r.done) return r.value; }
+}
 
 // the length of a vector as NumPy's norm sums it
 export const norm3 = (x: number, y: number, z: number) => Math.sqrt(x * x + y * y + z * z);
@@ -32,13 +41,12 @@ export function vertexNormals(V: F64, T: I32, n: number): F64 {
 // the mean length of the edges at each vertex (0 for a vertex of no triangle)
 export function vertexScales(V: F64, T: I32, n: number): F64 {
   const total = new Float64Array(n), count = new Float64Array(n);
-  for (let t = 0; t < T.length; t += 3) {
-    for (const [i, j] of [[0, 1], [1, 2], [2, 0]]) {
-      const p = T[t + i], q = T[t + j];
-      const l = norm3(V[p * 3] - V[q * 3], V[p * 3 + 1] - V[q * 3 + 1], V[p * 3 + 2] - V[q * 3 + 2]);
-      total[p] += l; count[p] += 1; total[q] += l; count[q] += 1;
-    }
-  }
+  const edge = (p: number, q: number) => {
+    const l = norm3(V[p * 3] - V[q * 3], V[p * 3 + 1] - V[q * 3 + 1], V[p * 3 + 2] - V[q * 3 + 2]);
+    total[p] += l; count[p] += 1; total[q] += l; count[q] += 1;
+  };
+  // the edges (0, 1), (1, 2) and (2, 0) of each triangle, in this order
+  for (let t = 0; t < T.length; t += 3) { edge(T[t], T[t + 1]); edge(T[t + 1], T[t + 2]); edge(T[t + 2], T[t]); }
   for (let i = 0; i < n; i++) total[i] /= Math.max(count[i], 1);
   return total;
 }
@@ -222,10 +230,23 @@ export class Surface {
   // the closest point of the surface to each point; with `limit`, a point farther than `limit` from every triangle may
   // get no triangle (distance Infinity)
   closest(points: F64, candidates = CANDIDATES, limit = Infinity): Closest {
-    const n = points.length / 3, m = this.T.length / 3, k = Math.min(candidates, m), grid = this.grid, T = this.T, V = this.V;
-    const triangle = new Int32Array(n), bary = new Float64Array(n * 3), point = new Float64Array(n * 3), distance = new Float64Array(n);
-    const ids = new Int32Array(k), d2 = new Float64Array(k), b = new Float64Array(3), reach = limit + this.radius;
-    for (let i = 0; i < n; i++) {
+    return runSteps(this.closestSteps(points, candidates, limit, Infinity));
+  }
+  // the same query in slices of `slice` points; each point's answer depends on that point alone
+  *closestSteps(points: F64, candidates = CANDIDATES, limit = Infinity, slice = QUERY_SLICE): Steps<Closest> {
+    const n = points.length / 3, m = this.T.length / 3, k = Math.min(candidates, m);
+    const out: Closest = { triangle: new Int32Array(n), bary: new Float64Array(n * 3), point: new Float64Array(n * 3), distance: new Float64Array(n) };
+    const ids = new Int32Array(k), d2 = new Float64Array(k), b = new Float64Array(3);
+    for (let i0 = 0; i0 < n; i0 += slice) {
+      if (i0 > 0) yield;
+      this.closestRange(points, i0, Math.min(n, i0 + slice), k, limit, out, ids, d2, b);
+    }
+    return out;
+  }
+  private closestRange(points: F64, i0: number, i1: number, k: number, limit: number, out: Closest, ids: I32, d2: F64, b: F64) {
+    const grid = this.grid, T = this.T, V = this.V, reach = limit + this.radius;
+    const { triangle, bary, point, distance } = out;
+    for (let i = i0; i < i1; i++) {
       const o = i * 3, got = grid.knn(points[o], points[o + 1], points[o + 2], k, ids, d2, reach);
       if (!got) { distance[i] = Infinity; continue; }
       let best = -1, bestR = Infinity, bd = Infinity, b0 = 0, b1 = 0, b2 = 0;
@@ -240,11 +261,13 @@ export class Surface {
       const a = T[triangle[i] * 3] * 3, bb = T[triangle[i] * 3 + 1] * 3, c = T[triangle[i] * 3 + 2] * 3;
       for (let q = 0; q < 3; q++) point[o + q] = (b0 * V[a + q] + b1 * V[bb + q]) + b2 * V[c + q];
     }
-    return { triangle, bary, point, distance };
   }
   // the distance along the surface normal at the closest point, the closest points and those normals
   signedDistance(points: F64, limit = Infinity): { signed: F64; found: Closest; normal: F64 } {
-    const found = this.closest(points, CANDIDATES, limit), n = points.length / 3, T = this.T, N = this.N;
+    return runSteps(this.signedDistanceSteps(points, limit, Infinity));
+  }
+  *signedDistanceSteps(points: F64, limit = Infinity, slice = QUERY_SLICE): Steps<{ signed: F64; found: Closest; normal: F64 }> {
+    const found = yield* this.closestSteps(points, CANDIDATES, limit, slice), n = points.length / 3, T = this.T, N = this.N;
     const corners = new Int32Array(n * 3);
     for (let i = 0; i < n; i++) for (let q = 0; q < 3; q++) corners[i * 3 + q] = T[found.triangle[i] * 3 + q];
     const normal = unitRows(interpolate(N, corners, found.bary)), signed = new Float64Array(n);
@@ -258,6 +281,10 @@ export class Surface {
 // whether the ray from each origin along its direction meets a triangle within reach (Moller-Trumbore, as
 // opensculptboy.wearables.geometry.ray_hits)
 export function rayHits(origins: F64, directions: F64, V: F64, T: I32, reach: number): Uint8Array {
+  return runSteps(rayHitsSteps(origins, directions, V, T, reach, Infinity));
+}
+// the same test in slices of `slice` rays
+export function* rayHitsSteps(origins: F64, directions: F64, V: F64, T: I32, reach: number, slice = 2048): Steps<Uint8Array> {
   const n = origins.length / 3, hit = new Uint8Array(n), m = T.length / 3;
   if (!m || !n) return hit;
   const D = unitRows(directions.slice()), C = new Float64Array(m * 3);
@@ -270,6 +297,7 @@ export function rayHits(origins: F64, directions: F64, V: F64, T: I32, reach: nu
   }
   const grid = new PointGrid(C, Math.max(reach, 1.5 * edge / m)), near: number[] = [];
   for (let i = 0; i < n; i++) {
+    if (i > 0 && i % slice === 0) yield;
     const o = i * 3, ox = origins[o], oy = origins[o + 1], oz = origins[o + 2], dx = D[o], dy = D[o + 1], dz = D[o + 2];
     grid.ball(ox, oy, oz, reach + radius, near);
     for (const t of near) {

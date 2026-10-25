@@ -58,7 +58,8 @@ class TestWearablesPage(unittest.TestCase):
                 "input[type=file][multiple]:not([webkitdirectory])"
             ).set_input_files(self.files)
             tab.wait_for_function(
-                "() => window.wearStats() && window.wearStats().pieces.length > 0",
+                "() => window.wearStats() && window.wearStats().pieces.length > 0"
+                " && window.wearStats().timing.full === true",
                 timeout=120000,
             )
             out = steps(tab)

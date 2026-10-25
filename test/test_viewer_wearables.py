@@ -278,6 +278,13 @@ class TestViewerWearables(unittest.TestCase):
         ):
             self.compare(case)
 
+    def test_sliced(self):
+        """The page runs the push-out in slices between frames: slices of 7 vertices give
+        every vertex, normal and count of the dress at once."""
+        for name, case in self.out.items():
+            with self.subTest(case=name):
+                self.assertEqual(case["sliced_difference"], 0)
+
     def test_no_outfit(self):
         """A card with an empty active_outfit wears none of its outfits in the page."""
         refs = [p["ref"] for p in self.out["no_outfit"]["pieces"]]

@@ -60,6 +60,15 @@ for (const c of inp.cases) {
   const ms = performance.now() - t0, t1 = performance.now();
   const cover = outfitCover(surface, dressed);
   const coverMs = performance.now() - t1;
+  // the same dress in slices of 7 vertices (as the page runs it between frames) gives the same numbers
+  const sliced = dress(surface, worn, { push: c.push !== false, slice: 7 });
+  let slicedDifference = 0;
+  dressed.forEach((p, k) => {
+    const q = sliced[k];
+    if (q.pushed !== p.pushed) slicedDifference = Infinity;
+    for (let i = 0; i < p.vertices.length; i++)
+      slicedDifference = Math.max(slicedDifference, Math.abs(p.vertices[i] - q.vertices[i]), Math.abs(p.normals[i] - q.normals[i]));
+  });
   const pieces = dressed.map((p, k) => {
     const name = `${c.name}_${k}`;
     write(`${name}_vertices.f64`, p.vertices); write(`${name}_normals.f64`, p.normals);
@@ -67,6 +76,6 @@ for (const c of inp.cases) {
     return { ref: p.ref, shown: p.shown, hidden_groups: p.hiddenGroups, pushed: p.pushed, push_mm: p.pushMm, file: name };
   });
   write(`${c.name}_cover.u8`, cover);
-  report.cases.push({ name: c.name, pieces, ms, cover_ms: coverMs, timing });
+  report.cases.push({ name: c.name, pieces, ms, cover_ms: coverMs, timing, sliced_difference: slicedDifference });
 }
 fs.writeFileSync(path.join(dir, 'output.json'), JSON.stringify(report, null, 1));
