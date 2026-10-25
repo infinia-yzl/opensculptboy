@@ -46,10 +46,16 @@ Straightening the arms, the fingers and the legs into the T-pose folds the skin 
 
 Each export prints its counts and checks the budget of its version: 70,000 triangles, 200 joints, 16 materials and 4096 px textures for VRM 1.0, and 32,000 triangles, 128 joints, 8 materials and 2048 px textures for VRM 0.x. A fitted card's finer detail levels step down to stay within it ([Fit to a reference](reference-fit.md)). `--budget strict` fails a file over its budget with exit status 1, and `--budget off` skips the check. Invalid options, metadata, thumbnails or cards end the command with one error line and exit status 2.
 
+## Spring bones
+
+The spring chains of the [wearables](wearables.md#springs) become `VRMC_springBone` springs in VRM 1.0 files: one spring per chain, its tail last, with the body's sphere and capsule colliders in the groups `head`, `torso`, `legs` and `arms`. VRM 0.x files carry them as `secondaryAnimation`: a bone group per spring of a piece, with the first joint of each chain in `bones`, and a collider group per collider, whose capsules become spheres along their axes. The joints ride on their parent bones into the T-pose and keep the identity rotation, as every node does.
+
+The chains' skin joints count against the joint budget. Unless `--budget off` is given, a spring takes fewer joints (3 at least), then fewer chains, then leaves the file until the file fits, and the export reports it with a `SpringWarning` and in `spring_messages` of the summary: the 104 bones of the `anny` rig leave a VRM 0.x file 24 joints, enough for a cape of 5 chains and a skirt of 7, each of 3 joints.
+
 ## Testing
 
-The files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`). three-vrm loads both versions with their look-at and expressions, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM are untested so far.
+The files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`). three-vrm loads both versions with their look-at, expressions and spring bones, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM are untested so far.
 
 ## Not in the file yet
 
-Hair and spring bones; outfits and lashes come with [Wearables](wearables.md) and [Eyes](eyes.md#lashes). Painted textures come only from a reference bake; other characters get a plain skin colour.
+Hair and its spring bones; outfits with their spring bones and lashes come with [Wearables](wearables.md) and [Eyes](eyes.md#lashes). Painted textures come only from a reference bake; other characters get a plain skin colour.

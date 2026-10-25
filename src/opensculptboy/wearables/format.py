@@ -221,7 +221,8 @@ class Wearable:
     shows. With ``cover_ray`` a vertex of a mask counts as covered only where its normal ray
     also meets the dressed piece (for masks made on another body, and for open pieces such as
     laced boots whose mask spans the gaps).
-    ``springs`` and ``constraints`` are kept for the VRM export (none are written yet).
+    ``springs`` lists the spring chains of the loose parts (:mod:`opensculptboy.wearables.springs`),
+    which the GLB and VRM exports write; ``constraints`` are kept for a later version.
     ``tags`` are free words that describe the piece ("shirt", "long sleeves", "linen") and
     ``description`` is one line of text about it.
     """
@@ -296,6 +297,10 @@ class Wearable:
             if not all(isinstance(g, str) for g in rule.get("groups", [])):
                 raise ValueError(f"The groups of a hides rule are names: {rule!r}.")
         self.garment.check()
+        if self.springs:
+            from opensculptboy.wearables.springs import parse_springs
+
+            parse_springs(self)
 
     def document(self, stem: str) -> dict[str, Any]:
         """The package's ``.wearable.json`` description for the file stem ``stem``."""

@@ -146,8 +146,11 @@ def export_glb(
         dressing: the wearables of the file
             (:class:`opensculptboy.wearables.export.Dressing`): each shown piece becomes a
             mesh skinned by the character's skin, and the body triangles it covers leave the
-            file unless ``dressing.covered`` is ``"keep"``. None dresses a card with
-            wardrobe fields in its active outfit and leaves other cards as they are.
+            file unless ``dressing.covered`` is ``"keep"``. The spring chains of the pieces
+            (:mod:`opensculptboy.wearables.springs`) become joints of the skin after the
+            bones, with the spring settings and the colliders in the scene extras. None
+            dresses a card with wardrobe fields in its active outfit and leaves other cards
+            as they are.
 
     Returns:
         A summary: counts, the file size and the largest dropped skin weight.
@@ -358,9 +361,14 @@ def export_glb(
     if dressing is not None:
         from opensculptboy.wearables.export import covered_body_triangles, dress_card
 
+        from opensculptboy.wearables.export import piece_springs
+
         wear_body, dressed = dress_card(
             character, model, detail_dir, dressing, max_influences
         )
+        springs = piece_springs(wear_body, dressed, model, dressing)
+    else:
+        springs = None
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
     head_material, head, ear_material = None, None, None
     if skin is not None:
@@ -388,7 +396,10 @@ def export_glb(
         or (mouth is not None and mouth.normal)
     ):
         body.add_tangents()  # the MikkTSpace frames that the normal maps were baked in
-    joint_type = np.uint8 if model.bone_count <= 256 else np.uint16
+    joint_count = model.bone_count + (
+        0 if springs is None else springs.skin_joint_count
+    )
+    joint_type = np.uint8 if joint_count <= 256 else np.uint16
     eye_parts = []  # (material, triangle mask) of the eyes of opensculptboy.eyes
     if eyed is not None:
         eye_material, eyes = None, None
@@ -494,13 +505,20 @@ def export_glb(
         if children:
             node["children"] = children
         doc.add_node(node)
+    inverse_bind = np.linalg.inv(bind)
+    spring_extras = None
+    if springs is not None:  # the chains' joints, after the bones (wearables.springs)
+        from opensculptboy.wearables.gltf import add_spring_nodes
+
+        chain_inverse, spring_extras = add_spring_nodes(doc, springs, labels, bind, C3)
+        inverse_bind = np.concatenate([inverse_bind, chain_inverse])
     mesh_index = doc.add_mesh(mesh)
     roots = [j for j, p in enumerate(parents) if p < 0]
-    inverse_bind = np.linalg.inv(bind).transpose(0, 2, 1).reshape(len(labels), 16)
+    inverse_bind = inverse_bind.transpose(0, 2, 1).reshape(len(inverse_bind), 16)
     skin = doc.add_skin(
         {
             "name": character.rig,
-            "joints": list(range(len(labels))),
+            "joints": list(range(len(inverse_bind))),
             "skeleton": roots[0],
             "inverseBindMatrices": doc.accessor(inverse_bind.astype(np.float32)),
         }
@@ -617,6 +635,8 @@ def export_glb(
         doc.scene_extras["opensculptboy"]["wearables"] = wear_summary(
             dressed, removed, dressing
         )
+        if spring_extras is not None:
+            doc.scene_extras["opensculptboy"]["wearables"]["springs"] = spring_extras
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -636,6 +656,9 @@ def export_glb(
     if dressing is not None:
         summary["wearables"] = [p.ref for p in dressed if p.shown]
         summary["removed_body_triangles"] = removed
+        if springs is not None:
+            summary["spring_chains"] = len(springs.chains)
+            summary["joints"] += springs.skin_joint_count
     return summary
 
 

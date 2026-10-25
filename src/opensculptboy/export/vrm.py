@@ -399,6 +399,29 @@ class LookAt:
 
 
 @dataclasses.dataclass
+class SpecCollider:
+    """A body collider in the file: its node, its centre and (a capsule's) other end in the
+    node's frame (the file's axes; the nodes keep the identity rotation), its radius."""
+
+    name: str
+    group: str
+    node: int
+    offset: np.ndarray
+    tail: np.ndarray | None
+    radius: float
+
+
+@dataclasses.dataclass
+class SpecSprings:
+    """The spring chains of the wearables (:mod:`opensculptboy.wearables.springs`): the rig,
+    the node of each joint of each chain and the colliders."""
+
+    rig: Any
+    chain_nodes: list[list[int]]
+    colliders: list[SpecCollider]
+
+
+@dataclasses.dataclass
 class VrmSpec:
     """
     The content of a VRM file, before its serialisation as VRM 1.0 or VRM 0.x.
@@ -437,6 +460,8 @@ class VrmSpec:
     # Skin textures (slot, PNG or JPEG bytes), written first so that their texture indices
     # are their positions in this list.
     images: list[tuple[str, bytes]] = dataclasses.field(default_factory=list)
+    # The spring chains of the wearables and the body colliders, or None.
+    springs: SpecSprings | None = None
 
 
 def vrm_version(version: str) -> str:
@@ -879,9 +904,13 @@ def vrm_spec(
         from opensculptboy.wearables.export import Dressing
 
         dressing = Dressing()
-    dressed, wear_body, worn_meshes = None, None, []
+    dressed, wear_body, worn_meshes, rig = None, None, [], None
     if dressing is not None:
-        from opensculptboy.wearables.export import dress_card, vrm_piece_meshes
+        from opensculptboy.wearables.export import (
+            dress_card,
+            piece_springs,
+            vrm_piece_meshes,
+        )
 
         if dressing.wardrobe:
             raise ValueError(
@@ -890,7 +919,16 @@ def vrm_spec(
         wear_body, dressed = dress_card(
             character, model, detail_dir, dressing, 4, skin_weights=file_skin
         )
-        worn_meshes = vrm_piece_meshes(dressed, rb, G)
+        # The spring chains, within the joints that the budget leaves after the bones.
+        room = None
+        if budget != "off":
+            target = "vrm1" if version == "1.0" else "vrm0"
+            room = budgets.BUDGETS[target]["joints"] - len(labels)
+        rig = piece_springs(wear_body, dressed, model, dressing, room)
+        X = rb.transforms
+        if rig is not None:  # each chain rides on its parent bone into the T-pose
+            X = np.concatenate([X, X[rig.parent_bones(labels)]])
+        worn_meshes = vrm_piece_meshes(dressed, rb, G, X)
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
@@ -917,9 +955,22 @@ def vrm_spec(
         nodes[labels.index(bone)].constraint = RollConstraint(
             labels.index(source), axis, float(weight)
         )
-    inverse_bind = np.tile(np.eye(4), (len(labels), 1, 1))
-    inverse_bind[:, :3, 3] = -joints
-    skins = [SpecSkin(character.rig, list(range(len(labels))), inverse_bind, root)]
+    skin_positions = joints
+    spec_springs = None
+    if (
+        rig is not None
+    ):  # the chains' joints after the bones: skin joints, then the tails
+        spec_springs, chain_positions = _spring_nodes(
+            rig, labels, nodes, rb, G, offset, joints
+        )
+        skin_positions = np.concatenate(
+            [joints, chain_positions[: rig.skin_joint_count]]
+        )
+    inverse_bind = np.tile(np.eye(4), (len(skin_positions), 1, 1))
+    inverse_bind[:, :3, 3] = -skin_positions
+    skins = [
+        SpecSkin(character.rig, list(range(len(skin_positions))), inverse_bind, root)
+    ]
     if mouth is not None:  # the maps of the reference's inner mouth
         for slot, name in mouth.textures().items():
             if slot != "roughness":
@@ -1128,7 +1179,7 @@ def vrm_spec(
     if dressing is not None:
         from opensculptboy.wearables.export import summary as wear_summary
 
-        extras["wearables"] = wear_summary(dressed, removed, dressing)
+        extras["wearables"] = wear_summary(dressed, removed, dressing, rig)
     return VrmSpec(
         version=version,
         frame=G.copy(),
@@ -1155,7 +1206,46 @@ def vrm_spec(
         parents=parents,
         images=[(slot, images[slot]) for slot in VRM_TEXTURE_SLOTS if slot in images]
         + garment_images,
+        springs=spec_springs,
     )
+
+
+def _spring_nodes(rig, labels, nodes, rb, G, offset, joints):
+    """
+    Append the nodes of a spring rig to the spec's ``nodes`` (after the bones, which fill
+    indices 0 to J - 1): each joint rides on its chain's parent bone into the T-pose. Returns
+    the :class:`SpecSprings` and the joints' positions in the file (skin joints first, then
+    the tails), and places the body colliders on their bones in the same way.
+    """
+    J = len(labels)
+    X = rb.transforms
+    world = [
+        np.asarray(p, dtype=np.float64) for p in joints
+    ]  # the bones' file positions
+    spring_nodes = rig.nodes(labels)
+    chain_positions = []
+    chain_nodes = [[0] * c.count for c in rig.chains]
+
+    def turned(bone: str, point):
+        M = X[labels.index(bone)]
+        return G @ (M[:3, :3] @ point + M[:3, 3]) + offset
+
+    for k, node in enumerate(spring_nodes):
+        P = turned(rig.chains[node.chain].parent, node.position)
+        index = len(nodes)
+        assert index == J + k
+        nodes.append(SpecNode(node.name, P - world[node.parent]))
+        nodes[node.parent].children.append(index)
+        world.append(P)
+        chain_positions.append(P)
+        chain_nodes[node.chain][node.joint] = index
+    colliders = []
+    for c in rig.colliders:
+        bone = labels.index(c.bone)
+        head = turned(c.bone, c.head) - world[bone]
+        tail = None if c.sphere else turned(c.bone, c.tail) - world[bone]
+        colliders.append(SpecCollider(c.name, c.group, bone, head, tail, c.radius))
+    return SpecSprings(rig, chain_nodes, colliders), np.asarray(chain_positions)
 
 
 # the maps of a reference's inner mouth (opensculptboy.mouth.inner)
@@ -1783,6 +1873,9 @@ def vrm_document(spec: VrmSpec) -> GltfDocument:
     if spec.version == "1.0":
         doc.extensions["VRMC_vrm"] = _vrm1_extension(spec, thumbnail)
         doc.use_extension("VRMC_vrm")
+        if spec.springs is not None:
+            doc.extensions["VRMC_springBone"] = _vrm1_springs(spec)
+            doc.use_extension("VRMC_springBone")
     else:
         texture = None if thumbnail is None else doc.add_texture(thumbnail)
         doc.extensions["VRM"] = _vrm0_extension(spec, texture, properties)
@@ -1987,8 +2080,153 @@ def _vrm0_extension(spec: VrmSpec, texture: int | None, properties: list) -> dic
         },
         "firstPerson": first_person,
         "blendShapeMaster": {"blendShapeGroups": groups},
-        "secondaryAnimation": {"boneGroups": [], "colliderGroups": []},
+        "secondaryAnimation": _vrm0_springs(spec),
         "materialProperties": properties,
+    }
+
+
+def _spring_joint(spec: VrmSpec, chain, node: int, hit: float, stiffness) -> dict:
+    s = chain.settings
+    return {
+        "node": int(node),
+        "hitRadius": round(float(hit), 6),
+        "stiffness": round(float(stiffness), 6),
+        "gravityPower": float(s.gravity_power),
+        "gravityDir": [
+            round(float(x), 6) for x in spec.frame @ np.array(s.gravity_dir)
+        ],
+        "dragForce": float(s.drag_force),
+    }
+
+
+def _collider_groups(springs: SpecSprings) -> list[tuple[str, list[int]]]:
+    """The collider groups of a file (the groups of
+    :data:`opensculptboy.wearables.springs.COLLIDER_GROUPS` that hold a collider)."""
+    from opensculptboy.wearables.springs import COLLIDER_GROUPS
+
+    out = []
+    for group in COLLIDER_GROUPS:
+        members = [k for k, c in enumerate(springs.colliders) if c.group == group]
+        if members:
+            out.append((group, members))
+    return out
+
+
+def _vrm1_springs(spec: VrmSpec) -> dict:
+    """The ``VRMC_springBone`` extension of a VRM 1.0 file: the body colliders (spheres and
+    capsules), their groups and one spring per chain, its tail last."""
+    springs = spec.springs
+    colliders = []
+    for c in springs.colliders:
+        offset = [round(float(x), 6) for x in c.offset]
+        if c.tail is None:
+            shape = {"sphere": {"offset": offset, "radius": round(float(c.radius), 6)}}
+        else:
+            tail = [round(float(x), 6) for x in c.tail]
+            shape = {
+                "capsule": {
+                    "offset": offset,
+                    "radius": round(float(c.radius), 6),
+                    "tail": tail,
+                }
+            }
+        colliders.append({"node": int(c.node), "shape": shape})
+    groups = _collider_groups(springs)
+    out_springs = []
+    for chain, chain_nodes in zip(springs.rig.chains, springs.chain_nodes):
+        out_springs.append(
+            {
+                "name": chain.name,
+                "joints": [
+                    _spring_joint(spec, chain, n, h, k)
+                    for n, h, k in zip(
+                        chain_nodes,
+                        chain.hit_radii,
+                        chain.settings.joint_stiffness(chain.count),
+                    )
+                ],
+                "colliderGroups": [
+                    g for g, (name, _) in enumerate(groups) if name in chain.colliders
+                ],
+            }
+        )
+    return {
+        "specVersion": "1.0",
+        "colliders": colliders,
+        "colliderGroups": [
+            {"name": name, "colliders": members} for name, members in groups
+        ],
+        "springs": out_springs,
+    }
+
+
+def _vrm0_springs(spec: VrmSpec) -> dict:
+    """
+    The ``secondaryAnimation`` of a VRM 0.x file: a collider group per body collider on its
+    node (spheres only: a capsule becomes spheres along its axis, at most a radius apart),
+    and a bone group per spring of a piece, whose ``bones`` are the first joints of its
+    chains. The offsets and the gravity take UniVRM's axes (z negated), as three-vrm reads
+    them; the hit radius of a group is the least of its joints'.
+    """
+    springs = spec.springs
+    if springs is None:
+        return {"boneGroups": [], "colliderGroups": []}
+
+    def vector(v):
+        return {"x": float(v[0]) + 0.0, "y": float(v[1]) + 0.0, "z": 0.0 - float(v[2])}
+
+    collider_groups, group_of = [], []
+    for c in springs.colliders:
+        if c.tail is None:
+            centres = [c.offset]
+        else:
+            length = float(np.linalg.norm(c.tail - c.offset))
+            count = max(2, int(np.ceil(length / max(c.radius, 1e-3))) + 1)
+            centres = [
+                c.offset + (c.tail - c.offset) * t for t in np.linspace(0, 1, count)
+            ]
+        collider_groups.append(
+            {
+                "node": int(c.node),
+                "colliders": [
+                    {
+                        "offset": vector(np.round(x, 6)),
+                        "radius": round(float(c.radius), 6),
+                    }
+                    for x in centres
+                ],
+            }
+        )
+        group_of.append(c.group)
+    bone_groups: dict[tuple[str, str], dict] = {}
+    for chain, chain_nodes in zip(springs.rig.chains, springs.chain_nodes):
+        key = (chain.piece, chain.spring)
+        s = chain.settings
+        hit = float(np.min(chain.hit_radii[1:])) if chain.count > 1 else 0.0
+        if key not in bone_groups:
+            gravity = spec.frame @ np.array(s.gravity_dir)
+            bone_groups[key] = {
+                "comment": f"{chain.piece}.{chain.spring}",
+                # one stiffness per group: the mean of the joints that turn
+                "stiffiness": round(
+                    float(np.mean(s.joint_stiffness(chain.count)[:-1])), 6
+                ),
+                "gravityPower": float(s.gravity_power),
+                "gravityDir": vector(np.round(gravity, 6)),
+                "dragForce": float(s.drag_force),
+                "center": -1,
+                "hitRadius": round(hit, 6),
+                "bones": [],
+                "colliderGroups": [
+                    k for k, g in enumerate(group_of) if g in chain.colliders
+                ],
+            }
+        group = bone_groups[key]
+        group["hitRadius"] = round(min(group["hitRadius"], hit), 6)
+        group["bones"].append(int(chain_nodes[0]))
+    return {
+        "boneGroups": list(bone_groups.values()),
+        "colliderGroups": collider_groups,
     }
 
 
@@ -2118,8 +2356,12 @@ def export_vrm(
             (:class:`opensculptboy.wearables.export.Dressing`; a wardrobe is for GLB files
             only): each shown piece becomes a mesh bound into the T-pose with the file's
             skin weights at its bound points and an MToon material, and the covered body
-            triangles leave the file unless ``dressing.covered`` is ``"keep"``. None dresses
-            a card with wardrobe fields in its active outfit (none with ``bare``).
+            triangles leave the file unless ``dressing.covered`` is ``"keep"``. The spring
+            chains of the pieces become ``VRMC_springBone`` springs (VRM 1.0) or
+            ``secondaryAnimation`` bone groups (VRM 0.x) with the body colliders; unless
+            ``budget`` is ``"off"``, they take fewer joints to keep the file within its
+            joint budget. None dresses a card with wardrobe fields in its active outfit
+            (none with ``bare``).
 
     Returns:
         A summary: counts, the file size, the version and the budget messages.
@@ -2161,6 +2403,9 @@ def export_vrm(
         summary["wearables"] = [
             p["ref"] for p in spec.extras["wearables"]["pieces"] if p["shown"]
         ]
+    if spec.springs is not None:
+        summary["spring_chains"] = len(spec.springs.rig.chains)
+        summary["spring_messages"] = list(spec.springs.rig.messages)
     if tier is not None:
         summary["tier"] = tier.get("name")
     return summary
