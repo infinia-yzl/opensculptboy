@@ -303,9 +303,12 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
         if free.sum() > target:
             out_t, out_l, out_g = T[free], labels[free], groups[free]
             out_o = np.flatnonzero(free)
-            errors, passes = {}, 0
+            errors, passes, thinned = {}, 0, 0
+            wearable_groups = {
+                g for g, piece in enumerate(pieces) if piece.kind == "wearable"
+            }
             # a run that stops above the target (the floors, or no valid collapse left) runs
-            # again with the floors halved
+            # again after thinning the small parts, then with lower floors
             for attempt in range(4):
                 r = decimate(  # one below: a last collapse can stop one above
                     positions,
@@ -327,8 +330,35 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
                 passes += r.passes
                 if len(out_t) <= target:
                     break
-                floors = {g: f // 2 for g, f in floors.items()}
-            run = {"passes": passes, "stopped": r.stopped, "runs": attempt + 1}
+                # first thin the small parts of the wearables (fur cards, gems) that the
+                # views see least, then halve the wearables' floors, the body's last
+                keep = _thin_parts(
+                    positions,
+                    out_t,
+                    out_g,
+                    out_o,
+                    seen,
+                    importance,
+                    wearable_groups,
+                    len(out_t) - target,
+                )
+                thinned += int((~keep).sum())
+                out_t, out_l, out_g, out_o = (
+                    a[keep] for a in (out_t, out_l, out_g, out_o)
+                )
+                if len(out_t) <= target:
+                    break
+                if attempt >= 1:
+                    floors = {
+                        g: f // 2 if (g in wearable_groups or attempt >= 2) else f
+                        for g, f in floors.items()
+                    }
+            run = {
+                "passes": passes,
+                "stopped": r.stopped,
+                "runs": attempt + 1,
+                "thinned_triangles": thinned,
+            }
         else:
             out_t, out_l, out_g, out_o = (
                 T[free],
@@ -378,6 +408,38 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
         mesh.body.triangles = np.concatenate([p.triangles for p in new_prims])
         mesh.body.triangle_faces = np.concatenate(faces)
     return {"pieces": report, "seconds": round(time.time() - started, 2), **run}
+
+
+def _thin_parts(
+    positions, T, groups, origin, seen, importance, wearable_groups, excess
+):
+    """A mask of the triangles to keep after removing whole small parts (connected parts of
+    :data:`~opensculptboy.export.decimate.MIN_PART` triangles or fewer) of the wearable groups,
+    those that the views see least first (their seen pixels times their importance), until
+    ``excess`` triangles are gone (or none is left)."""
+    from opensculptboy.export.decimate import MIN_PART, _components, weld
+
+    keep = np.ones(len(T), bool)
+    if excess <= 0 or len(T) == 0:
+        return keep
+    wid = weld(positions)
+    W = int(wid.max(initial=-1)) + 1
+    Tw = wid[T]
+    a = np.concatenate([Tw[:, 0], Tw[:, 1]])
+    b = np.concatenate([Tw[:, 1], Tw[:, 2]])
+    part = _components(W, a, b)[Tw[:, 0]]
+    size = np.bincount(part, minlength=W)[part]
+    small = (size <= MIN_PART) & np.isin(groups, sorted(wearable_groups))
+    if not small.any():
+        return keep
+    score_t = seen[origin] * importance[T].mean(1)
+    score = np.bincount(part[small], weights=score_t[small], minlength=W)
+    parts = np.unique(part[small])
+    order = parts[np.argsort(score[parts], kind="stable")]
+    count = np.bincount(part[small], minlength=W)[order]
+    take = order[: int(np.searchsorted(np.cumsum(count), excess)) + 1]
+    keep[np.isin(part, take) & small] = False
+    return keep
 
 
 def _row_lookup(rows: np.ndarray, faces: np.ndarray):
