@@ -68,7 +68,9 @@ def _load_character(path: str | None, parser=None) -> Character:
     if path is None:
         return Character()
     try:
-        return Character.from_dict(json.loads(pathlib.Path(path).read_text()))
+        return Character.from_dict(
+            json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+        )
     except (OSError, ValueError, TypeError) as error:
         if parser is None:
             raise
@@ -102,7 +104,7 @@ def _with_eyes(character, value, parser):
     eyes = dict(eyes) if isinstance(eyes, dict) else {}
     if value:
         try:
-            eyes.update(json.loads(pathlib.Path(value).read_text()))
+            eyes.update(json.loads(pathlib.Path(value).read_text(encoding="utf-8")))
             check_eyes(eyes)
         except (OSError, ValueError, TypeError) as error:
             parser.error(f"--eyes {value}: {_one_line(error)}")
@@ -126,7 +128,7 @@ def _with_teeth(character, value, parser):
     teeth = dict(material.get("teeth", {}))
     if value:
         try:
-            teeth.update(json.loads(pathlib.Path(value).read_text()))
+            teeth.update(json.loads(pathlib.Path(value).read_text(encoding="utf-8")))
             check_teeth(teeth)
         except (OSError, ValueError, TypeError) as error:
             parser.error(f"--teeth {value}: {_one_line(error)}")
@@ -225,7 +227,9 @@ def _export_vrm(args, parser) -> int:
     meta = None
     if args.meta:
         try:
-            meta = VrmMeta.from_dict(json.loads(pathlib.Path(args.meta).read_text()))
+            meta = VrmMeta.from_dict(
+                json.loads(pathlib.Path(args.meta).read_text(encoding="utf-8"))
+            )
         except (OSError, ValueError, TypeError) as error:
             parser.error(f"--meta {args.meta}: {_one_line(error)}")
     if not args.author and not (meta and meta.authors):
@@ -312,7 +316,7 @@ def _export_tier(args, parser) -> int:
         if args.meta:
             try:
                 meta = VrmMeta.from_dict(
-                    json.loads(pathlib.Path(args.meta).read_text())
+                    json.loads(pathlib.Path(args.meta).read_text(encoding="utf-8"))
                 )
             except (OSError, ValueError, TypeError) as error:
                 parser.error(f"--meta {args.meta}: {_one_line(error)}")
@@ -442,7 +446,7 @@ def _pose(args) -> int:
         if args.card == "-":
             print(text)
         else:
-            pathlib.Path(args.card).write_text(text + "\n")
+            pathlib.Path(args.card).write_text(text + "\n", encoding="utf-8")
             written.append(args.card)
     if args.glb:
         from opensculptboy.export.gltf import export_glb
@@ -456,11 +460,11 @@ def _pose(args) -> int:
         desc = f"{character.name}, posed from {pathlib.Path(args.image).name}"
         if args.svg:
             text = silhouette_svg(vertices, faces, view, size=size, desc=desc)
-            pathlib.Path(args.svg).write_text(text)
+            pathlib.Path(args.svg).write_text(text, encoding="utf-8")
             written.append(args.svg)
         if args.outline:
             text = outline_svg(vertices, faces, view, size=size, desc=desc)
-            pathlib.Path(args.outline).write_text(text)
+            pathlib.Path(args.outline).write_text(text, encoding="utf-8")
             written.append(args.outline)
         if args.png:
             shaded_png(vertices, faces, view, size=size).save(args.png)
@@ -619,7 +623,7 @@ def _merge_material(material: dict, path: str | None, parser) -> dict:
 
     if path:
         try:
-            extra = json.loads(pathlib.Path(path).read_text())
+            extra = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
             parser.error(f"{path}: {_one_line(error)}")
         if not isinstance(extra, dict):
@@ -667,7 +671,7 @@ def _bake(args, parser) -> int:
             for e in detail.get("levels", [])
         ]
     character.detail = detail
-    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n")
+    out.write_text(json.dumps(character.to_dict(), indent=2) + "\n", encoding="utf-8")
     from opensculptboy.fit.handoff import load_handoff
 
     handoff = load_handoff(args.handoff)
@@ -1384,9 +1388,9 @@ def main(argv=None) -> int:
         "convert",
         help="convert a character card between the anny and sculpt meshes",
         description="Write a character card on another mesh (anny or sculpt): the same "
-        "parameters, its detail offsets and ear tile UVs converted level by level and "
-        "written next to the new card; the textures stay on anny's atlas. See "
-        "docs/sculpt-topology.md.",
+        "parameters, its detail offsets, ear tile UVs, eye poses and mouth poses converted "
+        "level by level and written next to the new card; the textures stay on anny's "
+        "atlas. See docs/sculpt-topology.md.",
     )
     c.add_argument("card", help="the character card (JSON) to convert")
     c.add_argument(
