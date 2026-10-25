@@ -64,6 +64,10 @@ THIN_PART = 16
 THIN_SHARE = 0.5
 HIDDEN_PART = 64
 HIDDEN_RATIO = 0.35
+# the importance of a wearable's connected part smaller than SMALL_PART_AREA (m^2) grows
+# with the square root of the ratio, up to SMALL_PART_BOOST times
+SMALL_PART_AREA = 0.002
+SMALL_PART_BOOST = 8.0
 # morph targets whose shapes join the cost of the body's reduction (the largest movers)
 SHAPES = 6
 
@@ -249,6 +253,33 @@ def reduce_spec(spec, limit: int, options: FitOptions | None = None) -> dict:
             key, number = np.unique(e, axis=0, return_counts=True)
             ends = np.unique(key[number == 1])
             locked[ends[face[ends - offsets[piece.mesh]] > 0.5]] = True
+    # small parts of the wearables (a pendant, a buckle, a gem) cost little to collapse by
+    # area, yet they draw the eye: their importance grows as their area shrinks
+    wear_rows = np.isin(
+        groups, [g for g, p in enumerate(pieces) if p.kind == "wearable"]
+    )
+    if wear_rows.any():
+        from opensculptboy.export.decimate import _components, weld
+
+        wid = weld(positions)
+        n_w = int(wid.max(initial=-1)) + 1
+        Tw = wid[T[wear_rows]]
+        part = _components(
+            n_w,
+            np.concatenate([Tw[:, 0], Tw[:, 1]]),
+            np.concatenate([Tw[:, 1], Tw[:, 2]]),
+        )
+        part_area = np.bincount(part[Tw[:, 0]], weights=area[wear_rows], minlength=n_w)
+        boost = np.clip(
+            np.sqrt(SMALL_PART_AREA / np.maximum(part_area, 1e-12)),
+            1.0,
+            SMALL_PART_BOOST,
+        )
+        boost_v = np.ones(len(positions))
+        rows_w = T[wear_rows]
+        for k in range(3):
+            np.maximum.at(boost_v, rows_w[:, k], boost[part[Tw[:, k]]])
+        importance *= boost_v
     shapes = []
     body_mesh = spec.meshes[0]
     if body_mesh.body.targets:
