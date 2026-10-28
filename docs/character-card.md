@@ -80,10 +80,11 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `subsurface` | the scattering: weight 0 to 1, mean free path per RGB channel in mm, IOR, anisotropy, and one of Blender's methods (`random_walk_skin`, `random_walk`, `burley`) | [Fit to a reference](reference-fit.md#the-skin-material-in-the-exports) |
 | `head`, `ears` | the head tile's and the ear tile's maps; `ears.uvs` holds the ears' own UVs | [Fit to a reference](reference-fit.md#textures) |
 | `eyes` | the eyes of `--eyes`: iris, pupil, sclera, cornea and caruncle; `false` keeps anny's eyeballs | [Eyes](eyes.md) |
-| `reference_eyes` | the cornea's values and the gaze measured on the reference, used where `eyes` says `"auto"`, and the file of the reference's blinks (`poses`); a fitted card's eyes are on without `eyes` | [Eyes](eyes.md) |
+| `reference_eyes` | the cornea's values and the gaze measured on the reference, used where `eyes` says `"auto"`, the file of the reference's blinks (`poses`) and the file of the exports' eye targets for the web viewer (`blinks`); a fitted card's eyes are on without `eyes` | [Eyes](eyes.md) |
 | `lashes` | the lashes that come with the eyes: the reference's or generic ones; `false` leaves them out | [Eyes](eyes.md#lashes) |
+| `hair`, `brows` | the reference's hair and brows of a fitted card: the groom file and the textures of its materials; the brows come with the eyes; `false` leaves either out | [Fit to a reference](reference-fit.md#hair-and-brows) |
 | `teeth` | the teeth of `--teeth`: the reference's or a generic set | [Teeth](teeth.md) |
 | `mouth` | the reference's inner mouth and its mouth poses | [Mouth](mouth.md) |
 | `tiers` | per rendering-budget tier, the normal maps baked for that tier's mesh | [Budget tiers](budget-tiers.md) |
 
-A card without `material` gets the exporters' own plain skin. A section that holds only `eyes`, `reference_eyes`, `lashes`, `teeth` or `mouth` keeps that plain skin and changes those parts alone. `fit --textures` and `opensculptboy bake` write the section of a fitted character, and `--material skin.json` lays further values over it.
+A card without `material` gets the exporters' own plain skin. A section that holds only `eyes`, `reference_eyes`, `lashes`, `teeth`, `mouth`, `hair` or `brows` keeps that plain skin and changes those parts alone. `fit --textures` and `opensculptboy bake` write the section of a fitted character, and `--material skin.json` lays further values over it.

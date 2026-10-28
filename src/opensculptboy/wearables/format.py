@@ -85,7 +85,10 @@ class Material:
     """
     A garment material in glTF metallic-roughness terms. ``textures`` maps the slots
     ``base_color``, ``metallic_roughness``, ``normal``, ``occlusion`` and ``emissive`` to PNG or
-    JPEG bytes on the garment's UVs.
+    JPEG bytes on the garment's UVs. ``extras`` (the material's glTF extras) and ``toon``
+    (fields of :class:`~opensculptboy.export.mtoon.ToonMaterial` for the VRM files, such as
+    ``render_queue_offset``) serve the pieces made in memory (:mod:`opensculptboy.groom`); a
+    package keeps neither.
     """
 
     name: str
@@ -98,6 +101,8 @@ class Material:
     double_sided: bool = False
     normal_scale: float = 1.0
     textures: dict = dataclasses.field(default_factory=dict)
+    extras: dict = dataclasses.field(default_factory=dict)
+    toon: dict = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass

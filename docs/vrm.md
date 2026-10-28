@@ -70,10 +70,14 @@ The spring chains of the [wearables](wearables.md#springs) become `VRMC_springBo
 
 The chains' skin joints count against the joint budget. Unless `--budget off` is given, a spring takes fewer joints (3 at least), then fewer chains, then leaves the file until the file fits, and the export reports it with a `SpringWarning` and in `spring_messages` of the summary: the 104 bones of the `anny` rig leave a VRM 0.x file 24 joints, enough for a cape of 5 chains and a skirt of 7, each of 3 joints.
 
+## Hair and brows
+
+A fitted card's reference hair ([Fit to a reference](reference-fit.md#hair-and-brows)) is a mesh `hair` of its own, skinned with the hair's own weights, and its chains become springs as the wearables' do, with the spring preset `hair` (a stiffness of 4, a gravity power of 0.15, a drag of 0.6 and a hit radius of 1 cm). MToon draws no vertex colours in every app, so each hair material takes the mean colour of its vertices as its base colour, and its blended cards write depth (`transparentWithZWrite`) with a render queue offset per material in the groom's order, after the cap; the hair's triangles run from the inside out, so the outer cards draw over the inner ones. The brows are part of the body mesh, as the lashes are, with an MToon material `brows` blended by their texture's alpha; they follow the skin's morph targets, so the expressions move them. `--bare` leaves both out.
+
 ## Testing
 
 The files pass the VRM 1.0 and 0.x schemas (`test/test_vrm_schema.py`), and the fitted files of `--fit-budget` too (`test/test_vrm_fit_budget.py`, with synthetic meshes and garments). three-vrm loads both versions with their look-at, expressions and spring bones, and the Khronos glTF validator reports no errors (`test/test_vrm_three.py`). VSeeFace, Warudo, VMagicMirror and UniVRM are untested so far.
 
 ## Not in the file yet
 
-Hair and its spring bones; outfits with their spring bones and lashes come with [Wearables](wearables.md) and [Eyes](eyes.md#lashes). Painted textures come only from a reference bake; other characters get a plain skin colour.
+Hair for a card without a reference: the reference's hair of a fitted card comes with its spring bones (see "Hair and brows"), and outfits with their spring bones and lashes come with [Wearables](wearables.md) and [Eyes](eyes.md#lashes). Painted textures come only from a reference bake; other characters get a plain skin colour.

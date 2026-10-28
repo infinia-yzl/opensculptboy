@@ -118,7 +118,9 @@ class DressedPiece:
     """
     One piece on a body: the package, its rest vertices and normals (Anny's frame), its skin
     weights and bones, whether it shows, which of its groups other pieces hide now and which
-    they can hide, and how far the push-out moved it.
+    they can hide, and how far the push-out moved it. A piece made in memory may carry vertex
+    colours (``colors``, (V, 4) linear RGBA, ``COLOR_0`` in GLB files) and the marker of a groom
+    (``groom``, :class:`opensculptboy.groom.export.GroomPiece`), whose extras its node records.
     """
 
     ref: str
@@ -135,6 +137,8 @@ class DressedPiece:
     pushed: int = 0
     push_mm: float = 0.0
     source: str | None = None
+    colors: np.ndarray | None = None
+    groom: object = None
 
     @property
     def garment(self) -> Garment:

@@ -158,12 +158,14 @@ PRESETS = {
     "cape": SpringSettings(4.0, 0.6, (0.0, 0.0, -1.0), 0.5, 0.04, stiffness_top=2.0),
     "skirt": SpringSettings(3.0, 0.3, (0.0, 0.0, -1.0), 0.5, 0.03, stiffness_top=2.0),
     "hem": SpringSettings(3.0, 0.4, (0.0, 0.0, -1.0), 0.5, 0.02, stiffness_top=2.0),
+    # the chains of a reference's hair (opensculptboy.groom): short, firm, a slight sway
+    "hair": SpringSettings(4.0, 0.15, (0.0, 0.0, -1.0), 0.6, 0.01, stiffness_top=2.0),
 }
 SLOT_PRESETS = {"cloak": "cape", "legs": "skirt", "under": "skirt"}
 # The bone that the chains of a preset hang from when the spring names none (else the
 # strongest torso bone at each chain's first joint: the upper spine or a clavicle for a cape).
 PRESET_PARENTS = {"skirt": "root"}
-COLUMNS = {"cape": 5, "skirt": 8, "hem": 3}
+COLUMNS = {"cape": 5, "skirt": 8, "hem": 3, "hair": 1}
 JOINTS = 4
 
 

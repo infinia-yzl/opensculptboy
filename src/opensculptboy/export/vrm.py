@@ -695,11 +695,14 @@ def vrm_spec(
     images = texture_images(character, textures, detail_dir)
     skin = character.skin_material()
     eye = character.eye_material()
-    lashes, lash_png = None, None
+    lashes, lash_png, brows = None, None, None
     if eye is not None:  # the lashes of opensculptboy.eyes.lashes come with the eyes
         from opensculptboy.eyes.lashes import eyed_lashes
+        from opensculptboy.groom.export import card_groom
 
         lashes, lash_png = eyed_lashes(character, detail_dir)
+        if not bare:  # the reference's brows (opensculptboy.groom)
+            brows = card_groom(character, "brows", detail_dir)
     ear_topology, ears = ear_mesh(character, skin, images, detail, detail_dir)
     if textures is None:  # the card's maps, baked on its finest level
         from opensculptboy.texture.levels import level_normals
@@ -739,6 +742,7 @@ def vrm_spec(
                 skin_baked=baked_skin(images),
                 lashes=lashes,
                 layout=layout,
+                brows=None if brows is None else brows[0],
             )
             targets, blinks = _vrm_blinks(
                 eyed, base, offsets, actions, targets, rb, character, None, detail_dir
@@ -848,6 +852,7 @@ def vrm_spec(
                 skin_baked=baked_skin(images),
                 lashes=lashes,
                 layout=layout,
+                brows=None if brows is None else brows[0],
             )
             targets, blinks = _vrm_blinks(
                 eyed,
@@ -905,30 +910,44 @@ def vrm_spec(
 
         dressing = Dressing()
     dressed, wear_body, worn_meshes, rig = None, None, [], None
-    if dressing is not None:
+    # the reference's hair (opensculptboy.groom): a mesh of its own with its spring chains
+    hair = []
+    wants_hair = not bare and character.groom_section("hair") is not None
+    if dressing is not None or wants_hair:
         from opensculptboy.wearables.export import (
+            Dressing,
             dress_card,
             piece_springs,
             vrm_piece_meshes,
         )
 
-        if dressing.wardrobe:
+        if dressing is not None and dressing.wardrobe:
             raise ValueError(
                 "A wardrobe file is a GLB file; a VRM file wears one outfit."
             )
-        wear_body, dressed = dress_card(
-            character, model, detail_dir, dressing, 4, skin_weights=file_skin
-        )
+        if dressing is not None:
+            wear_body, dressed = dress_card(
+                character, model, detail_dir, dressing, 4, skin_weights=file_skin
+            )
+        if wants_hair:
+            from opensculptboy.groom.export import hair_pieces
+            from opensculptboy.wearables.fit import card_body
+
+            if wear_body is None:
+                wear_body = card_body(character, model, detail_dir)
+            hair = hair_pieces(character, wear_body, detail_dir, 4, vrm=True)
         # The spring chains, within the joints that the budget leaves after the bones.
         room = None
         if budget != "off":
             target = "vrm1" if version == "1.0" else "vrm0"
             room = budgets.BUDGETS[target]["joints"] - len(labels)
-        rig = piece_springs(wear_body, dressed, model, dressing, room)
+        rig = piece_springs(
+            wear_body, (dressed or []) + hair, model, dressing or Dressing(), room
+        )
         X = rb.transforms
         if rig is not None:  # each chain rides on its parent bone into the T-pose
             X = np.concatenate([X, X[rig.parent_bones(labels)]])
-        worn_meshes = vrm_piece_meshes(dressed, rb, G, X)
+        worn_meshes = vrm_piece_meshes((dressed or []) + hair, rb, G, X)
 
     # Centring: the hips at X = Z = 0, the lowest vertex at Y = 0.
     joints = np.asarray(rb.joint_positions, dtype=np.float64) @ G.T
@@ -1008,6 +1027,8 @@ def vrm_spec(
         eye_parts = _eye_part_toon_materials(
             images, eyed, eye, model, baked_eyes, lash_png, character.lash_material()
         )
+        if brows is not None:  # the reference's brows (opensculptboy.groom)
+            eye_parts += _brow_toon_materials(images, eyed, brows)
     if eye_material is not None:
         from opensculptboy.export.body import eyeball_triangles
 
@@ -1180,6 +1201,16 @@ def vrm_spec(
         from opensculptboy.wearables.export import summary as wear_summary
 
         extras["wearables"] = wear_summary(dressed, removed, dressing, rig)
+    elif rig is not None:  # the hair's chains alone
+        extras["springs"] = rig.extras()
+    if hair:
+        from opensculptboy.export.gltf import _groom_extras
+
+        extras["hair"] = _groom_extras(hair[0], rig)
+    if brows is not None and eyed is not None:
+        from opensculptboy.export.gltf import _brow_extras
+
+        extras["brows"] = dict(_brow_extras(eyed, brows[0]), source="reference")
     return VrmSpec(
         version=version,
         frame=G.copy(),
@@ -1268,7 +1299,35 @@ VRM_TEXTURE_SLOTS = (
     "shade",
     # the lashes of opensculptboy.eyes.lashes (last, so that no other slot's index moves)
     "lashes",
+    # the reference's brows of opensculptboy.groom (after the lashes, for the same reason)
+    "brows",
 )
+
+
+def _brow_toon_materials(images: dict, eyed, brows):
+    """The MToon material and triangle mask of the reference's brows on an eyed mesh: the
+    texture of their first material (slot ``brows``) times its base colour factor, blended by
+    its alpha and double-sided, drawn after the lashes."""
+    from opensculptboy.groom.export import brow_masks
+
+    data, textures = brows
+    masks = brow_masks(eyed)
+    if not masks:
+        return []
+    first = data.materials[min(masks)]
+    image = textures.get(first.name, {}).get("base_color")
+    material = mtoon.soft_material("brows", tuple(first.base_color))
+    material.shade_color = tuple(0.8 * c for c in first.base_color[:3])
+    if image is not None:
+        images["brows"] = image
+        material.base_texture = material.shade_texture = _texture_index(images, "brows")
+    material.alpha_mode = first.alpha_mode
+    material.alpha_cutoff = float(first.alpha_cutoff)
+    material.double_sided = bool(first.double_sided)
+    mask = np.zeros_like(next(iter(masks.values())))
+    for m in masks.values():
+        mask |= m
+    return [(material, mask)]
 
 
 def _texture_index(images: dict, slot: str) -> int | None:

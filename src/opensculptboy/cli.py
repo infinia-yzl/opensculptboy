@@ -590,6 +590,8 @@ def _fit(args, parser) -> int:
     result.write(out, textures=textures)
     _write_mouth_poses(out, handoff, reference)
     _write_eye_poses(out, handoff, reference)
+    if textures:
+        _write_page_blinks(out)
     summary = {
         "card": str(out),
         "levels": sorted(int(k) for k in result.offsets),
@@ -632,6 +634,20 @@ def _write_textures(baked, card: pathlib.Path, subdiv: int, topology: str = "ann
             path = card.parent / f"{stem}.lashes.png"
             path.write_bytes(png_bytes(baked.lash_texture))
             names["lashes_base_color"] = path.name
+    for kind, (groom, images) in (getattr(baked, "grooms", None) or {}).items():
+        from opensculptboy.export.document import png_bytes
+        from opensculptboy.groom.data import file_stem
+
+        path = card.parent / f"{stem}.{kind}.safetensors"
+        groom.save(path)
+        names[kind] = path.name
+        files = {}
+        for material, slots in images.items():
+            for slot, image in slots.items():
+                path = card.parent / f"{stem}.{kind}.{file_stem(material)}.{slot}.png"
+                path.write_bytes(png_bytes(image))
+                files.setdefault(material, {})[slot] = path.name
+        names[f"{kind}_textures"] = files
     if getattr(baked, "mouth", None) is not None:  # the reference's inner mouth
         path = card.parent / f"{stem}.mouth.safetensors"
         baked.mouth.save(path)
@@ -665,6 +681,16 @@ def _write_eye_poses(card: pathlib.Path, handoff, reference=None) -> None:
     path = write_card_eye_poses(card, handoff, reference)
     if path is not None:
         print(f"eye poses: {path.name}", file=sys.stderr)
+
+
+def _write_page_blinks(card: pathlib.Path) -> None:
+    """Write a fitted card's blinks for the web viewer (``opensculptboy.eyes.page``): the
+    eye targets of its GLB export at the level of its bake."""
+    from opensculptboy.eyes.page import write_page_blinks
+
+    path = write_page_blinks(card)
+    if path is not None:
+        print(f"page blinks: {path.name}", file=sys.stderr)
 
 
 def _mouth_rig(character) -> None:
@@ -738,6 +764,7 @@ def _bake(args, parser) -> int:
     if "mouth" in (character.material or {}):
         _write_mouth_poses(out, handoff)
     _write_eye_poses(out, handoff)
+    _write_page_blinks(out)
     _result({"card": str(out), "covered": round(baked.covered_share, 4), **textures})
     return 0
 

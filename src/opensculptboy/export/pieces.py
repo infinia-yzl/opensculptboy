@@ -4,8 +4,8 @@
 The pieces of a VRM file and what each one costs against the budget.
 
 A VRM file of :mod:`opensculptboy.export.vrm` holds the body mesh, whose primitives draw the
-skin (with its head and ear tiles), the eyes, the lashes and the teeth or the inner mouth, and
-one mesh per shown wearable piece. :func:`spec_pieces` names these pieces in a
+skin (with its head and ear tiles), the eyes, the lashes, the brows and the teeth or the inner
+mouth, and one mesh per shown wearable piece and for the hair. :func:`spec_pieces` names these pieces in a
 :class:`~opensculptboy.export.vrm.VrmSpec`, and :func:`piece_report` counts for each one its
 triangles, its vertices (those its triangles use), its materials, its textures with their
 sizes and the joints that weight its vertices. :func:`spec_counts` gives the counts of the file
@@ -28,6 +28,7 @@ BODY_PIECES = {
     "eyes": "eyes",
     "conjunctiva": "eyes",
     "lashes": "lashes",
+    "brows": "brows",
     "teeth": "teeth",
     "gums": "teeth",
     "mouth": "mouth",
@@ -46,8 +47,9 @@ TEXTURE_FIELDS = (
 
 @dataclasses.dataclass
 class Piece:
-    """A piece of a VRM file: a name, a kind (``body``, ``eyes``, ``lashes``, ``teeth``,
-    ``mouth`` or ``wearable``) and its primitives, as (mesh, primitive) indices of the spec."""
+    """A piece of a VRM file: a name, a kind (``body``, ``eyes``, ``lashes``, ``brows``,
+    ``teeth``, ``mouth`` or ``wearable``, which the hair's mesh is too) and its primitives, as
+    (mesh, primitive) indices of the spec."""
 
     name: str
     kind: str

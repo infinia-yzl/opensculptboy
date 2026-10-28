@@ -92,6 +92,8 @@ def add_materials(doc: GltfDocument, materials, cache: dict | None = None) -> li
             entry["alphaCutoff"] = float(material.alpha_cutoff)
         if material.double_sided:
             entry["doubleSided"] = True
+        if getattr(material, "extras", None):
+            entry["extras"] = dict(material.extras)
         out.append(doc.add_material(entry))
     return out
 
@@ -202,6 +204,10 @@ def add_pieces(
                 (piece.normals @ frame.T).astype(np.float32), ARRAY_BUFFER
             ),
         }
+        if getattr(piece, "colors", None) is not None:
+            attributes["COLOR_0"] = doc.accessor(
+                np.asarray(piece.colors, dtype=np.float32), ARRAY_BUFFER
+            )
         if garment.uvs is not None:
             attributes["TEXCOORD_0"] = doc.accessor(
                 np.asarray(garment.uvs, dtype=np.float32), ARRAY_BUFFER
@@ -275,6 +281,8 @@ def add_pieces(
             "name": piece.ref,
             "extras": {"opensculptboy_wearable": piece.extras()},
         }
+        if getattr(piece, "groom", None) is not None:  # opensculptboy.groom
+            entry["extras"] = {"opensculptboy_groom": piece.groom.extras()}
         if mesh is not None:
             entry.update(mesh=mesh, skin=skin)
         if visibility and not piece.shown:

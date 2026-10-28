@@ -265,6 +265,7 @@ def vrm_piece_materials(piece, first_texture: int, images: list):
                 alpha_mode=material.alpha_mode,
                 alpha_cutoff=float(material.alpha_cutoff),
                 double_sided=bool(material.double_sided),
+                **dict(getattr(material, "toon", None) or {}),
             )
         )
     return out, images

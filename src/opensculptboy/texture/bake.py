@@ -91,6 +91,9 @@ class BakedTextures:
     lashes: object = None
     lash_texture: np.ndarray | None = None
     lash_values: dict = dataclasses.field(default_factory=dict)
+    # the reference's hair and brows in the card's rest frame by kind: (GroomData, textures by
+    # material and slot), for material.hair and material.brows (opensculptboy.groom)
+    grooms: dict = dataclasses.field(default_factory=dict)
 
     def png_files(self) -> dict[str, bytes]:
         """The textures as PNG files by slot (``"base_color"``, ``"normal"``, ``"eyes"``,
@@ -159,6 +162,13 @@ class BakedTextures:
                 ),
                 **self.lash_values,
             }
+        for kind in ("hair", "brows"):
+            if kind in names:
+                material[kind] = {
+                    "source": "reference",
+                    "mesh": names[kind],
+                    "textures": dict(names.get(f"{kind}_textures", {})),
+                }
         if "mouth" in names:
             material["mouth"] = {"mesh": names["mouth"]}
             for slot in ("base_color", "normal", "roughness"):
@@ -993,6 +1003,37 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         )
         if found is not None:
             baked.lashes, baked.lash_texture, baked.lash_values = found
+    grooms = getattr(result.reference, "groom_parts", None)
+    if grooms:  # the reference's hair and brows (opensculptboy.groom)
+        from opensculptboy.groom.reference import Carrier, reference_groom
+        from opensculptboy.teeth.mesh import mouth_rows
+
+        head, _ = mouth_rows(model, topology)
+        rest = out["rest_vertices"][0].numpy()
+        rest_bones = out.get("rest_bone_poses")
+        heads = None if rest_bones is None else rest_bones[0, :, :3, 3].numpy()
+        motion = None
+        if "bone_poses" in out and rest_bones is not None:
+            transforms = out["bone_poses"][0] @ torch.linalg.inv(rest_bones[0])
+            motion = (
+                transforms.numpy(),
+                np.asarray(result.rotation, np.float64),
+                np.asarray(result.translation, np.float64),
+            )
+        carrier = Carrier(vertices, rest, head, result.reference, motion)
+        for kind in ("hair", "brows"):
+            found = reference_groom(
+                grooms,
+                kind,
+                vertices,
+                rest,
+                head,
+                bone_heads=heads,
+                labels=list(model.bone_labels),
+                carrier=carrier,
+            )
+            if found is not None:
+                baked.grooms[kind] = found
     mouth = getattr(result.reference, "mouth_parts", None)
     if mouth:
         from opensculptboy.teeth.mesh import mouth_rows

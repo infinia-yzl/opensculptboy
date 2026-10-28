@@ -399,6 +399,7 @@ def eyed_mesh(
     skin_baked: bool = False,
     lashes=None,
     layout=None,
+    brows=None,
 ) -> EyedMesh:
     """
     The mesh of a file with the eyes of ``eye`` (an :class:`~opensculptboy.material.
@@ -420,7 +421,10 @@ def eyed_mesh(
     straight onto the eye texture's layout (PNG bytes of the colours and of the normals,
     :func:`opensculptboy.texture.eyes.bake_eye_layout`), or None: with it, the baked eyes
     come from there, and ``baked`` only says that they are baked. The eyes look along
-    ``eye.gaze``. Raises ValueError for a mesh without
+    ``eye.gaze``. ``brows`` is the reference's brows (an :class:`~opensculptboy.groom.data.
+    GroomData`), or None: they become the parts ``"brows"`` of each side and material, bound
+    to the skin under them (:func:`opensculptboy.groom.export.brow_parts`). Raises ValueError
+    for a mesh without
     anny's eyeballs, and for ``"baked"`` sizes that no baked iris gives.
     """
     from opensculptboy.export.body import vertex_normals
@@ -553,6 +557,10 @@ def eyed_mesh(
             lashes, frames, rest, normals, skin, skin_tris, rows
         )
         parts += lash_list
+    if brows is not None:  # the reference's brows (opensculptboy.groom)
+        from opensculptboy.groom.export import brow_parts
+
+        parts += brow_parts(brows, rest, skin_tris, frames)
     socket = (
         socket_vertices[triangles].all(1) & kept
         if eye.caruncle and not follow_bake

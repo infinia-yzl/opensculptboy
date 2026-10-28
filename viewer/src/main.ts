@@ -1070,6 +1070,9 @@ function initCardLook() {
     setPageParts: (on: any) => { CARD_PARTS = on; updateHairVisibility(); HOOKS.hair(); },
     setBodyCard,
     changed: () => { if (RIG.ready) poseChanged(); shadowsDirty = true; resetAccum(); },
+    blinkShapes: setBlinkShapes,
+    blinkWeights: applyBlink,
+    moved: () => { shadowsDirty = true; resetAccum(); },
   });
 }
 function initWardrobe() {
@@ -1632,6 +1635,31 @@ function markRange(attr: any, a: number, b: number) {
   if (!FULL_UPLOAD.has(attr)) attr.addUpdateRange(a * 3, (b - a + 1) * 3);
   attr.needsUpdate = true;
 }
+// a card's eye targets on the fine body (card/look.ts): sparse shapes as the correctives', on their own vertices (the
+// eyes), applied with sparseApply over a copy of the body taken when they are set
+const BLINK: any = { shapes: null, w: null, wn: null, touched: null, mark: null, acc: null, nt: 0, base: null, nbase: null, sbase: null };
+function clearBlink() {
+  if (!BLINK.shapes) return;
+  BLINK.w.fill(0); BLINK.wn.fill(0);
+  const at = BODY.geo.attributes;
+  const [lo, hi] = sparseApply(BLINK, BLINK.shapes, BLINK.w, BLINK.wn, BODY.anny.pos, BODY.anny.nrm, BODY.anny.ns, BLINK.base, BLINK.nbase, BLINK.sbase);
+  markRange(at.position, lo, hi); markRange(at.normal, lo, hi); markRange(at.nsmooth, lo, hi);
+}
+function setBlinkShapes(shapes: any[] | null) {
+  clearBlink();
+  BLINK.shapes = null; BLINK.nt = 0;
+  if (!shapes || !shapes.length || !BODY.ready) return;
+  const n = BODY.anny.nFine;
+  Object.assign(BLINK, { shapes, w: new Float32Array(shapes.length), wn: new Float32Array(shapes.length), touched: new Uint32Array(n), mark: new Uint8Array(n),
+    acc: new Float32Array(n * 3), nt: 0, base: BODY.anny.pos.slice(), nbase: BODY.anny.nrm.slice(), sbase: BODY.anny.ns.slice() });
+}
+function applyBlink(w: Float32Array) {
+  if (!BLINK.shapes || w.length !== BLINK.shapes.length) return;
+  BLINK.w.set(w); BLINK.wn.set(w);
+  const at = BODY.geo.attributes;
+  const [lo, hi] = sparseApply(BLINK, BLINK.shapes, BLINK.w, BLINK.wn, BODY.anny.pos, BODY.anny.nrm, BODY.anny.ns, BLINK.base, BLINK.nbase, BLINK.sbase);
+  markRange(at.position, lo, hi); markRange(at.normal, lo, hi); markRange(at.nsmooth, lo, hi);
+}
 // take the correction off (before the sliders rebuild the rest shape)
 function clearCorrectives() {
   if (!CORR.ready) return;
@@ -1641,6 +1669,7 @@ function clearCorrectives() {
 }
 // after the sliders: the new rest shape is the base for the correction
 function rebaseCorrectives() {
+  BLINK.shapes = null; BLINK.nt = 0;   // a new body: the card's look sets its eye targets again
   if (!CORR.ready) return;
   CORR.base.set(BODY.anny.pos); CORR.nbase.set(BODY.anny.nrm); CORR.sbase.set(BODY.anny.ns);
   CORR.nt = 0;
@@ -2690,6 +2719,7 @@ function animate() {
   if (HAIR && HAIR.due()) resetAccum();
   // the hair's physics: it sleeps once the hair rests, so the picture can refine
   if (HAIR && hairShown() && !hairClock && HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); }
+  CARD?.tick(now);   // a card's blinks (card/look.ts): the frames of a blink draw again
   if (accCount < MAX_ACC) renderPass();
   const jsMs = performance.now() - now;
   if (DYN.rendered) { PERF.frames++; PERF.jsMs += jsMs; }
@@ -2847,6 +2877,7 @@ const APP: any = {
   raceShare, stature,
   bodyTiming: () => ({ ms: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming, worker: BW.ready, latency: BW.latency }),
   wardrobe: () => WEAR,
+  cardLook: () => CARD,
   hairSpecs,
   hairDefaults: (name: string) => HAIR ? HAIR.defaults(name) : null,
   fadeRange: FADE_RANGE,

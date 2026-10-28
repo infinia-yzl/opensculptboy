@@ -52,7 +52,7 @@ FLOORS = {"body": 0.3, "teeth": 0.25, "mouth": 0.15, "wearable": 0.08}
 FLOOR_RATIOS = {"body": 2.0, "teeth": 1.0, "mouth": 1.0, "wearable": 0.25}
 MIN_TRIANGLES = 32
 # pieces that stay whole unless given a number of triangles
-WHOLE = ("eyes", "lashes")
+WHOLE = ("eyes", "lashes", "brows")
 # the visibility of a vertex counts from this floor, so hidden surfaces keep some weight
 VISIBILITY_FLOOR = 0.1
 VIEW_SIZE = 384
