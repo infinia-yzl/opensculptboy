@@ -125,7 +125,7 @@ export function initUI(app: App): UI {
     { id: 'pose', label: 'Pose', icon: 'pose', key: 'p', el: ss.pose },
     { id: 'rig', label: 'Rig', icon: 'bones', key: 'r', el: ss.rig },
     { id: 'scene', label: 'Scene', icon: 'scene', key: 'l', el: ss.scene },
-    { id: 'sheet', label: 'Sheet', icon: 'sheet', key: 's', el: sheet.el },
+    { id: 'sheet', label: 'Sheet', icon: 'sheet', key: 's', el: sheet.el, onShow: () => sheet.refresh() },
   ], layout);
   if (!app.clips().length) { right.sections[0].el.remove(); (right.rail.querySelector('#tab-pose') as HTMLElement).hidden = true; }
 

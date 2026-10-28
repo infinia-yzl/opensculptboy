@@ -6,7 +6,8 @@ object and the layout maths in node (the framing of full figures at one scale on
 row, the head-and-shoulders frame, the page), and a sheet of the default character built in the
 built page through window.sheet.build, in Chromium with SwiftShader through Playwright (local
 only): the PNG's size, every panel's pictures with something in them and a transparent
-background, one height for the turnaround's views and one cell size for the expressions.
+background, one height for the turnaround's views, one cell size for the expressions, and
+cells that differ once a face driver (viewer/src/face/api.ts) draws the expressions.
 """
 
 import base64
@@ -58,9 +59,7 @@ class TestSheetPage(unittest.TestCase):
         with sync_playwright() as p:
             kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
             browser = p.chromium.launch(args=ARGS, **kw)
-            tab = browser.new_context(
-                viewport=dict(width=1200, height=800)
-            ).new_page()
+            tab = browser.new_context(viewport=dict(width=1200, height=800)).new_page()
             errors = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(PAGE.as_uri() + "?shot&acc=1")
@@ -74,8 +73,13 @@ class TestSheetPage(unittest.TestCase):
             )
             rep = tab.evaluate("() => window.sheet.report()")
             picture = tab.evaluate("() => window.sheet.picture('turnaround', 0)")
+            faces = [
+                tab.evaluate("(i) => window.sheet.picture('expressions', i)", i)
+                for i in (0, 1)
+            ]
             after = tab.evaluate(
-                "() => ({ pose: window.__MOTION.cur.name, turn: window.__RIG.holder.rotation.y, busy: window.sheet.busy() })"
+                "() => ({ pose: window.__MOTION.cur.name,"
+                " turn: window.__RIG.holder.rotation.y, busy: window.sheet.busy() })"
             )
             browser.close()
         self.assertFalse(errors, errors)
@@ -125,6 +129,12 @@ class TestSheetPage(unittest.TestCase):
             (int(r["x"]), int(r["y"]), int(r["x"] + r["w"]), int(r["y"] + r["h"]))
         )
         self.assertGreater(len(set(crop.getdata())), 50)
+        # the expressions: with a face driver (face/api.ts) the happy face differs from the
+        # neutral one; without one, every cell shows the neutral face
+        if rep["faces"]:
+            self.assertNotEqual(faces[0], faces[1])
+        else:
+            self.assertEqual(faces[0], faces[1])
         # the page's own pose and turn come back
         self.assertEqual(after["pose"], pose)
         self.assertEqual(after["turn"], 0)

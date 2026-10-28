@@ -25,7 +25,7 @@ import { STYLES, styleIds } from '../sheet/styles.ts';
 const PREVIEW_W = 960;
 
 // el: the section; view: the layout view; setOpen: the section opened or closed (index.ts), so the view shows with it
-export interface SheetUI { el: HTMLElement; view: HTMLElement; setOpen(open: boolean): void; shown(): boolean }
+export interface SheetUI { el: HTMLElement; view: HTMLElement; setOpen(open: boolean): void; shown(): boolean; refresh(): void }
 
 // the settings that change the pictures: the name, the title, the background and the info block draw on the page alone
 function pictureKey(s: SheetSettings) {
@@ -101,6 +101,8 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
   const openPicker = (title: string, slot: PoseSlot, done: (s: PoseSlot) => void) => {
     (picker.querySelector('#cs-picker-title') as HTMLElement).textContent = title;
     for (const b of Array.from(picker.querySelectorAll('.chip')) as HTMLElement[]) b.setAttribute('aria-pressed', String(!slot.q && b.dataset.pose === slot.pose));
+    // the group of the slot's pose opens
+    for (const f of Array.from(picker.querySelectorAll('details.fold')) as HTMLDetailsElement[]) f.open = !!f.querySelector('.chip[aria-pressed="true"]');
     pick = done;
     picker.showModal();
   };
@@ -308,7 +310,8 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
     const L = layoutOf({ ...r.settings, name: settings.name, title: settings.title, background: settings.background, panels: { ...r.settings.panels, info: settings.panels.info } }, name,
       planPanels({ ...r.settings, panels: { ...r.settings.panels, info: settings.panels.info } }, host).map((P) => r.panels.find((q) => q.id === P.id) || P));
     const png = await canvasPng(compose(L, settings.background, picturesFor(r), 1));
-    lastPng = png; lastReport = { ...report(r, png.length), width: L.width, height: L.height };
+    // faces: whether a face driver drew the expressions (face/api.ts); without one every cell shows the neutral face
+    lastPng = png; lastReport = { ...report(r, png.length), width: L.width, height: L.height, faces: faceReady() };
     return png;
   }
   async function downloadPng() {
@@ -361,5 +364,7 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
     el, view,
     setOpen: (on: boolean) => { if (on === open) return; open = on; showView(); },
     shown: () => shownNow,
+    // the section opens: the expressions that a face driver registered since show
+    refresh: () => paint(),
   };
 }

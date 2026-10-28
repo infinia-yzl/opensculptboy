@@ -145,6 +145,7 @@ uv run python -m anny.viewer build    # data (cached under ANNY_CACHE_DIR/viewer
 cd viewer && node build.mjs --reuse-data   # the page alone, with the model data of the last build (for changes to src/ or shell.html)
 cd viewer && npx tsc --noEmit         # type-check the page
 uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and vertices of a moving frame
+uv run python -m unittest test.test_viewer_sheet   # the character sheet: settings and layout in node, a sheet of the default character in the built page (local only)
 ```
 
 ## Architecture
