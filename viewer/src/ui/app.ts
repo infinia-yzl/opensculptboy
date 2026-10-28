@@ -148,6 +148,7 @@ export interface Hooks {
   look(): void;
   motion(): void;
   hair(): void;
+  face(): void;
   frame(now: number, dt: number, drew: boolean, jsMs: number): void;
   passBegin(): void;
   passEnd(): void;

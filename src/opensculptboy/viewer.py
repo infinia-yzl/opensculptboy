@@ -478,3 +478,115 @@ def pocket(seams: Seams, body_faces: np.ndarray) -> np.ndarray:
     flags[np.unique(seams.triangles[on])] = 1
     flags[np.unique(seams.triangles[~on])] = 0
     return flags
+
+
+# ------------------------------------------------------------------ the faces
+# The page plays the facial actions as the exports write them (docs/viewer.md, "Faces"): Anny's 52
+# ARKit actions with the mouth cavity kept behind the skin in each target (opensculptboy.export.mouth),
+# and jawOpen as the turn of the anny-mouth rig's jaw with its corrective (opensculptboy.mouth.jaw).
+
+
+@dataclasses.dataclass
+class FaceTables:
+    """The faces of the page on Anny's default body, in Anny's frame (metres)."""
+
+    labels: list  # the facial actions, in the order of model.facial_action_labels
+    rest: np.ndarray  # (V, 3) the default body at rest
+    offsets: np.ndarray  # (A, V, 3) each action's target, the cavity behind the skin
+    cleared: list  # the actions whose targets the cavity's correction changed
+    rotation: np.ndarray  # (3, 3) the jaw's turn for jawOpen at weight 1
+    pivot: np.ndarray  # (3,) the head of the jaw bone at rest
+    jaw_weights: np.ndarray  # (V,) the weight of the jaw and the tongue chain
+    tongue: np.ndarray  # rows of Anny's tongue
+    # per action that moves the tongue: ("rigid", R (3, 3), t (3,)) when the tongue moves rigidly,
+    # else ("follow", offsets of the tongue's rows (n, 3))
+    tongue_motion: dict
+    eyes: dict  # "L" and "R": the rows of each eyeball
+    eye_turns: (
+        dict  # per action that turns an eyeball: {"L": rotation vector, "R": ...}
+    )
+    model: object = None
+
+
+def face_model():
+    """The model of the page's faces: Anny's quad mesh on the ``anny-mouth`` rig with every
+    facial action, in float64."""
+    import torch
+
+    from opensculptboy.mouth.rig import mouth_model
+
+    return mouth_model(
+        topology="anny-quads", facial_actions="all", phenotypes="all"
+    ).to(dtype=torch.float64)
+
+
+def face_tables(model=None) -> FaceTables:
+    """The facial actions of the exports on Anny's default body, the jaw's turn for jawOpen,
+    the motion of Anny's tongue in each action and the turn of each eyeball in the actions
+    that turn it."""
+    import torch
+    from scipy.spatial.transform import Rotation
+
+    from opensculptboy.export.mouth import clear_vertices, mouth_interior
+    from opensculptboy.export.vrm_tables import eyeball_vertices
+    from opensculptboy.mouth.jaw import fit_jaw_open, jaw_weights
+    from opensculptboy.teeth.mesh import RIGID_SHARE, mouth_rows, rigid
+
+    model = model or face_model()
+    labels = list(model.facial_action_labels)
+    dtype = model.template_vertices.dtype
+    rows = torch.zeros((len(labels) + 1, len(labels)), dtype=dtype)
+    rows[1:] = torch.eye(len(labels), dtype=dtype)
+    with torch.no_grad():
+        rest = model(facial_actions=rows)["rest_vertices"].double().cpu().numpy()
+    base = rest[0]
+    offsets = rest[1:] - base
+    # the exports keep the cavity behind the skin in each target at full weight
+    interior = mouth_interior(model)
+    cleared = []
+    if interior is not None:
+        for a in range(len(labels)):
+            state, count = clear_vertices(base + offsets[a], interior)
+            if count:
+                offsets[a] = state - base
+                cleared.append(labels[a])
+    turn = fit_jaw_open(model)
+    _, tongue = mouth_rows(model)
+    motion = {}
+    for a, name in enumerate(labels):
+        d = offsets[a][tongue]
+        size = float(np.linalg.norm(d, axis=1).mean()) if len(tongue) else 0.0
+        if size < 1e-7:
+            continue
+        p = base[tongue]
+        R, t = rigid(p, p + d)
+        residual = float(np.linalg.norm(p @ R.T + t - (p + d), axis=1).mean())
+        motion[name] = (
+            ("rigid", R, t) if residual <= RIGID_SHARE * size else ("follow", d)
+        )
+    eyes = eyeball_vertices(model)
+    turns = {}
+    for a, name in enumerate(labels):
+        entry = {}
+        for side, ids in eyes.items():
+            d = offsets[a][ids]
+            if np.abs(d).max() < 1e-7:
+                continue
+            R, _ = rigid(base[ids], base[ids] + d)
+            entry[side] = Rotation.from_matrix(R).as_rotvec()
+        if entry:
+            turns[name] = entry
+    return FaceTables(
+        labels=labels,
+        rest=base,
+        offsets=offsets,
+        cleared=cleared,
+        rotation=turn.rotation,
+        pivot=turn.pivot,
+        jaw_weights=jaw_weights(model),
+        tongue=tongue,
+        tongue_motion=motion,
+        eyes=eyes,
+        eye_turns=turns,
+        model=model,
+    )

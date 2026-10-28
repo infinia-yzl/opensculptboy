@@ -32,7 +32,7 @@ The checks come in three tiers, and `scripts/check.sh` runs each of them. GitHub
 
 Rules for agents:
 - While working, run `scripts/check.sh quick` with the test modules your change touches. Before a push, run `scripts/check.sh ci`, or at least the jobs your change touches (`scripts/check.sh lint|viewer|tests|package`).
-- `OPENSCULPTBOY_CI=1` skips the tests marked `@local_only(reason)` (`test/markers.py`). Mark a new test `local_only` when it needs something CI lacks: Playwright with the built page (`test_hair_page`), the viewer data build (`test_viewer_body`, `test_hair_parity`, `TestPageSolver`), MediaPipe's models (`TestPoseFromImage`), the viewer's node packages three-vrm and gltf-validator with Playwright and Chromium (`test_vrm_three`, with the `faces` extra and after `cd viewer && npm ci`), or licensed files (`test_smpl`).
+- `OPENSCULPTBOY_CI=1` skips the tests marked `@local_only(reason)` (`test/markers.py`). Mark a new test `local_only` when it needs something CI lacks: Playwright with the built page (`test_hair_page`, `TestViewerFacePage`), the viewer data build (`test_viewer_body`, `test_hair_parity`, `TestPageSolver`, `TestViewerFaceData`), MediaPipe's models (`TestPoseFromImage`), the viewer's node packages three-vrm and gltf-validator with Playwright and Chromium (`test_vrm_three`, with the `faces` extra and after `cd viewer && npm ci`), or licensed files (`test_smpl`).
 - `OPENSCULPTBOY_SKIP_NONCOMMERCIAL=1` makes the download of the non-commercial SMPL and SMPL-X data raise `unittest.SkipTest` (`test/__init__.py`), so CI never fetches it. Put each topology of a loop in its own `subTest`, so that the smpl and smplx cases skip alone.
 - `lint.yml` runs on every pull request and on every push to `main`, without path filters. The other workflows run on the same events only when their files change (GitHub `paths:` filters): `tests.yml` (the suite and the package) for changes to `src/`, `test/`, `viewer/src/`, `viewer/test/`, `pyproject.toml`, `uv.lock`, `MANIFEST.in`, `scripts/check.sh` or the workflow; `viewer.yml` for changes to `viewer/`. Draft pull requests skip the tests and the package; marking a pull request ready for review runs them. A change to the docs alone runs lint only. The repository is public, so GitHub-hosted runners cost nothing; the filters save runner time. When you add a directory that the tests read, add it to the paths of `tests.yml`.
 - `test_vrm_schema` validates the VRM extensions of the shared exports against the VRM schemas and the glTF base schemas. The vrm-c/vrm-specification repository has no licence, so never vendor its schemas: the test downloads them at the commits pinned in `VRM_SPEC_COMMIT` and `GLTF_COMMIT` into `ANNY_CACHE_DIR/vrm_schema/<commit>/` and skips offline. Its structural checks (`check_vrm1`, `check_vrm0`) need no download and are the CI guard for both versions.
@@ -145,6 +145,7 @@ uv run python -m anny.viewer build    # data (cached under ANNY_CACHE_DIR/viewer
 cd viewer && node build.mjs --reuse-data   # the page alone, with the model data of the last build (for changes to src/ or shell.html)
 cd viewer && npx tsc --noEmit         # type-check the page
 uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and vertices of a moving frame
+uv run python -m unittest test.test_viewer_expressions     # the page's faces against Anny: actions, the jaw's turn, the sparse subdivision (node)
 ```
 
 ## Architecture
@@ -178,7 +179,7 @@ uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and 
 | Collision | `utils/collision.py` | Self-intersection detection, warp-accelerated |
 | Model data | `models/model_data.py`, `models/model_transforms.py` | `ModelData` bundles the template mesh, blend shapes and rig, with safetensors caching; the transforms retopologise, convert bone orientations and clean meshes |
 | Fitting and measures | `anny_inverter.py`, `keypoints.py`, `anthropometry.py` | `AnnyInverter` fits pose and shape to a mesh; `KeypointsRegressor` gives keypoints as vertex combinations; `Anthropometry` measures height, volume and mass |
-| Facial actions | `models/facial_actions.py` | The 52 ARKit expressions from MakeHuman's face units |
+| Facial actions | `models/facial_actions.py` | The 52 ARKit expressions from MakeHuman's face units; the web viewer plays them, `jawOpen` as the `anny-mouth` jaw's turn ([docs/viewer.md](docs/viewer.md#faces)) |
 | Face shapes | `models/face_shapes.py`, `faces/` | 103 face shapes and 10 detail shapes, and the calibrated face distribution (see Face Shapes below; [docs/body-model.md](docs/body-model.md)) |
 | Subdivision | `utils/subdivision.py` | Catmull-Clark as sparse linear operators; `MixedSubdivision` refines a region |
 | Poses and correctives | `poses/`, `correctives/` | 50 poses and 7 clips as `local-ref` parameters; soft-tissue correctives driven by joint angles |
@@ -223,7 +224,7 @@ The pose, corrective and hair authoring code (`*/authoring/`) and the viewer wor
 
 ### Web Viewer
 
-`viewer/` is a node project (TypeScript, three.js, esbuild) that builds the single-file page `viewer/dist/anny_viewer.html` ([docs/viewer.md](docs/viewer.md)). `src/anny_shape.ts` and `src/subdivision.ts` repeat Anny's maths, checked by `test/test_viewer_parity.py`; `src/main.ts` holds the renderer, `src/ui/` the interface and `src/hair/` the hair, checked by `test_hair_parity`, `test_hair_page` and `test_hair_dynamics`. The page keeps one `<canvas>` (the screenshot tools select it), so the interface draws its graphs in SVG, and `?shot` hides the interface. `test/vrm_page/` is the three-vrm test page; nothing in `src/` imports its devDependencies. `python -m anny.viewer.benchmark` and the Performance card measure a moving frame.
+`viewer/` is a node project (TypeScript, three.js, esbuild) that builds the single-file page `viewer/dist/anny_viewer.html` ([docs/viewer.md](docs/viewer.md)). `src/anny_shape.ts` and `src/subdivision.ts` repeat Anny's maths, checked by `test/test_viewer_parity.py`; `src/face/` plays Anny's facial actions, `jawOpen` as the `anny-mouth` rig's jaw turn and a card's own mouth poses and eye targets behind the interface of `src/face/api.ts` (on the GPU in `face/morph.ts`), checked by `test_viewer_expressions`; `src/main.ts` holds the renderer, `src/ui/` the interface and `src/hair/` the hair, checked by `test_hair_parity`, `test_hair_page` and `test_hair_dynamics`. The page keeps one `<canvas>` (the screenshot tools select it), so the interface draws its graphs in SVG, and `?shot` hides the interface. `test/vrm_page/` is the three-vrm test page; nothing in `src/` imports its devDependencies. `python -m anny.viewer.benchmark` and the Performance card measure a moving frame.
 
 ### Dependencies
 
