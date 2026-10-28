@@ -125,14 +125,15 @@ export class PageFace implements FaceDriver {
   tick(now: number) {
     const f = this.fade;
     if (!f) {
-      if (this.rough && now - this.lastApply > 60) this.apply(true);
+      if (this.waiting) this.apply(false);
+      else if (this.rough && now - this.lastApply > 60) this.apply(true);
       return;
     }
     const t = Math.min(1, (now - f.t0) / f.ms), e = t * t * (3 - 2 * t);
     if (t >= 1) { this.fade = null; this.show(f.to); this.host.drawn().then(f.resolve); }
     else this.show(mix(f.from, f.to, e), false);
   }
-  private rough = false; private lastApply = 0;
+  private rough = false; private lastApply = 0; private waiting = false;
   get fading() { return !!this.fade; }
 
   // ---------------------------------------------------------------- the page's side
@@ -234,7 +235,9 @@ export class PageFace implements FaceDriver {
           g.shapes.forEach((sh, i) => { if (gw[i]) { layer.normalShape(sh); shown.push({ s: sh, w: gw[i] }); if (g.after) after.add(sh); } });
         }
         const wj = rig.jaw >= 0 ? w[rig.jaw] : 0;
-        morph.show(shown, wj ? { w: wj, R: rig.turn(wj), p: rig.pivot } : null);
+        // the frames of a fade write at most two new layers each; a still face writes all of them
+        morph.show(shown, wj ? { w: wj, R: rig.turn(wj), p: rig.pivot } : null, exact ? Infinity : 2);
+        this.waiting = morph.pending > 0;
         this.host.redraw();
         const P = this.host.body().pos, o = [0, 0, 0];
         const at = (v: number, out: number[]) => morph.at(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], out);

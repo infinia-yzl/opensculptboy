@@ -80,6 +80,19 @@ export function toHalf(x: number): number {
   return (m & 0x1000) ? h + 1 : h;
 }
 
+// a shape's offsets and normals' changes as half floats (kept with the shape)
+function halves(s: Shape): { d: Uint16Array; n: Uint16Array | null } {
+  const c = s as any;
+  if (!c.half || (!c.half.n && s.dn)) {
+    const d = new Uint16Array(s.d.length);
+    for (let i = 0; i < d.length; i++) d[i] = toHalf(s.d[i]);
+    let n: Uint16Array | null = null;
+    if (s.dn) { n = new Uint16Array(s.dn.length); for (let i = 0; i < n.length; i++) n[i] = toHalf(s.dn[i]); }
+    c.half = { d, n };
+  }
+  return c.half;
+}
+
 // float16 to float32
 export function fromHalf(h: number): number {
   const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
@@ -120,17 +133,19 @@ export class FaceMorph {
     P.fill(0, o0, o0 + per); N.fill(0, o0, o0 + per);
     const st = this.start, n = this.count;
     if (s) {
+      // the shape's values as half floats, kept with the shape, so that a layer that gives way and comes back is a copy
+      const h = halves(s);
       for (let i = 0; i < s.idx.length; i++) {
         const r = s.idx[i] - st;
         if (r < 0 || r >= n) continue;
-        const o = o0 + r * 4;
-        for (let k = 0; k < 3; k++) P[o + k] = toHalf(s.d[i * 3 + k]);
+        const o = o0 + r * 4, q = i * 3;
+        P[o] = h.d[q]; P[o + 1] = h.d[q + 1]; P[o + 2] = h.d[q + 2];
       }
-      if (s.nIdx && s.dn) for (let i = 0; i < s.nIdx.length; i++) {
+      if (s.nIdx && h.n) for (let i = 0; i < s.nIdx.length; i++) {
         const r = s.nIdx[i] - st;
         if (r < 0 || r >= n) continue;
-        const o = o0 + r * 4;
-        for (let k = 0; k < 3; k++) N[o + k] = toHalf(s.dn[i * 3 + k]);
+        const o = o0 + r * 4, q = i * 3;
+        N[o] = h.n[q]; N[o + 1] = h.n[q + 1]; N[o + 2] = h.n[q + 2];
       }
     }
     if (jaw) {
@@ -145,10 +160,13 @@ export class FaceMorph {
   setJaw(corrective: Shape | null, weights: { idx: Uint32Array; w: Float32Array } | null) {
     this.write(0, corrective, weights || { idx: new Uint32Array(0), w: new Float32Array(0) });
   }
-  // the layer of a shape, written when it has none (the layer used longest ago gives way)
+  // the layer of a shape, written when it has none (the layer used longest ago gives way); -1 when the uploads of this
+  // frame are spent
   private slot(s: Shape, tick: number): number {
     let k = this.slotOf.get(s);
     if (k === undefined) {
+      if (this.budget <= 0) return -1;
+      this.budget--;
       k = -1;
       for (let i = 1; i <= FACE_SLOTS; i++) if (!this.shapeIn[i]) { k = i; break; }
       if (k < 0) { k = 1; for (let i = 2; i <= FACE_SLOTS; i++) if (this.used[i] < this.used[k]) k = i; }
@@ -160,15 +178,22 @@ export class FaceMorph {
     this.used[k] = tick;
     return k;
   }
-  private tick = 0;
-  // the face: the shapes with their weights (the largest FACE_SLOTS), and the jaw's weight, turn (row-major) and pivot
-  show(shapes: { s: Shape; w: number }[], jaw: { w: number; R: ArrayLike<number>; p: number[] } | null) {
+  private tick = 0; private budget = Infinity;
+  pending = 0;   // the shapes of the last face that wait for their layers (uploads: at most `uploads` a frame)
+  // the face: the shapes with their weights (the largest FACE_SLOTS), and the jaw's weight, turn (row-major) and pivot;
+  // `uploads` limits the layers written in this call (the frames of a fade), and a shape without its layer waits
+  show(shapes: { s: Shape; w: number }[], jaw: { w: number; R: ArrayLike<number>; p: number[] } | null, uploads = Infinity) {
     const list = shapes.filter((x) => x.w).sort((a, b) => Math.abs(b.w) - Math.abs(a.w)).slice(0, FACE_SLOTS);
-    this.tick++;
-    const u = this.u;
-    list.forEach((x, i) => { u.uFaceSlot.value[i] = this.slot(x.s, this.tick); u.uFaceW.value[i] = x.w; });
-    u.uFaceCount.value = list.length;
-    this.shown = list.map((x) => ({ layer: this.slotOf.get(x.s)!, w: x.w }));
+    this.tick++; this.budget = uploads; this.pending = 0;
+    const u = this.u, shown: { layer: number; w: number }[] = [];
+    for (const x of list) {
+      const k = this.slot(x.s, this.tick);
+      if (k < 0) { this.pending++; continue; }
+      u.uFaceSlot.value[shown.length] = k; u.uFaceW.value[shown.length] = x.w;
+      shown.push({ layer: k, w: x.w });
+    }
+    u.uFaceCount.value = shown.length;
+    this.shown = shown;
     if (jaw && jaw.w) {
       u.uJawW.value = jaw.w;
       const R = jaw.R;
