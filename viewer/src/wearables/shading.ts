@@ -6,6 +6,8 @@
 // masked material cuts at its alpha cutoff; a blended one drops each fragment with the chance of its transparency, so
 // that the page's progressive accumulation averages it. In the shadow maps a masked material cuts at its alpha cutoff
 // and a blended one at BLEND_SHADOW_CUTOFF (GARMENT_DEPTH_FS), since the page draws the shadow maps once per change.
+// HAS_VCOLOR multiplies the base colour by the vertex colours (glTF COLOR_0, the gColor attribute), as a reference's
+// hair carries its colour (opensculptboy.groom).
 
 import { GLSL_COMMON, SKIN_GLSL } from '../shading.ts';
 
@@ -13,7 +15,14 @@ export const GARMENT_VS = /* glsl */`
 ${SKIN_GLSL}
 attribute vec4 gTangent;
 varying vec3 vWPos; varying vec3 vN; varying vec2 vUv; varying vec4 vT;
+#ifdef HAS_VCOLOR
+attribute vec4 gColor;
+varying vec4 vCol;
+#endif
 void main() {
+#ifdef HAS_VCOLOR
+  vCol = gColor;
+#endif
   mat4 S = skinMat();
   mat3 M = mat3(modelMatrix) * mat3(S);
   vec4 wp = modelMatrix * (S * vec4(position, 1.0));
@@ -58,10 +67,16 @@ ${GLSL_COMMON}
 uniform vec4 uBase; uniform float uMetal; uniform float uRough; uniform vec3 uEmissive; uniform float uCutoff; uniform float uNormalScale;
 uniform sampler2D uMap; uniform sampler2D uMR; uniform sampler2D uNormalMap; uniform sampler2D uAO; uniform sampler2D uEmissiveMap;
 varying vec3 vWPos; varying vec3 vN; varying vec2 vUv; varying vec4 vT;
+#ifdef HAS_VCOLOR
+varying vec4 vCol;
+#endif
 void main() {
   vec4 base = uBase;
 #ifdef HAS_MAP
   base *= texture(uMap, vUv);
+#endif
+#ifdef HAS_VCOLOR
+  base *= vCol;
 #endif
 #ifdef ALPHA_MASK
   if (base.a < uCutoff) discard;

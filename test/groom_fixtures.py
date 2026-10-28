@@ -424,7 +424,9 @@ def card_grooms(model, rest, folder, stem="card"):
             "source": "reference",
             "mesh": f"{stem}.hair.safetensors",
             "textures": {
-                "hair_strands": {"base_color": f"{stem}.hair.hair_strands.base_color.png"}
+                "hair_strands": {
+                    "base_color": f"{stem}.hair.hair_strands.base_color.png"
+                }
             },
         },
         "brows": {

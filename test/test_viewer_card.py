@@ -5,7 +5,8 @@ The page's view of a character card (docs/viewer.md, "A card's look"): the UVs a
 fine body (opensculptboy.viewer) against the detail layer's UVs, the rows of a card's detail levels
 behind the page's levels, and in node the eye layout, the eye axes, the eyeball's outer surface,
 a level offset added inside the page's subdivision and MakeHuman's local changes
-(viewer/test/card_parity.mjs).
+(viewer/test/card_parity.mjs), and the page's reading of a card's grooms and blinks, with the
+weights of its blink targets (viewer/test/groom_parity.mjs).
 """
 
 import json
@@ -35,6 +36,7 @@ from .test_viewer_parity import node_available
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "viewer" / "test" / "card_parity.mjs"
+GROOM_SCRIPT = REPO / "viewer" / "test" / "groom_parity.mjs"
 BODY = 13380  # anny's base-mesh vertices of the body (the page's fine body)
 
 
@@ -299,3 +301,151 @@ class TestCardParity(unittest.TestCase):
             # 16-bit offsets in steps of 1e-5 m, summed over a dozen changes
             self.assertLess(np.abs(V[i] - dv[self.vertex_ids]).max(), 1e-4, values)
             self.assertLess(np.abs(J[i] - dj).max(), 1e-5, values)
+
+
+@unittest.skipUnless(
+    node_available(), "node 22 or later is needed to run the page's TypeScript"
+)
+class TestGroomParity(unittest.TestCase):
+    """The page reads the groom and blinks files as opensculptboy writes them."""
+
+    @classmethod
+    def setUpClass(cls):
+        from opensculptboy.eyes import page
+        from opensculptboy.groom.data import GroomData, GroomMaterial
+
+        cls.dir = pathlib.Path(tempfile.mkdtemp())
+        rng = np.random.default_rng(2)
+        cls.groom = GroomData(
+            kind="hair",
+            points=rng.random((12, 3)),
+            normals=rng.random((12, 3)),
+            uvs=rng.random((12, 2)),
+            triangles=np.arange(12).reshape(4, 3),
+            material=np.array([0, 0, 1, 1]),
+            materials=[
+                GroomMaterial("cap", (0.1, 0.06, 0.04, 1.0), 0.7),
+                GroomMaterial(
+                    "strands",
+                    (1, 1, 1, 1),
+                    0.45,
+                    "BLEND",
+                    0.5,
+                    True,
+                    1.0,
+                    ("base_color",),
+                ),
+            ],
+            colors=rng.random((12, 4)),
+        )
+        cls.groom.save(cls.dir / "c.hair.safetensors")
+        cls.names = [
+            "eyeBlinkLeft",
+            "eyeBlinkRight",
+            "eyeSquintLeft",
+            "eyeSquintRight",
+            "eyeBlinkLeft.inbetween",
+            "eyeBlinkRight.inbetween",
+        ]
+        cls.blinks = {
+            "names": cls.names,
+            "level": 2,
+            "rows": np.array([3, 17, 40]),
+            "offsets": rng.normal(size=(6, 3, 3)) * 1e-3,
+            "lashes": rng.normal(size=(6, 5, 3)) * 1e-3,
+            "brows": None,
+        }
+        page.save(cls.dir / "c.blinks.safetensors", cls.blinks)
+        card = {
+            "detail": {
+                "levels": [{"subdiv": 2, "offsets": "d2"}],
+                "textures": {"subdiv": 2, "eye_layout": "e.png"},
+            },
+            "material": {
+                "reference_eyes": {"blinks": "c.blinks.safetensors"},
+                "hair": {
+                    "source": "reference",
+                    "mesh": "c.hair.safetensors",
+                    "textures": {"strands": {"base_color": "s.png"}},
+                },
+                "brows": {"source": "reference", "mesh": "c.brows.safetensors"},
+            },
+        }
+        cls.closures = [
+            [0, 0, 0, 0],
+            [0.5, 0.25, 0.1, 0.0],
+            [1, 1, 0, 1],
+            [0.75, 0.0, 0.0, 0.0],
+        ]
+        cls.curve = [0.0, 0.1, 1 / 3, 0.5, 0.9, 1.0]
+        (cls.dir / "input.json").write_text(
+            json.dumps(
+                {
+                    "card": card,
+                    "groom": "c.hair.safetensors",
+                    "blinks": "c.blinks.safetensors",
+                    "closures": cls.closures,
+                    "curve": cls.curve,
+                }
+            )
+        )
+        subprocess.run(["node", str(GROOM_SCRIPT), str(cls.dir)], check=True, cwd=REPO)
+        cls.out = json.loads((cls.dir / "output.json").read_text())
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def test_plan(self):
+        plan = self.out["plan"]
+        self.assertEqual(plan["hair"]["mesh"], "c.hair.safetensors")
+        self.assertEqual(plan["hair"]["textures"], {"strands": {"base_color": "s.png"}})
+        self.assertEqual(plan["brows"], {"mesh": "c.brows.safetensors", "textures": {}})
+        self.assertEqual(plan["blinks"], "c.blinks.safetensors")
+        self.assertEqual(plan["shown"], 2)
+
+    def test_groom(self):
+        g = self.out["groom"]
+        self.assertEqual(g["kind"], "hair")
+        np.testing.assert_allclose(g["points"], self.groom.points.ravel()[:9])
+        np.testing.assert_allclose(g["uvs"], self.groom.uvs.ravel()[:6], atol=1e-7)
+        self.assertEqual(g["triangles"], 4)
+        self.assertEqual(g["material"], [0, 0, 1, 1])
+        np.testing.assert_allclose(
+            g["colors"], self.groom.colors.ravel()[:8], atol=1e-7
+        )
+        strands = g["materials"][1]
+        self.assertEqual(
+            (strands["name"], strands["alpha"], strands["double"]),
+            ("strands", "BLEND", True),
+        )
+
+    def test_blinks(self):
+        b = self.out["blinks"]
+        self.assertEqual(b["names"], self.names)
+        self.assertEqual(b["level"], 2)
+        self.assertEqual(b["rows"], [3, 17, 40])
+        np.testing.assert_allclose(
+            b["offsets"], self.blinks["offsets"].ravel()[:12], atol=1e-9
+        )
+        self.assertEqual(b["lashes"], 6 * 5 * 3)
+
+    def test_weights(self):
+        # the blink targets follow the closures, their in-between correctives rise to 1 half way
+        # (the GLB animations "<target>.close"), and the squints follow theirs
+        for (left, right, sl, sr), w in zip(self.closures, self.out["weights"]):
+            want = dict(zip(self.names, w))
+            self.assertAlmostEqual(want["eyeBlinkLeft"], left)
+            self.assertAlmostEqual(want["eyeBlinkRight"], right)
+            self.assertAlmostEqual(want["eyeSquintLeft"], sl, places=6)
+            self.assertAlmostEqual(want["eyeSquintRight"], sr)
+            for side, c in (("Left", left), ("Right", right)):
+                tent = 0.0 if c in (0, 1) else 1 - abs(2 * c - 1)
+                self.assertAlmostEqual(want[f"eyeBlink{side}.inbetween"], tent)
+
+    def test_curve(self):
+        c = self.out["curve"]
+        self.assertEqual(c[0], 0.0)
+        self.assertEqual(c[-1], 0.0)
+        self.assertAlmostEqual(c[2], 1.0)
+        self.assertTrue(0 < c[1] < 1 and 0 < c[4] < c[3] < 1)

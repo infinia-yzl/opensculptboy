@@ -59,6 +59,8 @@ export interface App {
   bodyTiming(): { ms: number; total: number; steps: Record<string, number> };
   // the wardrobe: a card's outfits and wearable packages from the user's own files (wearables/view.ts)
   wardrobe(): import('../wearables/view.ts').Wardrobe | null;
+  // the card's look (card/look.ts): its blinks for the Wearables section's eye controls
+  cardLook(): import('../card/look.ts').CardLook | null;
 
   // the hair
   hairSpecs(): any[];

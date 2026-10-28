@@ -7,7 +7,10 @@
 //     maps every row of the page's levels 1 and 2 to the row of the card topology's full level);
 //   - the skin's maps and values (opensculptboy.material, the glTF export's skin material);
 //   - the eyes of a fitted card (opensculptboy.eyes): the layout of the eye texture and the single-surface eyeball;
-//   - the parts that the exports append: the reference's lashes, teeth and inner mouth, in the card's rest frame.
+//   - the parts that the exports append: the reference's lashes, teeth and inner mouth, in the card's rest frame;
+//   - the reference's hair and brows (opensculptboy.groom), with the materials of the exports;
+//   - the eye targets of the GLB export (opensculptboy.eyes.page): the blinks, their in-between correctives and the
+//     squints, which the page plays on a timer.
 
 export interface Frame { scale: number; rotation: number[]; offset: number[] }   // Anny's frame to the page's: p = s R x + o
 
@@ -25,11 +28,28 @@ export interface CardPlan {
   lashes: null | { mesh: string; baseColor: string | null; roughness: number };
   mouth: null | { mesh: string; baseColor: string | null; normal: string | null; roughness: string | null };
   teeth: null | { mesh: string; color: number[]; roughness: number };
+  hair: null | GroomPlan;
+  brows: null | GroomPlan;
+  blinks: string | null;               // the file of the exports' eye targets
   localChanges: Record<string, number>;
   notes: string[];
 }
 
 const num = (v: any, d: number) => (typeof v === 'number' && isFinite(v) ? v : d);
+
+// a groom of the card (material.hair, material.brows): its file and the texture files of its materials by slot
+export interface GroomPlan { mesh: string; textures: Record<string, Record<string, string>> }
+
+function groomPlan(section: any): GroomPlan | null {
+  if (!section || typeof section !== 'object' || typeof section.mesh !== 'string') return null;
+  const textures: Record<string, Record<string, string>> = {};
+  for (const [name, slots] of Object.entries<any>(section.textures || {})) {
+    if (!slots || typeof slots !== 'object') continue;
+    textures[name] = {};
+    for (const slot of ['base_color', 'normal']) if (typeof slots[slot] === 'string') textures[name][slot] = slots[slot];
+  }
+  return { mesh: section.mesh, textures };
+}
 
 // the plan of a card: which files the page reads and which values it takes
 export function cardPlan(card: any): CardPlan {
@@ -82,7 +102,11 @@ export function cardPlan(card: any): CardPlan {
     else notes.push('the page leaves out the generic teeth');
   }
   if (card?.facial_actions && Object.values(card.facial_actions).some((v: any) => v)) notes.push('the page leaves out the card\'s facial actions');
-  return { topology: String(card?.topology || 'anny').replace(/-quads$/, ''), levels, shown, textures, bakeLevel, skin, eyes, lashes, mouth, teeth,
+  // the reference's hair, and its brows, which come with the eyes as the lashes do
+  const hair = material.hair === false ? null : groomPlan(material.hair);
+  const brows = eyes && material.brows !== false ? groomPlan(material.brows) : null;
+  const blinks = eyes && typeof re?.blinks === 'string' ? re.blinks : null;
+  return { topology: String(card?.topology || 'anny').replace(/-quads$/, ''), levels, shown, textures, bakeLevel, skin, eyes, lashes, mouth, teeth, hair, brows, blinks,
     localChanges: card?.local_changes && typeof card.local_changes === 'object' ? card.local_changes : {}, notes };
 }
 
@@ -206,4 +230,63 @@ export function uvTangents(P: ArrayLike<number>, N: ArrayLike<number>, UV: Array
     res[i * 4] = x; res[i * 4 + 1] = y; res[i * 4 + 2] = z; res[i * 4 + 3] = w;
   }
   return res;
+}
+
+// ------------------------------------------------------------------ grooms (opensculptboy.groom)
+export interface GroomMaterial { name: string; base: number[]; roughness: number; alpha: string; cutoff: number; double: boolean; normalScale: number }
+export interface Groom extends Part { kind: string; material: Uint32Array; colors: Float32Array | null; materials: GroomMaterial[] }
+
+// a groom file (opensculptboy/groom@1): points, normals, UVs (glTF convention already), triangles in drawing order, the
+// material of each triangle, the vertex colours and the materials of its metadata
+export function groomOf(tensors: Record<string, { values: ArrayLike<number> }>, metadata: Record<string, string>): Groom {
+  if (metadata.format !== 'opensculptboy/groom@1') throw new Error('the file is not a groom file (opensculptboy/groom@1)');
+  const P = tensors.points, N = tensors.normals, U = tensors.uvs, T = tensors.triangles, M = tensors.material, C = tensors.colors;
+  if (!P || !T || !M) throw new Error('the file holds no points, triangles and materials');
+  const materials: GroomMaterial[] = JSON.parse(metadata.materials || '[]').map((m: any) => ({
+    name: String(m.name), base: Array.isArray(m.base_color) ? m.base_color.map(Number) : [1, 1, 1, 1], roughness: num(m.roughness, 0.6),
+    alpha: String(m.alpha_mode || 'OPAQUE'), cutoff: num(m.alpha_cutoff, 0.5), double: !!m.double_sided, normalScale: num(m.normal_scale, 1),
+  }));
+  return { kind: String(metadata.kind || ''), points: Float64Array.from(P.values), normals: N ? Float64Array.from(N.values) : null,
+    uvs: U ? Float32Array.from(U.values) : null, triangles: Uint32Array.from(T.values), material: Uint32Array.from(M.values),
+    colors: C ? Float32Array.from(C.values) : null, materials };
+}
+
+// ------------------------------------------------------------------ blinks (opensculptboy.eyes.page)
+export interface Blinks { names: string[]; level: number; rows: Uint32Array; offsets: Float32Array; lashes: Float32Array | null; brows: Float32Array | null }
+
+// a blinks file (opensculptboy/page-blinks@1): per target (names), the offsets of the moved rows of the card's level
+// (P x K x 3, Anny's frame), and of the points of the card's lashes and brows (P x M x 3)
+export function blinksOf(tensors: Record<string, { values: ArrayLike<number> }>, metadata: Record<string, string>): Blinks {
+  if (metadata.format !== 'opensculptboy/page-blinks@1') throw new Error('the file is not a blinks file (opensculptboy/page-blinks@1)');
+  const R = tensors.rows, O = tensors.offsets;
+  if (!R || !O) throw new Error('the file holds no rows and offsets');
+  return { names: JSON.parse(metadata.names || '[]'), level: Number(JSON.parse(metadata.level || '0')), rows: Uint32Array.from(R.values),
+    offsets: Float32Array.from(O.values), lashes: tensors.lashes ? Float32Array.from(tensors.lashes.values) : null,
+    brows: tensors.brows ? Float32Array.from(tensors.brows.values) : null };
+}
+
+// the weights of the targets of a blinks file for each eye's closure (0 open, 1 closed) and squint, as the GLB
+// animations "<target>.close" play them: the blink target follows the closure, and its in-between corrective rises from
+// 0 to 1 half way and falls back to 0
+export function blinkWeights(names: string[], close: { L: number; R: number }, squint: { L: number; R: number }): Float32Array {
+  const w = new Float32Array(names.length);
+  const value: Record<string, number> = {
+    eyeBlinkLeft: close.L, eyeBlinkRight: close.R, eyeSquintLeft: squint.L, eyeSquintRight: squint.R,
+    'eyeBlinkLeft.inbetween': 1 - Math.abs(2 * close.L - 1), 'eyeBlinkRight.inbetween': 1 - Math.abs(2 * close.R - 1),
+  };
+  names.forEach((n, i) => { w[i] = Math.min(1, Math.max(0, value[n] ?? 0)); });
+  for (const s of ['L', 'R'] as const) {
+    const i = names.indexOf(s === 'L' ? 'eyeBlinkLeft.inbetween' : 'eyeBlinkRight.inbetween');
+    if (i >= 0 && (close[s] <= 0 || close[s] >= 1)) w[i] = 0;
+  }
+  return w;
+}
+
+// the closure of an eye during a blink of the page's timer, at a share t (0 to 1) of the blink: a quick close over the
+// first third, then a slower opening
+export const BLINK_SECONDS = 0.3;
+export function blinkCurve(t: number): number {
+  if (t <= 0 || t >= 1) return 0;
+  if (t < 1 / 3) { const u = t * 3; return u * u * (3 - 2 * u); }
+  const u = (t - 1 / 3) * 1.5; return 1 - u * u * (3 - 2 * u);
 }

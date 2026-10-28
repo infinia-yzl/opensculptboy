@@ -7,7 +7,7 @@
 // the browser.
 
 import type { App } from './app.ts';
-import { chip, sectionHead, textButton, toggle } from './controls.ts';
+import { chip, sectionHead, slider, textButton, toggle } from './controls.ts';
 import { h } from './dom.ts';
 import { toast } from './toast.ts';
 import { fromDrop, fromInput, type PickedFile } from '../wearables/files.ts';
@@ -63,6 +63,12 @@ export function wearablesSection(app: App): HTMLElement {
   const body = h('div.wear-body');
   const skinT = toggle('Hide covered skin', (on) => { W()?.setKeepSkin(!on); paint(); }, 'Leave out the body triangles under the shown pieces');
   const stats = h('p.note.wear-stats');
+  // a card's eyes (card/look.ts): the blinks of the timer, one blink, and the closure and the squint that they start from
+  const C = () => app.cardLook();
+  const blinkT = toggle('Blink', (on) => C()?.setBlinkAuto(on), 'Close the eyes now and then, as the exports\' blink targets close them');
+  const closeS = slider({ id: 'card-eyes-closed', label: 'Eyes closed', min: 0, max: 1, def: 0, onInput: (v) => C()?.setEyes(v, null) });
+  const squintS = slider({ id: 'card-eyes-squint', label: 'Squint', min: 0, max: 1, def: 0, onInput: (v) => C()?.setEyes(null, v) });
+  const eyes = h('div.wear-eyes', {}, blinkT.el, h('div.btn-row', {}, textButton('Blink once', () => C()?.blinkNow())), closeS.el, squintS.el);
   el.append(head.el,
     h('p.sec-lead', { text: 'A character card with its outfits and wearable packages, from your own files. The page reads them here and sends nothing.' }),
     tools, drop, msg, files, folder, body);
@@ -105,6 +111,11 @@ export function wearablesSection(app: App): HTMLElement {
       h('h3.sub', { text: 'Outfit' }), outfits,
       ...groups.flatMap(([title, list]) => [h('h3.sub', { text: title }), h('div.wear-list', {}, ...list.map((r) => row(r, worn)))]),
       h('h3.sub', { text: 'Skin' }), skinT.el, stats);
+    const panel = C()?.blinkPanel();
+    if (panel) {
+      blinkT.set(panel.auto); closeS.set(panel.close); squintS.set(panel.squint);
+      body.append(h('h3.sub', { text: 'Eyes' }), eyes);
+    }
   };
   // a full dress repaints the section (the counts and times); the quick dress of a slider edit leaves it
   W()?.listeners.push(() => { if (W()?.loaded && (W()!.timing as any).full) paint(); else showNotes(); });

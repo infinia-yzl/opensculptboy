@@ -5,8 +5,9 @@
 // with the page's lights. The card's local changes and the offsets of its detail level shape the body (body.ts); its
 // baked maps colour the skin through the UVs of anny's atlas, the head tile's maps on the head's island; its baked
 // eyes take the single-surface eyeball of opensculptboy.eyes on the spheres of the fitted eyeballs, looking where the
-// reference looks; and the reference's lashes, teeth and inner mouth ride on the head. The plan of what the page takes
-// lives in card/data.ts. Nothing of the user's files is stored or sent: the page keeps them in memory until it closes.
+// reference looks; the reference's lashes, teeth, inner mouth, hair and brows ride on the head, the grooms with the
+// materials of the exports; and the eyes blink as the GLB export's targets close them, on a timer and from the panel.
+// The plan of what the page takes lives in card/data.ts. Nothing of the user's files is stored or sent: the page keeps them in memory until it closes.
 
 import type * as THREE_NS from 'three';
 import type { AnnyBody } from '../body.ts';
@@ -14,7 +15,8 @@ import { sphereFit, vertexNormals } from '../body.ts';
 import type { FileSet } from '../wearables/files.ts';
 import { readSafetensors } from '../wearables/package.ts';
 import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from '../wearables/shading.ts';
-import { cardPlan, eyeAxes, irisRadius, outerRadius, pagePoints, pageVectors, partOf, uvTangents, type CardPlan, type Frame, type Part } from './data.ts';
+import { BLINK_SECONDS, blinkCurve, blinksOf, blinkWeights, cardPlan, eyeAxes, groomOf, irisRadius, outerRadius, pagePoints, pageVectors, partOf, uvTangents,
+  type Blinks, type CardPlan, type Frame, type Groom, type Part } from './data.ts';
 
 // what the card's look needs from the renderer (main.ts)
 export interface CardHost {
@@ -39,9 +41,23 @@ export interface CardHost {
   setPageParts(on: { hair: boolean; brows: boolean; lashes: boolean } | null): void;   // null: as the look has them
   setBodyCard(c: { local: Record<string, number> | null; coarse: Float32Array | null; levels: (Float32Array | null)[]; pageDetail: boolean; hide: boolean } | null): void;
   changed(): void;
+  // the eye targets on the body: sparse shapes of the fine body (vertices, position offsets and normal offsets, page
+  // frame) and their weights; null takes them off
+  blinkShapes(shapes: BodyShape[] | null): void;
+  blinkWeights(w: Float32Array): void;
+  moved(): void;                                      // a frame of a blink: the picture and the shadows again
 }
 
-interface PartMesh { name: string; mesh: any; geo: THREE_NS.BufferGeometry; rest: Float32Array; normals: Float32Array; materials: any[]; depth: any[] }
+export interface BodyShape { idx: Uint32Array; d: Float32Array; n: Float32Array }
+type PartKind = 'lashes' | 'mouth' | 'teeth' | 'hair' | 'brows';
+
+interface PartMesh { name: string; kind: PartKind; mesh: any; geo: THREE_NS.BufferGeometry; rest: Float32Array; normals: Float32Array; materials: any[]; depth: any[]; blink: Float32Array | null }
+
+// the blinks of a card: its eye targets, their offsets on the page (the parts' and the patch's in the page frame), the
+// state of the panel and of the timer
+interface BlinkState {
+  data: Blinks; ready: boolean; auto: boolean; close: number; squint: number; start: number; next: number; active: boolean; vertices: number;
+}
 
 const ANISOTROPY = 8;
 // the share of the key light that the skin around a point reflects onto it (shading.ts, CARD_SKIN), set against the
@@ -57,7 +73,8 @@ export class CardLook {
   private images = new Map<string, ImageBitmap>();
   private skin: THREE_NS.ShaderMaterial | null = null;
   private parts: PartMesh[] = [];
-  private partData: { name: string; part: Part; kind: 'lashes' | 'mouth' | 'teeth' }[] = [];
+  private partData: { name: string; part: Part; kind: PartKind }[] = [];
+  private blink: BlinkState | null = null;
   private eyeState: { saved: any[]; meshes: any[] } | null = null;
   private iris: Record<string, number> = {};
   private placedHead: { joint: number[]; scale: number } | null = null;
@@ -155,6 +172,32 @@ export class CardLook {
       } catch (err: any) { fail(`${slot}: ${err.message || err}`, err); }
     }
     if (plan.mouth) notes.push('the page draws the reference\'s inner mouth over anny\'s own');
+    // the reference's hair and brows, and their textures by material and slot
+    for (const kind of ['hair', 'brows'] as const) {
+      const g = plan[kind];
+      if (!g) continue;
+      try {
+        const st = readSafetensors(await files.bytes(g.mesh, folder));
+        this.partData.push({ name: kind, part: groomOf(st.tensors, st.metadata), kind });
+      } catch (err: any) { fail(`${kind}: ${err.message || err}`, err); continue; }
+      for (const [material, slots] of Object.entries(g.textures)) for (const [slot, rel] of Object.entries(slots)) {
+        try {
+          const bytes = await files.bytes(rel, folder);
+          this.images.set(`${kind}:${material}:${slot}`, await createImageBitmap(new Blob([bytes as any]), { imageOrientation: 'none' as any, colorSpaceConversion: 'none' as any, premultiplyAlpha: 'none' as any }));
+        } catch (err: any) { fail(`${kind} ${material} ${slot}: ${err.message || err}`, err); }
+      }
+    }
+    // the exports' eye targets, which the page plays on a timer
+    if (plan.blinks) {
+      try {
+        const st = readSafetensors(await files.bytes(plan.blinks, folder));
+        const data = blinksOf(st.tensors, st.metadata);
+        if (data.level !== plan.shown) notes.push(`the blinks hold level ${data.level}; the page shows level ${plan.shown} and plays them on the parts alone`);
+        const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null;
+        const auto = !(q && (q.has('shot') || q.get('blink') === 'off'));
+        this.blink = { data, ready: false, auto, close: 0, squint: 0, start: -1, next: performance.now() + 1500, active: false, vertices: 0 };
+      } catch (err: any) { fail(`blinks: ${err.message || err}`, err); }
+    }
     // the body: the card's local changes and its detail offsets, with the page's own detail layers left out
     this.plan = plan; this.notes = notes; this.failures = failures;
     this.host.setBodyCard({ local: Object.keys(plan.localChanges).length ? plan.localChanges : null, coarse, levels, pageDetail: !hasDetail, hide: !!this.patch });
@@ -168,9 +211,10 @@ export class CardLook {
     if (!this.plan) return;
     const t0 = performance.now(), plan = this.plan, T = this.host.THREE;
     this.placed = true;
-    // the hair: a card holds none, so the page shows none; the brows of a baked skin are in its maps (or absent),
-    // and the reference's lashes replace the page's
-    this.host.setPageParts({ hair: false, brows: !this.images.has('base_color'), lashes: !this.partData.some((p) => p.kind === 'lashes') });
+    // the reference's hair takes the place of the page's strand hair, which stays for a card without it; the brows of a
+    // baked skin are in its maps (or absent), and the reference's brows and lashes replace the page's
+    const has = (k: PartKind) => this.partData.some((p) => p.kind === k);
+    this.host.setPageParts({ hair: !has('hair'), brows: !this.images.has('base_color') && !has('brows'), lashes: !has('lashes') });
     if (this.images.has('base_color') && !this.skin) {
       const defines: Record<string, string> = { CARD_SKIN: '' };
       const tex = (slot: string, srgb: boolean) => this.texture(slot, srgb);
@@ -208,9 +252,11 @@ export class CardLook {
   bodyChanged() {
     if (!this.plan || !this.placed) return;
     const t0 = performance.now();
+    if (this.blink) this.blink.ready = false;   // the body's shapes follow the new body when the eyes move next
     this.placeEyes();
     this.placeParts();
     this.placePatch();
+    if (this.blink && (this.blink.close || this.blink.squint)) this.showEyes(this.blink.close);
     this.host.changed();
     this.timing.follow = performance.now() - t0;
   }
@@ -346,20 +392,27 @@ export class CardLook {
     }
     // the patch's border (a vertex within half a millimetre of its nearest page vertex, where the page's skin shows)
     // takes the place and the normal of the page's skin, so that the two meet and the shading runs on across them
-    const BP = body.pos, BN = body.nrm, near2 = (0.0005 * this.host.frame().scale) ** 2, border: number[] = [];
+    const BP = body.pos, near2 = (0.0005 * this.host.frame().scale) ** 2, border: number[] = [];
     const hidden = (this.host.geometry().attributes as any).cardUV.array as Uint16Array;
     for (let i = 0; i < n; i++) {
       const o = i * 3, q = p.near[i] * 3, dx = P[o] - BP[q], dy = P[o + 1] - BP[q + 1], dz = P[o + 2] - BP[q + 2];
       const shown = hidden[p.near[i] * 4 + 3] === 0;
       if (shown && dx * dx + dy * dy + dz * dz < near2) { P[o] = BP[q]; P[o + 1] = BP[q + 1]; P[o + 2] = BP[q + 2]; border.push(i); }
     }
-    const N = p.geo.attributes.normal.array as Float32Array;
+    (p as any).base = P.slice(); (p as any).border = border;
+    this.patchNormals();
+    this.patchBorder = border.length;
+  }
+
+  // the patch's normals, its border taking the page skin's
+  private patchNormals() {
+    const p = this.patch!, P = p.geo!.attributes.position.array as Float32Array, BN = this.host.body().nrm, border: number[] = (p as any).border || [];
+    const N = p.geo!.attributes.normal.array as Float32Array;
     vertexNormals(P, p.triangles, N);
     for (const i of border) { const o = i * 3, q = p.near[i] * 3; N[o] = BN[q]; N[o + 1] = BN[q + 1]; N[o + 2] = BN[q + 2]; }
-    this.patchBorder = border.length;
-    (p.geo.attributes.nsmooth.array as Float32Array).set(N);
-    p.geo.attributes.position.needsUpdate = true; p.geo.attributes.normal.needsUpdate = true; p.geo.attributes.nsmooth.needsUpdate = true;
-    p.geo.computeBoundingSphere();
+    (p.geo!.attributes.nsmooth.array as Float32Array).set(N);
+    p.geo!.attributes.position.needsUpdate = true; p.geo!.attributes.normal.needsUpdate = true; p.geo!.attributes.nsmooth.needsUpdate = true;
+    p.geo!.computeBoundingSphere();
   }
 
   // ---------------------------------------------------------------- the parts
@@ -368,26 +421,180 @@ export class CardLook {
     const body = this.host.body(), frame = this.host.frame(), head = this.host.headBone();
     const J = body.joints, jh = [J[head * 3], J[head * 3 + 1], J[head * 3 + 2]], k = body.headScale();
     if (!this.parts.length) {
+      if (this.blink) this.blink.ready = false;
       for (const d of this.partData) {
         const rest = pagePoints(d.part.points, frame, body.floorShift), n = rest.length / 3;
         const normals = d.part.normals ? pageVectors(d.part.normals, null, n, frame) : new Float32Array(n * 3);
         for (let i = 0; i < n; i++) { const l = Math.hypot(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]) || 1; normals[i * 3] /= l; normals[i * 3 + 1] /= l; normals[i * 3 + 2] /= l; }
         if (!d.part.normals) vertexNormals(rest, d.part.triangles, normals);
-        this.parts.push(this.partMesh(d.name, d.kind, d.part, rest, normals, head));
+        if (d.kind === 'hair' || d.kind === 'brows') this.parts.push(...this.groomMeshes(d.kind, d.part as Groom, rest, normals, head));
+        else this.parts.push(this.partMesh(d.name, d.kind, d.part, rest, normals, head));
       }
       this.placedHead = { joint: jh, scale: k };
     }
-    // the parts keep their place on the head of the card's body: they move and scale with the head
-    const ph = this.placedHead!, s = k / ph.scale;
+    this.moveParts();
+  }
+
+  // the parts keep their place on the head of the card's body: they move and scale with the head, and the lashes and
+  // the brows take the eye targets' offsets of the blink shown
+  private moveParts() {
+    const body = this.host.body(), head = this.host.headBone(), J = body.joints, jh = [J[head * 3], J[head * 3 + 1], J[head * 3 + 2]];
+    const ph = this.placedHead!, s = body.headScale() / ph.scale;
     for (const p of this.parts) {
-      const at = p.geo.attributes.position as any, A = at.array as Float32Array, R = p.rest;
-      for (let i = 0; i < A.length; i += 3) for (let c = 0; c < 3; c++) A[i + c] = jh[c] + (R[i + c] - ph.joint[c]) * s;
+      const at = p.geo.attributes.position as any, A = at.array as Float32Array, R = p.rest, B = p.blink;
+      for (let i = 0; i < A.length; i += 3) for (let c = 0; c < 3; c++) A[i + c] = jh[c] + (R[i + c] - ph.joint[c] + (B ? B[i + c] : 0)) * s;
       at.needsUpdate = true;
       p.geo.computeBoundingSphere();
     }
   }
 
-  private partMesh(name: string, kind: 'lashes' | 'mouth' | 'teeth', part: Part, rest: Float32Array, normals: Float32Array, head: number): PartMesh {
+  // ---------------------------------------------------------------- blinks
+  // The page plays the GLB export's eye targets (opensculptboy.eyes.page): on the fine body as sparse shapes of its
+  // vertices (the card's level carried through the page's remaining subdivision), on the sculpt patch by its card rows,
+  // and on the lashes and the brows by their points. A blink of the timer closes both eyes over BLINK_SECONDS, every
+  // 2.5 to 6 seconds; the panel sets the closure and the squint that the blinks start from.
+  get hasBlinks() { return !!this.blink; }
+  blinkPanel() { const b = this.blink; return b ? { auto: b.auto, close: b.close, squint: b.squint } : null; }
+  setBlinkAuto(on: boolean) { const b = this.blink; if (!b) return; b.auto = on; b.next = performance.now() + 600; if (!on && b.active) { b.active = false; this.showEyes(b.close); } }
+  blinkNow() { const b = this.blink; if (!b) return; b.active = true; b.start = performance.now(); }
+  setEyes(close: number | null, squint: number | null) {
+    const b = this.blink;
+    if (!b) return;
+    if (close !== null) b.close = Math.min(1, Math.max(0, close));
+    if (squint !== null) b.squint = Math.min(1, Math.max(0, squint));
+    if (!b.active) this.showEyes(b.close);
+  }
+  // the timer: true while a blink moves the eyes this frame
+  tick(now: number): boolean {
+    const b = this.blink;
+    if (!b || !this.placed) return false;
+    if (b.auto && !b.active && now >= b.next) { b.active = true; b.start = now; }
+    if (!b.active) return false;
+    const t = (now - b.start) / (BLINK_SECONDS * 1000);
+    if (t >= 1) { b.active = false; b.next = now + 2500 + Math.random() * 3500; this.showEyes(b.close); return true; }
+    this.showEyes(Math.max(b.close, blinkCurve(t)));
+    return true;
+  }
+
+  private showEyes(close: number) {
+    const b = this.blink!;
+    if (!b.ready) this.prepareBlinks();
+    const w = blinkWeights(b.data.names, { L: close, R: close }, { L: b.squint, R: b.squint });
+    this.host.blinkWeights(w);
+    const sum = (shapes: Float32Array[] | undefined, out: Float32Array) => {
+      out.fill(0);
+      if (!shapes) return;
+      shapes.forEach((D, t) => { const k = w[t]; if (k) for (let i = 0; i < out.length; i++) out[i] += k * D[i]; });
+    };
+    for (const p of this.parts) if (p.blink) sum(this.partBlinks.get(p), p.blink);
+    if (this.parts.length) this.moveParts();
+    const q = this.patch;
+    if (q?.geo && (q as any).base && this.patchBlinks) {
+      const P = q.geo.attributes.position.array as Float32Array, B = (q as any).base as Float32Array, D = new Float32Array(P.length);
+      sum(this.patchBlinks, D);
+      for (let i = 0; i < P.length; i++) P[i] = B[i] + D[i];
+      this.patchNormals();
+    }
+    this.host.moved();
+  }
+
+  private partBlinks = new Map<PartMesh, Float32Array[]>();
+  private patchBlinks: Float32Array[] | null = null;
+
+  // the shapes of the current body: the fine body's (when the file holds the level the page shows), the patch's and
+  // the parts'
+  private prepareBlinks() {
+    const b = this.blink!, plan = this.plan!, d = b.data, body = this.host.body(), frame = this.host.frame();
+    const T = d.names.length, K = d.rows.length, R = frame.rotation, sc = frame.scale;
+    b.ready = true;
+    const at = new Map<number, number>();
+    for (let k = 0; k < K; k++) at.set(d.rows[k], k);
+    // s R offset of target t at moved row k, added to out at o with the weight f
+    const add = (src: Float32Array, rows: number, t: number, k: number, out: Float32Array, o: number, f = 1) => {
+      const q = (t * rows + k) * 3, x = src[q], y = src[q + 1], z = src[q + 2];
+      for (let r = 0; r < 3; r++) out[o + r] += f * sc * (R[r * 3] * x + R[r * 3 + 1] * y + R[r * 3 + 2] * z);
+    };
+    const topology = ['anny', 'sculpt'].includes(plan.topology) ? plan.topology : 'anny';
+    const u32 = (name: string) => { const x = this.host.buffer(name); return x ? new Uint32Array(x) : null; };
+    const rows = d.level === plan.shown ? (d.level > 0 ? u32(`card_rows_${topology}_${d.level}`) : u32('card_coarse')) : null;
+    const shapes: BodyShape[] = [];
+    if (rows) {
+      const fixBuf = d.level > 0 ? this.host.buffer(`card_fix_${topology}_${d.level}`) : null;
+      const tris = body.hide && body.weldShown ? body.weldShown : body.weld, n = body.nFine;
+      let touched = 0;
+      for (let t = 0; t < T; t++) {
+        const lv = new Float32Array(rows.length * 3);
+        for (let i = 0; i < rows.length; i++) { const k = at.get(rows[i]); if (k !== undefined) add(d.offsets, K, t, k, lv, i * 3); }
+        if (fixBuf) {   // the rows whose stencil a patch changed: the blend of their three card rows
+          const f = new Float32Array(fixBuf), ids = new Uint32Array(fixBuf);
+          for (let q = 0; q < f.length; q += 10) {
+            const o = ids[q] * 3;
+            lv[o] = lv[o + 1] = lv[o + 2] = 0;
+            for (let j = 0; j < 3; j++) { const k = at.get(ids[q + 1 + j]); if (k !== undefined) add(d.offsets, K, t, k, lv, o, f[q + 4 + j]); }
+          }
+        }
+        const fine = d.level > 0
+          ? body.sub.apply(new Float32Array(body.nBody * 3), 3, d.level === 1 ? [lv, null] : [null, lv]).slice()
+          : body.sub.apply(lv.subarray(0, body.nBody * 3), 3).slice();
+        const P1 = body.pos.slice();
+        for (let i = 0; i < fine.length; i++) P1[i] += fine[i];
+        const N1 = body.copyRows(vertexNormals(P1, tris), 3), N0 = body.nrm, idx: number[] = [];
+        for (let v = 0; v < n; v++) {
+          const o = v * 3, dd = fine[o] ** 2 + fine[o + 1] ** 2 + fine[o + 2] ** 2;
+          const dn = (N1[o] - N0[o]) ** 2 + (N1[o + 1] - N0[o + 1]) ** 2 + (N1[o + 2] - N0[o + 2]) ** 2;
+          if (dd > 1e-18 || dn > 1e-12) idx.push(v);
+        }
+        const D = new Float32Array(idx.length * 3), Nd = new Float32Array(idx.length * 3);
+        idx.forEach((v, i) => { for (let c = 0; c < 3; c++) { D[i * 3 + c] = fine[v * 3 + c]; Nd[i * 3 + c] = N1[v * 3 + c] - N0[v * 3 + c]; } });
+        shapes.push({ idx: Uint32Array.from(idx), d: D, n: Nd });
+        touched = Math.max(touched, idx.length);
+      }
+      b.vertices = touched;
+      // the patch's vertices: their card rows of the level
+      const q = this.patch;
+      this.patchBlinks = null;
+      if (q && d.level > 0) {
+        this.patchBlinks = [];
+        for (let t = 0; t < T; t++) {
+          const D = new Float32Array(q.rows.length * 3);
+          for (let i = 0; i < q.rows.length; i++) { const k = at.get(q.rows[i]); if (k !== undefined) add(d.offsets, K, t, k, D, i * 3); }
+          this.patchBlinks.push(D);
+        }
+      }
+    }
+    this.host.blinkShapes(rows ? shapes : null);
+    // the lashes and the brows: the offsets of their points
+    this.partBlinks.clear();
+    for (const p of this.parts) {
+      const src = p.kind === 'lashes' ? d.lashes : p.kind === 'brows' ? d.brows : null;
+      const m = p.rest.length / 3;
+      if (!src || src.length !== T * m * 3) { p.blink = null; continue; }
+      const list: Float32Array[] = [];
+      for (let t = 0; t < T; t++) { const D = new Float32Array(m * 3); for (let i = 0; i < m; i++) add(src, m, t, i, D, i * 3); list.push(D); }
+      this.partBlinks.set(p, list);
+      p.blink = new Float32Array(m * 3);
+    }
+  }
+
+  // a groom of the reference (opensculptboy.groom): one mesh per material, with its texture, alpha and sides as the
+  // GLB export writes them, and the hair's vertex colours
+  private groomMeshes(kind: 'hair' | 'brows', g: Groom, rest: Float32Array, normals: Float32Array, head: number): PartMesh[] {
+    const out: PartMesh[] = [];
+    g.materials.forEach((m, k) => {
+      const tris: number[] = [];
+      for (let t = 0; t < g.material.length; t++) if (g.material[t] === k) tris.push(g.triangles[t * 3], g.triangles[t * 3 + 1], g.triangles[t * 3 + 2]);
+      if (!tris.length) return;
+      const part: Part = { points: g.points, normals: g.normals, uvs: g.uvs, triangles: Uint32Array.from(tris) };
+      const look = { base: m.base, rough: m.roughness, alpha: m.alpha, cutoff: m.cutoff, double: m.double, normalScale: m.normalScale,
+        map: this.images.has(`${kind}:${m.name}:base_color`) ? this.texture(`${kind}:${m.name}:base_color`, true) : null,
+        normal: this.images.has(`${kind}:${m.name}:normal`) && g.uvs ? this.texture(`${kind}:${m.name}:normal`, false) : null,
+        colors: g.colors };
+      out.push(this.partMesh(`${kind}:${m.name}`, kind, part, rest, normals, head, look));
+    });
+    return out;
+  }
+
+  private partMesh(name: string, kind: PartKind, part: Part, rest: Float32Array, normals: Float32Array, head: number, look: any = null): PartMesh {
     const T = this.host.THREE, plan = this.plan!, n = rest.length / 3, geo = new T.BufferGeometry();
     geo.setAttribute('position', new T.BufferAttribute(rest.slice(), 3));
     geo.setAttribute('normal', new T.BufferAttribute(normals, 3));
@@ -397,8 +604,12 @@ export class CardLook {
     geo.setAttribute('skinIndex', new T.BufferAttribute(si, 4));
     geo.setAttribute('skinWeight', new T.BufferAttribute(sw, 4));
     geo.setIndex(new T.BufferAttribute(part.triangles, 1));
-    const mt: any = { base: [1, 1, 1, 1], rough: 0.5, map: null, normal: null, mr: null, blend: false, double: false };
-    if (kind === 'lashes') { mt.map = this.images.has('lashes') ? this.texture('lashes', true) : null; mt.rough = plan.lashes!.roughness; mt.blend = true; mt.double = true; }
+    const mt: any = { base: [1, 1, 1, 1], rough: 0.5, map: null, normal: null, mr: null, blend: false, mask: false, double: false, cutoff: 0.5, normalScale: 1 };
+    if (look) {
+      Object.assign(mt, { base: look.base.slice(0, 4), rough: look.rough, map: look.map, normal: look.normal, blend: look.alpha === 'BLEND', mask: look.alpha === 'MASK',
+        double: look.double, cutoff: look.cutoff, normalScale: look.normalScale });
+      if (look.colors) geo.setAttribute('gColor', new T.BufferAttribute(look.colors, 4));
+    } else if (kind === 'lashes') { mt.map = this.images.has('lashes') ? this.texture('lashes', true) : null; mt.rough = plan.lashes!.roughness; mt.blend = true; mt.double = true; }
     else if (kind === 'mouth') {
       mt.map = this.images.has('mouth_base_color') ? this.texture('mouth_base_color', true) : null;
       mt.normal = this.images.has('mouth_normal') && part.uvs ? this.texture('mouth_normal', false) : null;
@@ -410,18 +621,20 @@ export class CardLook {
     if (mt.normal) defines.HAS_NORMAL_MAP = '';
     if (mt.mr) defines.HAS_MR = '';
     if (mt.blend) defines.ALPHA_BLEND = '';
+    if (mt.mask) defines.ALPHA_MASK = '';
+    if (look?.colors) defines.HAS_VCOLOR = '';
     const own = { uBase: { value: new T.Vector4(...(mt.base as [number, number, number, number])) }, uMetal: { value: 0 }, uRough: { value: mt.rough },
-      uEmissive: { value: new T.Vector3(0, 0, 0) }, uCutoff: { value: 0.5 }, uNormalScale: { value: 1 },
+      uEmissive: { value: new T.Vector3(0, 0, 0) }, uCutoff: { value: mt.cutoff }, uNormalScale: { value: mt.normalScale },
       uMap: { value: mt.map }, uMR: { value: mt.mr }, uNormalMap: { value: mt.normal }, uAO: { value: null }, uEmissiveMap: { value: null } };
     const mat = new T.ShaderMaterial({ uniforms: Object.assign({}, this.host.uniforms, own), vertexShader: GARMENT_VS, fragmentShader: this.host.toMRT(GARMENT_FS),
       defines, glslVersion: T.GLSL3, blending: T.NoBlending, side: mt.double ? T.DoubleSide : T.FrontSide });
-    const depth = mt.blend ? new T.ShaderMaterial({ uniforms: { uBase: own.uBase, uMap: own.uMap, uCutoff: { value: BLEND_SHADOW_CUTOFF } },
+    const depth = mt.blend || mt.mask ? new T.ShaderMaterial({ uniforms: { uBase: own.uBase, uMap: own.uMap, uCutoff: { value: mt.blend ? BLEND_SHADOW_CUTOFF : mt.cutoff } },
       vertexShader: GARMENT_DEPTH_VS, fragmentShader: GARMENT_DEPTH_FS, defines: Object.assign({}, this.host.depth.defines, mt.map ? { HAS_MAP: '' } : {}), side: T.DoubleSide }) : this.host.depth;
     const mesh = new T.SkinnedMesh(geo, mat);
     mesh.bind(this.host.skeleton(), new T.Matrix4());
     mesh.frustumCulled = false; mesh.name = `card ${name}`; mesh.userData.depthMat = depth;
     this.host.scene.add(mesh); this.host.opaque.push(mesh);
-    return { name, mesh, geo, rest, normals, materials: [mat], depth: [depth] };
+    return { name, kind, mesh, geo, rest, normals, materials: [mat], depth: [depth], blink: null };
   }
 
   private texture(slot: string, srgb: boolean): THREE_NS.Texture {
@@ -446,6 +659,8 @@ export class CardLook {
       p.geo.dispose(); p.materials.forEach((m) => m.dispose()); p.depth.forEach((m) => { if (m !== this.host.depth) m.dispose(); });
     }
     this.parts = []; this.partData = []; this.placedHead = null; this.placed = false;
+    if (this.blink) { this.host.blinkShapes(null); this.blink = null; }
+    this.partBlinks.clear(); this.patchBlinks = null;
     if (this.patch?.mesh) {
       this.host.scene.remove(this.patch.mesh);
       const i = this.host.opaque.indexOf(this.patch.mesh);
@@ -478,7 +693,9 @@ export class CardLook {
     const eyes = this.host.eyes().filter((e) => e.card).map((e) => ({ side: e.side, ...e.card }));
     return { active: !!this.plan, level: this.plan?.shown ?? null, topology: this.plan?.topology ?? null, textures: [...this.images.keys()].sort(),
       patch: this.patch ? { vertices: this.patch.rows.length, triangles: this.patch.triangles.length / 3, border: this.patchBorder } : null,
-      skin: !!this.skin, parts: this.parts.map((p) => ({ name: p.name, vertices: p.rest.length / 3 })), eyes, notes: this.notes, timing: this.timing };
+      skin: !!this.skin, parts: this.parts.map((p) => ({ name: p.name, vertices: p.rest.length / 3 })), eyes, notes: this.notes, timing: this.timing,
+      blinks: this.blink ? { targets: this.blink.data.names, level: this.blink.data.level, vertices: this.blink.vertices, auto: this.blink.auto,
+        close: this.blink.close, squint: this.blink.squint } : null };
   }
 }
 
