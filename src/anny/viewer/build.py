@@ -441,8 +441,8 @@ def expression_buffers(pk, man, body, compact, src, count, verbose=True):
       rig move, and their weights (uint32 and float32 pairs);
     - ``face_region``: the drawn vertices of the fine body that any action or the jaw moves, so
       that build.mjs puts them together in the vertex order and an upload of a face is one range;
-    - ``man["expressions"]``: the actions, the jaw's turn (a rotation vector and the blend of
-      coarse vertices that gives its pivot on every body), the turns of the eyeballs, the
+    - ``man["expressions"]``: the actions, the jaw's turn (a rotation vector and its pivot on
+      Anny's default body, which the page carries with the head), the turns of the eyeballs, the
       motion of Anny's tongue, and the VRM presets and visemes of
       ``opensculptboy/data/vrm/expressions.json``.
     """
@@ -502,7 +502,6 @@ def expression_buffers(pk, man, body, compact, src, count, verbose=True):
         fields=1,
         sort="none",
     )
-    near, weights, err = card.jaw_pivot_regressor(compact)
     rotvec = M @ Rotation.from_matrix(F.rotation).as_rotvec()
     tongue_rest = rig.to_legacy(F.rest[F.tongue])
     tongue = {}
@@ -538,9 +537,6 @@ def expression_buffers(pk, man, body, compact, src, count, verbose=True):
             rotation=rotvec.round(8).tolist(),
             angle_degrees=round(float(np.degrees(np.linalg.norm(rotvec))), 4),
             pivot=rig.to_legacy(F.pivot).round(7).tolist(),
-            pivot_vertices=near.tolist(),
-            pivot_weights=weights.round(8).tolist(),
-            pivot_error=err,
             vertices=int(len(on)),
         ),
         eye_turns=eye_turns,
@@ -552,7 +548,7 @@ def expression_buffers(pk, man, body, compact, src, count, verbose=True):
     if verbose:
         print(
             f"faces: {len(ids)} coarse offsets, {len(region)} fine vertices, jaw turn "
-            f"{man['expressions']['jaw']['angle_degrees']:.1f} degrees, pivot error {err * 1000:.2f} mm "
+            f"{man['expressions']['jaw']['angle_degrees']:.1f} degrees "
             f"({time.time() - t0:.0f} s)"
         )
 

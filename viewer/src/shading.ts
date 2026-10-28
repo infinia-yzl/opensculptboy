@@ -7,6 +7,8 @@
 // veins and vellus sheen; the eyes; the hair; the backdrop and the props. The hair vertex shader places each
 // point from the frame of its strand on the current body (AnnyBody.followStrands).
 
+import { FACE_GLSL } from './face/morph.ts';
+
 export const BG_GLSL = /* glsl */`
 uniform vec3 uBgA; uniform vec3 uBgB; uniform vec2 uBgCenter; uniform vec2 uRes;
 vec3 bgColor() {
@@ -248,15 +250,17 @@ vec2 keyShadowLite(vec3 wp, vec3 n) {
 // Without SSS_SCREEN the shader falls back to the pre-integrated curvature LUT.
 // skin under a worn garment sinks a few millimetres, so bends of the body cannot push it through the fabric; the
 // sinking fades out over a few millimetres past the edge, where an elastic band would press into the skin
+// (FACE_P and FACE_N: the position and the normal with the face, face/morph.ts)
 export const COVER_GLSL = /* glsl */`
 vec3 coveredPosition() {
   vec4 c = attrV * uWearOn;
-  return position - normal * (0.004 * max(max(c.x, c.y), max(c.z, c.w)));
+  return FACE_P - FACE_N * (0.004 * max(max(c.x, c.y), max(c.z, c.w)));
 }`;
 
 export const SKIN_VS = /* glsl */`
 ${SKIN_GLSL}
 ${HEAD_OUT_GLSL}
+${FACE_GLSL}
 attribute vec3 nsmooth; attribute vec4 attrA; attribute vec4 attrB; attribute vec4 attrC; attribute vec4 attrW; attribute vec4 attrV;
 #ifndef CARD_SKIN
 // (ANGLE on Direct3D counts the declared attributes against the limit of 16, so a card's skin leaves these out)
@@ -282,12 +286,13 @@ void main() {
 #ifdef CARD_SKIN
   vCardUV = cardUV.xy; vCardTile = cardUV.z; vCardHide = cardUV.w;
 #endif
+  faceMorph(position, normal, nsmooth);
   vec4 wp = modelMatrix * (S * vec4(coveredPosition(), 1.0));
   vWPos = wp.xyz; vObj = rest;
-  vN = normalize(M * normal);
-  vNs = normalize(M * nsmooth);
+  vN = normalize(M * FACE_N);
+  vNs = normalize(M * FACE_S);
   // the rest normal and the turn of the skin: surface detail is worked out in the rest pose and turned with the skin
-  vN0 = normal; vR0 = M[0]; vR1 = M[1]; vR2 = M[2];
+  vN0 = FACE_N; vR0 = M[0]; vR1 = M[1]; vR2 = M[2];
   vHOut = M * headOutRest(rest);   // the head of anny's default body (uHeadInv maps to it)
 #ifdef CARD_SKIN
   vAlb = vec3(0.0);

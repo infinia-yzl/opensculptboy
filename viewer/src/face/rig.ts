@@ -20,7 +20,7 @@ export interface FaceMeta {
   counts: number[];
   step: number;
   cleared: string[];
-  jaw: { action: string; rotation: number[]; angle_degrees: number; pivot: number[]; pivot_vertices: number[]; pivot_weights: number[]; pivot_error: number; vertices: number };
+  jaw: { action: string; rotation: number[]; angle_degrees: number; pivot: number[]; vertices: number };
   eye_turns: Record<string, Record<string, number[]>>;   // per action: per eye ('l', 'r') a rotation vector (page frame)
   tongue: { rest: number[]; motion: Record<string, { kind: 'rigid'; rotation: number[]; translation: number[] } | { kind: 'follow'; offsets: number[] }> };
   region: number;
@@ -146,9 +146,13 @@ export class SparseSubdivision {
 export interface FaceBody {
   sub: FineSubdivision; nBody: number; nc: number; nFine: number; nWeld: number;
   coarse: Float32Array; quads: Uint32Array;
+  // the head bone's rest head on this body and on anny's default body, and the head's scale (the page's body)
+  joints?: Float32Array; jointsDefault?: Float32Array; headScale?: () => number; head?: number;
 }
 
-export interface Shape { idx: Uint32Array; d: Float32Array }
+// a sparse shape of the fine body: offsets of its vertices, and (once computed, face/rig.ts FaceLayer.normalShape) the
+// change of the normals at weight 1 on the vertices it turns
+export interface Shape { idx: Uint32Array; d: Float32Array; nIdx?: Uint32Array; dn?: Float32Array }
 
 // The facial actions and the jaw's turn on a body. The fine shapes of the actions follow from the coarse offsets by
 // the sparse subdivision, once per action when it first shows; the jaw's pivot and corrective follow each body.
@@ -221,9 +225,13 @@ export class FaceRig {
   rebase(fine: Float32Array) {
     const m = this.data.meta;
     if (this.jaw < 0 || !m.jaw) return;
-    const C = this.body.coarse, ids = m.jaw.pivot_vertices, w = m.jaw.pivot_weights;
-    this.pivot = [0, 0, 0];
-    for (let k = 0; k < ids.length; k++) for (let c = 0; c < 3; c++) this.pivot[c] += w[k] * C[ids[k] * 3 + c];
+    // the pivot of anny's default body, carried with the head to the current body (a move and a uniform scale, as the
+    // page carries the eyes and the hair); the corrective takes up the rest, so that weight 1 gives jawOpen exactly
+    const C = this.body.coarse, p0 = m.jaw.pivot, B = this.body;
+    if (B.joints && B.jointsDefault && B.headScale && B.head !== undefined && B.head >= 0) {
+      const h = B.head * 3, k = B.headScale();
+      this.pivot = [0, 1, 2].map((c) => B.joints![h + c] + k * (p0[c] - B.jointsDefault![h + c]));
+    } else this.pivot = p0.slice();
     const p = this.pivot, R = this.R1;
     // the coarse corrective
     const J = this.coarseShape(this.jaw), nc = this.body.nc, cc = this.coarseCorrective || (this.coarseCorrective = new Float32Array(nc * 3));
@@ -322,10 +330,11 @@ export class FaceLayer {
   copies = new Uint32Array(0);                                // pairs (copy, source) of the seam copies among the normal vertices
   groups = new Map<string, ShapeGroup>();
   stageA = new Float32Array(0);                               // per region vertex the offset of the face before the extra shapes marked `after`
-  private moved: number[] = []; private normals: number[] = [];
-  private mark = new Uint8Array(0); private triMark = new Uint8Array(0); private acc = new Float32Array(0);
+  private moved = new Uint32Array(0); private normals = new Uint32Array(0); private nMoved = 0; private nNormals = 0;
+  private mark = new Uint8Array(0); private triMark = new Uint8Array(0); private triList = new Uint32Array(0); private acc = new Float32Array(0);
   ready = false;
   rebaseMs = 0;
+  private scratch = new Float32Array(0);   // the body at rest, for the normals of single shapes
   outside = 0;   // vertices of extra shapes outside the region (left out)
   constructor(rig: FaceRig, body: LayerBody) { this.rig = rig; this.body = body; }
 
@@ -345,6 +354,7 @@ export class FaceLayer {
       this.region = Uint32Array.from(ids);
       this.region.forEach((v, i) => { this.at[v] = i; });
       this.mark = new Uint8Array(n); this.acc = new Float32Array(n * 3);
+      this.moved = new Uint32Array(n); this.normals = new Uint32Array(n);
       this.buildTriangles();
     }
     const R = this.region, P = b.pos;
@@ -367,8 +377,10 @@ export class FaceLayer {
       for (const v of [a, c1, c2]) { const q = nAt[v]; if (q >= 0) { G[q * 3] += nx; G[q * 3 + 1] += ny; G[q * 3 + 2] += nz; } }
     }
     this.rig.rebase(P);
+    if (this.scratch.length !== P.length) this.scratch = new Float32Array(P.length);
+    this.scratch.set(P);
     this.stageA = new Float32Array(R.length * 3);
-    this.moved = []; this.normals = [];
+    this.nMoved = 0; this.nNormals = 0;
     this.ready = true;
     this.rebaseMs = now() - t0;
     return this.rebaseMs;
@@ -404,7 +416,7 @@ export class FaceLayer {
     this.nAt = new Int32Array(n).fill(-1);
     this.nIds.forEach((v, i) => { this.nAt[v] = i; });
     this.copies = Uint32Array.from(copies);
-    this.triMark = new Uint8Array(T.length / 3);
+    this.triMark = new Uint8Array(T.length / 3); this.triList = new Uint32Array(T.length / 3);
   }
 
   // the extra shapes of a group (null takes it off); `after`: added after the stage the parts follow (a card's eye
@@ -420,22 +432,32 @@ export class FaceLayer {
 
   // a face: action weights (by the rig's order), and the weights of each group; writes the body's arrays and returns the
   // range of vertices to upload ([lo, hi], hi < lo when nothing changed)
-  apply(w: ArrayLike<number>, groups: Record<string, ArrayLike<number>> = {}): [number, number] {
+  // exact: the normals of the moved triangles; otherwise the sum of each shape's change of the normals at weight 1, which
+  // costs less (the frames of a fade)
+  apply(w: ArrayLike<number>, groups: Record<string, ArrayLike<number>> = {}, exact = true): [number, number] {
     if (!this.ready) this.rebase();
-    const b = this.body, P = b.pos, N = b.nrm, S = b.ns, at = this.at, bP = this.bP, rig = this.rig;
+    const b = this.body, P = b.pos, N = b.nrm, S = b.ns, at = this.at, bP = this.bP, nAt = this.nAt, bN = this.bN, bS = this.bS, rig = this.rig, A = this.stageA;
     let lo = Infinity, hi = -1;
-    const span = (v: number) => { if (v < lo) lo = v; if (v > hi) hi = v; };
     // back to the rest for the vertices that the last face moved
-    for (const v of this.moved) { const q = at[v] * 3, o = v * 3; P[o] = bP[q]; P[o + 1] = bP[q + 1]; P[o + 2] = bP[q + 2]; this.stageA[q] = this.stageA[q + 1] = this.stageA[q + 2] = 0; span(v); }
-    for (const v of this.normals) { const q = this.nAt[v] * 3, o = v * 3; N[o] = this.bN[q]; N[o + 1] = this.bN[q + 1]; N[o + 2] = this.bN[q + 2]; S[o] = this.bS[q]; S[o + 1] = this.bS[q + 1]; S[o + 2] = this.bS[q + 2]; span(v); }
-    const mark = this.mark, moved: number[] = [];
-    const touch = (v: number) => { if (!mark[v]) { mark[v] = 1; moved.push(v); } };
+    const pm = this.moved, pn = this.normals;
+    for (let i = 0; i < this.nMoved; i++) {
+      const v = pm[i], q = at[v] * 3, o = v * 3;
+      P[o] = bP[q]; P[o + 1] = bP[q + 1]; P[o + 2] = bP[q + 2]; A[q] = 0; A[q + 1] = 0; A[q + 2] = 0;
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    for (let i = 0; i < this.nNormals; i++) {
+      const v = pn[i], q = nAt[v] * 3, o = v * 3;
+      N[o] = bN[q]; N[o + 1] = bN[q + 1]; N[o + 2] = bN[q + 2]; S[o] = bS[q]; S[o + 1] = bS[q + 1]; S[o + 2] = bS[q + 2];
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    const mark = this.mark, moved = this.moved;
+    let nm = 0, outside = 0;
     const add = (s: Shape, k: number) => {
-      const { idx, d } = s;
-      for (let i = 0; i < idx.length; i++) {
+      const idx = s.idx, d = s.d, m = idx.length;
+      for (let i = 0; i < m; i++) {
         const v = idx[i];
-        if (at[v] < 0) { this.outside++; continue; }
-        touch(v);
+        if (at[v] < 0) { outside++; continue; }
+        if (mark[v] === 0) { mark[v] = 1; moved[nm++] = v; }
         const o = v * 3, q = i * 3;
         P[o] += k * d[q]; P[o + 1] += k * d[q + 1]; P[o + 2] += k * d[q + 2];
       }
@@ -444,57 +466,177 @@ export class FaceLayer {
     for (const [name, g] of this.groups) {
       const gw = groups[name];
       if (!gw || g.after) continue;
-      g.shapes.forEach((s, i) => { if (gw[i]) add(s, gw[i]); });
+      for (let i = 0; i < g.shapes.length; i++) if (gw[i]) add(g.shapes[i], gw[i]);
     }
     const wj = rig.jaw >= 0 ? w[rig.jaw] || 0 : 0;
     if (wj && rig.jawCorrective && rig.fineJaw) {
       add(rig.jawCorrective, wj);
-      const R = rig.turn(wj), p = rig.pivot, J = rig.fineJaw;
-      for (let i = 0; i < J.idx.length; i++) { const v = J.idx[i]; if (at[v] < 0) continue; touch(v); turnPoint(P, v * 3, R, p, J.w[i]); }
+      const R = rig.turn(wj), p = rig.pivot, J = rig.fineJaw, px = p[0], py = p[1], pz = p[2];
+      const r0 = R[0] - 1, r1 = R[1], r2 = R[2], r3 = R[3], r4 = R[4] - 1, r5 = R[5], r6 = R[6], r7 = R[7], r8 = R[8] - 1;
+      for (let i = 0; i < J.idx.length; i++) {
+        const v = J.idx[i];
+        if (at[v] < 0) continue;
+        if (mark[v] === 0) { mark[v] = 1; moved[nm++] = v; }
+        const o = v * 3, k = J.w[i], dx = P[o] - px, dy = P[o + 1] - py, dz = P[o + 2] - pz;
+        P[o] += k * (r0 * dx + r1 * dy + r2 * dz); P[o + 1] += k * (r3 * dx + r4 * dy + r5 * dz); P[o + 2] += k * (r6 * dx + r7 * dy + r8 * dz);
+      }
     }
     // the stage the parts follow
-    for (const v of moved) { const q = at[v] * 3, o = v * 3; this.stageA[q] = P[o] - bP[q]; this.stageA[q + 1] = P[o + 1] - bP[q + 1]; this.stageA[q + 2] = P[o + 2] - bP[q + 2]; }
+    for (let i = 0; i < nm; i++) { const v = moved[i], q = at[v] * 3, o = v * 3; A[q] = P[o] - bP[q]; A[q + 1] = P[o + 1] - bP[q + 1]; A[q + 2] = P[o + 2] - bP[q + 2]; }
     for (const [name, g] of this.groups) {
       const gw = groups[name];
       if (!gw || !g.after) continue;
-      g.shapes.forEach((s, i) => { if (gw[i]) add(s, gw[i]); });
+      for (let i = 0; i < g.shapes.length; i++) if (gw[i]) add(g.shapes[i], gw[i]);
     }
-    for (const v of moved) { mark[v] = 0; span(v); }
-    this.moved = moved;
-    this.updateNormals(moved, span);
+    for (let i = 0; i < nm; i++) { const v = moved[i]; mark[v] = 0; if (v < lo) lo = v; if (v > hi) hi = v; }
+    this.nMoved = nm;
+    this.outside = outside;
+    const [l2, h2] = exact ? this.updateNormals() : this.blendNormals(w, groups, wj);
+    return [Math.min(lo, l2), Math.max(hi, h2)];
+  }
+
+  // the change of the normals of a shape at weight 1 on the body at rest (as updateNormals finds it), kept with the shape
+  normalShape(s: Shape) {
+    if (s.dn) return;
+    const P = this.scratch, bP = this.bP, at = this.at, nAt = this.nAt, T = this.tris, F = this.fBase, G = this.gBase, bN = this.bN;
+    const vtS = this.vtStart, vtT = this.vtTris, idx = s.idx, d = s.d;
+    const tm = new Uint8Array(T.length / 3), tl: number[] = [], seen = new Map<number, number>(), acc: number[] = [];
+    for (let i = 0; i < idx.length; i++) {
+      const v = idx[i], q = at[v];
+      if (q < 0) continue;
+      const o = v * 3;
+      P[o] += d[i * 3]; P[o + 1] += d[i * 3 + 1]; P[o + 2] += d[i * 3 + 2];
+      for (let e = vtS[q]; e < vtS[q + 1]; e++) { const t = vtT[e]; if (!tm[t]) { tm[t] = 1; tl.push(t); } }
+    }
+    for (const t of tl) {
+      const o = t * 3, a = T[o] * 3, c1 = T[o + 1] * 3, c2 = T[o + 2] * 3;
+      const ax = P[a], ay = P[a + 1], az = P[a + 2];
+      const e1x = P[c1] - ax, e1y = P[c1 + 1] - ay, e1z = P[c1 + 2] - az, e2x = P[c2] - ax, e2y = P[c2 + 1] - ay, e2z = P[c2 + 2] - az;
+      const dx = e1y * e2z - e1z * e2y - F[o], dy = e1z * e2x - e1x * e2z - F[o + 1], dz = e1x * e2y - e1y * e2x - F[o + 2];
+      for (let k = 0; k < 3; k++) {
+        const v = T[o + k];
+        let j = seen.get(v);
+        if (j === undefined) { j = acc.length; seen.set(v, j); acc.push(0, 0, 0); }
+        acc[j] += dx; acc[j + 1] += dy; acc[j + 2] += dz;
+      }
+    }
+    for (let i = 0; i < idx.length; i++) { const v = idx[i], q = at[v]; if (q >= 0) { P[v * 3] = bP[q * 3]; P[v * 3 + 1] = bP[q * 3 + 1]; P[v * 3 + 2] = bP[q * 3 + 2]; } }
+    const ids: number[] = [], dn: number[] = [], C = this.copies, byV = new Map<number, number>();
+    for (const [v, j] of seen) {
+      const q = nAt[v] * 3;
+      const gx = G[q], gy = G[q + 1], gz = G[q + 2], gl = 1 / (Math.sqrt(gx * gx + gy * gy + gz * gz) || 1);
+      let hx = gx + acc[j], hy = gy + acc[j + 1], hz = gz + acc[j + 2];
+      const hl = 1 / (Math.sqrt(hx * hx + hy * hy + hz * hz) || 1);
+      hx *= hl; hy *= hl; hz *= hl;
+      let x = bN[q] + hx - gx * gl, y = bN[q + 1] + hy - gy * gl, z = bN[q + 2] + hz - gz * gl;
+      const l = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+      x *= l; y *= l; z *= l;
+      byV.set(v, ids.length);
+      ids.push(v); dn.push(x - bN[q], y - bN[q + 1], z - bN[q + 2]);
+    }
+    for (let i = 0; i < C.length; i += 2) {
+      const j = byV.get(C[i + 1]);
+      if (j === undefined) continue;
+      ids.push(C[i]); dn.push(dn[j * 3], dn[j * 3 + 1], dn[j * 3 + 2]);
+    }
+    s.nIdx = Uint32Array.from(ids); s.dn = Float32Array.from(dn);
+  }
+
+  // the normals as the sum of each shown shape's change at its weight, turned by the jaw
+  private blendNormals(w: ArrayLike<number>, groups: Record<string, ArrayLike<number>>, wj: number): [number, number] {
+    const b = this.body, N = b.nrm, S = b.ns, nAt = this.nAt, bN = this.bN, bS = this.bS, rig = this.rig, acc = this.acc, mark = this.mark, out = this.normals;
+    let no = 0, lo = Infinity, hi = -1;
+    const add = (s: Shape, k: number) => {
+      this.normalShape(s);
+      const idx = s.nIdx!, dn = s.dn!;
+      for (let i = 0; i < idx.length; i++) {
+        const v = idx[i], o = v * 3;
+        if (nAt[v] < 0) continue;
+        if (mark[v] === 0) { mark[v] = 1; out[no++] = v; acc[o] = 0; acc[o + 1] = 0; acc[o + 2] = 0; }
+        acc[o] += k * dn[i * 3]; acc[o + 1] += k * dn[i * 3 + 1]; acc[o + 2] += k * dn[i * 3 + 2];
+      }
+    };
+    for (let a = 0; a < rig.names.length; a++) { const k = w[a]; if (k && a !== rig.jaw) add(rig.fineShape(a), k); }
+    for (const [name, g] of this.groups) { const gw = groups[name]; if (gw) for (let i = 0; i < g.shapes.length; i++) if (gw[i]) add(g.shapes[i], gw[i]); }
+    const J = rig.fineJaw;
+    if (wj && rig.jawCorrective && J) {
+      add(rig.jawCorrective, wj);
+      for (let i = 0; i < J.idx.length; i++) { const v = J.idx[i], o = v * 3; if (nAt[v] >= 0 && mark[v] === 0) { mark[v] = 1; out[no++] = v; acc[o] = 0; acc[o + 1] = 0; acc[o + 2] = 0; } }
+    }
+    for (let i = 0; i < no; i++) {
+      const v = out[i], q = nAt[v] * 3, o = v * 3;
+      const ax = bN[q], ay = bN[q + 1], az = bN[q + 2];
+      let x = ax + acc[o], y = ay + acc[o + 1], z = az + acc[o + 2];
+      const l = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+      N[o] = x * l; N[o + 1] = y * l; N[o + 2] = z * l;
+    }
+    // the jaw's turn of the normals, by each vertex's weight
+    if (wj && J) {
+      const R = rig.turn(wj);
+      for (let i = 0; i < J.idx.length; i++) {
+        const v = J.idx[i], o = v * 3, k = J.w[i];
+        if (nAt[v] < 0) continue;
+        const x = N[o], y = N[o + 1], z = N[o + 2];
+        let nx = x + k * ((R[0] - 1) * x + R[1] * y + R[2] * z), ny = y + k * (R[3] * x + (R[4] - 1) * y + R[5] * z), nz = z + k * (R[6] * x + R[7] * y + (R[8] - 1) * z);
+        const l = 1 / (Math.sqrt(nx * nx + ny * ny + nz * nz) || 1);
+        nx *= l; ny *= l; nz *= l;
+        N[o] = nx; N[o + 1] = ny; N[o + 2] = nz;
+      }
+    }
+    for (let i = 0; i < no; i++) {
+      const v = out[i], q = nAt[v] * 3, o = v * 3;
+      mark[v] = 0;
+      const ax = bN[q], ay = bN[q + 1], az = bN[q + 2], x = N[o], y = N[o + 1], z = N[o + 2];
+      const kx = ay * z - az * y, ky = az * x - ax * z, kz = ax * y - ay * x, c = ax * x + ay * y + az * z, s2 = kx * kx + ky * ky + kz * kz;
+      let vx = bS[q], vy = bS[q + 1], vz = bS[q + 2];
+      if (s2 > 1e-12 && c > -0.9) {
+        const ff = (kx * vx + ky * vy + kz * vz) * (1 - c) / s2;
+        const rx = vx * c + (ky * vz - kz * vy) + kx * ff, ry = vy * c + (kz * vx - kx * vz) + ky * ff, rz = vz * c + (kx * vy - ky * vx) + kz * ff;
+        vx = rx; vy = ry; vz = rz;
+      }
+      const mm = 1 / (Math.sqrt(vx * vx + vy * vy + vz * vz) || 1);
+      S[o] = vx * mm; S[o + 1] = vy * mm; S[o + 2] = vz * mm;
+      if (v < lo) lo = v; if (v > hi) hi = v;
+    }
+    this.nNormals = no;
     return [lo, hi];
   }
 
   // the normals of the moved surface: the summed normal at rest plus the change of the moved triangles, turned onto the
   // body's own normal at rest; the smooth shading normal turns with the normal (as the correctives turn it in main.ts)
-  private updateNormals(moved: number[], span: (v: number) => void) {
+  private updateNormals(): [number, number] {
     const b = this.body, P = b.pos, N = b.nrm, S = b.ns, T = this.tris, F = this.fBase, at = this.at, nAt = this.nAt;
-    const tm = this.triMark, acc = this.acc, mark = this.mark, list: number[] = [], out: number[] = [];
-    for (const v of moved) { const q = at[v]; for (let e = this.vtStart[q]; e < this.vtStart[q + 1]; e++) { const t = this.vtTris[e]; if (!tm[t]) { tm[t] = 1; list.push(t); } } }
-    const f = new Float32Array(3);
-    for (const t of list) {
+    const tm = this.triMark, acc = this.acc, mark = this.mark, moved = this.moved, nm = this.nMoved, vtS = this.vtStart, vtT = this.vtTris;
+    const tl = this.triList, out = this.normals;
+    let nt = 0, no = 0, lo = Infinity, hi = -1;
+    for (let i = 0; i < nm; i++) {
+      const q = at[moved[i]];
+      for (let e = vtS[q]; e < vtS[q + 1]; e++) { const t = vtT[e]; if (tm[t] === 0) { tm[t] = 1; tl[nt++] = t; } }
+    }
+    for (let i = 0; i < nt; i++) {
+      const t = tl[i];
       tm[t] = 0;
-      const o = t * 3;
-      faceNormal(P, T[o], T[o + 1], T[o + 2], f, 0);
-      const dx = f[0] - F[o], dy = f[1] - F[o + 1], dz = f[2] - F[o + 2];
+      const o = t * 3, a = T[o] * 3, c1 = T[o + 1] * 3, c2 = T[o + 2] * 3;
+      const ax = P[a], ay = P[a + 1], az = P[a + 2];
+      const e1x = P[c1] - ax, e1y = P[c1 + 1] - ay, e1z = P[c1 + 2] - az, e2x = P[c2] - ax, e2y = P[c2 + 1] - ay, e2z = P[c2 + 2] - az;
+      const dx = e1y * e2z - e1z * e2y - F[o], dy = e1z * e2x - e1x * e2z - F[o + 1], dz = e1x * e2y - e1y * e2x - F[o + 2];
       for (let k = 0; k < 3; k++) {
-        const v = T[o + k];
-        if (!mark[v]) { mark[v] = 1; out.push(v); acc[v * 3] = 0; acc[v * 3 + 1] = 0; acc[v * 3 + 2] = 0; }
-        acc[v * 3] += dx; acc[v * 3 + 1] += dy; acc[v * 3 + 2] += dz;
+        const v = T[o + k], m = v * 3;
+        if (mark[v] === 0) { mark[v] = 1; out[no++] = v; acc[m] = 0; acc[m + 1] = 0; acc[m + 2] = 0; }
+        acc[m] += dx; acc[m + 1] += dy; acc[m + 2] += dz;
       }
     }
     const G = this.gBase, bN = this.bN, bS = this.bS;
-    for (const v of out) {
-      mark[v] = 0;
-      const q = nAt[v] * 3, o = v * 3;
-      const gx = G[q], gy = G[q + 1], gz = G[q + 2], gl = Math.hypot(gx, gy, gz) || 1;
+    for (let i = 0; i < no; i++) {
+      const v = out[i], q = nAt[v] * 3, o = v * 3;
+      const gx = G[q], gy = G[q + 1], gz = G[q + 2], gl = 1 / (Math.sqrt(gx * gx + gy * gy + gz * gz) || 1);
       let hx = gx + acc[o], hy = gy + acc[o + 1], hz = gz + acc[o + 2];
-      const hl = Math.hypot(hx, hy, hz) || 1;
-      hx /= hl; hy /= hl; hz /= hl;
+      const hl = 1 / (Math.sqrt(hx * hx + hy * hy + hz * hz) || 1);
+      hx *= hl; hy *= hl; hz *= hl;
       const ax = bN[q], ay = bN[q + 1], az = bN[q + 2];
-      let x = ax + hx - gx / gl, y = ay + hy - gy / gl, z = az + hz - gz / gl;
-      const l = Math.hypot(x, y, z) || 1;
-      x /= l; y /= l; z /= l;
+      let x = ax + hx - gx * gl, y = ay + hy - gy * gl, z = az + hz - gz * gl;
+      const l = 1 / (Math.sqrt(x * x + y * y + z * z) || 1);
+      x *= l; y *= l; z *= l;
       N[o] = x; N[o + 1] = y; N[o + 2] = z;
       // the smooth normal: the shortest turn from the old normal to the new one
       const kx = ay * z - az * y, ky = az * x - ax * z, kz = ax * y - ay * x, c = ax * x + ay * y + az * z, s2 = kx * kx + ky * ky + kz * kz;
@@ -504,25 +646,23 @@ export class FaceLayer {
         const rx = vx * c + (ky * vz - kz * vy) + kx * ff, ry = vy * c + (kz * vx - kx * vz) + ky * ff, rz = vz * c + (kx * vy - ky * vx) + kz * ff;
         vx = rx; vy = ry; vz = rz;
       }
-      const m = Math.hypot(vx, vy, vz) || 1;
-      S[o] = vx / m; S[o + 1] = vy / m; S[o + 2] = vz / m;
-      span(v);
+      const mm = 1 / (Math.sqrt(vx * vx + vy * vy + vz * vz) || 1);
+      S[o] = vx * mm; S[o + 1] = vy * mm; S[o + 2] = vz * mm;
+      if (v < lo) lo = v; if (v > hi) hi = v;
     }
     // the seam copies take their source's normals
-    const C = this.copies, done: number[] = out;
+    const C = this.copies;
     for (let i = 0; i < C.length; i += 2) {
       const c = C[i], s = C[i + 1];
-      if (!mark[s] && !this.wasNormal(s, out)) continue;
+      if (mark[s] === 0) continue;
       const o = c * 3, os = s * 3;
       N[o] = N[os]; N[o + 1] = N[os + 1]; N[o + 2] = N[os + 2]; S[o] = S[os]; S[o + 1] = S[os + 1]; S[o + 2] = S[os + 2];
-      done.push(c); span(c);
+      out[no++] = c;
+      if (c < lo) lo = c; if (c > hi) hi = c;
     }
-    this.normals = done;
-  }
-  private outSet: Set<number> | null = null; private outRef: number[] | null = null;
-  private wasNormal(v: number, out: number[]) {
-    if (this.outRef !== out) { this.outSet = new Set(out); this.outRef = out; }
-    return this.outSet!.has(v);
+    for (let i = 0; i < no; i++) mark[out[i]] = 0;
+    this.nNormals = no;
+    return [lo, hi];
   }
 
   // the offset of a fine vertex in the stage that the parts follow (zero outside the region)

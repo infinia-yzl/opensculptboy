@@ -9,6 +9,7 @@
 
 import { registerFace, type FaceDriver, type FaceState } from './api.ts';
 import { FaceLayer, FaceRig, rotvecMatrix, turnPoint, type FaceData, type LayerBody, type Shape } from './rig.ts';
+import type { FaceMorph } from './morph.ts';
 
 // the actions that a card's eye targets play in place of Anny's (opensculptboy.eyes.page.ACTIONS)
 export const CARD_EYE_ACTIONS = ['eyeBlinkLeft', 'eyeBlinkRight', 'eyeSquintLeft', 'eyeSquintRight'];
@@ -32,7 +33,7 @@ export interface FaceMotion {
   skin(v: number, out: number[]): void;                       // the offset of a fine vertex
   region: Uint32Array;                                         // the fine vertices that the face moves
   lower(x: number, y: number, z: number, out: number[]): void;   // the offset of a point of the lower jaw
-  tongue(x: number, y: number, z: number, out: number[]): void;  // the offset of a point of the tongue
+  tongue(x: number, y: number, z: number, out: number[], key?: number): void;  // the offset of a point of the tongue (key: a number of the point, which keeps its nearest vertices of Anny's tongue)
   jawTurn: Float64Array;                                      // the jaw's turn (row-major), for the normals of the lower jaw
   coarse: Float32Array | null;                                // the face's offsets of the coarse body
   poses: Float32Array;                                        // the weight of each of the card's poses
@@ -43,7 +44,11 @@ export interface FaceHost {
   body(): LayerBody;
   data(): FaceData | null;
   upload(lo: number, hi: number): void;            // the body's arrays changed on these vertices: upload and draw again
-  strands(): void;                                 // the page's brows and lashes follow the skin
+  redraw(): void;                                  // the face on the GPU changed: draw again
+  morph(): FaceMorph | null;                       // the face on the GPU (face/morph.ts), when the page has it
+  // the page's brows and lashes follow the skin; `at` gives the face's position of a vertex when the body's arrays hold
+  // the rest (the face on the GPU)
+  strands(at?: (v: number, out: number[]) => void): void;
   eyes(turns: Record<string, Float64Array>): void;   // the turn of each eye (row-major, page frame), about its centre
   head(turn: number, tilt: number, nod: number): void;   // degrees: turn to the figure's left, tilt to its left shoulder, nod down
   toDefault(p: number[]): number[];                // a point of the current head carried to the head of anny's default body
@@ -116,19 +121,38 @@ export class PageFace implements FaceDriver {
     if (this.fade) this.fade.resolve();
     return new Promise((resolve) => { this.fade = { from: this.get(), to: clean(state), t0: performance.now(), ms, resolve }; });
   }
-  // a frame of the page: the fade moves on
+  // a frame of the page: the fade moves on; once the face rests, its normals follow its triangles exactly
   tick(now: number) {
     const f = this.fade;
-    if (!f) return;
+    if (!f) {
+      if (this.rough && now - this.lastApply > 60) this.apply(true);
+      return;
+    }
     const t = Math.min(1, (now - f.t0) / f.ms), e = t * t * (3 - 2 * t);
-    this.show(t >= 1 ? f.to : mix(f.from, f.to, e));
-    if (t >= 1) { this.fade = null; this.host.drawn().then(f.resolve); }
+    if (t >= 1) { this.fade = null; this.show(f.to); this.host.drawn().then(f.resolve); }
+    else this.show(mix(f.from, f.to, e), false);
   }
+  private rough = false; private lastApply = 0;
   get fading() { return !!this.fade; }
 
   // ---------------------------------------------------------------- the page's side
+  // a step of the warm-up while the page rests: the copy of the rest, then one action's fine shape and the change of its
+  // normals; returns false once every action is ready
+  private warmAt = 0;
+  warm(): boolean {
+    const rig = this.rig, layer = this.layer;
+    if (!rig || !layer) return false;
+    if (!layer.ready) { layer.rebase(); const m = this.host.morph(); if (m) this.jawLayer(m); return true; }
+    while (this.warmAt < rig.names.length && this.warmAt === rig.jaw) this.warmAt++;
+    if (this.warmAt >= rig.names.length) return false;
+    const s = rig.fineShape(this.warmAt++);
+    layer.normalShape(s);
+    return true;
+  }
+
   // the body is about to change: the next face takes a new copy of the rest
-  invalidate() { if (this.layer) this.layer.ready = false; }
+  invalidate() { if (this.layer) this.layer.ready = false; this.tongueNear.clear(); }
+  private tongueNear = new Map<number, [number, number][]>();   // per point of a card's tongue its nearest vertices of Anny's tongue
   // a new body: the copy of the rest and the jaw follow it, and the face shows again (a face at rest waits for the next
   // face, so that a slider edit costs nothing more)
   bodyChanged() {
@@ -140,16 +164,19 @@ export class PageFace implements FaceDriver {
     const s = this.state;
     return !Object.keys(s.actions).length && !(s.gaze && (s.gaze.yaw || s.gaze.pitch)) && !(this.blinkW && this.blinkW.some(Boolean));
   }
-  // the card's eye targets (card/look.ts): their shapes on the fine body, and their weights
-  blinkShapes(shapes: Shape[] | null) {
+  // the card's eye targets (card/look.ts): their shapes on the fine body (with the change of their normals), and their
+  // weights
+  blinkShapes(shapes: { idx: Uint32Array; d: Float32Array; n?: Float32Array }[] | null) {
     if (!this.layer) return;
-    this.layer.setGroup('blink', shapes, true);
-    this.blinkW = shapes ? new Float32Array(shapes.length) : null;
+    const list: Shape[] | null = shapes ? shapes.map((x) => ({ idx: x.idx, d: x.d, nIdx: x.n ? x.idx : undefined, dn: x.n })) : null;
+    this.layer.setGroup('blink', list, true);
+    this.blinkW = list ? new Float32Array(list.length) : null;
   }
   blinkWeights(w: Float32Array) {
     if (!this.blinkW || w.length !== this.blinkW.length) return;
     this.blinkW.set(w);
-    if (!this.applying) this.apply();
+    // the frames of a blink take the quicker normals, and the eyes at rest the exact ones
+    if (!this.applying) this.apply(false);
   }
   // a card came or went: its poses join the faces, its eyes play the blinks and squints
   cardChanged() {
@@ -162,19 +189,20 @@ export class PageFace implements FaceDriver {
   }
 
   // the state shown
-  private show(state: FaceState) {
+  private show(state: FaceState, exact = true) {
     const prevHead = this.state.head, prevGaze = this.state.gaze;
     this.state = state;
-    this.apply();
+    this.apply(exact);
     const h = state.head || { turn: 0, tilt: 0, nod: 0 }, ph = prevHead || { turn: 0, tilt: 0, nod: 0 };
     if (h.turn !== ph.turn || h.tilt !== ph.tilt || h.nod !== ph.nod) this.host.head(h.turn, h.tilt, h.nod);
     void prevGaze;
   }
 
   // the weights of the rig's actions, of the card's poses and of the eye targets, on the body
-  apply() {
+  apply(exact = true) {
     const rig = this.rig, layer = this.layer;
     if (!rig || !layer) return;
+    this.rough = !exact; this.lastApply = performance.now();
     const t0 = performance.now(), s = this.state, card = this.host.card();
     this.applying = true;
     try {
@@ -192,14 +220,36 @@ export class PageFace implements FaceDriver {
       const groups: Record<string, Float32Array> = {};
       if (pw) groups.poses = pw;
       if (this.blinkW) groups.blink = this.blinkW;
-      const wasReady = layer.ready;
-      const [lo, hi] = layer.apply(w, groups);
+      const wasReady = layer.ready, morph = this.host.morph();
+      let skin: (v: number, out: number[]) => void;
+      if (morph) {
+        // the face on the GPU: the shapes' layers and weights, and the jaw's turn
+        if (!wasReady) { layer.rebase(); this.jawLayer(morph); }
+        const shown: { s: Shape; w: number }[] = [];
+        for (let a = 0; a < rig.names.length; a++) if (w[a] && a !== rig.jaw) { const sh = rig.fineShape(a); layer.normalShape(sh); shown.push({ s: sh, w: w[a] }); }
+        const after = new Set<Shape>();
+        for (const [name, g] of layer.groups) {
+          const gw = groups[name];
+          if (!gw) continue;
+          g.shapes.forEach((sh, i) => { if (gw[i]) { layer.normalShape(sh); shown.push({ s: sh, w: gw[i] }); if (g.after) after.add(sh); } });
+        }
+        const wj = rig.jaw >= 0 ? w[rig.jaw] : 0;
+        morph.show(shown, wj ? { w: wj, R: rig.turn(wj), p: rig.pivot } : null);
+        this.host.redraw();
+        const P = this.host.body().pos, o = [0, 0, 0];
+        const at = (v: number, out: number[]) => morph.at(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], out);
+        this.host.strands(at);
+        skin = (v, out) => { morph.at(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], o, after); out[0] = o[0] - P[v * 3]; out[1] = o[1] - P[v * 3 + 1]; out[2] = o[2] - P[v * 3 + 2]; };
+      } else {
+        const [lo, hi] = layer.apply(w, groups, exact);
+        if (hi >= lo) this.host.upload(lo, hi);
+        this.host.strands();
+        skin = (v, out) => layer.offsetOf(v, out);
+      }
       if (!wasReady) this.timing.rebase = layer.rebaseMs;
-      if (hi >= lo) this.host.upload(lo, hi);
-      this.host.strands();
       this.host.eyes(turns);
       const tf = performance.now();
-      if (card) card.followFace(this.motion(w, pw));
+      if (card) card.followFace(this.motion(w, pw, skin));
       this.timing.follow = performance.now() - tf;
       this.timing.apply = performance.now() - t0; this.timing.count++;
     } finally { this.applying = false; }
@@ -262,7 +312,14 @@ export class PageFace implements FaceDriver {
   }
 
   // the face's motion for a card's parts
-  private motion(w: Float32Array, pw: Float32Array | null): FaceMotion {
+  // the jaw's corrective of the current body and its weights, in the GPU's layer 0
+  private jawLayer(morph: FaceMorph) {
+    const rig = this.rig!, layer = this.layer!;
+    if (rig.jawCorrective) layer.normalShape(rig.jawCorrective);
+    morph.setJaw(rig.jawCorrective, rig.fineJaw);
+  }
+
+  private motion(w: Float32Array, pw: Float32Array | null, skin: (v: number, out: number[]) => void): FaceMotion {
     const rig = this.rig!, layer = this.layer!, m = rig.data.meta, host = this.host;
     const wj = rig.jaw >= 0 ? w[rig.jaw] : 0, R = rig.turn(wj), k = host.headScale(), p = rig.pivot;
     const tongue = m.tongue, rigid = Object.entries(tongue.motion).filter(([n, t]) => t.kind === 'rigid' && n !== m.jaw.action && w[rig.index.get(n) ?? -1]);
@@ -272,7 +329,7 @@ export class PageFace implements FaceDriver {
       const r = t.rotation, tr = t.translation;
       for (let c = 0; c < 3; c++) out[c] += f * k * (r[c * 3] * p0[0] + r[c * 3 + 1] * p0[1] + r[c * 3 + 2] * p0[2] + tr[c] - p0[c]);
     };
-    const lower = (x: number, y: number, z: number, out: number[]) => {
+    const lowerAt = (x: number, y: number, z: number, out: number[]) => {
       out[0] = out[1] = out[2] = 0;
       const p0 = host.toDefault([x, y, z]);
       for (const [n, t] of rigid) rigidOffset(t, p0, out, w[rig.index.get(n)!]);
@@ -289,16 +346,33 @@ export class PageFace implements FaceDriver {
         out[0] = q[0] - x; out[1] = q[1] - y; out[2] = q[2] - z;
       }
     };
+    // the motion of the lower jaw is affine in the point: its matrix from four points, then three dot products a point
+    const L = new Float64Array(12), o0 = [0, 0, 0], oi = [0, 0, 0];
+    lowerAt(0, 0, 0, o0);
+    for (let c = 0; c < 3; c++) {
+      lowerAt(c === 0 ? 1 : 0, c === 1 ? 1 : 0, c === 2 ? 1 : 0, oi);
+      for (let r = 0; r < 3; r++) L[r * 4 + c] = oi[r] - o0[r];
+    }
+    for (let r = 0; r < 3; r++) L[r * 4 + 3] = o0[r];
+    const lower = (x: number, y: number, z: number, out: number[]) => {
+      out[0] = L[0] * x + L[1] * y + L[2] * z + L[3]; out[1] = L[4] * x + L[5] * y + L[6] * z + L[7]; out[2] = L[8] * x + L[9] * y + L[10] * z + L[11];
+    };
     // the tongue: the lower jaw's motion, and in an action that bends Anny's tongue the blend of its 4 nearest vertices
     const follow = Object.entries(tongue.motion).filter(([n, t]) => t.kind === 'follow' && w[rig.index.get(n) ?? -1]);
     const rest = tongue.rest, nt = rest.length / 3;
-    const tongueAt = (x: number, y: number, z: number, out: number[]) => {
+    const near = this.tongueNear;
+    const tongueAt = (x: number, y: number, z: number, out: number[], key?: number) => {
       lower(x, y, z, out);
       if (!follow.length || !nt) return;
-      const p0 = host.toDefault([x, y, z]), best: [number, number][] = [];
-      for (let i = 0; i < nt; i++) {
-        const d = Math.hypot(rest[i * 3] - p0[0], rest[i * 3 + 1] - p0[1], rest[i * 3 + 2] - p0[2]);
-        if (best.length < 4 || d < best[3][1]) { best.push([i, d]); best.sort((a, b) => a[1] - b[1]); if (best.length > 4) best.pop(); }
+      let best = key === undefined ? undefined : near.get(key);
+      if (!best) {
+        const p0 = host.toDefault([x, y, z]);
+        best = [];
+        for (let i = 0; i < nt; i++) {
+          const d = Math.hypot(rest[i * 3] - p0[0], rest[i * 3 + 1] - p0[1], rest[i * 3 + 2] - p0[2]);
+          if (best.length < 4 || d < best[3][1]) { best.push([i, d]); best.sort((a, b) => a[1] - b[1]); if (best.length > 4) best.pop(); }
+        }
+        if (key !== undefined) near.set(key, best);
       }
       let sw = 0; for (const [, d] of best) sw += 1 / Math.max(d, 1e-5);
       for (const [n, t] of follow) {
@@ -313,7 +387,7 @@ export class PageFace implements FaceDriver {
     for (let i = 0; i < V.length; i++) coarse[i] = V[i] - C[i];
     const P = this.poses;
     if (P && pw) P.coarse.forEach((c, j) => { const f = pw[j]; if (f) for (let i = 0; i < c.idx.length; i++) for (let q = 0; q < 3; q++) coarse[c.idx[i] * 3 + q] += f * c.d[i * 3 + q]; });
-    return { skin: (v, out) => layer.offsetOf(v, out), region: layer.region, lower, tongue: tongueAt, jawTurn: R, coarse, poses: pw || new Float32Array(0) };
+    return { skin, region: layer.region, lower, tongue: tongueAt, jawTurn: R, coarse, poses: pw || new Float32Array(0) };
   }
 
   stats() {

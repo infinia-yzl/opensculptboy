@@ -24,6 +24,8 @@ from scipy.spatial.transform import Rotation
 
 import anny
 from anny.utils.subdivision import MixedSubdivision
+from test.markers import local_only
+from test.test_hair_page import CHROMIUM, PAGE, playwright_available
 from test.test_viewer_parity import node_available
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
@@ -92,10 +94,6 @@ class TestViewerExpressions(unittest.TestCase):
         cls.jaw_weights = (
             np.where(jw > 1e-6, jw, 0.0).astype(np.float32).astype(np.float64)
         )
-        # a pivot that four coarse vertices give exactly on this body (the page's regressor has its own test)
-        near = np.argsort(np.linalg.norm(rest - F.pivot, axis=1))[:4]
-        A = np.concatenate([rest[near].T, np.ones((1, 4))])
-        w = np.linalg.solve(A, np.concatenate([F.pivot, [1.0]]))
         cls.rotvec = Rotation.from_matrix(F.rotation).as_rotvec()
         meta = dict(
             format="opensculptboy/page-faces@1",
@@ -109,9 +107,6 @@ class TestViewerExpressions(unittest.TestCase):
                 rotation=cls.rotvec.tolist(),
                 angle_degrees=float(np.degrees(np.linalg.norm(cls.rotvec))),
                 pivot=F.pivot.tolist(),
-                pivot_vertices=near.tolist(),
-                pivot_weights=w.tolist(),
-                pivot_error=0.0,
                 vertices=int(len(on)),
             ),
             eye_turns={},
@@ -255,17 +250,22 @@ class TestViewerExpressions(unittest.TestCase):
         self.assertLess(self.out["rest_normal_error"], 1e-6)
 
     def test_eye_turns(self):
-        # an eye-look action turns each eyeball rigidly: its rotation vector gives the eyeball's offsets
+        # an eye-look action turns each eyeball nearly rigidly: the page turns its own eyeball by the turn of the rigid
+        # fit, about the eyeball's centre (the fit's small shift of the eyeball stays out)
+        from opensculptboy.teeth.mesh import rigid
+
         F = self.F
         for name, entry in F.eye_turns.items():
             for side, rv in entry.items():
                 with self.subTest(action=name, eye=side):
                     ids = F.eyes[side]
                     p = F.rest[ids]
-                    c = p.mean(0)
-                    moved = (p - c) @ Rotation.from_rotvec(rv).as_matrix().T + c
                     target = p + F.offsets[F.labels.index(name)][ids]
-                    self.assertLess(np.abs(moved - target).max(), 2e-4)
+                    R, t = rigid(p, target)
+                    self.assertLess(np.abs(p @ R.T + t - target).max(), 5e-4)
+                    turn = Rotation.from_rotvec(rv).as_matrix()
+                    self.assertLess(np.abs(turn - R).max(), 1e-6)
+                    self.assertGreater(np.degrees(np.linalg.norm(rv)), 5)
 
     def test_tongue_motion(self):
         # the jaw actions turn Anny's tongue rigidly (the lower teeth follow that motion); tongueOut bends it
@@ -273,19 +273,112 @@ class TestViewerExpressions(unittest.TestCase):
         self.assertEqual(self.F.tongue_motion["tongueOut"][0], "follow")
 
 
-class TestJawPivot(unittest.TestCase):
-    def test_pivot_over_bodies(self):
-        # the page's blend of coarse vertices gives the jaw's head on random bodies within half a millimetre
-        from opensculptboy import viewer
+BUILD = REPO / "viewer" / "build"
+BODY_SCRIPT = REPO / "viewer" / "test" / "face_body.mjs"
 
-        page_model = anny.Anny(topology="anny-quads", phenotypes="all")
-        base_index = page_model.base_mesh_vertex_indices.numpy()
-        faces = page_model.faces.numpy()
-        used = np.unique(faces[(base_index[faces] < 13380).all(1)])
-        near, weights, err = viewer.jaw_pivot_regressor(used, bodies=24)
-        self.assertEqual(len(near), len(weights))
-        self.assertAlmostEqual(float(weights.sum()), 1.0, places=4)
-        self.assertLess(err, 5e-4)
+
+def _built_faces():
+    path = BUILD / "manifest.json"
+    return path.exists() and "expressions" in json.loads(path.read_text())
+
+
+@local_only("the viewer data build (python -m anny.viewer build --data)")
+@unittest.skipUnless(
+    node_available() and _built_faces(),
+    "node 22 or later and the viewer data with the faces are needed",
+)
+class TestViewerFaceData(unittest.TestCase):
+    """the faces on the page's own body (viewer/test/face_body.mjs on viewer/build)"""
+
+    @classmethod
+    def setUpClass(cls):
+        out = pathlib.Path(tempfile.mkdtemp()) / "faces.json"
+        subprocess.run(
+            ["node", str(BODY_SCRIPT), str(BUILD), str(out)], check=True, cwd=REPO
+        )
+        cls.result = json.loads(out.read_text())
+
+    def test_presets(self):
+        faces = self.result["faces"]
+        self.assertGreaterEqual(len(faces), 14)
+        for name, f in faces.items():
+            with self.subTest(face=name):
+                self.assertTrue(f["finite"])
+                if name != "neutral":
+                    self.assertGreater(f["moved"], 0)
+
+    def test_rest_again(self):
+        self.assertEqual(self.result["rest_error"], 0)
+        self.assertEqual(self.result["rest_normal_error"], 0)
+
+    def test_other_body(self):
+        self.assertTrue(self.result["other_body"]["finite"])
+
+
+@local_only("Playwright with the built viewer page")
+@unittest.skipUnless(
+    playwright_available(), "Playwright and the built viewer page are needed"
+)
+class TestViewerFacePage(unittest.TestCase):
+    """the faces in the built page: the interface of face/api.ts, and the face on the GPU against the CPU's"""
+
+    @classmethod
+    def setUpClass(cls):
+        from playwright.sync_api import sync_playwright
+
+        args = [
+            "--use-gl=angle",
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+        ]
+        with open(REPO / "src/opensculptboy/data/vrm/expressions.json") as f:
+            vrm = json.load(f)
+        cls.vrm = vrm
+        mixes = {
+            n: vrm["presets"][n]["mix"] for n in ("happy", "aa", "surprised", "blink")
+        }
+        mixes["eyeBlinkLeft"] = {"eyeBlinkLeft": 1.0}
+        with sync_playwright() as p:
+            kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
+            browser = p.chromium.launch(args=args, **kw)
+            tab = browser.new_context(viewport=dict(width=640, height=480)).new_page()
+            tab.goto(PAGE.as_uri() + "?shot&acc=1")
+            tab.wait_for_function("() => window.__ready === true", timeout=300000)
+            cls.names = tab.evaluate(
+                "() => { const f = window.__FACE();"
+                " return f && { actions: f.actionNames(), presets: f.presetNames() }; }"
+            )
+            cls.checks = {
+                n: tab.evaluate("(m) => window.faceCheck(m)", m)
+                for n, m in mixes.items()
+            }
+            cls.preset = tab.evaluate(
+                "() => window.setPresetFace('sad', 0.5).then((s) => s.state)"
+            )
+            cls.stats = tab.evaluate("() => window.faceStats()")
+            browser.close()
+
+    def test_interface(self):
+        self.assertEqual(len(self.names["actions"]), 52)
+        self.assertEqual(len(self.names["presets"]), 24)
+        want = {k: 0.5 * v for k, v in self.vrm["presets"]["sad"]["mix"].items()}
+        got = self.preset["actions"]
+        self.assertEqual(sorted(got), sorted(want))
+        for k, v in want.items():
+            self.assertAlmostEqual(got[k], v, places=5)
+
+    def test_gpu_against_cpu(self):
+        # half floats in the layers: well under a tenth of a millimetre
+        for name, c in self.checks.items():
+            with self.subTest(face=name):
+                self.assertIsNotNone(c)
+                self.assertLess(c["max"], 1e-4)
+        # a shape's own change of the normals at weight 1 (a mix blends them as morph targets blend, and the exact
+        # normals of a mix differ where its shapes move the same skin, as the blinks of both eyes do)
+        self.assertLess(self.checks["eyeBlinkLeft"]["normal_p99"], 0.5)
+
+    def test_on_the_gpu(self):
+        self.assertTrue(self.stats["ready"])
 
 
 if __name__ == "__main__":

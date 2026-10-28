@@ -398,6 +398,9 @@ export class CardLook {
       const mesh = new T.SkinnedMesh(geo, this.skin);
       mesh.bind(this.host.skeleton(), new T.Matrix4());
       mesh.frustumCulled = false; mesh.name = 'card patch'; mesh.userData.depthMat = this.host.depth;
+      // the face on the GPU moves the body's vertices by their index: the patch has its own (it follows the face here)
+      const faceOn = this.host.uniforms.uFaceOn;
+      if (faceOn) mesh.onBeforeRender = (_r: any, _s: any, _c: any, _g: any, m: any) => { if (faceOn.value !== 0) { faceOn.value = 0; m.uniformsNeedUpdate = true; } };
       this.host.scene.add(mesh); this.host.opaque.push(mesh);
       p.geo = geo; p.mesh = mesh;
     }
@@ -522,8 +525,8 @@ export class CardLook {
     this.face = m;
     if (!this.plan || !this.placed) return;
     const body = this.host.body(), o = [0, 0, 0], P = this.cardPoses;
-    for (const p of this.parts) {
-      const n = p.rest.length / 3;
+    for (let pi = 0; pi < this.parts.length; pi++) {
+      const p = this.parts[pi], n = p.rest.length / 3;
       if (!m) { p.face = null; continue; }
       const F = p.face || (p.face = new Float32Array(n * 3));
       const A = p.geo.attributes.position.array as Float32Array;
@@ -534,7 +537,7 @@ export class CardLook {
         // the points at the place the head gives them (the face's own offsets are taken off first)
         for (let i = 0; i < n; i++) {
           const x = A[i * 3] - F[i * 3], y = A[i * 3 + 1] - F[i * 3 + 1], z = A[i * 3 + 2] - F[i * 3 + 2];
-          if (p.tongue && p.tongue[i]) m.tongue(x, y, z, o); else if (p.arch[i]) m.lower(x, y, z, o); else { o[0] = o[1] = o[2] = 0; }
+          if (p.tongue && p.tongue[i]) m.tongue(x, y, z, o, (pi << 20) + i); else if (p.arch[i]) m.lower(x, y, z, o); else { o[0] = o[1] = o[2] = 0; }
           F[i * 3] = o[0]; F[i * 3 + 1] = o[1]; F[i * 3 + 2] = o[2];
         }
         // the lower jaw's normals turn with the jaw

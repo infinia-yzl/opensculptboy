@@ -215,6 +215,7 @@ export class AnnyBody {
   weld: Uint32Array; copyOf: Uint32Array; nWeld: number;
   weldShown: Uint32Array | null = null; hide = false; private allNormals: Float32Array | null = null;
   jointsDefault: Float32Array;
+  head = -1;   // the head bone (the faces carry the jaw's pivot with it)
   constructor(meta: any, bufs: {
     template: Float32Array; components: Int16Array; projection: Float32Array; jointTemplate: Float32Array; jointBlend: Float32Array;
     quads: Uint32Array; rows: Uint32Array; detail: Int16Array; relief?: Int16Array; index: Uint32Array; rest: Float32Array; nsmooth: Float32Array;
@@ -259,6 +260,7 @@ export class AnnyBody {
     this.area = new Float32Array(this.nFine);
     this.coarse = new Float32Array(this.nc * 3); this.joints = new Float32Array(this.space.nb * 3);
     this.jointsDefault = this.space.joints(coefficients(this.rule, {}));
+    this.head = meta.rig?.names ? meta.rig.names.indexOf('head') : -1;
     // anny's default body. The detail layers of anny.viewer sit in the frames of anny.viewer.geometry (normals and
     // tangents summed over the triangles). The page keeps them in the cheaper frames of ringFrames, together with
     // the normals of the full surface and the smooth shading normals. The detail scales with the size around each
