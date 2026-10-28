@@ -10,7 +10,10 @@ rigid motion (Kabsch) that takes the head back to its rest pose, plus two fields
 vertices blended at the point (Gaussian weights of its nearest head vertices on the placed
 mesh): the head's own residual from that rigid motion, and the offset from the reference's skin
 to the fitted surface, so that a brow strip that lies 0.5 mm over the reference's skin lies
-0.5 mm over the card's.
+0.5 mm over the card's. The hair, whose skin reaches the neck and the shoulders, takes the
+offset alone and then the inverse of the fit's pose blended with its own skin on Anny's bones
+(:meth:`Carrier.unpose`), so that the exports, which pose the hair with that skin, put the
+strands over the nape where the reference has them.
 
 :func:`reference_groom` builds the :class:`~opensculptboy.groom.data.GroomData` of one kind:
 the parts' points, normals, UVs and vertex colours, one material per material of the parts,
@@ -58,7 +61,7 @@ class Carrier:
     surface (None: no offset). ``R`` and ``t`` are the rigid part: x -> R x + t.
     """
 
-    def __init__(self, posed, rest, head, reference=None):
+    def __init__(self, posed, rest, head, reference=None, motion=None):
         from scipy.spatial import cKDTree
 
         from opensculptboy.teeth.mesh import rigid
@@ -73,16 +76,47 @@ class Carrier:
         self.tree = cKDTree(hp)
         self.count = len(hp)
         self.centre = hr.mean(0)
+        # the fit's pose: (bone transforms (J, 4, 4) that take rest points to posed ones in
+        # Anny's frame, the placement R_p, t_p that takes posed points to the reference's frame)
+        self.motion = motion
 
-    def points(self, points) -> np.ndarray:
-        """(P, 3) the points in the card's rest frame."""
-        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    def _blend(self, points):
+        """(P, k) indices of the nearest head vertices and their Gaussian weights."""
         k = min(NEAREST, self.count)
         d, idx = self.tree.query(points, k=k)
         d, idx = d.reshape(len(points), k), idx.reshape(len(points), k)
         scale = np.maximum(1.5 * d[:, :1], SPREAD)
         w = np.exp(-((d / scale) ** 2))
         w /= np.maximum(w.sum(1, keepdims=True), 1e-300)
+        return idx, w
+
+    def unpose(self, points, normals, slots, weights):
+        """
+        Points and normals of the reference's frame in the card's rest frame by the inverse of
+        the fit's pose blended with a skin on Anny's bones (``slots`` (P, k) bone indices,
+        ``weights`` (P, k)): the offset to the fitted surface, then the placement undone, then
+        the inverse of each point's blended bone transform. Without the fit's pose, as
+        :meth:`points`.
+        """
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        if self.motion is None:
+            R = self.R
+            return self.points(points), np.asarray(normals) @ R.T
+        transforms, Rp, tp = self.motion
+        idx, w = self._blend(points)
+        x = points + np.einsum("pk,pkd->pd", w, self.offset[idx])
+        x = (x - tp) @ Rp  # the placement undone: Anny's frame, posed
+        M = np.einsum("pk,pkij->pij", weights, transforms[slots])
+        inverse = np.linalg.inv(M)
+        rest = np.einsum("pij,pj->pi", inverse[:, :3, :3], x) + inverse[:, :3, 3]
+        n = np.einsum("pij,pj->pi", inverse[:, :3, :3], np.asarray(normals) @ Rp)
+        n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-12)
+        return rest, n
+
+    def points(self, points) -> np.ndarray:
+        """(P, 3) the points in the card's rest frame."""
+        points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        idx, w = self._blend(points)
         shift = np.einsum("pk,pkd->pd", w, self.offset[idx])
         lift = np.einsum("pk,pkd->pd", w, self.residual[idx])
         return (points + shift) @ self.R.T + self.t + lift
@@ -211,7 +245,8 @@ def reference_groom(
     role) in the rest frame of a fitted mesh (see the module documentation), and its textures:
     (:class:`~opensculptboy.groom.data.GroomData`, ``{material name: {slot: (H, W, C) uint8}}``),
     or None without such parts. ``posed``, ``rest``, ``head`` and ``reference`` are as for
-    :func:`carry` (``carrier``, a :class:`Carrier` of them, saves building it again);
+    :func:`carry` (``carrier``, a :class:`Carrier` of them, saves building it again, and with
+    the fit's pose undoes it for the hair with the hair's own skin, :meth:`Carrier.unpose`);
     ``bone_heads`` and ``labels`` (the rest heads and names of the card's bones) give the hair
     its skin.
     """
@@ -224,6 +259,7 @@ def reference_groom(
         carrier = Carrier(posed, rest, head, reference)
     R, t, centre = carrier.R, carrier.t, carrier.centre
     points, normals, uvs, colors, triangles, material = [], [], [], [], [], []
+    source, source_normals = [], []  # the reference's frame
     materials: list[GroomMaterial] = []
     textures: dict = {}
     names: dict = {}
@@ -263,6 +299,8 @@ def reference_groom(
             textures[name] = slots
         points.append(carrier.points(v))
         normals.append(n @ R.T)
+        source.append(v)
+        source_normals.append(n)
         uvs.append(
             np.asarray(p.uvs, np.float64)
             if p.uvs is not None
@@ -304,4 +342,26 @@ def reference_groom(
         bones, slots, weights, chains, share = anny_skin(mine, R, t, bone_heads, labels)
         data.bones, data.bone_slots, data.bone_weights = tuple(bones), slots, weights
         data.chains, data.chain_share = chains, share
+        if carrier.motion is not None:  # the fit's pose undone with the hair's own skin
+            index = np.array([list(labels).index(b) for b in bones])
+            rest_points, rest_normals = carrier.unpose(
+                np.concatenate(source),
+                np.concatenate(source_normals),
+                index[slots],
+                weights,
+            )
+            data.points, data.normals = rest_points, rest_normals
+            data.triangles = _resorted(data, carrier.centre)
     return data, textures
+
+
+def _resorted(data: GroomData, centre) -> np.ndarray:
+    """The triangles of a groom with each blended material's sorted again from the inside out
+    (after its points moved)."""
+    out = data.triangles.copy()
+    for k, m in enumerate(data.materials):
+        if m.alpha_mode != "BLEND":
+            continue
+        pick = data.material == k
+        out[pick] = _sorted_inside_out(data.points, data.triangles[pick], centre)
+    return out

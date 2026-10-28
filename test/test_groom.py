@@ -112,6 +112,33 @@ class TestCarry(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(local)), 0.0905, delta=1e-4)
 
 
+class TestUnpose(unittest.TestCase):
+    def test_skin_of_the_hair(self):
+        # a head bone turned one way and a neck bone another: a point weighted to the neck goes
+        # back by the neck's turn, a point weighted half and half by the blend of both
+        rng = np.random.default_rng(4)
+        d = rng.standard_normal((300, 3))
+        rest = 0.09 * d / np.linalg.norm(d, axis=1, keepdims=True) + [0, 0, 1.6]
+        head, neck = np.eye(4), np.eye(4)
+        head[:3, :3], head[:3, 3] = _turn(0.3), [0.01, 0.0, 0.0]
+        neck[:3, :3] = _turn(0.1)
+        transforms = np.stack([neck, head])
+        posed = rest @ head[:3, :3].T + head[:3, 3]
+        Rp, tp = _turn(-0.2), np.array([0.0, 0.02, 0.85])
+        placed = posed @ Rp.T + tp
+        carrier = Carrier(placed, rest, np.arange(300), None, (transforms, Rp, tp))
+        x_rest = np.array([[0.0, 0.1, 1.5], [0.03, 0.08, 1.55]])
+        w = np.array([[1.0, 0.0], [0.5, 0.5]])
+        slots = np.array([[0, 1], [0, 1]])
+        M = np.einsum("pk,pkij->pij", w, transforms[slots])
+        x_posed = np.einsum("pij,pj->pi", M[:, :3, :3], x_rest) + M[:, :3, 3]
+        got, n = carrier.unpose(
+            x_posed @ Rp.T + tp, np.tile([0, 0, 1.0], (2, 1)), slots, w
+        )
+        np.testing.assert_allclose(got, x_rest, atol=1e-9)
+        np.testing.assert_allclose(np.linalg.norm(n, axis=1), 1.0)
+
+
 class TestReferenceGroom(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

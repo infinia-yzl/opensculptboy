@@ -1012,7 +1012,15 @@ def bake_fit(result, subdiv: int | None = None, size: int = 1024, **kwargs):
         rest = out["rest_vertices"][0].numpy()
         rest_bones = out.get("rest_bone_poses")
         heads = None if rest_bones is None else rest_bones[0, :, :3, 3].numpy()
-        carrier = Carrier(vertices, rest, head, result.reference)
+        motion = None
+        if "bone_poses" in out and rest_bones is not None:
+            transforms = out["bone_poses"][0] @ torch.linalg.inv(rest_bones[0])
+            motion = (
+                transforms.numpy(),
+                np.asarray(result.rotation, np.float64),
+                np.asarray(result.translation, np.float64),
+            )
+        carrier = Carrier(vertices, rest, head, result.reference, motion)
         for kind in ("hair", "brows"):
             found = reference_groom(
                 grooms,
