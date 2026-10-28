@@ -33,8 +33,9 @@ export function expressionSection() {
     const was = d.get();
     if (was.gaze) state.gaze = was.gaze;
     if (was.head) state.head = was.head;
-    if (fadeMs && d.fadeTo) d.fadeTo(state, fadeMs); else d.set(state);
-    sync();
+    // the section shows the preset chosen once the face shows it
+    const shown = fadeMs && d.fadeTo ? d.fadeTo(state, fadeMs) : d.set(state);
+    shown.then(sync);
   };
   const choose = (name: string) => { current = name; show(180); };
   for (const [name, label] of PRESETS) { const b = chip(label, () => choose(name)); b.dataset.expression = name; presets.append(b); chips.set(name, b); }
