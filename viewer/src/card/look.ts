@@ -521,6 +521,9 @@ export class CardLook {
     if (rows) {
       const fixBuf = d.level > 0 ? this.host.buffer(`card_fix_${topology}_${d.level}`) : null;
       const tris = body.hide && body.weldShown ? body.weldShown : body.weld, n = body.nFine;
+      // the normals' change against the normals of the same positions without the blink (the body's own normals hold
+      // the correctives' and the pocket's corrections)
+      const N0 = body.copyRows(vertexNormals(body.pos, tris), 3);
       let touched = 0;
       for (let t = 0; t < T; t++) {
         const lv = new Float32Array(rows.length * 3);
@@ -538,11 +541,11 @@ export class CardLook {
           : body.sub.apply(lv.subarray(0, body.nBody * 3), 3).slice();
         const P1 = body.pos.slice();
         for (let i = 0; i < fine.length; i++) P1[i] += fine[i];
-        const N1 = body.copyRows(vertexNormals(P1, tris), 3), N0 = body.nrm, idx: number[] = [];
+        const N1 = body.copyRows(vertexNormals(P1, tris), 3), idx: number[] = [];
         for (let v = 0; v < n; v++) {
           const o = v * 3, dd = fine[o] ** 2 + fine[o + 1] ** 2 + fine[o + 2] ** 2;
           const dn = (N1[o] - N0[o]) ** 2 + (N1[o + 1] - N0[o + 1]) ** 2 + (N1[o + 2] - N0[o + 2]) ** 2;
-          if (dd > 1e-18 || dn > 1e-12) idx.push(v);
+          if (dd > 1e-14 || dn > 1e-8) idx.push(v);
         }
         const D = new Float32Array(idx.length * 3), Nd = new Float32Array(idx.length * 3);
         idx.forEach((v, i) => { for (let c = 0; c < 3; c++) { D[i * 3 + c] = fine[v * 3 + c]; Nd[i * 3 + c] = N1[v * 3 + c] - N0[v * 3 + c]; } });
