@@ -36,6 +36,10 @@ from opensculptboy.groom.data import GroomData, GroomMaterial
 # (metres) or 1.5 times the distance of the nearest one
 NEAREST = 16
 SPREAD = 0.004
+# the head's vertices whose offset to the reference's skin stays within this (metres) give the
+# offset field: the others lie inside the head (the mouth's cavity, the eye sockets), where the
+# reference has no skin
+SURFACE = 0.003
 # the Anny bones that a joint of the hair may become
 HAIR_BONES = (
     "spine03",
@@ -71,19 +75,28 @@ class Carrier:
         self.R, self.t = rigid(hp, hr)
         self.residual = hr - (hp @ self.R.T + self.t)
         self.offset = np.zeros_like(hp)
+        surface = np.arange(len(hp))
         if reference is not None:
             self.offset = hp - reference.closest(hp)[0]
+            near = np.linalg.norm(self.offset, axis=1) <= SURFACE
+            if near.sum() >= 8:
+                surface = np.flatnonzero(near)
         self.tree = cKDTree(hp)
         self.count = len(hp)
+        # the offset field from the head's surface alone
+        self.surface = surface
+        self.surface_tree = cKDTree(hp[surface])
         self.centre = hr.mean(0)
         # the fit's pose: (bone transforms (J, 4, 4) that take rest points to posed ones in
         # Anny's frame, the placement R_p, t_p that takes posed points to the reference's frame)
         self.motion = motion
 
-    def _blend(self, points):
-        """(P, k) indices of the nearest head vertices and their Gaussian weights."""
-        k = min(NEAREST, self.count)
-        d, idx = self.tree.query(points, k=k)
+    def _blend(self, points, surface: bool = False):
+        """(P, k) indices of the nearest head vertices (of its surface, rows of the offset
+        field) and their Gaussian weights."""
+        tree = self.surface_tree if surface else self.tree
+        k = min(NEAREST, len(self.surface) if surface else self.count)
+        d, idx = tree.query(points, k=k)
         d, idx = d.reshape(len(points), k), idx.reshape(len(points), k)
         scale = np.maximum(1.5 * d[:, :1], SPREAD)
         w = np.exp(-((d / scale) ** 2))
@@ -103,8 +116,7 @@ class Carrier:
             R = self.R
             return self.points(points), np.asarray(normals) @ R.T
         transforms, Rp, tp = self.motion
-        idx, w = self._blend(points)
-        x = points + np.einsum("pk,pkd->pd", w, self.offset[idx])
+        x = points + self._shift(points)
         x = (x - tp) @ Rp  # the placement undone: Anny's frame, posed
         M = np.einsum("pk,pkij->pij", weights, transforms[slots])
         inverse = np.linalg.inv(M)
@@ -117,9 +129,13 @@ class Carrier:
         """(P, 3) the points in the card's rest frame."""
         points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         idx, w = self._blend(points)
-        shift = np.einsum("pk,pkd->pd", w, self.offset[idx])
         lift = np.einsum("pk,pkd->pd", w, self.residual[idx])
-        return (points + shift) @ self.R.T + self.t + lift
+        return (points + self._shift(points)) @ self.R.T + self.t + lift
+
+    def _shift(self, points) -> np.ndarray:
+        """(P, 3) the offset to the fitted surface, blended over the head's surface."""
+        idx, w = self._blend(points, surface=True)
+        return np.einsum("pk,pkd->pd", w, self.offset[self.surface][idx])
 
 
 def carry(points, posed, rest, head, reference=None) -> np.ndarray:
