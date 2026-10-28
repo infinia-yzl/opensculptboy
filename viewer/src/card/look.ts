@@ -58,6 +58,7 @@ export class CardLook {
   private eyeState: { saved: any[]; meshes: any[] } | null = null;
   private iris: Record<string, number> = {};
   private placedHead: { joint: number[]; scale: number } | null = null;
+  private placed = false;   // the card's sliders shape the body: the eyes and the parts may take their places
   timing: Record<string, number> = {};
 
   constructor(host: CardHost) { this.host = host; }
@@ -145,6 +146,7 @@ export class CardLook {
   place() {
     if (!this.plan) return;
     const t0 = performance.now(), plan = this.plan, T = this.host.THREE;
+    this.placed = true;
     // the hair: a card holds none, so the page shows none; the brows of a baked skin are in its maps (or absent),
     // and the reference's lashes replace the page's
     this.host.setPageParts({ hair: false, brows: !this.images.has('base_color'), lashes: !this.partData.some((p) => p.kind === 'lashes') });
@@ -180,7 +182,7 @@ export class CardLook {
 
   // the body changed (a slider, the card's own body): the tangents of the normal maps, the eyes and the parts follow
   bodyChanged() {
-    if (!this.plan) return;
+    if (!this.plan || !this.placed) return;
     const t0 = performance.now();
     this.placeEyes();
     this.placeParts();
@@ -350,7 +352,7 @@ export class CardLook {
       if (i >= 0) this.host.opaque.splice(i, 1);
       p.geo.dispose(); p.materials.forEach((m) => m.dispose()); p.depth.forEach((m) => { if (m !== this.host.depth) m.dispose(); });
     }
-    this.parts = []; this.partData = []; this.placedHead = null;
+    this.parts = []; this.partData = []; this.placedHead = null; this.placed = false;
     if (this.eyeState) {
       const eyes = this.host.eyes();
       eyes.forEach((e, i) => {

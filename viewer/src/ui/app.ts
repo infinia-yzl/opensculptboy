@@ -133,6 +133,12 @@ export interface App {
   shadowSize(): number;
   sssMode(): string;
   loadTimes(): [string, number][];
+  // the GPU time of the passes drawn since the last call (ms, EXT_disjoint_timer_query_webgl2), and whether the browser
+  // measures it
+  takeGpu(): number[];
+  gpuSupported(): boolean;
+  // why the picture stopped refining: 'converged' or 'samples'
+  refined(): string;
 }
 
 // what main.ts calls back into the interface

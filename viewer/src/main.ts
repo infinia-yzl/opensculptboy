@@ -33,6 +33,7 @@ import { detect as detectPicture } from './picture.ts';
 import { silhouetteSvg } from './flat.ts';
 import { Wardrobe } from './wearables/view.ts';
 import { CardLook } from './card/look.ts';
+import { QueryPool, setQueryPool } from './wearables/pool.ts';
 
 const qs = new URLSearchParams(location.search);
 const DEG = Math.PI / 180;
@@ -748,7 +749,9 @@ function updateHairLod(h: number) {
   if (!HAIR || !RIG.ready) return;
   const d = Math.max(1e-3, camera.position.distanceTo(HAIR.uHeadC.value));
   const px = 0.24 * HEADMAP.k / (2 * d * Math.tan(camera.fov * DEG / 2)) * h;
-  const want = Math.min(1, (px / LOD.full) ** 2), S = LOD.steps;
+  // while the figure or the camera moves, each step of the dynamic resolution also halves the strands every two steps
+  const budget = DYN.on && moving() ? LOD.steps[Math.min(DYN.k, LOD.steps.length - 1)] : 1;
+  const want = Math.min(1, (px / LOD.full) ** 2) * budget, S = LOD.steps;
   const up = LOD.i > 0 ? S[LOD.i - 1] : Infinity;
   if (want >= up * 1.1 || want < S[LOD.i] / 1.1) {
     LOD.i = S.findIndex((v) => v <= want);
@@ -910,6 +913,7 @@ function applyBodyShape(values: any, face: any = {}) {
 // the steps that follow a new body on the page: the uploads, the bounds, the hair ribbons, the eyes, the correctives
 // and the rig
 function finishBodyShape(t0: number, bodyMs: number) {
+  COUNTS.body++;
   const steps: any = {};
   let last = performance.now();
   const mark = (name: string) => { const t = performance.now(); steps[name] = Math.round((t - last) * 10) / 10; last = t; };
@@ -939,6 +943,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
 // worker builds one set of values at a time, and the newest values wait for the build in flight. The shot mode, the
 // test hooks (window.setLook, window.setSliders, window.setFace) and '?bodyworker=off' build the body on the page.
 declare const __BODY_WORKER__: string;
+declare const __QUERY_WORKER__: string;
 const BW: any = { worker: null, ready: false, busy: false, want: null, flight: null, spare: null, gen: 0, id: 0, sync: 0, latency: 0 };
 // copies of the buffers for the worker: a view of the model data would carry the whole decoded model with it
 function ownCopy(x: any): any {
@@ -1023,6 +1028,13 @@ function updateEyeShape() {
 // draws its skin, eyes and parts.
 let WEAR: Wardrobe | null = null;
 let CARD: CardLook | null = null;
+// the worker threads of the wearables' closest-point queries (wearables/pool.ts): all cores but two, at most six
+function startQueryPool() {
+  if (SHOT || qs.get('querypool') === 'off' || typeof __QUERY_WORKER__ === 'undefined' || typeof Worker === 'undefined') return;
+  const n = Math.min(6, Math.max(0, (navigator.hardwareConcurrency || 2) - 2));
+  if (n < 2) return;
+  try { setQueryPool(new QueryPool(__QUERY_WORKER__, n)); } catch (e) { console.warn('The query workers are not available.', e); }
+}
 function setBodyCard(c: any) {
   const A = BODY.anny;
   if (!c && !A.coarseOffsets && !A.localValues && !A.levelOffsets.some(Boolean) && A.pageDetail) return;
@@ -1060,6 +1072,7 @@ function initCardLook() {
 function initWardrobe() {
   const fr = MANIFEST.shape.frame;
   initCardLook();
+  startQueryPool();
   WEAR = new Wardrobe({
     THREE, scene, opaque,
     skeleton: () => RIG.skel,
@@ -1906,8 +1919,10 @@ function upperFrame() {
 }
 // everything that rides on the head, the shadow cameras, the floor shade and the stool follow the pose
 const _headSkin = new THREE.Matrix4(), _headFull = new THREE.Matrix4(), _m3 = new THREE.Matrix3(), _v = new THREE.Vector3();
+const COUNTS: Record<string, number> = { pose: 0, body: 0 };   // for tests: how often the pose and the body changed
 function poseChanged() {
   if (!RIG.ready) return;
+  COUNTS.pose++;
   RIG.holder.updateMatrixWorld(true);
   applyCorrectives();
   if (HAIR) { RIG.skel.update(); HAIR.setPose(RIG.skel.boneMatrices, RIG.head); }
@@ -2051,6 +2066,7 @@ let currentLook: any = JSON.parse(JSON.stringify(BASELINE_LOOK));
 let hairWanted = true;
 // a card's look (card/look.ts) hides the page's hair, and the brows and lashes that its maps and parts replace
 let CARD_PARTS: { hair: boolean; brows: boolean; lashes: boolean } | null = null;
+function hairShown() { return hairWanted && (!CARD_PARTS || CARD_PARTS.hair); }
 function updateHairVisibility() {
   const hairOn = hairWanted && (!CARD_PARTS || CARD_PARTS.hair);
   LOOK_PARTS.hairMeshes.forEach((m: any, i: number) => { m.visible = !WEIGHTS.on && (i === 0 ? hairOn : i === 1 ? !CARD_PARTS || CARD_PARTS.brows : !CARD_PARTS || CARD_PARTS.lashes); });
@@ -2372,9 +2388,10 @@ function allocRTs() {
   DYN.last = 0;
 }
 // dynamic resolution: while the figure or the camera moves, the scene, subsurface and accumulation passes draw into
-// a corner of their targets at the scale s, which a controller lowers when frames come slower than 48 per second
-// (or 80 % of the frame rate limit) and raises after two seconds at the target rate; once everything rests, the page
-// refines at full resolution
+// a corner of their targets at the scale s, and the hair draws a share of its strands; a controller takes a step down
+// when frames come slower than 48 per second (or 80 % of the frame rate limit) or a pass takes more GPU time than
+// BUDGET_MS, and a step up after two seconds within both; once everything rests, the page refines at full resolution
+// with all the strands
 const DYN = { steps: [1, 0.85, 0.7, 0.6, 0.5], k: 0, last: 0, ema: 1 / 60, slow: 0, fast: 0, lastReset: -1e9, resetFrame: -10,
   frame: 0, rendered: false, on: !SHOT && qs.get('dyn') !== 'off' };
 // moving: the accumulation started again in this frame or one of the two before it (or within 100 ms, for short gaps
@@ -2384,7 +2401,10 @@ function tuneScale(dt: number) {
   if (!DYN.on || !moving() || !DYN.rendered) { DYN.slow = DYN.fast = 0; return; }
   DYN.ema += (dt - DYN.ema) * 0.15;
   const target = 1 / Math.min(60, FPS.cap || 60);
-  if (DYN.ema > target * 1.25) { DYN.slow += dt; DYN.fast = 0; } else if (DYN.ema < target * 1.09) { DYN.fast += dt; DYN.slow = 0; } else { DYN.slow = DYN.fast = 0; }
+  // slow: the frames come late, or a pass takes more GPU time than the budget of a moving frame; fast: neither, with
+  // room to spare
+  const over = GPU.ms > BUDGET_MS, under = !GPU.ms || GPU.ms < BUDGET_MS * 0.6;
+  if (DYN.ema > target * 1.25 || over) { DYN.slow += dt; DYN.fast = 0; } else if (DYN.ema < target * 1.09 && under) { DYN.fast += dt; DYN.slow = 0; } else { DYN.slow = DYN.fast = 0; }
   if (DYN.slow > 0.4 && DYN.k < DYN.steps.length - 1) { DYN.k++; DYN.slow = 0; }
   if (DYN.fast > 2.0 && DYN.k > 0) { DYN.k--; DYN.fast = 0; }
 }
@@ -2473,9 +2493,85 @@ const dispMat = new THREE.ShaderMaterial({
 const quadMesh = new THREE.Mesh(triGeo, accMat); quadMesh.frustumCulled = false;
 const quadScene = new THREE.Scene(); quadScene.add(quadMesh);
 function halton(i, b) { let f = 1, r = 0; while (i > 0) { f /= b; r += f * (i % b); i = Math.floor(i / b); } return r; }
+// the GPU time of every pass (EXT_disjoint_timer_query_webgl2): the dynamic resolution keeps a moving frame within
+// BUDGET_MS of GPU time, and the performance card shows it. At most four queries wait for their results.
+const GPU: any = { gl: renderer.getContext(), ext: null, active: null, pending: [] as any[], ms: 0, fresh: [] as number[] };
+GPU.ext = GPU.gl.getExtension('EXT_disjoint_timer_query_webgl2');
+const BUDGET_MS = qs.get('budget') === 'off' ? Infinity : parseFloat(qs.get('budget') || '6') || 6;
+function gpuBegin() {
+  if (!GPU.ext || PROFILE.on || GPU.active || GPU.pending.length >= 4) return;
+  GPU.active = GPU.gl.createQuery();
+  if (GPU.active) GPU.gl.beginQuery(GPU.ext.TIME_ELAPSED_EXT, GPU.active);
+}
+function gpuEnd() {
+  if (!GPU.active) return;
+  GPU.gl.endQuery(GPU.ext.TIME_ELAPSED_EXT); GPU.pending.push(GPU.active); GPU.active = null;
+}
+function gpuPoll() {
+  const gl = GPU.gl;
+  if (!GPU.pending.length) return;
+  const disjoint = gl.getParameter(GPU.ext.GPU_DISJOINT_EXT);
+  while (GPU.pending.length && gl.getQueryParameter(GPU.pending[0], gl.QUERY_RESULT_AVAILABLE)) {
+    const q = GPU.pending.shift();
+    if (!disjoint) { GPU.ms = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6; GPU.fresh.push(GPU.ms); if (GPU.fresh.length > 240) GPU.fresh.shift(); }
+    gl.deleteQuery(q);
+  }
+}
+// the refinement stops once a new sample no longer changes the picture: every other pass from the eighth on, a small
+// pass measures the mean change of the accumulated picture (relative to its brightness) at a grid of points, read
+// back without a stall; below CONVERGED for two readings in a row, the picture counts as refined
+const CONVERGED = parseFloat(qs.get('converge') || '0.001');
+const CONV: any = { rt: null, mat: null, buf: new Float32Array(32 * 32 * 4), busy: false, low: 0, epoch: 0, done: '', history: [] as number[] };
+function convergence(prev: any, next: any, n: number) {
+  if (!(CONVERGED > 0) || n < 8 || n % 2 || CONV.busy || !renderer.readRenderTargetPixelsAsync) return;
+  if (!CONV.rt) {
+    CONV.rt = new THREE.WebGLRenderTarget(32, 32, { type: THREE.FloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    CONV.mat = new THREE.ShaderMaterial({
+      uniforms: { tA: { value: null }, tB: { value: null }, uUvScale: sssU.uUvScale }, vertexShader: FSQ_VS,
+      fragmentShader: `uniform sampler2D tA; uniform sampler2D tB; uniform vec2 uUvScale; varying vec2 vUv;
+void main() {
+  float s = 0.0;
+  for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) {
+    vec2 uv = (vUv + (vec2(float(i), float(j)) - 1.5) / 128.0) * uUvScale;
+    vec3 a = texture2D(tA, uv).rgb, b = texture2D(tB, uv).rgb;
+    float la = dot(a, vec3(0.2126, 0.7152, 0.0722)), lb = dot(b, vec3(0.2126, 0.7152, 0.0722));
+    s += abs(la - lb) / (max(la, lb) + 0.02);
+  }
+  gl_FragColor = vec4(s / 16.0, 0.0, 0.0, 1.0);
+}`,
+      depthTest: false, depthWrite: false, toneMapped: false, blending: THREE.NoBlending,
+    });
+  }
+  CONV.mat.uniforms.tA.value = prev.texture; CONV.mat.uniforms.tB.value = next.texture;
+  quadMesh.material = CONV.mat;
+  renderer.setRenderTarget(CONV.rt); renderer.render(quadScene, quadCam);
+  CONV.busy = true;
+  const epoch = CONV.epoch;
+  renderer.readRenderTargetPixelsAsync(CONV.rt, 0, 0, 32, 32, CONV.buf).then(() => {
+    CONV.busy = false;
+    if (epoch !== CONV.epoch) return;
+    let m = 0;
+    for (let i = 0; i < 32 * 32; i++) m += CONV.buf[i * 4];
+    m /= 32 * 32;
+    CONV.history.push(+m.toFixed(5));
+    CONV.low = m < CONVERGED ? CONV.low + 1 : 0;
+    if (CONV.low >= 2 && accCount < MAX_ACC) { CONV.done = 'converged'; CONV.at = accCount; accCount = MAX_ACC; }
+  }).catch(() => { CONV.busy = false; });
+}
+// GPU time by stage of a refinement pass (window.gpuProfile): a timer query around each stage while PROFILE.on
+const PROFILE: any = { on: false, gl: null, ext: null, pending: [] as [string, any][] };
+function stage(name: string, fn: () => void) {
+  if (!PROFILE.on) { fn(); return; }
+  const gl = PROFILE.gl, q = gl.createQuery();
+  gl.beginQuery(PROFILE.ext.TIME_ELAPSED_EXT, q);
+  fn();
+  gl.endQuery(PROFILE.ext.TIME_ELAPSED_EXT);
+  PROFILE.pending.push([name, q]);
+}
 function renderPass() {
   const t0 = performance.now();
   HOOKS.passBegin();
+  gpuBegin();
   // a change of scale starts the accumulation again (without counting as a move)
   const sc = renderScale();
   if (sc !== DYN.last) { accCount = 0; DYN.last = sc; }
@@ -2486,8 +2582,8 @@ function renderPass() {
   BG.uRes.value.set(w, h);
   for (const o of hairObjs) o.userData.hu.uViewportH.value = h;
   if (accCount === 0) updateHairLod(h);
-  if (HAIR && HAIR.update(renderer)) shadowsDirty = true;
-  if (shadowsDirty) renderShadows();
+  stage('hair', () => { if (HAIR && HAIR.update(renderer)) shadowsDirty = true; });
+  if (shadowsDirty) stage('shadows', renderShadows);
   setRegion(sceneRT, w, h);
   if (SSS_ON) setRegion(sssRT, w, h);
   accRT.forEach((r) => setRegion(r, w, h));
@@ -2496,7 +2592,7 @@ function renderPass() {
   camera.setViewOffset(w, h, jx, jy, w, h);
   U.uFrame.value = accCount;
   renderer.setClearColor(0x000000, 0);
-  renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera);
+  stage('scene', () => { renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera); });
   camera.clearViewOffset();
   if (SSS_ON) {
     sssU.tSSS.value = sceneRT.textures[1]; sssU.tDepth.value = sceneRT.depthTexture;
@@ -2504,24 +2600,27 @@ function renderPass() {
     sssU.uTexel.value.set(1 / W, 1 / H);
     sssU.uFrameS.value = accCount;
     quadMesh.material = sssMat;
-    renderer.setRenderTarget(sssRT); renderer.render(quadScene, quadCam);
+    stage('diffusion', () => { renderer.setRenderTarget(sssRT); renderer.render(quadScene, quadCam); });
     accMat.uniforms.tSSSH.value = sssRT.texture;
   }
   const src = accRT[0], dst = accRT[1];
   accMat.uniforms.tNew.value = sceneRT.textures[0]; accMat.uniforms.tAcc.value = src.texture; accMat.uniforms.uW.value = 1 / (accCount + 1);
   quadMesh.material = accMat;
-  renderer.setRenderTarget(dst); renderer.render(quadScene, quadCam);
+  stage('accumulation', () => { renderer.setRenderTarget(dst); renderer.render(quadScene, quadCam); });
   accRT = [dst, src];
+  if (!moving()) convergence(src, dst, accCount);
   dispMat.uniforms.tAcc.value = dst.texture; dispMat.uniforms.uSeed.value = (accCount * 0.618) % 1;
   quadMesh.material = dispMat;
-  renderer.setRenderTarget(null); renderer.render(quadScene, quadCam);
+  stage('display', () => { renderer.setRenderTarget(null); renderer.render(quadScene, quadCam); });
   drawOverlay();
+  gpuEnd();
   HOOKS.passEnd();
   accCount++;
+  if (accCount >= MAX_ACC && !CONV.done) CONV.done = 'samples';
   DYN.rendered = true;
   PERF.passes++; PERF.passMs += performance.now() - t0; PERF.w = w; PERF.h = h;
 }
-function resetAccum() { accCount = 0; DYN.lastReset = performance.now(); DYN.resetFrame = DYN.frame; }
+function resetAccum() { accCount = 0; DYN.lastReset = performance.now(); DYN.resetFrame = DYN.frame; CONV.epoch++; CONV.low = 0; CONV.done = ''; CONV.history = []; }
 // the display pass alone, from the accumulated picture: an overlay can change without starting the refinement again
 function redisplay() {
   if (!accCount) return;
@@ -2537,7 +2636,7 @@ const _hc = new THREE.Vector3();
 // the frame rate limit (0: the display's rate): the loop skips the display's frames that come before the next due
 // time, which advances by whole intervals, so a limit that does not divide the display's rate still holds on average
 const FPS_CAPS = [0, 60, 30, 20];
-const FPS = { cap: 0, due: 0 };
+const FPS = { cap: SHOT ? 0 : 60, due: 0 };   // 60 per second by default: a fast display draws no more frames than that
 function setFpsCap(cap: number) {
   if (!FPS_CAPS.includes(cap)) return;
   FPS.cap = cap; FPS.due = 0;
@@ -2555,6 +2654,7 @@ function animate() {
     if (FPS.due < now - iv) FPS.due = now + iv;
   }
   const rawDt = (now - lastFrameT) / 1000, dt = Math.min(0.1, rawDt); lastFrameT = now;
+  if (GPU.ext) gpuPoll();
   DYN.frame++;
   tuneScale(dt);
   DYN.rendered = false;
@@ -2579,7 +2679,7 @@ function animate() {
   if (controls.autoRotate) resetAccum();
   if (HAIR && HAIR.due()) resetAccum();
   // the hair's physics: it sleeps once the hair rests, so the picture can refine
-  if (HAIR && hairWanted && !hairClock && HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); }
+  if (HAIR && hairShown() && !hairClock && HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); }
   if (accCount < MAX_ACC) renderPass();
   const jsMs = performance.now() - now;
   if (DYN.rendered) { PERF.frames++; PERF.jsMs += jsMs; }
@@ -2611,6 +2711,7 @@ const PERF = { frames: 0, passes: 0, jsMs: 0, passMs: 0, t0: performance.now(), 
 function frameStats() {
   const st = HAIR ? HAIR.stats() : null;
   return Object.assign({ fps: +PERF.fps.toFixed(1), fps_cap: FPS.cap, js_ms: +PERF.js.toFixed(2), idle: PERF.idle, scale: DYN.last || 1, width: PERF.w, height: PERF.h,
+    gpu_pass_ms: +GPU.ms.toFixed(3), refined: CONV.done,
     hair: st ? { strands: st.strands, vertices: st.vertices, lod: st.lod, physics: st.physics ? (st.asleep ? 'asleep' : +st.sim.ms.toFixed(2)) : 'off' } : null },
   UI ? UI.stats.snapshot() : {});
 }
@@ -2794,6 +2895,9 @@ const APP: any = {
   shadowSize: () => SHADOW_SIZE,
   sssMode: () => SSS_ON ? 'screen space' : 'curvature table',
   loadTimes: () => LOADT,
+  takeGpu: () => GPU.fresh.splice(0),
+  gpuSupported: () => !!GPU.ext,
+  refined: () => CONV.done,
 };
 
 // test hook
@@ -2834,6 +2938,43 @@ window.hairPoints = (n) => { HAIR.update(renderer); return Array.from(HAIR.readP
 window.hairRest = (n) => HAIR.readRest(renderer, n);
 window.hairGuides = () => HAIR.readGuides(renderer);
 window.frameStats = frameStats;
+window.__counts = () => ({ ...COUNTS });
+window.convergence = () => ({ done: CONV.done, at: CONV.at, samples: accCount, history: CONV.history.slice(), threshold: CONVERGED });
+// GPU time (ms, medians over the passes) of each stage of a refinement pass in the current view, as it is and with
+// groups of the scene hidden: { full: { hair, shadows, scene, diffusion, accumulation, display, total }, ... }.
+// shadows: true draws the shadow maps in every pass, as a moving figure does. Needs EXT_disjoint_timer_query_webgl2.
+window.gpuProfile = async (opts: any = {}) => {
+  const gl = renderer.getContext(), ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if (!ext) return null;
+  const n = opts.passes || 12, out: any = {};
+  const groups: Record<string, any[]> = {
+    hair: hairObjs, body: [BODY_MESH], eyes: RIG.eyes.map((e: any) => e.mesh),
+    wearables: opaque.filter((o: any) => o !== BODY_MESH && !RIG.eyes.some((e: any) => e.mesh === o)),
+  };
+  const configs: [string, any[]][] = [['full', []], ...Object.entries(groups).map(([k, v]) => ['without ' + k, v] as [string, any[]])];
+  for (const [name, hide] of configs) {
+    const vis = hide.map((o: any) => o.visible);
+    hide.forEach((o: any) => { o.visible = false; });
+    PROFILE.on = true; PROFILE.gl = gl; PROFILE.ext = ext; PROFILE.pending = [];
+    accCount = 1;
+    for (let i = 0; i < n; i++) { if (opts.shadows !== false) shadowsDirty = true; renderPass(); }
+    PROFILE.on = false;
+    const px = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    for (let k = 0; k < 400 && !PROFILE.pending.every(([, q]: any) => gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)); k++) await new Promise((r) => setTimeout(r, 10));
+    const by: Record<string, number[]> = {};
+    for (const [st, q] of PROFILE.pending) { (by[st] = by[st] || []).push(gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6); gl.deleteQuery(q); }
+    const med = (a: number[]) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
+    const r: any = {};
+    let total = 0;
+    for (const [st, a] of Object.entries(by)) { r[st] = +med(a).toFixed(3); total += r[st]; }
+    r.total = +total.toFixed(3);
+    out[name] = r;
+    hide.forEach((o: any, i: number) => { o.visible = vis[i]; });
+  }
+  shadowsDirty = true; resetAccum();
+  out.pixels = [PERF.w, PERF.h]; out.strands = HAIR ? HAIR.stats().strands : 0; out.shadow_size = SHADOW_SIZE;
+  return out;
+};
 // the wardrobe for tests: its counts and times (the files load through the Wearables section's file input)
 window.wearStats = () => WEAR ? WEAR.stats() : null;
 // the card's look for tests: its level, maps, eyes, parts and notes

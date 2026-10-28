@@ -14,10 +14,15 @@ export type I32 = Int32Array;
 export const CANDIDATES = 24;
 // query points per slice of a sliced closest-point query
 export const QUERY_SLICE = 128;
+// triangle tests per slice of a sliced ray test (about 10 ms)
+export const RAY_TESTS = 150000;
+
+import { queryPool } from './pool.ts';
 
 // a computation in steps: it yields between slices of its work, so that the page can run it between frames
-// (wearables/view.ts); runSteps runs every step at once
-export type Steps<T> = Generator<void, T, void>;
+// (wearables/view.ts); runSteps runs every step at once. A step may yield the promise of a query on worker threads
+// (pool.ts), which only the wardrobe's settled dress awaits: it resumes the steps with the answer.
+export type Steps<T> = Generator<any, T, any>;
 export function runSteps<T>(steps: Steps<T>): T {
   for (;;) { const r = steps.next(); if (r.done) return r.value; }
 }
@@ -206,10 +211,12 @@ export class PointGrid {
 export interface Closest { triangle: I32; bary: F64; point: F64; distance: F64 }
 
 // a triangle mesh with its vertex normals and scales, for closest-point queries (opensculptboy.wearables.geometry.Surface)
+let surfaces = 0;
 export class Surface {
   V: F64; T: I32; N: F64; nv: number;
   radius = 0;   // the largest distance of a corner from its triangle's centroid
   private _scales: F64 | null = null; private _grid: PointGrid | null = null;
+  id = ++surfaces;   // the surface's key in the query pool
   constructor(V: F64, T: I32, normals?: F64) {
     this.V = V; this.T = T; this.nv = V.length / 3;
     this.N = normals || vertexNormals(V, T, this.nv);
@@ -235,6 +242,8 @@ export class Surface {
   // the same query in slices of `slice` points; each point's answer depends on that point alone
   *closestSteps(points: F64, candidates = CANDIDATES, limit = Infinity, slice = QUERY_SLICE): Steps<Closest> {
     const n = points.length / 3, m = this.T.length / 3, k = Math.min(candidates, m);
+    const pool = queryPool();
+    if (pool && slice !== Infinity && pool.usable(n) && m) return (yield pool.closest(this, points, candidates, limit)) as Closest;
     const out: Closest = { triangle: new Int32Array(n), bary: new Float64Array(n * 3), point: new Float64Array(n * 3), distance: new Float64Array(n) };
     const ids = new Int32Array(k), d2 = new Float64Array(k), b = new Float64Array(3);
     for (let i0 = 0; i0 < n; i0 += slice) {
@@ -295,11 +304,16 @@ export function* rayHitsSteps(origins: F64, directions: F64, V: F64, T: I32, rea
     for (const p of [a, b, c]) radius = Math.max(radius, norm3(V[p] - C[t * 3], V[p + 1] - C[t * 3 + 1], V[p + 2] - C[t * 3 + 2]));
     edge += norm3(V[a] - V[b], V[a + 1] - V[b + 1], V[a + 2] - V[b + 2]);
   }
+  yield;
   const grid = new PointGrid(C, Math.max(reach, 1.5 * edge / m)), near: number[] = [];
+  yield;
+  let tests = 0;
   for (let i = 0; i < n; i++) {
-    if (i > 0 && i % slice === 0) yield;
+    // a slice ends after `slice` rays or RAY_TESTS triangle tests, whichever comes first
+    if (i > 0 && (i % slice === 0 || tests > RAY_TESTS)) { tests = 0; yield; }
     const o = i * 3, ox = origins[o], oy = origins[o + 1], oz = origins[o + 2], dx = D[o], dy = D[o + 1], dz = D[o + 2];
     grid.ball(ox, oy, oz, reach + radius, near);
+    tests += near.length;
     for (const t of near) {
       const a = T[t * 3] * 3, b = T[t * 3 + 1] * 3, c = T[t * 3 + 2] * 3;
       const e1x = V[b] - V[a], e1y = V[b + 1] - V[a + 1], e1z = V[b + 2] - V[a + 2], e2x = V[c] - V[a], e2y = V[c + 1] - V[a + 1], e2z = V[c + 2] - V[a + 2];

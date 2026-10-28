@@ -13,6 +13,7 @@ import { BodySurface, DressCache, dress, dressSteps, estimatedPose, MOUTH_ANCEST
 import { dirname, FileSet, type PickedFile } from './files.ts';
 import { readSafetensors, readWearable, type Material, type Wearable } from './package.ts';
 import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from './shading.ts';
+import { queryPool } from './pool.ts';
 import { skinTriangles } from './skin.ts';
 import { cardOutfit, NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
 
@@ -269,14 +270,21 @@ export class Wardrobe {
   private settleNow() {
     const id = this.job = ++this.jobs, steps = this.settleSteps(), started = performance.now();
     const stat = { slices: 0, longest: 0, work: 0 };
+    const pool = queryPool();
+    let answer: any;
+    // a step that yields a promise (a query on the worker threads of pool.ts) ends the slice; the steps resume with
+    // its answer
     const run = () => {
       if (this.job !== id) return;
       const t0 = performance.now();
-      let r: IteratorResult<void, Record<string, number>>;
-      try { do r = steps.next(); while (!r.done && performance.now() - t0 < SLICE_MS); }
+      let r: IteratorResult<any, Record<string, number>>;
+      if (pool) pool.active = true;
+      try { do { r = steps.next(answer); answer = undefined; } while (!r.done && !r.value?.then && performance.now() - t0 < SLICE_MS); }
       catch (e: any) { this.job = 0; this.fail(`the push-out and the covered skin failed: ${e.message || e}`, e); this.notify(); return; }
+      finally { if (pool) pool.active = false; }
       const ms = performance.now() - t0;
       stat.slices++; stat.work += ms; stat.longest = Math.max(stat.longest, ms);
+      if (!r.done && r.value?.then) { r.value.then((v: any) => { answer = v; soon(run); }); return; }
       if (!r.done) { soon(run); return; }
       this.job = 0;
       const timing = r.value;

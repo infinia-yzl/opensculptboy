@@ -137,12 +137,18 @@ const worker = await esbuild.build({
   bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
   legalComments: 'none',
 });
+// the worker of the wearables' query pool (src/wearables/query_worker.ts), started the same way
+const queryWorker = await esbuild.build({
+  entryPoints: [path.join(here, 'src', 'wearables', 'query_worker.ts')],
+  bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
+  legalComments: 'none',
+});
 // the script: the TypeScript with three.js in one bundle
 const bundle = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'main.ts')],
   bundle: true, format: 'esm', minify: true, write: false, target: 'es2022',
   alias: { 'three/addons': 'three/examples/jsm' },
-  define: { __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text) },
+  define: { __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text), __QUERY_WORKER__: JSON.stringify(queryWorker.outputFiles[0].text) },
   legalComments: 'none',
 });
 const app = bundle.outputFiles[0].text;
