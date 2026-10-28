@@ -5,8 +5,9 @@
 // on a run of points with Surface.closest.
 //   { type: 'surface', id, V, T, N }
 //   { type: 'closest', job, id, points, candidates, limit } -> { job, triangle, bary, point, distance }
+//   { type: 'line', job, origins, directions, V, T, reach } -> { job, hit, triangle, bary, along }
 
-import { Surface } from './geometry.ts';
+import { linePartners, Surface } from './geometry.ts';
 
 const surfaces = new Map<number, Surface>();
 self.onmessage = (e: MessageEvent) => {
@@ -17,5 +18,8 @@ self.onmessage = (e: MessageEvent) => {
   } else if (m.type === 'closest') {
     const r = surfaces.get(m.id)!.closest(m.points, m.candidates, m.limit);
     (self as any).postMessage({ job: m.job, ...r }, [r.triangle.buffer, r.bary.buffer, r.point.buffer, r.distance.buffer]);
+  } else if (m.type === 'line') {
+    const r = linePartners(m.origins, m.directions, m.V, m.T, m.reach);
+    (self as any).postMessage({ job: m.job, ...r }, [r.hit.buffer, r.triangle.buffer, r.bary.buffer, r.along.buffer]);
   }
 };

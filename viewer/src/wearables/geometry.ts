@@ -340,6 +340,9 @@ export function linePartners(origins: F64, directions: F64, V: F64, T: I32, reac
 // the same query in slices of `slice` origins
 export function* linePartnersSteps(origins: F64, directions: F64, V: F64, T: I32, reach: number, slice = 2048): Steps<LinePartners> {
   const n = origins.length / 3, m = T.length / 3;
+  // a large query of the settled dress: the query pool's workers answer runs of the origins (pool.ts)
+  const pool = queryPool();
+  if (pool && slice !== Infinity && pool.usable(n) && m) return (yield pool.linePartners(origins, directions, V, T, reach)) as LinePartners;
   const out: LinePartners = { hit: new Uint8Array(n), triangle: new Int32Array(n), bary: new Float64Array(n * 3), along: new Float64Array(n) };
   if (!m || !n) return out;
   const D = unitRows(directions.slice()), C = new Float64Array(m * 3);
