@@ -159,18 +159,23 @@ export function bodyWeights(w: Wearable, body: BodySurface, k = MAX_INFLUENCES):
 }
 
 // ------------------------------------------------------------------ rigid poses in the page
-// The page has the bone heads of every body but no rest rotations. A rigid piece then turns with its bone's skin: the
-// rotation that carries the binding body's vertices under that bone onto the current body's (weighted by the bone's
-// skin weights) times the bone's rotation on the binding body, which the package gives back: its garment vertices are
-// the bone's rest frame applied to the binding's local vertices.
-export function rotationBetween(X: F64, Y: F64, w?: F64): F64 {
-  // Horn's quaternion method: the rotation R that minimises sum w |R (x - cx) - (y - cy)|^2
+// The page has the bone heads of every body but no rest rotations. A rigid piece then turns with its bone's skin, as
+// Anny's rig finds a bone's rest rotation (the rotation that carries the template's vertices under the bone, about
+// the bone's head, onto the body's, weighted by the bone's skin weights): the rotation that carries the binding
+// body's vertices about the bone's head there onto the current body's about its head, times the bone's rotation on
+// the binding body. The package gives back that rotation and that head: its garment vertices are the bone's rest
+// frame applied to the binding's local vertices. On a piece bound on the template the estimate is exact up to the
+// page's skin weights.
+// The rotation R that minimises sum w |R (x - cx) - (y - cy)|^2 (Horn's quaternion method); without the centres
+// `cx` and `cy`, those of X and Y.
+export function rotationBetween(X: F64, Y: F64, w?: F64, centres?: [number[], number[]]): F64 {
   const n = X.length / 3;
   let W = 0;
   const cx = [0, 0, 0], cy = [0, 0, 0];
   for (let i = 0; i < n; i++) { const wi = w ? w[i] : 1; W += wi; for (let k = 0; k < 3; k++) { cx[k] += wi * X[i * 3 + k]; cy[k] += wi * Y[i * 3 + k]; } }
   if (!(W > 0)) return Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1]);
   for (let k = 0; k < 3; k++) { cx[k] /= W; cy[k] /= W; }
+  if (centres) for (let k = 0; k < 3; k++) { cx[k] = centres[0][k]; cy[k] = centres[1][k]; }
   const S = new Float64Array(9);
   for (let i = 0; i < n; i++) {
     const wi = w ? w[i] : 1;
@@ -214,11 +219,15 @@ const mul3 = (A: F64, B: F64) => {
 // the rest pose of a rigid piece's bone on a body: `head` is the bone's head on that body
 export function estimatedPose(w: Wearable, body: BodySurface, head: ArrayLike<number>): BonePose {
   const b = w.binding, bone = bodyBone(b.bone!, body.bones), s = body.unit;
-  const local = b.local!.map((x) => x * s), garment = fromAnny(body.frame, w.garment.positions);
+  const local = b.local!.map((x) => x * s), garment = fromAnny(body.frame, w.garment.positions), n = local.length / 3;
   const Rb = rotationBetween(local, garment);
+  // the bone's head on the binding body: garment = Rb local + head
+  const bindHead = [0, 0, 0];
+  for (let i = 0; i < n; i++) for (let r = 0; r < 3; r++)
+    bindHead[r] += (garment[i * 3 + r] - (Rb[r * 3] * local[i * 3] + Rb[r * 3 + 1] * local[i * 3 + 1] + Rb[r * 3 + 2] * local[i * 3 + 2])) / n;
   const bind = fromAnny(body.frame, b.bodyVertices, body.n), wt = new Float64Array(body.n);
   for (let i = 0; i < body.n; i++) for (let q = 0; q < body.K; q++) if (body.indices[i * body.K + q] === bone) wt[i] += body.weights[i * body.K + q];
-  const Q = rotationBetween(bind, body.vertices, wt);
+  const Q = rotationBetween(bind, body.vertices, wt, [bindHead, Array.from(head)]);
   return { R: mul3(Q, Rb), t: Float64Array.from(head) };
 }
 
