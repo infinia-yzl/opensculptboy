@@ -315,6 +315,137 @@ def motion_data():
     return q_leg, root, clips, lib.bones
 
 
+# ------------------------------------------------------------------ character cards
+def card_seams(body, model, base_index):
+    """the seams of the fine body on anny's atlas (opensculptboy.viewer.seam_split), or None
+    when OpenSculptBoy is not installed or the model has no UVs"""
+    try:
+        from opensculptboy import viewer as card
+    except ImportError:
+        return None
+    uv_faces = model.face_texture_coordinate_indices
+    if uv_faces is None or model.texture_coordinates is None:
+        return None
+    mask = (base_index[model.faces.numpy()] < 13380).all(1)
+    fine = card.fine_uvs(
+        body.subdivision,
+        uv_faces.numpy()[mask],
+        model.texture_coordinates.detach().numpy(),
+    )
+    return card.seam_split(body.T, fine, len(body.V))
+
+
+def card_buffers(pk, man, body, model, seams, base_index, body_used, eye_ids, compact):
+    """
+    The data of a character card's look (opensculptboy.viewer): ``head_uv`` (per drawn vertex
+    its UV in steps of 1/65535, glTF convention, and a flag byte, 1 on the head tile's island),
+    ``head_seam`` (each copy and its source), ``card_coarse`` (the anny vertex of each coarse
+    vertex) and ``card_rows_<topology>_<level>`` (the rows of a card's detail levels behind the
+    page's levels 1 and 2), and their tables under ``card`` in the manifest.
+    """
+    from opensculptboy import viewer as card
+
+    mask = (base_index[model.faces.numpy()] < 13380).all(1)
+    body_faces = np.nonzero(mask)[0]
+    tile = card.head_tile(model, seams, body_faces)
+    hidden = card.pocket(seams, body_faces)
+    n = len(seams.source)
+    rec = np.zeros((n, 8), np.uint8)
+    uv16 = np.clip(np.round(seams.uvs * 65535), 0, 65535).astype("<u2")
+    rec[:, 0:4] = uv16.view(np.uint8).reshape(n, 4)
+    rec[:, 4] = tile["flags"]
+    rec[:, 5] = hidden
+    pk.add("head_uv", rec, "vertex", n, 8)
+    nv = int(seams.source.max()) + 1
+    copies = np.arange(nv, n)
+    pairs = np.stack([copies, seams.source[nv:]], 1).astype("<u4")
+    pk.add(
+        "head_seam",
+        pairs.view(np.uint8).reshape(-1, 8),
+        "sparse",
+        len(pairs),
+        8,
+        body="head",
+        fields=2,
+        sort="none",
+    )
+    pk.add("card_coarse", compact.astype(np.uint32), "raw", len(compact) * 4, 1)
+    rows = card.detail_rows(
+        np.searchsorted(body_used, body.subdivision.input_quads),
+        len(body_used),
+        compact,
+        model.template_vertices.detach().numpy(),
+    )
+    levels = {}
+    for topology in card.TOPOLOGIES:
+        if topology not in rows:
+            continue
+        levels[topology] = {"fallback": rows[topology]["fallback"]}
+        for k in ("1", "2"):
+            r = rows[topology][k]
+            pk.add(f"card_rows_{topology}_{k}", r, "vertex", len(r), 4)
+            levels[topology][k] = int(len(r))
+            e = rows[topology]
+            miss = e[f"{k}_missed"]
+            if len(miss):
+                # per such row: the page row, the three rows of the closest point of the card's
+                # surface and their weights, and the move to that point in the page's frame (a
+                # rotation and a scale of anny's)
+                fix = np.zeros((len(miss), 10), np.float32)
+                fix[:, 0] = miss.view(np.float32)
+                fix[:, 1:4] = e[f"{k}_corners"].view(np.float32)
+                fix[:, 4:7] = e[f"{k}_weights"]
+                fix[:, 7:] = P.RIG.scale * e[f"{k}_delta"] @ M.T
+                pk.add(f"card_fix_{topology}_{k}", fix, "raw", fix.nbytes, 1)
+    # the faces of the sculpt topology's patches, drawn in place of the hidden pocket on a sculpt card
+    patches = {}
+    fine = body.V[seams.source]
+    for k in (1, 2):
+        p = card.sculpt_patch(
+            k, compact, P.RIG.preview["coarse"]["V"][compact], fine, hidden
+        )
+        if p is None:
+            continue
+        for name in ("rows", "start", "cols", "values", "uvs", "triangles"):
+            pk.add(f"card_patch_{k}_{name}", p[name], "raw", p[name].nbytes, 1)
+        pk.add(
+            f"card_patch_{k}_near",
+            p["near"].astype("<u4").view(np.uint8).reshape(-1, 4),
+            "sparse",
+            len(p["near"]),
+            4,
+            body="head",
+            fields=1,
+            sort="none",
+        )
+        patches[str(k)] = dict(
+            vertices=int(len(p["rows"])), triangles=int(len(p["triangles"]))
+        )
+    man["card"] = dict(
+        copies=int(len(copies)),
+        head_tile=tile["transforms"],
+        levels=levels,
+        patches=patches,
+        hidden=int(hidden.sum()),
+    )
+
+
+def with_copies(shape, source, count):
+    """a corrective shape with the records of the seam copies of its vertices"""
+    copies = np.arange(count, len(source))
+    of = source[count:]
+    pos = {int(v): i for i, v in enumerate(shape["idx"])}
+    extra = [(c, pos[int(v)]) for c, v in zip(copies, of) if int(v) in pos]
+    if not extra:
+        return shape
+    c, i = (np.array(x) for x in zip(*extra))
+    out = dict(shape)
+    out["idx"] = np.concatenate([shape["idx"], c])
+    out["D"] = np.concatenate([shape["D"], shape["D"][i]])
+    out["N"] = np.concatenate([shape["N"], shape["N"][i]])
+    return out
+
+
 # ------------------------------------------------------------------ build
 def build(out_dir=DEFAULT_OUT, verbose=True):
     import anny
@@ -351,6 +482,12 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
     nV = len(V)
     lo = V.min(0) - 0.05
     hi = V.max(0) + 0.05
+    # the seams of anny's atlas: the page draws one copy of a fine vertex per side of a seam, so
+    # that each copy holds the UV of its side (opensculptboy.viewer, for the baked skin of a
+    # character card); every field of a copy is its source's, and the page shapes the source
+    seams = card_seams(body, model, base_index)
+    src = np.arange(nV) if seams is None else seams.source
+    T_drawn = T if seams is None else seams.triangles.astype(np.uint32)
 
     # ---------------- fine body: the legacy vertex record, positions of anny's default body
     rec = np.zeros((nV, 32), np.uint8)
@@ -373,17 +510,19 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
     rec[:, 23] = u8(aE[:, 1])
     rec[:, 24:28] = u8(A["wear"])
     rec[:, 28:32] = u8(A["cover"])
-    pk.add("head_v", rec, "vertex", nV, 32, lo=lo.tolist(), hi=hi.tolist())
-    pk.add("head_i", T.reshape(-1), "index", T.size, 4)
+    pk.add("head_v", rec[src], "vertex", len(src), 32, lo=lo.tolist(), hi=hi.tolist())
+    pk.add("head_i", T_drawn.reshape(-1), "index", T_drawn.size, 4)
     # the row of each fine vertex in the last level of the subdivision, for the page's
     # numbering of the coarse body (the body vertices alone, see coarse_quads)
     body_of = -np.ones(len(base_index), np.int64)
     body_of[body_used] = np.arange(len(body_used))
     pk.add(
         "head_row",
-        body.subdivision.renumbered_rows(body_of, len(body_used)).astype(np.uint32),
+        body.subdivision.renumbered_rows(body_of, len(body_used)).astype(np.uint32)[
+            src
+        ],
         "vertex",
-        nV,
+        len(src),
         4,
     )
     # detail layers in the (t1, t2, n) frames of the smooth surface, steps of 0.01 mm
@@ -393,15 +532,19 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
     base[:, 2] -= body.relief_height
     dl = np.round(np.concatenate([base, body.relief_height[:, None]], axis=1) / 1e-5)
     assert np.abs(dl).max() < 32767
-    pk.add("head_detail", dl.astype(np.int16), "vertex", nV, 8, step=1e-5)
+    pk.add("head_detail", dl.astype(np.int16)[src], "vertex", len(src), 8, step=1e-5)
     pk.add(
         "head_skin",
-        skin_record(weights["si"], weights["sw"]),
+        skin_record(weights["si"], weights["sw"])[src],
         "vertex",
-        nV,
+        len(src),
         16,
         influences=8,
     )
+    if seams is not None:
+        card_buffers(
+            pk, man, body, model, seams, base_index, body_used, eye_ids, compact
+        )
 
     man["skin"] = json.loads(str(A["skin"]))
     man["skin"]["wearables"] = []
@@ -492,6 +635,29 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
         pk.add("face_prior", factors, "raw", factors.size * 4, 1)
         man["shape"]["face"]["prior"] = prior_meta
 
+    # ---------------- MakeHuman's local changes: sparse offsets on the coarse body and bone-head
+    # deltas (legacy frame), two rows per change as anny weighs them
+    local_model = anny.Anny(topology="anny-quads", local_changes="all").to(
+        dtype=torch.float64
+    )
+    lc = export.local_offsets(local_model, compact)
+    if lc["labels"]:
+        qo = np.round(rig.scale * lc["offsets"] @ M.T / 1e-5)
+        assert np.abs(qo).max() < 32767
+        rec = np.zeros((len(qo), 4), np.int16)
+        rec[:, :3] = qo
+        pk.add("local_ids", lc["ids"], "raw", lc["ids"].size * 4, 1)
+        pk.add("local_offsets", rec, "vertex", len(rec), 8)
+        lb = (rig.scale * lc["bone_deltas"] @ M.T).astype(np.float32)
+        pk.add("local_bones", lb, "raw", lb.size * 4, 1)
+        man["shape"]["local"] = dict(
+            labels=lc["labels"],
+            starts=lc["starts"],
+            counts=lc["counts"],
+            bones=lc["bones"],
+            step=1e-5,
+        )
+
     # ---------------- rig and motion
     q, root, clips, bones = motion_data()
     assert bones == space["bones"], (
@@ -529,6 +695,8 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
 
     # ---------------- correctives (fine level, both sides)
     shapes, drivers = corrective_shapes(body, compact_of, weights)
+    if seams is not None:
+        shapes = [with_copies(s_, src, nV) for s_ in shapes]
     recs, entries, off = [], [], 0
     for s in shapes:
         qd = np.round(s["D"] / 1e-5)

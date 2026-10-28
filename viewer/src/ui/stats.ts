@@ -32,7 +32,7 @@ export interface Stats {
 export function makeStats(app: App): Stats {
   const { renderer } = app;
   const gl = renderer.getContext() as WebGL2RenderingContext;
-  const tq: any = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  const tq = app.gpuSupported();   // the renderer measures the GPU time of each pass (main.ts GPU)
   let gpuName = '';
   try {
     const dbg: any = gl.getExtension('WEBGL_debug_renderer_info');
@@ -51,10 +51,9 @@ export function makeStats(app: App): Stats {
 
   // ---------------------------------------------------------------- measurements
   const dts: number[] = [], cpu: number[] = [], gpu: number[] = [];
-  let lastDraw = 0, draws = 0, tris = 0, gpuLast = 0, pending: WebGLQuery[] = [], active: WebGLQuery | null = null;
+  let lastDraw = 0, draws = 0, tris = 0;
   let bench: null | { t0: number; dts: number[]; gpu: number[]; scale: number[]; turn: boolean } = null;
   const push = (a: number[], v: number) => { a.push(v); if (a.length > N) a.shift(); };
-  const timing = () => !!tq && (S.isOpen() || !!bench);
 
   // ---------------------------------------------------------------- the card
   const fps = h('span.st-big'), fpsUnit = h('span.st-unit', { text: 'fps' });
@@ -139,7 +138,7 @@ export function makeStats(app: App): Stats {
     const sc = app.scale(), sm = app.samples();
     R.scale.textContent = `${Math.round(sc.s * 100)} %`;
     R.res.textContent = `${sc.w} × ${sc.h}`;
-    R.samples.textContent = `${Math.min(sm.n, sm.max)} of ${sm.max} samples`;
+    R.samples.textContent = `${Math.min(sm.n, sm.max)} of ${sm.max} samples${app.refined() === 'converged' ? ' (converged)' : ''}`;
     R.draws.textContent = String(draws); R.tris.textContent = tris.toLocaleString();
     const hs = app.hairStats();
     if (hs) {
@@ -173,14 +172,9 @@ export function makeStats(app: App): Stats {
     onToggle: () => {},
     passBegin() {
       (renderer.info as any).reset();
-      if (timing() && !active && pending.length < 4) {
-        active = gl.createQuery();
-        if (active) gl.beginQuery(tq.TIME_ELAPSED_EXT, active);
-      }
     },
     passEnd() {
       draws = renderer.info.render.calls; tris = renderer.info.render.triangles;
-      if (active) { gl.endQuery(tq.TIME_ELAPSED_EXT); pending.push(active); active = null; }
     },
     frame(now, dt, drew, jsMs) {
       if (drew) {
@@ -188,14 +182,7 @@ export function makeStats(app: App): Stats {
         push(dts, dt * 1000); push(cpu, jsMs);
         if (bench) { bench.dts.push(dt * 1000); bench.scale.push(app.scale().s); }
       }
-      if (pending.length) {
-        const disjoint = gl.getParameter(tq.GPU_DISJOINT_EXT);
-        while (pending.length && gl.getQueryParameter(pending[0], gl.QUERY_RESULT_AVAILABLE)) {
-          const q = pending.shift()!;
-          if (!disjoint) { gpuLast = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6; push(gpu, gpuLast); if (bench) bench.gpu.push(gpuLast); }
-          gl.deleteQuery(q);
-        }
-      }
+      for (const g of app.takeGpu()) { push(gpu, g); if (bench) bench.gpu.push(g); }
       if (bench && now - bench.t0 > 10000) finishBench();
       if (el.hidden) return;
       if (now - tGraph > 100) { tGraph = now; line.setAttribute('points', points(dts)); gline.setAttribute('points', points(gpu)); hline.setAttribute('points', points(dts.slice(-N))); }

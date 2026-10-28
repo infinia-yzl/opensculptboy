@@ -10,7 +10,7 @@
 //   the lashes follow the triangles under their roots (anny.hair.StrandBinding): followStrands gives one frame
 //   per strand, and the page's hair shader places the points.
 
-import { addFace, coefficients, faceRowWeights, faceScales, makeRule, ShapeSpace, type CoefficientRule, type FaceData } from './anny_shape.ts';
+import { addFace, addRows, coefficients, faceRowWeights, faceScales, localRowWeights, makeRule, ShapeSpace, type CoefficientRule, type FaceData, type LocalData } from './anny_shape.ts';
 import { FineSubdivision } from './subdivision.ts';
 
 export interface StrandSet {
@@ -143,7 +143,7 @@ export function vertexFrames(P: Float32Array, I: Uint32Array, N: Float32Array, E
   }
 }
 
-function sphereFit(V: Float32Array, a: number, b: number): [number[], number] {
+export function sphereFit(V: Float32Array, a: number, b: number): [number[], number] {
   // least squares of |p|^2 = 2 c.p + d, as anny.viewer.geometry.sphere_fit
   const A = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]], y = [0, 0, 0, 0];
   for (let i = a; i < b; i++) {
@@ -204,15 +204,26 @@ export class AnnyBody {
   faceValues: Record<string, number> = {};
   timing: Record<string, number> = {};   // ms of each step of the last update
   coarseOffsets: Float32Array | null = null;   // offsets of the coarse body (a card's level-0 detail layer, page frame)
+  // a character card's look: MakeHuman's local changes and their values, the card's detail offsets of the page's levels
+  // 1 and 2 (page frame), and whether the page's own detail layers apply (a card with a detail layer leaves them out)
+  local: LocalData | null = null; localValues: Record<string, number> | null = null;
+  levelOffsets: (Float32Array | null)[] = [];
+  pageDetail = true;
+  floorShift = 0;   // the lift that put the last body on the floor (page frame)
+  // the seams of anny's atlas: the fine vertices after the first nWeld are copies of a vertex on the other side of a
+  // seam; the page computes every field of a copy as its source's, on the welded triangles
+  weld: Uint32Array; copyOf: Uint32Array; nWeld: number;
+  weldShown: Uint32Array | null = null; hide = false; private allNormals: Float32Array | null = null;
   jointsDefault: Float32Array;
   constructor(meta: any, bufs: {
     template: Float32Array; components: Int16Array; projection: Float32Array; jointTemplate: Float32Array; jointBlend: Float32Array;
     quads: Uint32Array; rows: Uint32Array; detail: Int16Array; relief?: Int16Array; index: Uint32Array; rest: Float32Array; nsmooth: Float32Array;
-    coarseSkin: Uint8Array; face?: FaceData;
+    coarseSkin: Uint8Array; face?: FaceData; seams?: Uint32Array; local?: LocalData; hidden?: Uint8Array;
   }, positions?: Float32Array, normals?: Float32Array, nsmooth?: Float32Array) {
     const sm = meta.shape;
     this.meta = meta;
     this.face = bufs.face || null;
+    this.local = bufs.local || null;
     this.rule = makeRule(sm.tables);
     this.space = new ShapeSpace({ template: bufs.template, components: bufs.components, componentScale: sm.component_scale, projection: bufs.projection,
       jointTemplate: bufs.jointTemplate, jointBlend: bufs.jointBlend });
@@ -221,6 +232,24 @@ export class AnnyBody {
     this.index = bufs.index; this.rest0 = bufs.rest; this.coarseSkin = bufs.coarseSkin;
     this.sub = new FineSubdivision(this.nBody, bufs.quads, sm.base_level, bufs.rows);
     this.nFine = bufs.rows.length;
+    // the welded triangles: each copy of a seam vertex replaced by its source
+    const seams = bufs.seams || new Uint32Array(0), nCopies = seams.length / 2;
+    this.copyOf = new Uint32Array(nCopies * 2);
+    const src = new Map<number, number>();
+    for (let i = 0; i < nCopies; i++) { src.set(seams[i * 2], seams[i * 2 + 1]); this.copyOf[i * 2] = seams[i * 2]; this.copyOf[i * 2 + 1] = seams[i * 2 + 1]; }
+    this.nWeld = this.nFine - nCopies;
+    if (nCopies) {
+      this.weld = bufs.index.slice();
+      for (let i = 0; i < this.weld.length; i++) { const t = src.get(this.weld[i]); if (t !== undefined) this.weld[i] = t; }
+    } else this.weld = bufs.index;
+    // the welded triangles without those of the pocket that a sculpt card hides: the normals at the pocket's border
+    // come from the skin that shows
+    const hid = bufs.hidden;
+    if (hid && hid.some((h) => h)) {
+      const keep: number[] = [], I = bufs.index;
+      for (let t = 0; t < I.length; t += 3) if (!hid[I[t]] && !hid[I[t + 1]] && !hid[I[t + 2]]) keep.push(this.weld[t], this.weld[t + 1], this.weld[t + 2]);
+      this.weldShown = Uint32Array.from(keep);
+    }
     this.floor = sm.frame.floor;
     this.eyeRange = sm.eye_vertices; this.eyeSphere0 = sm.default_eye_sphere; this.eyeOffset = sm.eye_offset;
     this.pos = positions || new Float32Array(this.nFine * 3);
@@ -238,7 +267,8 @@ export class AnnyBody {
     this.smoothSurface({});
     const S = this.smooth, D = this.detail, H = bufs.relief, st = this.detailStep, nF = this.nFine;
     const Nt = new Float32Array(nF * 3), Tt = new Float32Array(nF * 3);
-    vertexFrames(S, this.index, Nt, Tt);
+    vertexFrames(S, this.weld, Nt, Tt);
+    this.copyRows(Nt, 3); this.copyRows(Tt, 3);
     // W: the detail without the relief in world axes; the relief lies along the normal
     const P = this.pos, W = new Float32Array(nF * 3), bare = new Float32Array(nF * 3), reliefIds: number[] = [];
     for (let o = 0, v = 0; v < nF; v++, o += 3) {
@@ -253,10 +283,11 @@ export class AnnyBody {
     }
     // the strands bind to this body as the updates rebuild it (the rest attribute holds it in 16 bits)
     this.pos0 = P.slice();
-    this.ring = ringNeighbours(this.index, S, Nt, Tt, nF);
+    this.ring = ringNeighbours(this.weld, S, Nt, Tt, nF);
+    this.copyRows(this.ring, 4);
     ringFrames(S, this.ring, this.sn, this.tan, this.area);
     this.area0 = this.area.slice();
-    const N = this.sn, T = this.tan, N1 = vertexNormals(P, this.index), NS = bufs.nsmooth;
+    const N = this.sn, T = this.tan, N1 = this.copyRows(vertexNormals(P, this.weld), 3), NS = bufs.nsmooth;
     this.localDetail = new Float32Array(nF * 3); this.localNormals = new Float32Array(nF * 6);
     const toLocal = (x: number, y: number, z: number, o: number, out: Float32Array, q: number, t2x: number, t2y: number, t2z: number) => {
       out[q] = x * T[o] + y * T[o + 1] + z * T[o + 2];
@@ -271,7 +302,7 @@ export class AnnyBody {
       toLocal(NS[o], NS[o + 1], NS[o + 2], o, this.localNormals, v * 6 + 3, t2x, t2y, t2z);
     }
     // the relief vertices: the relief in the frames, and the normals of the body without the relief
-    const N0 = vertexNormals(bare, this.index), m = reliefIds.length;
+    const N0 = this.copyRows(vertexNormals(bare, this.weld), 3), m = reliefIds.length;
     this.reliefIndex = Uint32Array.from(reliefIds);
     this.reliefLocal = new Float32Array(m * 3); this.reliefNormals = new Float32Array(m * 3);
     for (let q = 0; q < m; q++) {
@@ -279,6 +310,26 @@ export class AnnyBody {
       toLocal(h * Nt[o], h * Nt[o + 1], h * Nt[o + 2], o, this.reliefLocal, q * 3, t2x, t2y, t2z);
       toLocal(N0[o], N0[o + 1], N0[o + 2], o, this.reliefNormals, q * 3, t2x, t2y, t2z);
     }
+  }
+
+  // every copy of a seam vertex takes its source's row (stride values per vertex)
+  copyRows<T extends Float32Array | Uint32Array>(a: T, stride: number): T {
+    const C = this.copyOf;
+    for (let i = 0; i < C.length; i += 2) {
+      const d = C[i] * stride, s0 = C[i + 1] * stride;
+      for (let k = 0; k < stride; k++) a[d + k] = a[s0 + k];
+    }
+    return a;
+  }
+
+  // a character card's look: its local changes, its detail offsets of the coarse body (nc * 3) and of the page's
+  // levels 1 and 2, all in the page frame; the page's own detail layers leave the picture while a card has a detail layer
+  setCard(card: { local?: Record<string, number> | null; coarse?: Float32Array | null; levels?: (Float32Array | null)[]; pageDetail?: boolean; hide?: boolean } | null) {
+    this.hide = !!card?.hide;
+    this.localValues = card?.local || null;
+    this.coarseOffsets = card?.coarse || null;
+    this.levelOffsets = card?.levels || [];
+    this.pageDetail = card?.pageDetail ?? true;
   }
 
   // the face-shape values in the order of the face tables (missing names take 0)
@@ -295,15 +346,25 @@ export class AnnyBody {
       const f = this.faceVector(face);
       if (f.some((x) => x !== 0)) addFace(this.face, faceRowWeights(this.face.tables, f, faceScales(this.face, c)), V, J);
     }
-    const O = this.coarseOffsets;
-    if (O) for (let i = 0; i < O.length; i++) V[i] += O[i];
+    if (this.local && this.localValues) {
+      const w = localRowWeights(this.local, this.localValues);
+      if (w.some((x) => x !== 0)) addRows(this.local, w, V, J);
+    }
+    // a card's detail level l > 0 holds the residual of the fitted surface over l levels of the parametric body, so
+    // the fine surface subdivides the body without the level-0 offsets and adds the offsets of that level; the
+    // coarse body keeps the level-0 offsets (the eyes, the wearables and the bounds read it)
+    const O = this.coarseOffsets, shown = this.levelOffsets.some(Boolean);
+    const bare = shown && O ? V.slice(0, this.nBody * 3) : null;
+    if (O) for (let i = 0; i < Math.min(O.length, V.length); i++) V[i] += O[i];
     marks?.push(['shape', performance.now()]);
     let minY = Infinity;
     for (let i = 0; i < this.nBody; i++) minY = Math.min(minY, V[i * 3 + 1]);
     const dy = this.floor - minY;
     for (let i = 1; i < V.length; i += 3) V[i] += dy;
     for (let i = 1; i < J.length; i += 3) J[i] += dy;
-    this.smooth.set(this.sub.apply(V.subarray(0, this.nBody * 3), 3));
+    if (bare) for (let i = 1; i < bare.length; i += 3) bare[i] += dy;
+    this.floorShift = dy;
+    this.smooth.set(this.sub.apply(bare || V.subarray(0, this.nBody * 3), 3, shown ? this.levelOffsets : undefined));
     marks?.push(['subdivision', performance.now()]);
   }
 
@@ -345,6 +406,20 @@ export class AnnyBody {
       let lx = RN[i] + kr * (L[j] - RN[i]), ly = RN[i + 1] + kr * (L[j + 1] - RN[i + 1]), lz = RN[i + 2] + kr * (L[j + 2] - RN[i + 2]);
       const l = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1; lx /= l; ly /= l; lz /= l;
       N1[o] = lx * tx + ly * t2x + lz * nx; N1[o + 1] = lx * ty + ly * t2y + lz * ny; N1[o + 2] = lx * tz + ly * t2z + lz * nz;
+    }
+    if (!this.pageDetail) {
+      // a card's detail layer: the surface as the card's levels shape it, with its own normals
+      P.set(S);
+      vertexNormals(P, this.hide && this.weldShown ? this.weldShown : this.weld, N1);
+      // the hidden pocket's own vertices keep the normals of all their faces (a zero normal would turn the shading of
+      // the slivers at the pocket's border into NaN)
+      if (this.hide && this.weldShown) {
+        const all = this.allNormals || (this.allNormals = new Float32Array(N1.length));
+        vertexNormals(P, this.weld, all);
+        for (let o = 0; o < N1.length; o += 3) if (N1[o] === 0 && N1[o + 1] === 0 && N1[o + 2] === 0) { N1[o] = all[o]; N1[o + 1] = all[o + 1]; N1[o + 2] = all[o + 2]; }
+      }
+      this.copyRows(N1, 3);
+      NS.set(N1);
     }
     marks.push(['frames and detail', performance.now()]);
     const V = this.coarse;
