@@ -17,6 +17,8 @@ import pathlib
 import subprocess
 import unittest
 
+import numpy as np
+
 from test.markers import local_only
 from test.test_hair_page import CHROMIUM, PAGE, playwright_available
 from test.test_viewer_parity import node_available
@@ -128,7 +130,8 @@ class TestSheetPage(unittest.TestCase):
         crop = page.crop(
             (int(r["x"]), int(r["y"]), int(r["x"] + r["w"]), int(r["y"] + r["h"]))
         )
-        self.assertGreater(len(set(crop.getdata())), 50)
+        colours = np.unique(np.asarray(crop).reshape(-1, 3), axis=0)
+        self.assertGreater(len(colours), 50)
         # the expressions: with a face driver (face/api.ts) the happy face differs from the
         # neutral one; without one, every cell shows the neutral face
         if rep["faces"]:
