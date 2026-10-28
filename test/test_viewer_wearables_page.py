@@ -35,8 +35,8 @@ class TestWearablesPage(unittest.TestCase):
 
         torch.set_num_threads(1)
         cls.dir = pathlib.Path(tempfile.mkdtemp())
-        cls.card = _packages(cls.dir)
-        cls.files = sorted(str(f) for f in cls.dir.iterdir())
+        cls.card = _packages(cls.dir)[0]
+        cls.files = sorted(str(f) for f in _card_files(cls.dir))
 
     @classmethod
     def tearDownClass(cls):
@@ -152,6 +152,13 @@ class TestWearablesPage(unittest.TestCase):
         )
 
 
+def _card_files(folder: pathlib.Path):
+    """The files of the first card of _packages: its second card (made together) and that
+    card's packages stay out, so that the page opens one card."""
+    other = ("together.", "inner.", "coat.")
+    return [f for f in folder.iterdir() if not f.name.startswith(other)]
+
+
 def _dropped_card(folder: pathlib.Path):
     """The synthetic packages of a card fitted on the anny-mouth rig, as the files of a drop:
     the outfit and loose pieces of _packages, a helm with its own weights on head and jaw (a
@@ -166,7 +173,7 @@ def _dropped_card(folder: pathlib.Path):
     from opensculptboy.wearables import bind_surface, write_wearable
     from test.wearable_fixtures import circlet, template_body, tunic
 
-    card = _packages(folder)
+    card = _packages(folder)[0]
     body = template_body()
     helm = circlet()
     helm.name, helm.slot, helm.layer, helm.weights = "helm", "head", 60, "own"
@@ -202,7 +209,7 @@ def _dropped_card(folder: pathlib.Path):
     }
     (folder / "card.json").write_text(json.dumps(data, indent=1))
     worn = ["travel/tunic", "travel/cape", "travel/circlet", "travel/helm"]
-    return sorted(folder.iterdir()), worn + ["plate", "vest"]
+    return sorted(_card_files(folder)), worn + ["plate", "vest"]
 
 
 @local_only("Playwright with the built viewer page")

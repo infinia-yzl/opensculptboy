@@ -254,6 +254,38 @@ def face_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dict
     )
 
 
+def local_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dict:
+    """
+    MakeHuman's local changes on the given vertices, as sparse offsets in the form of
+    :func:`face_offsets`: two rows per change (its positive and its negative direction, as
+    ``Anny._get_phenotype_blendshape_coefficients`` weighs them), and the labels of the changes.
+    """
+    labels = list(model.local_change_labels)
+    first = int(model.stacked_phenotype_blend_shapes_mask.shape[0]) + len(
+        model.facial_action_labels
+    )
+    rows = slice(first, first + 2 * len(labels))
+    B = model.blendshapes[rows, vertex_ids].detach().cpu().numpy()
+    J = model.bone_heads_blendshapes[rows].detach().cpu().numpy()
+    starts, counts, ids, offsets = [], [], [], []
+    for r in range(len(B)):
+        moved = np.nonzero(np.linalg.norm(B[r], axis=1) > threshold)[0]
+        starts.append(sum(counts))
+        counts.append(len(moved))
+        ids.append(moved)
+        offsets.append(B[r, moved])
+    bones = np.nonzero(np.abs(J).max(axis=(0, 2)) > threshold)[0]
+    return dict(
+        labels=labels,
+        starts=starts,
+        counts=counts,
+        ids=np.concatenate(ids).astype(np.uint32),
+        offsets=np.concatenate(offsets),
+        bones=bones.tolist(),
+        bone_deltas=J[:, bones],
+    )
+
+
 def face_prior_tables(model, rank: int = 24) -> tuple[dict, np.ndarray]:
     """the face-shape distribution for the page: anchors and means in the manifest, and low-rank
     factors (A, 2, F, rank) that keep the largest directions of each covariance"""
