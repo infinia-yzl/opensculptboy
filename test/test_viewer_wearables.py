@@ -361,7 +361,7 @@ class TestViewerWearables(unittest.TestCase):
 
     def test_estimated_rigid_pose(self):
         """The page has no rest rotations: rigid pieces turn with their bone's skin. On a
-        body far from the template the circlet stays within 4 mm of its place."""
+        body far from the template the circlet stays within 2.5 mm of its place."""
         pieces, _ = self.expected["estimate"]
         out = self.out["estimate"]["pieces"]
         k = [p.ref for p in pieces].index("travel/circlet")
@@ -369,7 +369,7 @@ class TestViewerWearables(unittest.TestCase):
         error = float(np.linalg.norm(V - pieces[k].vertices, axis=1).max())
         print(f"\nestimated rigid pose: {error * 1000:.2f} mm at most")
         self.assertEqual(out[k]["ref"], "travel/circlet")
-        self.assertLess(error, 0.004)
+        self.assertLess(error, 0.0025)
 
     def test_times(self):
         for name, case in self.out.items():
