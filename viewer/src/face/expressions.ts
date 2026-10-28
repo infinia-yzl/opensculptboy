@@ -62,6 +62,7 @@ export interface FaceCard {
   hasBlinks: boolean;
   setFaceEyes(close: { L: number; R: number }, squint: { L: number; R: number }): void;
   poses(): CardPoses | null;
+  warmFace?(): void;          // the eye targets' shapes on the current body, made ahead of the first blink
   followFace(m: FaceMotion | null): void;
 }
 
@@ -139,20 +140,25 @@ export class PageFace implements FaceDriver {
   // ---------------------------------------------------------------- the page's side
   // a step of the warm-up while the page rests: the copy of the rest, then one action's fine shape and the change of its
   // normals; returns false once every action is ready
-  private warmAt = 0;
+  private warmAt = 0; private warmCard = false;
   warm(): boolean {
     const rig = this.rig, layer = this.layer;
     if (!rig || !layer) return false;
     if (!layer.ready) { layer.rebase(); const m = this.host.morph(); if (m) this.jawLayer(m); return true; }
     while (this.warmAt < rig.names.length && this.warmAt === rig.jaw) this.warmAt++;
-    if (this.warmAt >= rig.names.length) return false;
-    const s = rig.fineShape(this.warmAt++);
-    layer.normalShape(s);
+    if (this.warmAt < rig.names.length) { layer.normalShape(rig.fineShape(this.warmAt++)); return true; }
+    // a card's faces: its poses' shapes, and its eye targets on the body
+    const card = this.host.card();
+    if (!card || this.warmCard) return false;
+    this.warmCard = true;
+    this.cardPoses(card);
+    for (const g of layer.groups.values()) for (const sh of g.shapes) layer.normalShape(sh);
+    card.warmFace?.();
     return true;
   }
 
   // the body is about to change: the next face takes a new copy of the rest
-  invalidate() { if (this.layer) this.layer.ready = false; this.tongueNear.clear(); }
+  invalidate() { if (this.layer) this.layer.ready = false; this.tongueNear.clear(); this.warmCard = false; }
   private tongueNear = new Map<number, [number, number][]>();   // per point of a card's tongue its nearest vertices of Anny's tongue
   // a new body: the copy of the rest and the jaw follow it, and the face shows again (a face at rest waits for the next
   // face, so that a slider edit costs nothing more)
@@ -181,7 +187,7 @@ export class PageFace implements FaceDriver {
   }
   // a card came or went: its poses join the faces, its eyes play the blinks and squints
   cardChanged() {
-    this.poses = null; this.poseKey = '';
+    this.poses = null; this.poseKey = ''; this.warmCard = false;
     if (!this.layer) return;
     this.layer.setGroup('poses', null);
     // the card's pocket changes the triangles of the normals: a new region

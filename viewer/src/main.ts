@@ -947,6 +947,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
   WEAR?.bodyChanged();
   CARD?.bodyChanged();
   FACE?.bodyChanged();
+  warmFace();
 }
 
 // ------------------------------------------------------------------ the body build in a worker
@@ -1084,6 +1085,7 @@ function initCardLook() {
     faceChanged: () => {
       if (!FACE?.ready) return;
       FACE.cardChanged();
+      warmFace();
       // the card's own face (its facial actions), as its exports bake it in
       const fa = CARD?.active ? CARD.facialActions : {};
       FACE.set({ actions: Object.keys(fa).length ? { ...fa } : {} });
@@ -1744,14 +1746,20 @@ function initFace() {
     drawn: () => new Promise<void>((resolve) => { FACE_DRAWN.push(resolve); resetAccum(); setTimeout(resolve, 1500); }),
   });
   if (!FACE.init()) { FACE = null; return; }
-  // the warm-up: the shapes of every action, one at a time while the page rests, so that a first face shows at once
-  if (SHOT || typeof requestIdleCallback === 'undefined') return;
+  setTimeout(warmFace, 3000);
+}
+// the warm-up: the shapes of every action and of a card's faces, and the copy of a new body's rest, one step at a time
+// while the page rests, so that a first face shows at once
+let FACE_WARMING = false;
+function warmFace() {
+  if (!FACE || FACE_WARMING || SHOT || typeof requestIdleCallback === 'undefined') return;
+  FACE_WARMING = true;
   const step = (d: IdleDeadline) => {
-    if (!FACE) return;
+    if (!FACE) { FACE_WARMING = false; return; }
     if (accCount < MAX_ACC && !d.didTimeout) { requestIdleCallback(step, { timeout: 4000 }); return; }   // the page draws: later
-    if (FACE.warm()) requestIdleCallback(step, { timeout: 4000 });
+    if (FACE.warm()) requestIdleCallback(step, { timeout: 4000 }); else FACE_WARMING = false;
   };
-  setTimeout(() => requestIdleCallback(step, { timeout: 4000 }), 3000);
+  requestIdleCallback(step, { timeout: 4000 });
 }
 
 // take the correction off (before the sliders rebuild the rest shape)

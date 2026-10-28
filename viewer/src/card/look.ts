@@ -478,6 +478,8 @@ export class CardLook {
   // gums, the tongue and the floor of the mouth with the jaw, the inner mouth with the poses' own offsets, and a sculpt
   // card's patch with the coarse body.
   get facialActions(): Record<string, number> { return this.plan?.facialActions || {}; }
+  // the eye targets' shapes on the current body, ahead of the first blink (the face's warm-up while the page rests)
+  warmFace() { const b = this.blink; if (b && !b.ready && this.placed) this.prepareBlinks(); }
   setFaceEyes(close: { L: number; R: number }, squint: { L: number; R: number }) {
     const b = this.blink;
     if (!b) return;

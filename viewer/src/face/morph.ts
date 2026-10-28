@@ -93,12 +93,17 @@ function halves(s: Shape): { d: Uint16Array; n: Uint16Array | null } {
   return c.half;
 }
 
-// float16 to float32
+// float16 to float32 (a table of every half float)
+let HALF: Float32Array | null = null;
 export function fromHalf(h: number): number {
-  const s = h & 0x8000 ? -1 : 1, e = (h >> 10) & 0x1f, m = h & 0x3ff;
-  if (e === 0) return s * m * 5.960464477539063e-8;
-  if (e === 31) return m ? NaN : s * Infinity;
-  return s * (1 + m / 1024) * Math.pow(2, e - 15);
+  if (!HALF) {
+    HALF = new Float32Array(65536);
+    for (let i = 0; i < 65536; i++) {
+      const s = i & 0x8000 ? -1 : 1, e = (i >> 10) & 0x1f, m = i & 0x3ff;
+      HALF[i] = e === 0 ? s * m * 5.960464477539063e-8 : e === 31 ? (m ? NaN : s * Infinity) : s * (1 + m / 1024) * Math.pow(2, e - 15);
+    }
+  }
+  return HALF[h];
 }
 
 export class FaceMorph {
