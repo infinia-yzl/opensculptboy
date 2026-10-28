@@ -213,11 +213,12 @@ export class AnnyBody {
   // the seams of anny's atlas: the fine vertices after the first nWeld are copies of a vertex on the other side of a
   // seam; the page computes every field of a copy as its source's, on the welded triangles
   weld: Uint32Array; copyOf: Uint32Array; nWeld: number;
+  weldShown: Uint32Array | null = null; hide = false; private allNormals: Float32Array | null = null;
   jointsDefault: Float32Array;
   constructor(meta: any, bufs: {
     template: Float32Array; components: Int16Array; projection: Float32Array; jointTemplate: Float32Array; jointBlend: Float32Array;
     quads: Uint32Array; rows: Uint32Array; detail: Int16Array; relief?: Int16Array; index: Uint32Array; rest: Float32Array; nsmooth: Float32Array;
-    coarseSkin: Uint8Array; face?: FaceData; seams?: Uint32Array; local?: LocalData;
+    coarseSkin: Uint8Array; face?: FaceData; seams?: Uint32Array; local?: LocalData; hidden?: Uint8Array;
   }, positions?: Float32Array, normals?: Float32Array, nsmooth?: Float32Array) {
     const sm = meta.shape;
     this.meta = meta;
@@ -241,6 +242,14 @@ export class AnnyBody {
       this.weld = bufs.index.slice();
       for (let i = 0; i < this.weld.length; i++) { const t = src.get(this.weld[i]); if (t !== undefined) this.weld[i] = t; }
     } else this.weld = bufs.index;
+    // the welded triangles without those of the pocket that a sculpt card hides: the normals at the pocket's border
+    // come from the skin that shows
+    const hid = bufs.hidden;
+    if (hid && hid.some((h) => h)) {
+      const keep: number[] = [], I = bufs.index;
+      for (let t = 0; t < I.length; t += 3) if (!hid[I[t]] && !hid[I[t + 1]] && !hid[I[t + 2]]) keep.push(this.weld[t], this.weld[t + 1], this.weld[t + 2]);
+      this.weldShown = Uint32Array.from(keep);
+    }
     this.floor = sm.frame.floor;
     this.eyeRange = sm.eye_vertices; this.eyeSphere0 = sm.default_eye_sphere; this.eyeOffset = sm.eye_offset;
     this.pos = positions || new Float32Array(this.nFine * 3);
@@ -315,7 +324,8 @@ export class AnnyBody {
 
   // a character card's look: its local changes, its detail offsets of the coarse body (nc * 3) and of the page's
   // levels 1 and 2, all in the page frame; the page's own detail layers leave the picture while a card has a detail layer
-  setCard(card: { local?: Record<string, number> | null; coarse?: Float32Array | null; levels?: (Float32Array | null)[]; pageDetail?: boolean } | null) {
+  setCard(card: { local?: Record<string, number> | null; coarse?: Float32Array | null; levels?: (Float32Array | null)[]; pageDetail?: boolean; hide?: boolean } | null) {
+    this.hide = !!card?.hide;
     this.localValues = card?.local || null;
     this.coarseOffsets = card?.coarse || null;
     this.levelOffsets = card?.levels || [];
@@ -400,7 +410,14 @@ export class AnnyBody {
     if (!this.pageDetail) {
       // a card's detail layer: the surface as the card's levels shape it, with its own normals
       P.set(S);
-      vertexNormals(P, this.weld, N1);
+      vertexNormals(P, this.hide && this.weldShown ? this.weldShown : this.weld, N1);
+      // the hidden pocket's own vertices keep the normals of all their faces (a zero normal would turn the shading of
+      // the slivers at the pocket's border into NaN)
+      if (this.hide && this.weldShown) {
+        const all = this.allNormals || (this.allNormals = new Float32Array(N1.length));
+        vertexNormals(P, this.weld, all);
+        for (let o = 0; o < N1.length; o += 3) if (N1[o] === 0 && N1[o + 1] === 0 && N1[o + 2] === 0) { N1[o] = all[o]; N1[o + 1] = all[o + 1]; N1[o + 2] = all[o + 2]; }
+      }
       this.copyRows(N1, 3);
       NS.set(N1);
     }

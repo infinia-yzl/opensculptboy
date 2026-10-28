@@ -385,12 +385,17 @@ def card_buffers(pk, man, body, model, seams, base_index, body_used, eye_ids, co
             r = rows[topology][k]
             pk.add(f"card_rows_{topology}_{k}", r, "vertex", len(r), 4)
             levels[topology][k] = int(len(r))
-            miss, delta = rows[topology][f"{k}_missed"], rows[topology][f"{k}_delta"]
+            e = rows[topology]
+            miss = e[f"{k}_missed"]
             if len(miss):
-                # the move of each such row in the page's frame (a rotation and a scale of anny's)
-                fix = np.zeros((len(miss), 4), np.float32)
+                # per such row: the page row, the three rows of the closest point of the card's
+                # surface and their weights, and the move to that point in the page's frame (a
+                # rotation and a scale of anny's)
+                fix = np.zeros((len(miss), 10), np.float32)
                 fix[:, 0] = miss.view(np.float32)
-                fix[:, 1:] = P.RIG.scale * delta @ M.T
+                fix[:, 1:4] = e[f"{k}_corners"].view(np.float32)
+                fix[:, 4:7] = e[f"{k}_weights"]
+                fix[:, 7:] = P.RIG.scale * e[f"{k}_delta"] @ M.T
                 pk.add(f"card_fix_{topology}_{k}", fix, "raw", fix.nbytes, 1)
     # the faces of the sculpt topology's patches, drawn in place of the hidden pocket on a sculpt card
     patches = {}

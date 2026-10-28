@@ -37,7 +37,7 @@ export interface CardHost {
   eyeMaterial(uniforms: Record<string, any>): THREE_NS.ShaderMaterial;
   eyes(): any[];                                     // the eyes of the rig: { mesh, u, side, shape, card }
   setPageParts(on: { hair: boolean; brows: boolean; lashes: boolean } | null): void;   // null: as the look has them
-  setBodyCard(c: { local: Record<string, number> | null; coarse: Float32Array | null; levels: (Float32Array | null)[]; pageDetail: boolean } | null): void;
+  setBodyCard(c: { local: Record<string, number> | null; coarse: Float32Array | null; levels: (Float32Array | null)[]; pageDetail: boolean; hide: boolean } | null): void;
   changed(): void;
 }
 
@@ -60,6 +60,7 @@ export class CardLook {
   private placedHead: { joint: number[]; scale: number } | null = null;
   private placed = false;
   private coarse0: Float32Array | null = null;   // the level-0 offsets of the coarse body (page frame)
+  private patchBorder = 0;
   private patch: null | { rows: Uint32Array; start: Uint32Array; cols: Uint32Array; values: Float32Array; uvs: Float32Array; near: Uint32Array;
     triangles: Uint32Array; offsets: Float32Array; mesh: any; geo: THREE_NS.BufferGeometry | null } = null;   // the card's sliders shape the body: the eyes and the parts may take their places
   timing: Record<string, number> = {};
@@ -103,11 +104,15 @@ export class CardLook {
         let max = 0; for (let i = 0; i < rows.length; i++) max = Math.max(max, rows[i]);
         if (v.length < (max + 1) * 3) throw new Error(`the offsets hold ${v.length / 3} rows; level ${plan.shown} needs ${max + 1}`);
         const lv = levels[plan.shown - 1] = pageVectors(v, rows, rows.length, frame);
-        // the rows whose stencil a patch of the topology changed take the nearest row's offset and the move between them
+        // the rows whose stencil a patch of the topology changed: the move to the closest point of the card's surface
+        // and the blend of its three rows' offsets (records of the page row, three rows, three weights and the move)
         const fix = this.host.buffer(`card_fix_${topology}_${plan.shown}`);
         if (fix) {
           const f = new Float32Array(fix), ids = new Uint32Array(fix);
-          for (let q = 0; q < f.length; q += 4) { const o = ids[q] * 3; lv[o] += f[q + 1]; lv[o + 1] += f[q + 2]; lv[o + 2] += f[q + 3]; }
+          for (let q = 0; q < f.length; q += 10) {
+            const blend = pageVectors(v, ids.subarray(q + 1, q + 4), 3, frame), o = ids[q] * 3;
+            for (let c = 0; c < 3; c++) lv[o + c] = f[q + 7 + c] + f[q + 4] * blend[c] + f[q + 5] * blend[3 + c] + f[q + 6] * blend[6 + c];
+          }
         }
         // a sculpt card: the faces of the patches, drawn in place of the faces of anny that they replace
         if (topology === 'sculpt') this.loadPatch(v, plan.shown, frame);
@@ -149,7 +154,7 @@ export class CardLook {
     if (plan.mouth) notes.push('the page draws the reference\'s inner mouth over anny\'s own');
     // the body: the card's local changes and its detail offsets, with the page's own detail layers left out
     this.plan = plan; this.notes = notes; this.failures = failures;
-    this.host.setBodyCard({ local: Object.keys(plan.localChanges).length ? plan.localChanges : null, coarse, levels, pageDetail: !hasDetail });
+    this.host.setBodyCard({ local: Object.keys(plan.localChanges).length ? plan.localChanges : null, coarse, levels, pageDetail: !hasDetail, hide: !!this.patch });
     this.timing.total = performance.now() - t0;
     return { notes, failures };
   }
@@ -334,8 +339,19 @@ export class CardLook {
       }
       P[i * 3] = x + p.offsets[i * 3]; P[i * 3 + 1] = y + p.offsets[i * 3 + 1]; P[i * 3 + 2] = z + p.offsets[i * 3 + 2];
     }
+    // the patch's border (a vertex within half a millimetre of its nearest page vertex, where the page's skin shows)
+    // takes the place and the normal of the page's skin, so that the two meet and the shading runs on across them
+    const BP = body.pos, BN = body.nrm, near2 = (0.0005 * this.host.frame().scale) ** 2, border: number[] = [];
+    const hidden = (this.host.geometry().attributes as any).cardUV.array as Uint16Array;
+    for (let i = 0; i < n; i++) {
+      const o = i * 3, q = p.near[i] * 3, dx = P[o] - BP[q], dy = P[o + 1] - BP[q + 1], dz = P[o + 2] - BP[q + 2];
+      const shown = hidden[p.near[i] * 4 + 3] === 0;
+      if (shown && dx * dx + dy * dy + dz * dz < near2) { P[o] = BP[q]; P[o + 1] = BP[q + 1]; P[o + 2] = BP[q + 2]; border.push(i); }
+    }
     const N = p.geo.attributes.normal.array as Float32Array;
     vertexNormals(P, p.triangles, N);
+    for (const i of border) { const o = i * 3, q = p.near[i] * 3; N[o] = BN[q]; N[o + 1] = BN[q + 1]; N[o + 2] = BN[q + 2]; }
+    this.patchBorder = border.length;
     (p.geo.attributes.nsmooth.array as Float32Array).set(N);
     p.geo.attributes.position.needsUpdate = true; p.geo.attributes.normal.needsUpdate = true; p.geo.attributes.nsmooth.needsUpdate = true;
     p.geo.computeBoundingSphere();
@@ -456,7 +472,7 @@ export class CardLook {
   stats() {
     const eyes = this.host.eyes().filter((e) => e.card).map((e) => ({ side: e.side, ...e.card }));
     return { active: !!this.plan, level: this.plan?.shown ?? null, topology: this.plan?.topology ?? null, textures: [...this.images.keys()].sort(),
-      patch: this.patch ? { vertices: this.patch.rows.length, triangles: this.patch.triangles.length / 3 } : null,
+      patch: this.patch ? { vertices: this.patch.rows.length, triangles: this.patch.triangles.length / 3, border: this.patchBorder } : null,
       skin: !!this.skin, parts: this.parts.map((p) => ({ name: p.name, vertices: p.rest.length / 3 })), eyes, notes: this.notes, timing: this.timing };
   }
 }

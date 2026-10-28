@@ -847,6 +847,8 @@ function initBody(meta: any, B: any, geo: any) {
     index: geo.index.array, rest: at.rest.array, nsmooth: at.nsmooth.array.slice(), coarseSkin: B.coarse_skin.data, face,
     // the copies of the fine vertices on the seams of anny's atlas, and MakeHuman's local changes
     seams: B.head_seam ? u32('head_seam').slice(0, B.head_seam.info.count * 2) : undefined, local,
+    // the drawn vertices of the pocket that a sculpt card hides at the inner eye corners (the flag byte of head_uv)
+    hidden: B.head_uv ? Uint8Array.from({ length: B.head_uv.info.count }, (_, i) => B.head_uv.data[i * 8 + 5]) : undefined,
   };
   const body = new AnnyBody(meta, bufs, at.position.array, at.normal.array, at.nsmooth.array);
   body.detailStep = B.head_detail.info.step || 1e-5;
@@ -1040,7 +1042,7 @@ function setBodyCard(c: any) {
   if (!c && !A.coarseOffsets && !A.localValues && !A.levelOffsets.some(Boolean) && A.pageDetail) return;
   A.setCard(c); BODY.values = null;
   BW.worker?.postMessage({ type: 'card', card: c ? { local: c.local || null, coarse: c.coarse ? c.coarse.slice() : null,
-    levels: (c.levels || []).map((l: any) => (l ? l.slice() : null)), pageDetail: c.pageDetail ?? true } : null });
+    levels: (c.levels || []).map((l: any) => (l ? l.slice() : null)), pageDetail: c.pageDetail ?? true, hide: !!c.hide } : null });
   syncBody(() => applyBodyShape(currentLook.phenotype, currentLook.face));
   HOOKS.look();
 }

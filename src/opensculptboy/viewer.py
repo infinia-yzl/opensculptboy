@@ -202,26 +202,93 @@ def head_tile(model, seams: Seams, body_faces: np.ndarray) -> dict:
     return out
 
 
+def closest_on_triangles(
+    points: np.ndarray,
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    candidates: int = 24,
+):
+    """
+    The closest point of a triangle mesh to each of ``points`` (M, 3), among the ``candidates``
+    triangles whose centroids lie nearest to the point: the triangle (M,) and the barycentric
+    weights (M, 3) of the closest point on it.
+    """
+    from scipy.spatial import cKDTree
+
+    points = np.asarray(points, dtype=np.float64)
+    tri = np.asarray(triangles, dtype=np.int64)
+    corners = np.asarray(vertices, dtype=np.float64)[tri]
+    k = min(candidates, len(tri))
+    near = cKDTree(corners.mean(1)).query(points, k=k)[1].reshape(len(points), k)
+    A, B, C = (corners[near, c] for c in range(3))
+    p = points[:, None]
+    best = np.full(near.shape, np.inf)
+    weights = np.zeros(near.shape + (3,))
+    # the closest point on each edge, then the projection inside the triangle where it falls there
+    for a, b, ia, ib in ((A, B, 0, 1), (B, C, 1, 2), (C, A, 2, 0)):
+        e = b - a
+        t = np.clip(
+            ((p - a) * e).sum(-1) / np.maximum((e * e).sum(-1), 1e-30), 0.0, 1.0
+        )
+        d = (((a + t[..., None] * e) - p) ** 2).sum(-1)
+        better = d < best
+        best = np.where(better, d, best)
+        w = np.zeros(near.shape + (3,))
+        w[..., ia], w[..., ib] = 1.0 - t, t
+        weights[better] = w[better]
+    ab, ac, ap = B - A, C - A, p - A
+    d00, d01, d11 = (ab * ab).sum(-1), (ab * ac).sum(-1), (ac * ac).sum(-1)
+    d20, d21 = (ap * ab).sum(-1), (ap * ac).sum(-1)
+    den = np.maximum(d00 * d11 - d01 * d01, 1e-30)
+    v = (d11 * d20 - d01 * d21) / den
+    w = (d00 * d21 - d01 * d20) / den
+    inside = np.stack([1.0 - v - w, v, w], -1)
+    plane = (
+        (inside[..., :1] * A + inside[..., 1:2] * B + inside[..., 2:] * C - p) ** 2
+    ).sum(-1)
+    use = (inside >= 0).all(-1) & (plane < best)
+    best = np.where(use, plane, best)
+    weights[use] = inside[use]
+    pick = np.argmin(best, axis=1)
+    rows = np.arange(len(points))
+    return near[rows, pick], weights[rows, pick]
+
+
 def _match(
     page: np.ndarray,
     target: np.ndarray,
     page_shape: np.ndarray,
     target_shape: np.ndarray,
+    triangles: np.ndarray,
     tol=1e-9,
 ):
     """The row of ``target`` (M, 3) equal to each row of ``page`` (P, 3) (random values through the
     same stencil), else the row of ``target_shape`` nearest to the row of ``page_shape`` (a body
-    through both stencils); and for those rows found by the shape, their indices and the move
-    (target_shape minus page_shape) that takes the page's row to the target's on that body."""
+    through both stencils). For the rows without an equal row: their indices, the three rows and
+    barycentric weights of the closest point of the target's ``triangles`` on that body, and the
+    move from the page's row to that point."""
     from scipy.spatial import cKDTree
 
     dist, rows = cKDTree(target).query(page, k=1)
     missed = np.nonzero(dist > tol)[0]
+    corners = np.zeros((len(missed), 3), np.int64)
+    weights = np.zeros((len(missed), 3))
     delta = np.zeros((len(missed), 3))
     if len(missed):
         rows[missed] = cKDTree(target_shape).query(page_shape[missed], k=1)[1]
-        delta = target_shape[rows[missed]] - page_shape[missed]
-    return rows.astype(np.uint32), missed.astype(np.uint32), delta.astype(np.float32)
+        face, weights = closest_on_triangles(
+            page_shape[missed], target_shape, triangles
+        )
+        corners = np.asarray(triangles, dtype=np.int64)[face]
+        point = np.einsum("mj,mjc->mc", weights, target_shape[corners])
+        delta = point - page_shape[missed]
+    return dict(
+        rows=rows.astype(np.uint32),
+        missed=missed.astype(np.uint32),
+        corners=corners.astype(np.uint32),
+        weights=weights.astype(np.float32),
+        delta=delta.astype(np.float32),
+    )
 
 
 def detail_rows(
@@ -240,9 +307,11 @@ def detail_rows(
     full levels of Catmull-Clark subdivision of its quads (``viewer/src/subdivision.ts``).
     Returns ``{"coarse": compact, "<topology>": {"1": rows, "2": rows, "fallback": {...}}}``:
     for each page row of a level, the row of the full level of that topology whose stencil is the
-    same, or, where the topology's patches changed the stencil, the nearest row on the template;
-    ``"<level>_missed"`` lists those page rows and ``"<level>_delta"`` the move from the page's
-    template position to that row's, which the page adds to the card's offset there.
+    same, or, where the topology's patches changed the stencil, the nearest row on the template.
+    ``"<level>_missed"`` lists those page rows; ``"<level>_corners"`` and ``"<level>_weights"``
+    give the closest point of the level's surface on the template to each of them, and
+    ``"<level>_delta"`` the move from the page's template position to that point. The page shows
+    such a row at its own position, moved by that move and by the blend of the corners' offsets.
     """
     from anny.utils.subdivision import catmull_clark
 
@@ -275,10 +344,18 @@ def detail_rows(
                 levels[k].operators[k - 1].apply(x_t),
                 levels[k].operators[k - 1].apply(shape_t),
             )
-            rows, miss, delta = _match(x_p, x_t, s_p, shape_t)
-            entry[str(k)] = rows
-            entry[f"{k}_missed"], entry[f"{k}_delta"] = miss, delta
-            missed[str(k)] = int(len(miss))
+            q = levels[k].quads
+            m = _match(
+                x_p,
+                x_t,
+                s_p,
+                shape_t,
+                np.concatenate([q[:, [0, 1, 2]], q[:, [0, 2, 3]]]),
+            )
+            entry[str(k)] = m["rows"]
+            for name in ("missed", "corners", "weights", "delta"):
+                entry[f"{k}_{name}"] = m[name]
+            missed[str(k)] = int(len(m["missed"]))
         entry["fallback"] = missed
         out[topology] = entry
     return out

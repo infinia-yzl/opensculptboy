@@ -101,10 +101,29 @@ class TestCardRows(unittest.TestCase):
             target = shape
             for op in level("sculpt", k).operators:
                 target = op.apply(target)
+            # the move takes each such row to the closest point of the level's surface, a blend of
+            # three rows, within about a millimetre of the page's surface
+            weights = entry[f"{k}_weights"].astype(np.float64)
+            corners = entry[f"{k}_corners"].astype(np.int64)
+            np.testing.assert_allclose(weights.sum(1), 1.0, atol=1e-6)
+            self.assertGreaterEqual(weights.min(), -1e-6)
+            point = np.einsum("mj,mjc->mc", weights, target[corners])
             moved = page[k - 1][missed] + entry[f"{k}_delta"]
-            self.assertLess(np.abs(moved - target[rows[missed]]).max(), 1e-6)
-            # the move stays within the corner (a few millimetres)
-            self.assertLess(np.linalg.norm(entry[f"{k}_delta"], axis=1).max(), 0.01)
+            self.assertLess(np.abs(moved - point).max(), 1e-6)
+            self.assertLess(np.linalg.norm(entry[f"{k}_delta"], axis=1).max(), 0.002)
+
+    def test_closest_on_triangles(self):
+        # points above a unit square of two triangles, and beside it
+        V = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], float)
+        T = np.array([[0, 1, 2], [0, 2, 3]])
+        P = np.array(
+            [[0.25, 0.75, 0.3], [0.8, 0.1, -0.2], [2.0, 0.5, 0.0], [-1, -1, 1]]
+        )
+        face, w = card.closest_on_triangles(P, V, T)
+        Q = np.einsum("mj,mjc->mc", w, V[T[face]])
+        np.testing.assert_allclose(
+            Q, [[0.25, 0.75, 0], [0.8, 0.1, 0], [1, 0.5, 0], [0, 0, 0]], atol=1e-12
+        )
 
     def test_uvs_and_seams(self):
         model = self.model
