@@ -2556,7 +2556,8 @@ function renderShadows() {
 
 // ------------------------------------------------------------------ progressive accumulation
 let accCount = 0;
-let MAX_ACC = SHOT ? parseInt(qs.get('acc') || '16') : (isSmall ? 20 : 40);
+// ?acc=N sets the count of samples (the page tests keep it small)
+let MAX_ACC = qs.get('acc') ? Math.max(1, parseInt(qs.get('acc')) || 1) : SHOT ? 16 : (isSmall ? 20 : 40);
 const rtOpts = { type: THREE.HalfFloatType, depthBuffer: true, generateMipmaps: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter };
 let sceneRT, sssRT, accRT = [];
 function allocRTs() {
@@ -3413,6 +3414,9 @@ window.setFpsCap = (cap) => { setFpsCap(cap); return FPS.cap; };
 window.__CORR = CORR;
 window.__U = U;
 window.setLook = (look) => syncBody(() => { applyLook(look, false); return true; });
+// what the keyboard shortcuts change, for the page tests (test_viewer_shortcuts)
+window.viewState = () => ({ turntable: !!controls.autoRotate, hair: hairWanted, rig: rigView(), preset: currentPreset, presets: Object.keys(PRESETS), playing: MOTION.playing,
+  clip: MOTION.cur ? MOTION.cur.name : null, camera: camera.position.toArray(), target: controls.target.toArray(), tweening: !!tween });
 window.setMotion = (name, t = 0, paused = true) => { MOTION.playing = !paused; return setMotion(name, { instant: true, t, remember: false }); };
 window.__MOTION = MOTION; window.__RIG = RIG;
 // the camera and the navigation state, for tests of the interface
