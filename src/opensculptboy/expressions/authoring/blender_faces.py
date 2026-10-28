@@ -362,7 +362,7 @@ def main():
                         clear if any(wd in name for wd in CLEAR_WORDS) else clay
                     )
 
-    faces = json.load(open(a.faces))["faces"]
+    faces = json.load(open(a.faces, encoding="utf-8"))["faces"]
     if a.only:
         pre = tuple(a.only.split(","))
         faces = [f for f in faces if f["name"].startswith(pre)]
@@ -388,7 +388,11 @@ def main():
         note(look, "done", len(faces), "faces", round(time.time() - t0, 1), "s")
     LOG["missing_keys"] = missing_all
     LOG["total_s"] = round(time.time() - t0, 1)
-    json.dump(LOG, open(os.path.join(a.out, "render_log.json"), "w"), indent=1)
+    json.dump(
+        LOG,
+        open(os.path.join(a.out, "render_log.json"), "w", encoding="utf-8"),
+        indent=1,
+    )
     note("total", LOG["total_s"], "s")
 
 

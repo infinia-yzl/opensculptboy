@@ -45,7 +45,7 @@ class TestReviewFaces(unittest.TestCase):
     def test_command(self):
         with tempfile.TemporaryDirectory() as d:
             faces.main(["--out", f"{d}/faces.json", "--mouth-poses", "a,b"])
-            data = json.load(open(f"{d}/faces.json"))
+            data = json.load(open(f"{d}/faces.json", encoding="utf-8"))
             self.assertEqual(data["faces"][-1]["name"], "m/b")
 
 

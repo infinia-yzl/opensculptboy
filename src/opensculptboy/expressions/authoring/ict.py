@@ -98,7 +98,7 @@ class IctExpressions:
 def read_obj_vertices(path, count: int | None = None) -> np.ndarray:
     """The first ``count`` vertex positions of an OBJ file (all when None)."""
     rows = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if line.startswith("v "):
                 rows.append(line.split()[1:4])
@@ -127,7 +127,9 @@ def load_expressions(root: pathlib.Path | None = None) -> IctExpressions:
                 deltas=z["deltas"],
             )
     model = root / "FaceXModel"
-    names = json.loads((model / "vertex_indices.json").read_text())["expressions"]
+    names = json.loads((model / "vertex_indices.json").read_text(encoding="utf-8"))[
+        "expressions"
+    ]
     names = list(names) + [n for n in ICT_EXTRA if (model / f"{n}.obj").exists()]
     neutral = read_obj_vertices(model / "generic_neutral_mesh.obj", SKIN_VERTICES)
     deltas = np.stack(
