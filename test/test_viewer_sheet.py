@@ -134,10 +134,21 @@ class TestSheetPage(unittest.TestCase):
         self.assertGreater(len(colours), 50)
         # the expressions: with a face driver (face/api.ts) the happy face differs from the
         # neutral one; without one, every cell shows the neutral face
+        cells = [
+            np.asarray(
+                Image.open(io.BytesIO(base64.b64decode(f.split(",", 1)[1]))).convert(
+                    "RGBA"
+                ),
+                dtype=np.float64,
+            )
+            for f in faces
+        ]
+        change = float(np.abs(cells[0] - cells[1]).mean())
+        print(f"neutral against happy: {change:.3f} mean change")
         if rep["faces"]:
-            self.assertNotEqual(faces[0], faces[1])
+            self.assertGreater(change, 1.0)
         else:
-            self.assertEqual(faces[0], faces[1])
+            self.assertLess(change, 1.0)
         # the page's own pose and turn come back
         self.assertEqual(after["pose"], pose)
         self.assertEqual(after["turn"], 0)
