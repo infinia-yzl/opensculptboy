@@ -224,6 +224,42 @@ class TestBinding(unittest.TestCase):
                 self.assertGreater(int(near.sum()), 50)
                 self.assertGreater(float((signed - target)[near].min()), -1e-4)
 
+    def test_push_out_over_a_piece_made_apart(self):
+        """A coat 4 mm off the skin over a vest 8 mm off it (a lower layer), both bound on
+        the template: packages made apart, so the relation on the template says nothing,
+        and the push-out brings the coat over the vest by the 1 mm gap. Bound on one card's
+        body, the two were made together, and the coat keeps its place inside the vest."""
+        from opensculptboy.wearables.fit import made_together
+        from opensculptboy.wearables.geometry import Surface
+
+        body = template_body()
+        vest = dataclasses.replace(tunic(offset=0.008), name="vest", layer=40)
+        coat = dataclasses.replace(tunic(offset=0.004), name="coat", layer=50)
+
+        def on_card(w):
+            return dataclasses.replace(
+                w, binding=dataclasses.replace(w.binding, body="card")
+            )
+
+        for together in (False, True):
+            with self.subTest(together=together):
+                pair = (on_card(vest), on_card(coat)) if together else (vest, coat)
+                self.assertEqual(made_together(pair[1], pair[0]), together)
+                dressed = dress(body, _worn(*pair))
+                under = Surface(
+                    dressed[0].vertices, vest.garment.triangles, dressed[0].normals
+                )
+                signed, found, _ = under.signed_distance(dressed[1].vertices)
+                near = found.distance < 0.01
+                self.assertGreater(int(near.sum()), 300)
+                if together:
+                    self.assertEqual(dressed[1].pushed, 0)
+                    self.assertLess(float(np.median(signed[near])), -0.003)
+                else:
+                    self.assertGreater(dressed[1].pushed, 300)
+                    self.assertGreater(float(np.percentile(signed[near], 1)), 0.0008)
+                    self.assertGreater(float(signed[near].min()), 0.0)
+
     def test_weights(self):
         body = template_body()
         dressed = dress(body, _worn(tunic(), circlet()))
@@ -234,13 +270,30 @@ class TestBinding(unittest.TestCase):
         self.assertTrue((dressed[1].weights[:, 0] == 1.0).all())
 
     def test_see_through_materials_cover_no_skin(self):
+        """A blended material covers no skin; a masked material covers the skin under its
+        triangles where its alpha reaches the cutoff all over them, and the skin under its
+        cut-outs shows."""
+        from opensculptboy.export.document import png_bytes
         from opensculptboy.wearables.cover import ray_cover
 
         body = template_body()
         piece = dress(body, _worn(tunic()))[0]
-        self.assertGreater(int(ray_cover(body, piece).sum()), 300)
-        piece.garment.materials[0].alpha_mode = "MASK"  # lace: the skin may show
+        full = ray_cover(body, piece)
+        self.assertGreater(int(full.sum()), 300)
+        material = piece.garment.materials[0]
+        material.alpha_mode = "BLEND"  # a sheer stocking: the skin may show
         self.assertEqual(int(ray_cover(body, piece).sum()), 0)
+        material.alpha_mode = "MASK"  # no texture: the factor's alpha holds everywhere
+        np.testing.assert_array_equal(ray_cover(body, piece), full)
+        # solid on the left half of the texture (u < 0.5: x < 0), cut out on the right
+        rgba = np.full((64, 64, 4), 200, np.uint8)
+        rgba[:, 32:, 3] = 0
+        rgba[:, :32, 3] = 255
+        material.textures["base_color"] = png_bytes(rgba)
+        half = ray_cover(body, piece)
+        self.assertGreater(int(half.sum()), 100)
+        self.assertLess(int(half.sum()), int(full.sum()))
+        self.assertLess(float(body.vertices[half, 0].max()), 0.01)
 
     def test_group_masks_without_a_mask_of_the_fixed_groups(self):
         """A package with group masks and no ``covers`` mask: the ray test covers the skin

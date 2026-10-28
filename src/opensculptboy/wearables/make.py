@@ -24,7 +24,7 @@ import dataclasses
 import numpy as np
 
 from opensculptboy.wearables.bind import BodySurface, bind_rigid, bind_surface, evaluate
-from opensculptboy.wearables.cover import RAY_REACH
+from opensculptboy.wearables.cover import RAY_REACH, masked_solid
 from opensculptboy.wearables.format import Garment, Wearable, WearableError
 from opensculptboy.wearables.geometry import ray_hits, unit_rows, vertex_normals
 
@@ -603,8 +603,15 @@ def bind_garment(
         for g, group in enumerate(garment.groups):
             opaque = garment.triangle_group == g
             for m, material in enumerate(garment.materials):
-                if material.alpha_mode != "OPAQUE":
-                    opaque &= garment.triangle_material != m
+                if material.alpha_mode == "OPAQUE":
+                    continue
+                rows = garment.triangle_material == m
+                if material.alpha_mode == "MASK" and rows.any():
+                    solid = np.zeros(len(garment.triangles), bool)
+                    solid[rows] = masked_solid(garment, m, garment.triangles[rows])
+                    opaque &= ~rows | solid
+                else:
+                    opaque &= ~rows
             if not opaque.any():
                 continue
             hit = ray_hits(

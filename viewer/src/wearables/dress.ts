@@ -4,18 +4,23 @@
 // Dressing a body in the page, as opensculptboy.wearables (bind.evaluate, bind.body_weights, fit.dress and cover)
 // computes it: surface bindings give back each garment vertex from a point of the skin, its frame and its offset
 // scaled by the local edge length; rigid bindings follow one bone; the skin weights come from the body at the bound
-// points; the push-out moves each piece outside the body and the lower layers; the cover masks and ray tests give the
-// skin under the pieces. The body is any frame that is a similarity of Anny's (the page's frame: Y up, scaled by the
-// authoring rig's scale), and `unit` gives its length of one metre. No DOM and no three.js: a worker can run it.
+// points; the push-out moves each piece outside the body and the lower layers, and its triangles over the points of the
+// lower layers; the cover masks and ray tests (opaque triangles, and those of masked materials where the alpha reaches
+// the cutoff) give the skin under the pieces. The body is any frame that is a similarity of Anny's (the page's frame:
+// Y up, scaled by the authoring rig's scale), and `unit` gives its length of one metre. No DOM and no three.js: a
+// worker can run it.
 
-import { adjacency, frames, norm3, QUERY_SLICE, rayHitsSteps, runSteps, Surface, unitRows, vertexNormals, vertexScales, type F64, type I32, type Steps } from './geometry.ts';
-import type { Wearable } from './package.ts';
+import { maskedSolid } from './alpha.ts';
+import { adjacency, CANDIDATES, frames, interpolate, linePartnersSteps, norm3, QUERY_SLICE, rayHitsSteps, runSteps, Surface, unitRows, vertexNormals, vertexScales, type F64, type I32, type Steps } from './geometry.ts';
+import type { Garment, Wearable } from './package.ts';
 
 export const GAP = 0.001;        // metres between a piece and what lies under it
 export const DEPTH = 0.03;       // metres: a vertex deeper inside a surface than this is left alone
 export const PUSH_ROUNDS = 3;
 export const FADE_RINGS = 2;
 export const RAY_REACH = 0.03;   // metres
+export const REACH = 0.06;       // metres: the line from a lower piece's point to the piece over it
+export const FACING = 0.5;       // the least cosine between a lower point's normal and the partner's normal
 export const MAX_INFLUENCES = 4;
 
 // The bones of the anny-mouth rig (opensculptboy.mouth.rig) that anny's rig leaves out: a card on that rig gives its
@@ -246,9 +251,97 @@ function fade(D: F64, moved: Uint8Array, T: I32): F64 {
   return out;
 }
 
-function* pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], unit: number, slice: number) {
-  const start = V.slice(), n = V.length / 3, moved = new Uint8Array(n);
+// The points of a lower piece that a piece covers, found once on the piece's vertices before the push
+// (opensculptboy.wearables.fit._cover_points): each point's partner (the point of the piece's triangles on the line
+// along the point's direction within REACH, ahead first, where the piece's normal there, turned away from the body,
+// faces the same way as the point's) must lie at least its target (along the direction) outside the point.
+interface CoverPoints { corners: I32; bary: F64; points: F64; directions: F64; targets: F64 }
+// a lower piece's points, their outward directions and their targets
+type Covered = [F64, F64, F64];
+
+function* coverPoints(V: F64, T: I32, [points, directions, targets]: Covered, facing: F64, unit: number, slice: number): Steps<CoverPoints> {
+  const found = yield* linePartnersSteps(points, directions, V, T, REACH * unit, slice), n = points.length / 3;
+  const keep: number[] = [];
+  for (let i = 0; i < n; i++) {
+    if (!found.hit[i]) continue;
+    const t = found.triangle[i], o = i * 3, nrm = [0, 0, 0];
+    for (let k = 0; k < 3; k++) for (let q = 0; q < 3; q++) nrm[k] += found.bary[o + q] * facing[T[t * 3 + q] * 3 + k];
+    const l = norm3(nrm[0], nrm[1], nrm[2]) || 1, x = nrm[0] / l, y = nrm[1] / l, z = nrm[2] / l;
+    if (x * directions[o] + y * directions[o + 1] + z * directions[o + 2] > FACING) keep.push(i);
+  }
+  const m = keep.length, out: CoverPoints = { corners: new Int32Array(m * 3), bary: new Float64Array(m * 3), points: new Float64Array(m * 3), directions: new Float64Array(m * 3), targets: new Float64Array(m) };
+  keep.forEach((i, r) => {
+    for (let k = 0; k < 3; k++) {
+      out.corners[r * 3 + k] = T[found.triangle[i] * 3 + k]; out.bary[r * 3 + k] = found.bary[i * 3 + k];
+      out.points[r * 3 + k] = points[i * 3 + k]; out.directions[r * 3 + k] = directions[i * 3 + k];
+    }
+    out.targets[r] = targets[i];
+  });
+  return out;
+}
+
+// the moves of the piece's vertices that bring each partner out to its target: the corners of the partner's triangle
+// move along the direction by their barycentric share, the largest move of each corner wins; null for none
+function coverMoves(c: CoverPoints, V: F64, unit: number): F64 | null {
+  const m = c.targets.length, B = c.bary, C = c.corners, P = c.points, D = c.directions, rows: number[] = [], amounts: number[] = [];
+  for (let r = 0; r < m; r++) {
+    const o = r * 3, a = C[o] * 3, b = C[o + 1] * 3, e = C[o + 2] * 3;
+    let along = 0;
+    for (let k = 0; k < 3; k++) along += ((B[o] * V[a + k] + B[o + 1] * V[b + k]) + B[o + 2] * V[e + k] - P[o + k]) * D[o + k];
+    const need = c.targets[r] - along;
+    if (need > 1e-7 * unit && along > -REACH * unit) {
+      rows.push(r);
+      amounts.push(need / Math.max((B[o] * B[o] + B[o + 1] * B[o + 1]) + B[o + 2] * B[o + 2], 1e-12));
+    }
+  }
+  if (!rows.length) return null;
+  const n = V.length / 3, size = new Float64Array(n), way = new Float64Array(n * 3);
+  for (let i = 0; i < 3; i++) rows.forEach((r, j) => {
+    const v = C[r * 3 + i], share = B[r * 3 + i] * amounts[j];
+    size[v] = Math.max(size[v], share);
+    for (let k = 0; k < 3; k++) way[v * 3 + k] += share * D[r * 3 + k];
+  });
+  const out = new Float64Array(n * 3);
+  for (let v = 0; v < n; v++) {
+    if (!(size[v] > 0)) continue;
+    const o = v * 3, l = norm3(way[o], way[o + 1], way[o + 2]) || 1;
+    for (let k = 0; k < 3; k++) out[o + k] = size[v] * (way[o + k] / l);
+  }
+  return out;
+}
+
+// the unit `normals` of `rows` of a piece's vertices, turned away from the body where they face it (the body's normal
+// at the closest point decides; opensculptboy.wearables.fit._outward)
+function* outward(body: BodySurface, vertices: F64, normals: F64, rows: ArrayLike<number> | null, slice: number): Steps<F64> {
+  const n = rows ? rows.length : vertices.length / 3, P = new Float64Array(n * 3), out = new Float64Array(n * 3);
+  for (let i = 0; i < n; i++) { const v = rows ? rows[i] : i; for (let k = 0; k < 3; k++) { P[i * 3 + k] = vertices[v * 3 + k]; out[i * 3 + k] = normals[v * 3 + k]; } }
+  unitRows(out);
+  const surface = body.surface, found = yield* surface.closestSteps(P, CANDIDATES, Infinity, slice), corners = new Int32Array(n * 3);
+  for (let i = 0; i < n; i++) for (let q = 0; q < 3; q++) corners[i * 3 + q] = surface.T[found.triangle[i] * 3 + q];
+  const skin = unitRows(interpolate(surface.N, corners, found.bary));
+  for (let o = 0; o < n * 3; o += 3)
+    if (out[o] * skin[o] + out[o + 1] * skin[o + 1] + out[o + 2] * skin[o + 2] < 0) { out[o] = -out[o]; out[o + 1] = -out[o + 1]; out[o + 2] = -out[o + 2]; }
+  return out;
+}
+
+// Move vertices outside the colliders by at least their targets (signed lengths along each collider's normal at the
+// closest point), and move triangles over the points of `covered` (each lower piece's), so that a lower piece denser
+// than this one shows through none of its triangles (`facing`: the vertex normals turned away from the body)
+function* pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], unit: number, slice: number, covered: Covered[] = [], facing: F64 | null = null) {
+  const start = V.slice(), n = V.length / 3, moved = new Uint8Array(n), movers: CoverPoints[] = [];
+  for (const c of covered) { movers.push(yield* coverPoints(V, T, c, facing!, unit, slice)); yield; }
   for (let round = 0; round <= PUSH_ROUNDS; round++) {
+    // the triangles first: the vertices' targets, met last, hold after the pass
+    for (const mover of movers) {
+      const step = coverMoves(mover, V, unit);
+      if (!step) continue;
+      for (let i = 0; i < n; i++) {
+        const o = i * 3;
+        if (step[o] === 0 && step[o + 1] === 0 && step[o + 2] === 0) continue;
+        V[o] += step[o]; V[o + 1] += step[o + 1]; V[o + 2] += step[o + 2];
+        moved[i] = 1;
+      }
+    }
     for (let c = 0; c < colliders.length; c++) {
       // a vertex farther than DEPTH from every triangle never moves, so its query may stop early
       const { signed, found, normal } = yield* colliders[c].signedDistanceSteps(V, DEPTH * unit, slice), target = targets[c];
@@ -289,12 +382,30 @@ function* pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], 
 export interface WornPiece { ref: string; piece: string; outfit: string | null; wearable: Wearable; shown: boolean; hiddenGroups: string[]; hideableGroups: string[] }
 export interface DressedPiece extends WornPiece { vertices: F64; normals: F64; weights: Float32Array; joints: Uint16Array; pushed: number; pushMm: number }
 
+// whether each triangle of a garment hides the skin: those of opaque materials, and those of a masked material whose
+// alpha reaches the cutoff all over them (wearables/alpha.ts maskedSolid); a blended material (a sheer stocking) and
+// the cut-outs of a masked one (lace, mesh) may let the skin show through (opensculptboy.wearables.cover.opaque_triangles)
+const SOLID = new WeakMap<Garment, Uint8Array>();
+export function solidTriangles(g: Garment): Uint8Array {
+  let solid = SOLID.get(g);
+  if (solid) return solid;
+  const m = g.triangles.length / 3, masked = g.materials.map((mt, k) => (mt.alphaMode === 'MASK' ? maskedSolid(g, k) : null));
+  solid = new Uint8Array(m);
+  for (let t = 0; t < m; t++) {
+    const k = g.triangleMaterial[t], mode = g.materials[k]?.alphaMode || 'OPAQUE';
+    solid[t] = mode === 'OPAQUE' ? 1 : masked[k] ? masked[k]![t] : 0;
+  }
+  SOLID.set(g, solid);
+  return solid;
+}
+
+// the triangles of the groups that show; with `opaque`, those that hide the skin alone
 export function visibleTriangles(p: { wearable: Wearable; hiddenGroups: string[] }, opaque = false): I32 {
   const g = p.wearable.garment, hidden = new Set(p.hiddenGroups.map((h) => g.groups.indexOf(h)));
-  const keep: number[] = [];
+  const keep: number[] = [], solid = opaque ? solidTriangles(g) : null;
   for (let t = 0; t < g.triangles.length / 3; t++) {
     if (hidden.has(g.triangleGroup[t])) continue;
-    if (opaque && (g.materials[g.triangleMaterial[t]]?.alphaMode || 'OPAQUE') !== 'OPAQUE') continue;
+    if (solid && !solid[t]) continue;
     keep.push(g.triangles[t * 3], g.triangles[t * 3 + 1], g.triangles[t * 3 + 2]);
   }
   return Int32Array.from(keep);
@@ -304,6 +415,14 @@ function sameRows(a: F64, b: F64): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+// whether two packages were made as one set, so that the relation between them on their binding body is part of their
+// design: both are bound on the same body, and that body is a card's or a reference's own body. Anny's template is the
+// common body of packages made apart (opensculptboy.wearables.fit.made_together).
+export function madeTogether(upper: Wearable, lower: Wearable): boolean {
+  const a = upper.binding, b = lower.binding;
+  return a.body !== 'anny-template' && a.body === b.body && sameRows(a.bodyVertices, b.bodyVertices);
 }
 
 // the rest vertices and normals of a lower piece on `home`, the binding body of an upper piece, or null where they are
@@ -321,7 +440,8 @@ function restOn(w: Wearable, home: BodySurface, body: BodySurface): { vertices: 
 
 // what a dress keeps between calls: the binding bodies and the push targets that depend on them alone
 export class DressCache {
-  homes = new Map<Wearable, { home: BodySurface; vertices: F64; target: F64; lower: Map<string, F64> }>();
+  // `lower`: per lower piece and its hidden groups, the push target and the targets of its points under the piece
+  homes = new Map<Wearable, { home: BodySurface; vertices: F64; target: F64; lower: Map<string, { target: F64; cover: F64 | null }> }>();
   // the skin weights of each piece: they depend on the binding and the body's skin weights alone, which a slider
   // edit leaves as they are
   weights = new Map<Wearable, { source: F64; weights: Float32Array; joints: Uint16Array }>();
@@ -360,24 +480,42 @@ export function* dressSteps(body: BodySurface, pieces: WornPiece[], opts: DressO
         h = { home, vertices: hv, target: sd.map((x) => Math.min(x, gap)), lower: new Map() };
         cache.homes.set(w, h);
       }
-      const colliders = [body.surface], targets = [h.target];
+      const colliders = [body.surface], targets = [h.target], covered: Covered[] = [], T = w.garment.triangles;
       for (const [layer, lower] of placed) {
         if (layer >= w.layer) continue;
         const tris = visibleTriangles(lower);
         if (!tris.length) continue;
         colliders.push(new Surface(lower.vertices, tris, lower.normals));
+        const nl = lower.vertices.length / 3, used = new Uint8Array(nl);
+        for (let i = 0; i < tris.length; i++) used[tris[i]] = 1;
+        const rows: number[] = [];
+        for (let i = 0; i < nl; i++) if (used[i]) rows.push(i);
+        const points = new Float64Array(rows.length * 3);
+        rows.forEach((v, i) => { for (let q = 0; q < 3; q++) points[i * 3 + q] = lower.vertices[v * 3 + q]; });
+        const directions = yield* outward(body, lower.vertices, vertexNormals(lower.vertices, tris, nl), rows, slice);
         const key = `${lower.ref}#${lower.hiddenGroups.slice().sort().join(',')}`;
-        let target = h.lower.get(key);
-        if (!target) {
-          const lh = restOn(lower.wearable, h.home, body);
-          target = lh
-            ? (yield* new Surface(lh.vertices, tris, lh.normals).signedDistanceSteps(h.vertices, Infinity, slice)).signed.map((x) => Math.min(x, gap))
-            : new Float64Array(h.vertices.length / 3).fill(gap);   // the relation on the binding body is unknown
-          if (lower.wearable.binding.method === 'surface' || !sameRows(h.home.vertices, body.vertices)) h.lower.set(key, target);
+        let rel = h.lower.get(key);
+        if (!rel) {
+          const lh = madeTogether(w, lower.wearable) ? restOn(lower.wearable, h.home, body) : null;
+          if (!lh) rel = { target: new Float64Array(h.vertices.length / 3).fill(gap), cover: null };   // the relation as made is unknown
+          else {
+            const target = (yield* new Surface(lh.vertices, tris, lh.normals).signedDistanceSteps(h.vertices, Infinity, slice)).signed.map((x) => Math.min(x, gap));
+            // the relation as made of the lower piece's points under this piece
+            const homePoints = new Float64Array(rows.length * 3);
+            rows.forEach((v, i) => { for (let q = 0; q < 3; q++) homePoints[i * 3 + q] = lh.vertices[v * 3 + q]; });
+            const homeDirections = yield* outward(h.home, lh.vertices, vertexNormals(lh.vertices, tris, nl), rows, slice);
+            const found = yield* linePartnersSteps(homePoints, homeDirections, h.vertices, T, REACH * unit, slice);
+            const cover = new Float64Array(rows.length);
+            for (let i = 0; i < rows.length; i++) cover[i] = found.hit[i] ? Math.min(found.along[i], gap) : -Infinity;
+            rel = { target, cover };
+          }
+          if (lower.wearable.binding.method === 'surface' || !sameRows(h.home.vertices, body.vertices)) h.lower.set(key, rel);
         }
-        targets.push(target);
+        targets.push(rel.target);
+        covered.push([points, directions, rel.cover || new Float64Array(rows.length).fill(gap)]);
       }
-      const r = yield* pushOut(vertices, normals, w.garment.triangles, colliders, targets, unit, slice);
+      const facing = covered.length ? yield* outward(body, vertices, vertexNormals(vertices, T, vertices.length / 3), null, slice) : null;
+      const r = yield* pushOut(vertices, normals, T, colliders, targets, unit, slice, covered, facing);
       vertices = r.vertices; normals = r.normals; pushed = r.pushed; pushMm = r.pushMm;
       timing.push = (timing.push || 0) + now() - t0;
     }

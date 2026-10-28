@@ -57,15 +57,45 @@ def validate(data: dict, schema_path: pathlib.Path) -> None:
 
 
 def shell(
-    name, offset, layer, colour, covers=True, slot="torso", inside_out=False
+    name,
+    offset,
+    layer,
+    colour,
+    covers=True,
+    slot="torso",
+    inside_out=False,
+    inner=None,
+    body_kind="anny-template",
+    rigid=False,
+    narrower=0,
 ) -> Wearable:
     """A shell of anny's torso ``offset`` metres off the skin (negative: under it), with the
     skin under it as its cover mask when ``covers``; ``inside_out`` winds its triangles
-    toward the body."""
+    toward the body. ``inner`` adds an inner wall that many metres off the skin, wound
+    toward the body and three rings narrower (the two walls of a boot or a glove). ``body_kind`` names the binding
+    body (``card``: bound on a card's own body, as pieces made together are); ``rigid``
+    binds the shell to the chest bone; ``narrower`` takes that many rings off the
+    region."""
+    from opensculptboy.wearables import bind_rigid
+
     body = template_body()
-    vertices, triangles, rows = _region_shell(body, torso_mask(body), offset)
+    region = torso_mask(body)
+    for _ in range(narrower):
+        border = np.zeros(len(body.vertices), bool)
+        border[body.triangles[(~region[body.triangles]).any(1)].ravel()] = True
+        region &= ~border
+    vertices, triangles, rows = _region_shell(body, region, offset)
     if inside_out:
         triangles = triangles[:, ::-1]
+    if inner is not None:  # three rings narrower, so that the outer wall covers it
+        region = torso_mask(body)
+        for _ in range(3):
+            border = np.zeros(len(body.vertices), bool)
+            border[body.triangles[(~region[body.triangles]).any(1)].ravel()] = True
+            region &= ~border
+        wall, wall_triangles, _ = _region_shell(body, region, inner)
+        triangles = np.concatenate([triangles, wall_triangles[:, ::-1] + len(vertices)])
+        vertices = np.concatenate([vertices, wall])
     garment = Garment(vertices, triangles, materials=[Material(name, colour, 0.0, 0.9)])
     mask = np.zeros(len(body.vertices), bool)
     if covers:
@@ -75,16 +105,69 @@ def shell(
             outside = ~mask[body.triangles]
             border[body.triangles[outside.any(1)].ravel()] = True
             mask &= ~border
+    if rigid:
+        binding = bind_rigid(garment, body, "spine03", body_kind)
+    else:
+        binding = bind_surface(garment, body, body_kind)
     return Wearable(
         name=name,
         slot=slot,
         layer=layer,
         garment=garment,
-        binding=bind_surface(garment, body),
+        binding=binding,
+        weights="rigid" if rigid else "body",
         licence=dict(LICENCE),
         covers=mask,
         tags=["synthetic", "shell"],
         description=f"a synthetic shell {offset * 1000:g} mm off the torso",
+    )
+
+
+def bumpy(name, layer, colour, body_kind="anny-template") -> Wearable:
+    """A dense shell of anny's torso: each body triangle split in four, the corners 4 mm
+    off the skin and the edge midpoints 13 mm off it, so that it is denser than a shell of
+    the body's own triangles and bulges between their corners. It covers no skin."""
+    body = template_body()
+    _, triangles, rows = _region_shell(body, torso_mask(body), 0.0)
+    base, normal = body.vertices[rows], body.normals[rows]
+    edges = np.sort(
+        np.concatenate(
+            [triangles[:, [0, 1]], triangles[:, [1, 2]], triangles[:, [2, 0]]]
+        ),
+        axis=1,
+    )
+    edges, inverse = np.unique(edges, axis=0, return_inverse=True)
+    inverse = inverse.reshape(-1)
+    mid_normal = normal[edges[:, 0]] + normal[edges[:, 1]]
+    mid_normal /= np.linalg.norm(mid_normal, axis=1, keepdims=True)
+    vertices = np.concatenate(
+        [
+            base + 0.004 * normal,
+            0.5 * (base[edges[:, 0]] + base[edges[:, 1]]) + 0.013 * mid_normal,
+        ]
+    )
+    t = len(triangles)
+    m = len(rows) + inverse.reshape(3, t).T  # the midpoints of ab, bc and ca
+    a, b, c = triangles.T
+    split = np.concatenate(
+        [
+            np.stack([a, m[:, 0], m[:, 2]], 1),
+            np.stack([m[:, 0], b, m[:, 1]], 1),
+            np.stack([m[:, 2], m[:, 1], c], 1),
+            np.stack([m[:, 0], m[:, 1], m[:, 2]], 1),
+        ]
+    )
+    garment = Garment(vertices, split, materials=[Material(name, colour, 0.0, 0.9)])
+    return Wearable(
+        name=name,
+        slot="under",
+        layer=layer,
+        garment=garment,
+        binding=bind_surface(garment, body, body_kind),
+        licence=dict(LICENCE),
+        covers=np.zeros(len(body.vertices), bool),
+        tags=["synthetic", "shell"],
+        description="a synthetic dense shell that bulges between the body's vertices",
     )
 
 
@@ -242,18 +325,67 @@ class TestCheck(unittest.TestCase):
         write_wearable(
             wear / "tight.wearable.json", shell("tight", -0.004, 50, (0.6, 0.2, 0.2))
         )
-        write_wearable(
+        write_wearable(  # rigid: the push-out leaves it inside the tunic
             wear / "vest.wearable.json",
-            shell("vest", 0.002, 60, (0.1, 0.5, 0.1), covers=False, slot="accessory"),
+            shell(
+                "vest",
+                0.002,
+                60,
+                (0.1, 0.5, 0.1),
+                covers=False,
+                slot="accessory",
+                rigid=True,
+            ),
         )
+        write_wearable(
+            wear / "padded.wearable.json",
+            shell("padded", 0.004, 50, (0.3, 0.3, 0.6), inner=-0.003),
+        )
+        for kind, suffix in (("anny-template", "apart"), ("card", "together")):
+            write_wearable(
+                wear / f"strap_{suffix}.wearable.json",
+                shell(
+                    f"strap_{suffix}",
+                    0.008,
+                    40,
+                    (0.5, 0.3, 0.1),
+                    False,
+                    "accessory",
+                    body_kind=kind,
+                ),
+            )
+            write_wearable(
+                wear / f"coat_{suffix}.wearable.json",
+                shell(f"coat_{suffix}", 0.004, 50, (0.2, 0.2, 0.2), body_kind=kind),
+            )
         write_wearable(
             wear / "lining.wearable.json",
             shell("lining", 0.004, 50, (0.7, 0.7, 0.2), inside_out=True),
         )
+        write_wearable(
+            wear / "bumpy.wearable.json", bumpy("bumpy", 40, (0.8, 0.8, 0.9))
+        )
+        write_wearable(
+            wear / "over.wearable.json", shell("over", 0.008, 50, (0.3, 0.1, 0.1))
+        )
+        cls.dense = card_file(cls.folder, ["bumpy", "over"], "dense.json")
+        write_wearable(
+            wear / "flared.wearable.json",
+            shell("flared", 0.045, 40, (0.8, 0.7, 0.9), False, "under", narrower=4),
+        )
+        write_wearable(
+            wear / "snug.wearable.json", shell("snug", 0.005, 50, (0.2, 0.3, 0.2))
+        )
+        cls.flared = card_file(cls.folder, ["flared", "snug"], "flared.json")
         cls.clean = card_file(cls.folder, ["tunic", "cape", "circlet"], "clean.json")
         cls.lining = card_file(cls.folder, ["lining", "cape"], "lining.json")
         cls.skin = card_file(cls.folder, ["tight"], "skin.json")
         cls.layers = card_file(cls.folder, ["tunic", "vest"], "layers.json")
+        cls.padded = card_file(cls.folder, ["padded"], "padded.json")
+        cls.apart = card_file(cls.folder, ["strap_apart", "coat_apart"], "apart.json")
+        cls.together = card_file(
+            cls.folder, ["strap_together", "coat_together"], "together.json"
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -302,6 +434,94 @@ class TestCheck(unittest.TestCase):
         status, report, _ = self.check(self.lining, "--sheet", "none")
         self.assertEqual(status, 0, report["failed"])
         self.assertGreater(report["states"][0]["skin"]["covered"], 100)
+
+    def test_skin_between_two_walls_is_under_the_piece(self):
+        """The skin between the inner wall (3 mm under the skin) and the outer wall (4 mm
+        off it) of a padded piece, as in a boot or a glove: the partner ahead of the skin
+        is the outer wall, so no vertex counts."""
+        status, report, _ = self.check(self.padded, "--sheet", "none", "--no-tpose")
+        self.assertEqual(status, 0, report["failed"])
+        rest = report["states"][0]
+        self.assertGreater(rest["skin"]["covered"], 100)
+        self.assertEqual(rest["skin"]["showing"], 0)
+
+    def test_partner_on_a_fold_between_two_skins(self):
+        """Two skins facing each other 20 mm apart (two fingers in a glove) and a wall of
+        the piece between them, 8 mm from the upper skin: the lower skin's partner is the
+        wall ahead of it, which holds it, although the skin nearest to the wall is the
+        upper one, which faces the other way."""
+        import types
+
+        from opensculptboy.wearables.check import Partners
+        from opensculptboy.wearables.geometry import Surface
+
+        grid = np.array([[x, y] for x in (-0.05, 0.05) for y in (-0.05, 0.05)])
+
+        def sheet(z, up):
+            vertices = np.column_stack([grid, np.full(4, z)])
+            triangles = np.array([[0, 2, 3], [0, 3, 1]])
+            return vertices, triangles if up else triangles[:, ::-1]
+
+        lower, lower_t = sheet(0.0, True)
+        upper, upper_t = sheet(0.02, False)
+        body = types.SimpleNamespace(
+            surface=Surface(
+                np.concatenate([lower, upper]), np.concatenate([lower_t, upper_t + 4])
+            )
+        )
+        wall, wall_t = sheet(0.012, True)
+        piece = types.SimpleNamespace(vertices=wall, visible_triangles=lambda: wall_t)
+        points = np.array([[0.01, 0.01, 0.0]])
+        partners = Partners.at_rest(
+            points, np.array([0]), piece, body, np.array([[0.0, 0.0, 1.0]])
+        )
+        self.assertEqual(len(partners.rows), 1)
+        signed = partners.signed(points, piece, wall)
+        self.assertAlmostEqual(float(signed[0]), -0.012, places=6)
+
+    def test_dense_lower_piece_under_a_coarse_piece(self):
+        """A dense shell that bulges 13 mm off the skin between the body's vertices, under
+        a shell of the body's own triangles 8 mm off it: the push-out moves the triangles
+        of the upper shell over the bulges, so no vertex of the lower shell shows."""
+        status, report, _ = self.check(self.dense, "--sheet", "none", "--clips", "none")
+        layers = report["states"][0]["layers"]
+        self.assertGreater(layers["covered"], 300)
+        self.assertEqual(layers["cutting"], 0, report["failed"])
+        self.assertEqual(status, 0, report["failed"])
+
+    def test_flared_lower_piece_under_a_snug_piece(self):
+        """A loose shell 45 mm off the skin under a wider snug shell 5 mm off it, made
+        apart: the snug shell lies 40 mm inside the loose one, deeper than the vertex
+        push reaches, and the triangle push brings it over the loose shell."""
+        status, report, _ = self.check(
+            self.flared, "--sheet", "none", "--clips", "none", "--no-tpose"
+        )
+        layers = report["states"][0]["layers"]
+        self.assertGreater(layers["covered"], 300)
+        self.assertEqual(layers["cutting"], 0, report["failed"])
+        self.assertEqual(status, 0, report["failed"])
+
+    def test_layers_as_made(self):
+        """A strap 8 mm off the skin under a coat 4 mm off it: made apart (on the
+        template), the push-out brings the coat over the strap; made together (on one
+        card's body), the push-out keeps the strap outside the coat, and the check counts
+        those vertices as made, outside the gates."""
+        status, report, _ = self.check(self.apart, "--sheet", "none", "--clips", "none")
+        self.assertEqual(status, 0, report["failed"])
+        layers = report["states"][0]["layers"]
+        self.assertGreater(layers["covered"], 100)
+        self.assertEqual((layers["cutting"], layers["as_made"]), (0, 0))
+        status, report, _ = self.check(
+            self.together, "--sheet", "none", "--clips", "none"
+        )
+        self.assertEqual(status, 0, report["failed"])
+        layers = report["states"][0]["layers"]
+        self.assertEqual(layers["cutting"], 0)
+        self.assertGreater(layers["as_made"], 100)
+        self.assertEqual(
+            list(layers["as_made_pairs"]),
+            ["test/strap_together through test/coat_together"],
+        )
 
     def test_planted_skin_defect_fails(self):
         status, report, _ = self.check(self.skin, "--sheet", "none", "--no-tpose")
