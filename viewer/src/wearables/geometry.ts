@@ -316,6 +316,57 @@ export function* rayHitsSteps(origins: F64, directions: F64, V: F64, T: I32, rea
   return hit;
 }
 
+// The partner of each origin on the line along its unit direction, within reach on either side: the nearest point of
+// the triangles ahead of the origin, else the nearest point behind it (opensculptboy.wearables.geometry.line_partners).
+// `along` is the signed distance of the partner along the direction, negative behind the origin.
+export interface LinePartners { hit: Uint8Array; triangle: I32; bary: F64; along: F64 }
+export function linePartners(origins: F64, directions: F64, V: F64, T: I32, reach: number): LinePartners {
+  return runSteps(linePartnersSteps(origins, directions, V, T, reach, Infinity));
+}
+// the same query in slices of `slice` origins
+export function* linePartnersSteps(origins: F64, directions: F64, V: F64, T: I32, reach: number, slice = 2048): Steps<LinePartners> {
+  const n = origins.length / 3, m = T.length / 3;
+  const out: LinePartners = { hit: new Uint8Array(n), triangle: new Int32Array(n), bary: new Float64Array(n * 3), along: new Float64Array(n) };
+  if (!m || !n) return out;
+  const D = unitRows(directions.slice()), C = new Float64Array(m * 3);
+  let radius = 0, edgeSum = 0;
+  for (let t = 0; t < m; t++) {
+    const a = T[t * 3] * 3, b = T[t * 3 + 1] * 3, c = T[t * 3 + 2] * 3;
+    for (let k = 0; k < 3; k++) C[t * 3 + k] = (V[a + k] + V[b + k] + V[c + k]) / 3;
+    for (const p of [a, b, c]) radius = Math.max(radius, norm3(V[p] - C[t * 3], V[p + 1] - C[t * 3 + 1], V[p + 2] - C[t * 3 + 2]));
+    edgeSum += norm3(V[a] - V[b], V[a + 1] - V[b + 1], V[a + 2] - V[b + 2]);
+  }
+  // a line through a corner or an edge meets the triangles there within rounding
+  const grid = new PointGrid(C, Math.max(reach, 1.5 * edgeSum / m)), near: number[] = [], edge = -1e-9;
+  for (let i = 0; i < n; i++) {
+    if (i > 0 && i % slice === 0) yield;
+    const o = i * 3, ox = origins[o], oy = origins[o + 1], oz = origins[o + 2], dx = D[o], dy = D[o + 1], dz = D[o + 2];
+    grid.ball(ox, oy, oz, reach + radius, near);
+    // the rank of a hit: the distance ahead of the origin, or the reach plus the distance behind it, so that every hit
+    // ahead ranks before every hit behind; ties go to the lowest triangle
+    let best = Infinity, bt = -1, bu = 0, bv = 0, bs = 0;
+    for (const t of near) {
+      const a = T[t * 3] * 3, b = T[t * 3 + 1] * 3, c = T[t * 3 + 2] * 3;
+      const e1x = V[b] - V[a], e1y = V[b + 1] - V[a + 1], e1z = V[b + 2] - V[a + 2], e2x = V[c] - V[a], e2y = V[c + 1] - V[a + 1], e2z = V[c + 2] - V[a + 2];
+      const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+      const det = e1x * px + e1y * py + e1z * pz;
+      if (!(Math.abs(det) > 1e-14)) continue;
+      const inv = 1 / det, sx = ox - V[a], sy = oy - V[a + 1], sz = oz - V[a + 2];
+      const u = (sx * px + sy * py + sz * pz) * inv;
+      const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+      const v = (dx * qx + dy * qy + dz * qz) * inv, s = (e2x * qx + e2y * qy + e2z * qz) * inv;
+      if (!(u >= edge && v >= edge && u + v <= 1 - edge && Math.abs(s) <= reach)) continue;
+      const rank = s >= 0 ? s : reach - s;
+      if (rank < best || (rank === best && t < bt)) { best = rank; bt = t; bu = u; bv = v; bs = s; }
+    }
+    if (bt < 0) continue;
+    const w0 = Math.min(Math.max(1 - bu - bv, 0), 1), w1 = Math.min(Math.max(bu, 0), 1), w2 = Math.min(Math.max(bv, 0), 1), sum = w0 + w1 + w2;
+    out.hit[i] = 1; out.triangle[i] = bt; out.along[i] = bs;
+    out.bary[o] = w0 / sum; out.bary[o + 1] = w1 / sum; out.bary[o + 2] = w2 / sum;
+  }
+  return out;
+}
+
 // the vertex adjacency of a triangle mesh in compressed rows (each neighbour once)
 export interface Adjacency { start: I32; ids: I32; degree: F64 }
 export function adjacency(count: number, T: I32): Adjacency {
