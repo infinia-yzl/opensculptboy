@@ -5,7 +5,7 @@
 ```bash
 uv sync --extra viewer                                          # SciPy for the fit, embreex for the texture bake
 opensculptboy fit handoff/ --out character.json --detail 1      # the card, character.detail0.safetensors and character.detail1.safetensors
-opensculptboy fit handoff/ --out character.json --textures      # also the baked textures, eyes, lashes, teeth and inner mouth
+opensculptboy fit handoff/ --out character.json --textures      # also the baked textures, eyes, lashes, teeth, inner mouth, hair and brows
 opensculptboy export character.glb --character character.json --detail 1
 opensculptboy export character.vrm --character character.json --detail 1 --author "Your name"
 ```
@@ -120,7 +120,24 @@ Three tiles give parts of the body textures of their own, each drawn as a primit
 | head | 2048 by 4096 | the head's UV island, through a texture transform |
 | ears | 2048 by 1024 | the outer ears on levels 1 and 2, with UVs of their own unwrapped from the fitted ears |
 
-The texture transforms use `KHR_texture_transform` in glTF and VRM 1.0, and the ST vector of `_MainTex` in VRM 0.x. The bake also writes the target's eyes straight onto the layout of the exported eyes (`eye_layout`, 2048 by 1024 by default, `--eye-size`, with their normals), with each eye's gaze, and the fitted card's exports show them without `--eyes` ([Eyes](eyes.md)). It takes the target's lashes ([Eyes](eyes.md#lashes)), teeth and inner mouth ([Teeth](teeth.md), [Mouth](mouth.md)) as well, and the target's blinks when the handoff has them ([Eyes](eyes.md#a-references-blinks)).
+The texture transforms use `KHR_texture_transform` in glTF and VRM 1.0, and the ST vector of `_MainTex` in VRM 0.x. The bake also writes the target's eyes straight onto the layout of the exported eyes (`eye_layout`, 2048 by 1024 by default, `--eye-size`, with their normals), with each eye's gaze, and the fitted card's exports show them without `--eyes` ([Eyes](eyes.md)). It takes the target's lashes ([Eyes](eyes.md#lashes)), teeth and inner mouth ([Teeth](teeth.md), [Mouth](mouth.md)) as well, its hair and brows (see "Hair and brows" below), and the target's blinks when the handoff has them ([Eyes](eyes.md#a-references-blinks)). It also writes the eye targets of the card's GLB export at the level of its bake for the web viewer (`<card>.blinks.safetensors`, `opensculptboy/page-blinks@1`, named by `material.reference_eyes.blinks`; [Web viewer](viewer.md#a-cards-look)).
+
+## Hair and brows
+
+The parts of the roles `hair` and `brows` stay out of the fit, and the bake carries them onto the card's head (`opensculptboy.groom`):
+
+- **Reading.** `opensculptboy.groom.handoff` reads every hair and brow primitive of `replica.glb` straight from the file, with its UVs, its base colour and normal textures, its vertex colours (`COLOR_0`, which holds a game hair's colour while its texture holds the strands' alpha), its material's alpha mode, cutoff and sides, and its skin: the weights and the bind position and parent of each joint. The primitives that `hidden` names stay out.
+- **The carry.** Each point moves with the fitted head as the fit placed and posed it: the rigid motion (Kabsch) of the head's vertices back to their rest pose, plus two fields of the head's vertices blended at the point by Gaussian weights of its 16 nearest head vertices (at a scale of at least 4 mm): the head's residual from that rigid motion, and the offset from the target's skin to the fitted surface. A brow strip that lies 0.5 mm over the target's skin therefore lies 0.5 mm over the card's.
+- **The hair's skin.** The target's joint with the most weight over the hair is the head. The joints below it that weight the hair are chain joints: their weight goes to Anny's `head`, and each chain becomes a spring chain from its first joint down to a tail one segment past its last joint. Every other joint becomes Anny's nearest bone among the upper spine, the clavicles, the neck and the head (a nape's weight on the neck stays on the neck).
+- **Drawing order.** The triangles of a blended material run from the inside out, by the distance of their centres from the centre of the head, so that an engine that draws them in order draws the outer cards over the inner ones from any view outside the head.
+- **Files.** `<card>.hair.safetensors` and `<card>.brows.safetensors` (`opensculptboy/groom@1`) hold the points, normals, UVs (glTF convention), triangles, the material of each triangle, the vertex colours, the materials and, for the hair, its skin on Anny's bones, its chains and each point's share of weight on chain joints. The textures go next to them as `<card>.<kind>.<material>.<slot>.png`. The card's `material.hair` and `material.brows` sections name them (`{"source": "reference", "mesh": ..., "textures": {material: {slot: path}}}`); `false` leaves a groom out.
+- **The skin bake.** The bake rays meet the target's skin parts alone, so the baked skin holds what the target paints on its skin and no strand of the brow cards. A game character may paint brows on its skin under its brow cards; the exports then show both layers as the game does: the painted layer and the cards over it. The web viewer's own brows step aside for both.
+
+The exports write the grooms as the target draws them ([VRM avatars](vrm.md#hair-and-brows) for the VRM files):
+
+- **Hair.** A mesh `hair` of its own, skinned with the hair's own weights, with `COLOR_0`, a material per groom material and one spring chain per chain of the target (the spring preset `hair`, hanging from `head`); its node's extras hold `opensculptboy_groom`, and the scene extras record it under `opensculptboy.hair`. VRM files write its chains as spring bones.
+- **Brows.** Parts of the body mesh, as the lashes are: each brow point takes the closest point of the skin under it at rest and keeps its offset from that point, so the brows follow the skin's morph targets (`browInnerUp`, the squints), its skin weights and a VRM file's T-pose. The brows come with the eyes of `opensculptboy.eyes`; their materials are named `brows:<material>` in GLB files, and the scene extras record them under `opensculptboy.brows`.
+- **Checks.** `test/test_groom.py` checks a synthetic handoff with a hair cap, three coloured cards on a chain of two joints and two brow strips: the reading, the carry, the skin and the chains, the files and the card's sections, the GLB file (the hair's node, `COLOR_0`, its chain's weights and the brows through `browInnerUp`), the VRM files of both versions, and the page's blink targets against the GLB file's.
 
 ## The skin material in the exports
 
@@ -146,7 +163,8 @@ The last stage moves the vertices onto the target, so the reverse errors carry t
 
 ## Limits
 
-- Hair, eyelashes, brows and clothing are left out of the fit; the bake takes the eyelashes for the exports.
+- Hair, eyelashes, brows and clothing are left out of the fit; the bake takes the eyelashes, the hair and the brows for the exports.
+- The hair follows the head and its spring chains alone: a slider that changes the head's shape after the fit moves the hair with the head without reshaping it, and the shape of a helm over the hair is the helm's own (the `equipment.head.hair` rule of a handoff is not read).
 - The inside of the mouth and the eye sockets follow the skin around them. A handoff that describes its inner mouth gives the exports the target's own gums, palate, tongue, throat and teeth ([Mouth](mouth.md)).
 - An ear far from Anny's shape needs the ear outline landmarks, and an ear that stands off from the head needs `masks.ear`.
 - The body landmarks are joint centres of another rig, so they guide the pose and the proportions loosely; the face landmarks carry most of the placement. A target in a pose far from Anny's (arms raised high, crouching) needs landmarks on the elbows, the wrists and the knees.
