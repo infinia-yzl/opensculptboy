@@ -54,6 +54,9 @@ CASES = [
     {"name": "no_outfit", "body": "thin", "card": "bare"},
     # an override that shows a piece of another outfit puts it in its slot
     {"name": "override_swap", "body": "random", "card": "override"},
+    # a coat inside a vest, both bound on one card's body: made together, so the coat keeps
+    # its place inside the vest
+    {"name": "made_together", "body": "random", "card": "together"},
 ]
 
 
@@ -61,8 +64,11 @@ def _packages(folder: pathlib.Path):
     """The synthetic packages and the card: an outfit (tunic, cape that hides the tunic's
     back, rigid circlet), a second outfit whose smock takes the tunic's slot, and two loose
     pieces: a rigid plate under the tunic and a vest with its own skin weights, an opaque front
-    and a see-through back, and no cover mask (the ray test decides)."""
+    and a lace back (a masked material whose texture is cut out on one side), and no cover
+    mask (the ray test decides). A second card wears a coat inside a vest, both bound on a
+    card's body (made together)."""
     from opensculptboy import Character
+    from opensculptboy.export.document import png_bytes
     from opensculptboy.wearables import (
         Material,
         bind_rigid,
@@ -99,6 +105,11 @@ def _packages(folder: pathlib.Path):
         Material("cloth", (0.3, 0.5, 0.2, 1.0), 0.0, 0.8),
         Material("lace", (0.9, 0.9, 0.9, 1.0), 0.0, 0.6, alpha_mode="MASK"),
     ]
+    # the lace's alpha: solid for u < 0.625 (x < 0.125 m), under the cutoff beyond
+    rgba = np.full((64, 64, 4), 200, np.uint8)
+    rgba[:, 40:, 3] = 140
+    vest.garment.materials[1].alpha_cutoff = 0.6
+    vest.garment.materials[1].textures["base_color"] = png_bytes(rgba)
     vest.garment.triangle_material = vest.garment.triangle_group.copy()
     dense = dense_body_weights(vest.binding, body)
     smooth = smooth_weights(dense, vest.garment.vertices, vest.garment.triangles, 40)
@@ -133,7 +144,16 @@ def _packages(folder: pathlib.Path):
         ],
     )
     (folder / "card.json").write_text(json.dumps(card.to_dict(), indent=1))
-    return card
+    for name, offset, layer in (("inner", 0.008, 40), ("coat", 0.004, 50)):
+        w = dataclasses.replace(tunic(offset=offset), name=name, layer=layer)
+        w.binding = dataclasses.replace(w.binding, body="card")
+        write_wearable(folder / f"{name}.wearable.json", w)
+    together = Character(
+        name="together",
+        wearables=[{"id": n, "file": f"{n}.wearable.json"} for n in ("inner", "coat")],
+    )
+    (folder / "together.json").write_text(json.dumps(together.to_dict(), indent=1))
+    return card, together
 
 
 @unittest.skipUnless(
@@ -154,9 +174,10 @@ class TestViewerWearables(unittest.TestCase):
         cls.dir = pathlib.Path(tempfile.mkdtemp())
         folder = cls.dir / "wear"
         folder.mkdir()
-        card = _packages(folder)
+        card, together = _packages(folder)
         cards = {
             "card": card,
+            "together": together,
             "bare": dataclasses.replace(card, active_outfit=""),
             "override": dataclasses.replace(
                 card, wearable_overrides={"work/smock": {"enabled": True}}
@@ -286,6 +307,7 @@ class TestViewerWearables(unittest.TestCase):
             "no_push",
             "no_outfit",
             "override_swap",
+            "made_together",
         ):
             self.compare(case)
 
@@ -306,6 +328,21 @@ class TestViewerWearables(unittest.TestCase):
         """A card with an empty active_outfit wears none of its outfits in the page."""
         refs = [p["ref"] for p in self.out["no_outfit"]["pieces"]]
         self.assertEqual(refs, ["plate", "vest"])
+
+    def test_lace_and_made_together(self):
+        """The vest's lace back hides the skin where its texture's alpha reaches the cutoff:
+        some of its triangles, and not all. The coat made together with the vest keeps its
+        place inside it: the push-out moves few of its vertices."""
+        from opensculptboy.wearables.cover import opaque_triangles
+
+        pieces, _ = self.expected["template"]
+        vest = next(p for p in pieces if p.ref == "vest")
+        lace = vest.garment.triangle_material == 1
+        solid = len(opaque_triangles(vest)) - int((~lace).sum())
+        self.assertGreater(solid, 0)
+        self.assertLess(solid, int(lace.sum()))
+        coat = {p["ref"]: p for p in self.out["made_together"]["pieces"]}["coat"]
+        self.assertLess(coat["pushed"], 100)
 
     def test_page_frame(self):
         self.compare("page_frame", frame=True, vertex_tolerance=1e-6)

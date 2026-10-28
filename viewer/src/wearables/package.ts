@@ -6,6 +6,8 @@
 // one primitive per group and material) and the binding (<name>.binding.safetensors). The reader repeats
 // opensculptboy.wearables.format.read_wearable. Nothing here touches the DOM or three.js, so node and a worker run it.
 
+import { readAlphaMaps, type AlphaMap } from './alpha.ts';
+
 export const FORMAT = 'opensculptboy.wearable/1';
 
 export interface Material {
@@ -14,6 +16,7 @@ export interface Material {
   metallic: number; roughness: number; emissive: number[];
   alphaMode: string; alphaCutoff: number; doubleSided: boolean; normalScale: number;
   textures: Record<string, { bytes: Uint8Array; mime: string }>;   // base_color, metallic_roughness, normal, occlusion, emissive
+  alpha?: AlphaMap | null;   // the alpha of the base colour texture of a masked material (wearables/alpha.ts)
 }
 
 export interface Garment {
@@ -174,6 +177,7 @@ export async function readWearable(json: any, file: FileSource): Promise<Wearabl
     jointNames: info.joints,
   };
   const garment = readGarment(await file(json.geometry || `${stem}.glb`));
+  await readAlphaMaps(garment);
   const groups: string[] | undefined = json.groups;
   if (groups && groups.length >= garment.groups.length) {
     const index = garment.groups.map((g) => groups.indexOf(g));
