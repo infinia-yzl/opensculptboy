@@ -1585,7 +1585,7 @@ def _vrm_blinks(
         rest,
         rest_offsets,
         actions,
-        card_blink_poses(character, detail, detail_dir),
+        card_blink_poses(character, detail, detail_dir, rest),
         inbetween=False,
     )
     if blinks is None:

@@ -99,6 +99,9 @@ FLAT = 0.05
 # a lid point that lies closer than this (metres) to the eye at rest already touches it: the
 # straight line and the measures leave it aside
 REST_CONTACT = 0.00005
+# the lumps of a lid are its rises and sinks against the skin within about this distance
+# (metres, the deviation of a Gaussian) (:func:`lid_lumps`)
+LUMP_SIGMA = 0.001
 # the corners of the eye: the crossing and the clipping measures leave out the ends of the
 # margins within this distance (metres) along the eye's horizontal axis
 CORNER_MARGIN = 0.002
@@ -251,6 +254,55 @@ def steady_folds(rest, triangles, offsets, rows) -> np.ndarray:
     for k in np.unique(label):
         group = corners[label == k]
         out[group] = out[group].mean(0)
+    return out
+
+
+def local_turns(rest, offsets, triangles, rows) -> np.ndarray:
+    """The turn (len(rows), 3, 3) of the skin around each of ``rows`` from ``rest`` (N, 3) to
+    ``rest + offsets``: the rotation that best carries the edges to its neighbours over
+    (the Kabsch fit of its one ring of ``triangles``)."""
+    x0 = np.asarray(rest, dtype=np.float64)
+    d = np.asarray(offsets, dtype=np.float64)
+    t = np.asarray(triangles, dtype=np.int64)
+    rows = np.asarray(rows, dtype=np.int64)
+    a = np.concatenate([t[:, 0], t[:, 1], t[:, 2], t[:, 1], t[:, 2], t[:, 0]])
+    b = np.concatenate([t[:, 1], t[:, 2], t[:, 0], t[:, 0], t[:, 1], t[:, 2]])
+    local = np.full(len(x0), -1)
+    local[rows] = np.arange(len(rows))
+    keep = local[a] >= 0
+    a, b = a[keep], b[keep]
+    P = x0[b] - x0[a]
+    Q = P + d[b] - d[a]
+    H = np.zeros((len(rows), 3, 3))
+    np.add.at(H, local[a], Q[:, :, None] * P[:, None, :])
+    U, _, Vt = np.linalg.svd(H)
+    sign = np.sign(np.linalg.det(U @ Vt))
+    U[:, :, 2] *= np.where(sign == 0, 1.0, sign)[:, None]
+    return U @ Vt
+
+
+def turn_relief(
+    rest, offsets, relief, triangles, tolerance: float = 1e-9
+) -> np.ndarray:
+    """
+    A pose's offsets (N, 3) of a detail level, carried from level 0 by its subdivision, with
+    the level's ``relief`` (N, 3: its detail offsets that the pose does not carry) turned
+    with the skin around each moving row (:func:`local_turns` of the level's smooth surface,
+    ``rest`` less ``relief``). The detail offsets lie in the rest frame: on a lid that turns
+    about the eye they would keep their rest direction, and the relief of the lid's rim and
+    of its crease would show as lumps and a fold on the closed lid.
+    """
+    out = np.array(offsets, dtype=np.float64, copy=True)
+    relief = np.asarray(relief, dtype=np.float64)
+    rows = np.flatnonzero(
+        (np.linalg.norm(out, axis=1) > tolerance)
+        & (np.linalg.norm(relief, axis=1) > 0.0)
+    )
+    if len(rows) == 0:
+        return out
+    smooth = np.asarray(rest, dtype=np.float64) - relief
+    turns = local_turns(smooth, out, triangles, rows)
+    out[rows] += np.einsum("nij,nj->ni", turns, relief[rows]) - relief[rows]
     return out
 
 
@@ -453,6 +505,46 @@ def _segment_hits(p, q, a, b, c, eps: float = 1e-3) -> np.ndarray:
     return ok & (u > eps) & (v > eps) & (u + v < 1 - eps) & (t > eps) & (t < 1 - eps)
 
 
+def lid_lumps(lids: EyeLids, positions: np.ndarray, rest: np.ndarray) -> float:
+    """
+    How far (mm) the skin of the upper lid rises or sinks against the skin around it,
+    beyond what it does at rest, at its worst away from the corners of the eye
+    (:data:`CORNER_MARGIN`): for each row of the lid's outward skin, its distance from the
+    eye's centre less the Gaussian mean (:data:`LUMP_SIGMA`, over the rows near it at rest)
+    of the distances of the rows around it. A lid that turns about the eye keeps every
+    distance from the eye's centre, and a lid that stretches smoothly keeps the differences
+    over a millimetre, so a closed lid measures the height of the lumps and folds that the
+    closing gives it.
+    """
+    from scipy.spatial import cKDTree
+
+    rows = lids.upper_skin
+    if rows is None or len(rows) == 0:
+        return 0.0
+    x = np.asarray(positions, dtype=np.float64)
+    x0 = np.asarray(rest, dtype=np.float64)
+    R = lids.frame.radius
+    ends = []
+    for margin in (lids.upper, lids.lower):
+        s, _, _ = cylinder(lids.frame, x0[margin])
+        ends.append((s.min(), s.max()))
+    lo = max(ends[0][0], ends[1][0]) + CORNER_MARGIN / R
+    hi = min(ends[0][1], ends[1][1]) - CORNER_MARGIN / R
+    p0 = x0[rows]
+    change = np.linalg.norm(x[rows] - lids.frame.centre, axis=1) - np.linalg.norm(
+        p0 - lids.frame.centre, axis=1
+    )
+    s, _, _ = cylinder(lids.frame, p0)
+    worst = 0.0
+    for i, near in enumerate(cKDTree(p0).query_ball_point(p0, 3.0 * LUMP_SIGMA)):
+        if not lo < s[i] < hi:
+            continue
+        near = np.asarray(near)
+        w = np.exp(-0.5 * (np.linalg.norm(p0[near] - p0[i], axis=1) / LUMP_SIGMA) ** 2)
+        worst = max(worst, abs(change[i] - (w * change[near]).sum() / w.sum()))
+    return worst * 1000.0
+
+
 def lid_clipping(lids: EyeLids, positions: np.ndarray) -> int:
     """The number of pairs of triangles of the upper lid's and the lower lid's
     outward-facing skin that cut through each other, away from the corners of the eye
@@ -640,6 +732,7 @@ def measure_blink(lids, rest, closed, surface, lash=None, half=None, stages=STAG
             "folded_triangles": folded_triangles(lids, x, rest, surface),
             "eye_mm": round(depth, 3),
             "eye_points": n_depth,
+            "lumps_mm": round(lid_lumps(lids, x, rest), 3),
         }
         if lash is not None:
             l0, l1, lh, upper_mask = lash
@@ -1088,11 +1181,11 @@ def blink_offsets(eyed, rest, offsets, names, poses=None, inbetween: bool = True
     ``names``) with each eye's blink target (:data:`BLINK_TARGETS`) set: from the reference's
     blink (``poses``, side to :class:`~opensculptboy.eyes.poses.BlinkPose`) by
     :func:`reference_blink`, else from the synthetic lid rig on the target itself by
-    :func:`rig_blink`. With ``inbetween``, one more row per eye, the in-between corrective,
-    is appended; without it (VRM files) the closed pose keeps the straight line outside the
-    eye (:func:`clear_line`). Returns (offsets, :class:`EyeBlinks`), or (offsets unchanged,
-    None) when the file has no blink target or no lid margins. Raises ValueError for poses
-    of another mesh than ``rest``'s.
+    :func:`rig_blink`. With ``inbetween``, one more row per eye,
+    the in-between corrective, is appended; without it (VRM files) the closed pose keeps the
+    straight line outside the eye (:func:`clear_line`). Returns (offsets,
+    :class:`EyeBlinks`), or (offsets unchanged, None) when the file has no blink target or no
+    lid margins. Raises ValueError for poses of another mesh than ``rest``'s.
     """
     rest = np.asarray(rest, dtype=np.float64)
     offsets = np.asarray(offsets, dtype=np.float64)
@@ -1205,6 +1298,73 @@ def on_margin(offsets, base, margin) -> np.ndarray:
     return offsets - offsets[base] + np.asarray(margin)[base]
 
 
+# the upper lid's lashes (opensculptboy.eyes.lashes.UPPER)
+UPPER_LID = 0
+# the weights of a blink at which the upper lashes are kept in front of the lids, in at most
+# FRONT_ROUNDS rounds (:func:`lashes_in_front`)
+FRONT_CHECKS = (0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0)
+FRONT_ROUNDS = 4
+
+
+def played(t: float, inbetween: bool) -> tuple[float, float]:
+    """The weights of the half-closed pose and of the closed pose (absolute offsets) in a
+    blink at ``t`` as a file plays it: with the in-between corrective, the path from rest
+    through the half-closed pose to the closed pose; without it, the straight line."""
+    if not inbetween:
+        return 0.0, t
+    tent = 1.0 - abs(2.0 * t - 1.0)
+    return tent, t - 0.5 * tent
+
+
+def lashes_in_front(part, rest, lid, lash, inbetween: bool):
+    """
+    A lash part's blink offsets (closed (M, 3), in-between corrective (M, 3)) with its
+    points kept in front of the outward-facing skin around the eye at each weight of
+    :data:`FRONT_CHECKS` as a file plays them (:func:`played`): as far from it as the
+    lashes' binding keeps them (:data:`opensculptboy.eyes.lashes.CLEARANCE`, or their
+    distance at rest when that is less), measured as :func:`skin_side` measures it. ``lid``
+    holds the lids' closed offsets (N, 3) and their in-between corrective. A point that the
+    closing lid would cover moves out along the skin's normal, and the half-closed pose and
+    the closed pose share its push by their weights there. A reference's lashes keep its
+    turn about their bases, and the card's lid can bulge over them where it lies off the
+    reference's.
+    """
+    from opensculptboy.eyes.lashes import CLEARANCE
+
+    follow = part.follow
+    closed, between = lash
+    if follow is None or follow.skin_rows is None or follow.skin_triangles is None:
+        return closed, between
+    rest = np.asarray(rest, dtype=np.float64)
+    skin_tris = follow.skin_triangles
+    floor = np.minimum(
+        CLEARANCE, skin_side(part.rest, rest[follow.skin_rows], skin_tris)[0]
+    )
+    lid_closed, lid_between = (np.asarray(v, dtype=np.float64) for v in lid)
+    skin_rows = follow.skin_rows
+    lid_c = lid_closed[skin_rows]
+    lid_h = (lid_between + 0.5 * lid_closed)[skin_rows]
+    C = np.array(closed, dtype=np.float64, copy=True)
+    H = np.array(between, dtype=np.float64, copy=True) + 0.5 * C
+    for _ in range(FRONT_ROUNDS):
+        moved = False
+        for t in FRONT_CHECKS:
+            a, b = played(t, inbetween)
+            skin = rest[skin_rows] + a * lid_h + b * lid_c
+            points = part.rest + a * H + b * C
+            depth, normals, _ = skin_side(points, skin, skin_tris)
+            need = np.clip(floor - depth, 0.0, None)
+            if need.max(initial=0.0) <= 1e-7:
+                continue
+            moved = True
+            share = need / (a * a + b * b)
+            H += (share * a)[:, None] * normals
+            C += (share * b)[:, None] * normals
+        if not moved:
+            break
+    return C, H - 0.5 * C
+
+
 def blink_lash_offsets(eyed, blinks: EyeBlinks, rest, targets):
     """
     The eyed mesh's targets (T, N + M, 3) with the lashes of each blink target and of its
@@ -1256,6 +1416,15 @@ def blink_lash_offsets(eyed, blinks: EyeBlinks, rest, targets):
                 else:
                     closed, between = rig_lashes(
                         p, frame, rest, shape.closed, shape.inbetween, shape.turn
+                    )
+                if p.lid == UPPER_LID:
+                    # the upper lashes stay in front of the lids at every weight
+                    closed, between = lashes_in_front(
+                        p,
+                        rest,
+                        (shape.closed, shape.inbetween),
+                        (closed, between),
+                        side in blinks.inbetween_rows,
                     )
                 targets[row, rows] = closed
                 if side in blinks.inbetween_rows:

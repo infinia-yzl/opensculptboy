@@ -26,6 +26,7 @@ from opensculptboy.eyes import geometry
 from opensculptboy.eyes.lashes import LOWER, UPPER
 from opensculptboy.eyes.mesh import eyed_mesh
 from opensculptboy.eyes.poses import (
+    SMOOTH_PASSES,
     EyePoses,
     card_blink_poses,
     card_eye_poses,
@@ -63,6 +64,15 @@ UPPER_LASH_DEPTH_MM = 0.3
 # anny's default character)
 LASH_ORDER_MM = 1.2
 CASES = {"left": ("L",), "right": ("R",), "both": ("L", "R")}
+# a closed or half-closed upper lid that turns as one piece gains lumps of at most this
+# height (mm, ``lid_lumps``): the straight line of a morph target shortens each row's path
+# by its own turn, 0.036 mm at most half way on the synthetic relief below, and a level that
+# took level 0's pose subdivided gained 0.11 mm
+LUMPS_MM = 0.05
+# the weights of a blink at which the upper lashes are checked in front of the lids
+FINE_STAGES = tuple(np.round(np.arange(0.05, 1.0001, 0.05), 2))
+# the upper lashes lie at most this deep (mm) inside the lids at any of them
+FRONT_MM = 0.02
 # the base of a lash strip in a file: this share of its points, those nearest the eye's centre
 STRIP_BASE = 0.25
 
@@ -199,6 +209,7 @@ class FileEyes:
             "folded_triangles": B.folded_triangles(lids, skin, self.rest, surface),
             "eye_mm": depth,
             "lash_mm": lash_depth,
+            "lumps_mm": B.lid_lumps(lids, skin, self.rest),
         }
         if closed:
             out["lash_order_mm"] = B.lash_order(
@@ -760,14 +771,19 @@ class TestReferenceClosedEye(unittest.TestCase):
         now = 0.5 * shape.closed + shape.inbetween
         for p, rows in parts:
             # each lash keeps the reference's own turn about its base, and the base moves
-            # with the lid margin under it
+            # with the lid margin under it (B.on_margin); the upper lashes then stay in
+            # front of the lids at every weight (B.lashes_in_front)
             r = p.follow.rows
             base = B.lash_bases(p)
             closed = full[blinks.rows["L"], rows]
             half = full[blinks.inbetween_rows["L"], rows] + 0.5 * closed
+            ref_closed = B.on_margin(
+                lash_closed[p.points], base, p.follow.root @ shape.closed[r]
+            )
+            ref_half = B.on_margin(lash_half[p.points], base, p.follow.root @ now[r])
             for got, want, lid in (
-                (closed, lash_closed[p.points], shape.closed),
-                (half, lash_half[p.points], now),
+                (ref_closed, lash_closed[p.points], shape.closed),
+                (ref_half, lash_half[p.points], now),
             ):
                 np.testing.assert_allclose(
                     got - got[base], want - want[base], atol=1e-12
@@ -775,6 +791,17 @@ class TestReferenceClosedEye(unittest.TestCase):
                 np.testing.assert_allclose(
                     got[base], (p.follow.root @ lid[r])[base], atol=1e-12
                 )
+            if p.lid == UPPER:
+                ref_closed, between = B.lashes_in_front(
+                    p,
+                    rest,
+                    (shape.closed, shape.inbetween),
+                    (ref_closed, ref_half - 0.5 * ref_closed),
+                    True,
+                )
+                ref_half = between + 0.5 * ref_closed
+            np.testing.assert_allclose(closed, ref_closed, atol=1e-12)
+            np.testing.assert_allclose(half, ref_half, atol=1e-12)
             # each base is a point of its own lash near the point's root, and its own base
             np.testing.assert_array_equal(base[base], base)
             roots = p.follow.root @ p.follow.rest
@@ -813,11 +840,33 @@ class TestReferenceClosedEye(unittest.TestCase):
             base = B.lash_bases(p)
             closed = full[blinks.rows["L"], rows]
             half = full[blinks.inbetween_rows["L"], rows] + 0.5 * closed
-            np.testing.assert_allclose(
-                half[base], (p.follow.root @ now[p.follow.rows])[base], atol=1e-12
+            r = p.follow.rows
+            want_closed = B.on_margin(
+                lash_closed[p.points], base, p.follow.root @ shape.closed[r]
             )
-            want = 0.5 * lash_closed[p.points]
-            np.testing.assert_allclose(half - half[base], want - want[base], atol=1e-12)
+            want_half = B.on_margin(
+                0.5 * lash_closed[p.points], base, p.follow.root @ now[r]
+            )
+            if p.lid == UPPER:  # kept in front of the lids
+                want_closed, between = B.lashes_in_front(
+                    p,
+                    rest,
+                    (shape.closed, shape.inbetween),
+                    (want_closed, want_half - 0.5 * want_closed),
+                    True,
+                )
+                want_half = between + 0.5 * want_closed
+            np.testing.assert_allclose(half, want_half, atol=1e-12)
+            np.testing.assert_allclose(closed, want_closed, atol=1e-12)
+            # the base rides the margin of the half-closed lid, with half the turn
+            if p.lid == LOWER:
+                np.testing.assert_allclose(
+                    half[base], (p.follow.root @ now[r])[base], atol=1e-12
+                )
+                want = 0.5 * lash_closed[p.points]
+                np.testing.assert_allclose(
+                    half - half[base], want - want[base], atol=1e-12
+                )
 
     def test_poses_of_another_mesh(self):
         # eye poses of another topology (a card converted after its bake) raise a clear
@@ -859,6 +908,245 @@ class TestReferenceClosedEye(unittest.TestCase):
         self.assertIsNone(card_eye_poses(Character(material={"eyes": {}})))
 
 
+# ------------------------------------------------------------- a detail level's relief
+RELIEF_ANGLE = np.radians(25.0)
+
+
+@functools.lru_cache(maxsize=None)
+def relief_card():
+    """
+    A fitted card in a folder of its own, with a relief on the left upper lid of its detail
+    level 1 (outward bumps of up to 0.6 mm in rows along the lid, as a fitted lid's rim and
+    crease hold), and a reference's blink of that eye from a synthetic rig whose skin is the
+    level's own mesh: its lid joint turns the upper lid by :data:`RELIEF_ANGLE` about the
+    eye's horizontal axis, half as much half way. Returns a namespace of the folder, the card,
+    the level's topology, its rest vertices with and without the relief, the rig's lid
+    weight on them, and the eye's frame.
+    """
+    from types import SimpleNamespace
+
+    from opensculptboy.detail import detail_topology, save_offsets
+    from opensculptboy.export.body import vertex_normals
+    from opensculptboy.eyes.mesh import eyeball_rows
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY, load_handoff
+    from opensculptboy.fit.reference import Reference
+
+    rest0, eyed, _ = anny_blinks()
+    frame = eyed.frames["L"]
+    model = Character().build_model(dtype=torch.float64)
+    topo = detail_topology(model, 1, "full", "anny")
+    smooth = np.asarray(topo.apply(rest0))
+    eyes1 = eyeball_rows(model, topo)
+    on_eye = np.zeros(len(smooth), bool)
+    for rows in eyes1.values():
+        on_eye[rows] = True
+    local = frame.to_local(smooth)
+    dist = np.linalg.norm(local, axis=1)
+    normals = vertex_normals(smooth, topo.triangles)
+    outward = ((normals @ frame.axes) * local).sum(1) / np.maximum(dist, 1e-12) > 0.3
+    window = np.clip((1.55 - dist) / 0.2, 0.0, 1.0) * np.clip((dist - 1.05) / 0.1, 0, 1)
+    window *= np.clip((local[:, 1] - 0.1) / 0.15, 0.0, 1.0) * (local[:, 2] > 0.0)
+    # bumps out of the skin, and rows moved up and down the lid, as the detail offsets of a
+    # fitted rim and crease move them
+    wave = 2.0 * np.pi * local[:, 0] * frame.radius / 0.004
+    phi = np.arctan2(local[:, 1], local[:, 2])
+    up = np.stack([np.zeros_like(phi), np.cos(phi), -np.sin(phi)], 1) @ frame.axes.T
+    keep = (0.0006 * window * (outward & ~on_eye))[:, None]
+    relief = keep * (
+        0.5 * (1.0 + np.cos(wave))[:, None] * normals + np.sin(wave)[:, None] * up
+    )
+    rest1 = smooth + relief
+    # the whole upper lid turns as one piece: the weight falls to 0 over the eye, below
+    # the upper rim and above the lower rim (between their corners)
+    weight = np.clip((local[:, 1] + 0.2) / 0.1, 0.0, 1.0)
+    weight *= np.clip((2.2 - dist) / 0.6, 0.0, 1.0)
+    folder = pathlib.Path(_TMP.name) / "relief"
+    folder.mkdir(exist_ok=True)
+    _reference_rig(folder, rest1, np.asarray(topo.triangles), weight, frame.centre)
+    axis = frame.axes[:, 0] @ GLTF_TO_ANNY
+
+    def turn(angle):
+        return {
+            "lower_jaw": {"rotation": [*(np.sin(angle / 2) * axis), np.cos(angle / 2)]}
+        }
+
+    appearance = {
+        "parts": [{"name": "head", "role": "skin"}],
+        "eyes": {
+            "format": "eyes/1",
+            "poses": {
+                "close_l": {"known": True, "joints": turn(RELIEF_ANGLE)},
+                "half_l": {"known": True, "joints": turn(0.5 * RELIEF_ANGLE)},
+            },
+        },
+    }
+    (folder / "appearance.json").write_text(json.dumps(appearance), encoding="utf-8")
+    handoff = load_handoff(folder)
+    reference = Reference.from_handoff(handoff)
+    triangles0 = eyed.triangles[: int(eyed.kept.sum())]
+    head = np.flatnonzero(np.linalg.norm(rest0 - frame.centre, axis=1) > 0.05)
+    poses = eye_poses(
+        handoff,
+        reference,
+        rest0,
+        rest0,
+        head,
+        eyeball_rows(model),
+        triangles0,
+        levels=[(1, topo, rest1, eyes1)],
+    )
+    poses.save(folder / "card.eye_poses.safetensors")
+    levels = []
+    for subdiv, offsets in ((0, np.zeros_like(rest0)), (1, relief)):
+        name = f"card.detail{subdiv}.safetensors"
+        save_offsets(folder / name, offsets, subdiv, "anny")
+        levels.append({"subdiv": subdiv, "offsets": name})
+    card = Character(
+        name="relief",
+        material={
+            "eyes": {},
+            "reference_eyes": {"poses": "card.eye_poses.safetensors"},
+        },
+        detail={"levels": levels},
+    )
+    return SimpleNamespace(
+        folder=folder,
+        card=card,
+        topology=topo,
+        smooth=smooth,
+        rest=rest1,
+        relief=relief,
+        weight=weight,
+        frame=frame,
+        poses=poses,
+        model=model,
+    )
+
+
+class TestDetailRelief(unittest.TestCase):
+    """A detail level's offsets lie in the rest frame: a blink carried to the level by its
+    subdivision alone keeps their rest direction on the turning lid, and the relief of the
+    lid's rim and crease shows as lumps and folds on the closed lid. The level takes its own
+    carry of the reference's blink (or, for poses written before the levels' carry, turns the
+    level's detail offsets with the skin around them), and the files' lid closes without new
+    lumps."""
+
+    def _ideal(self, data, angle):
+        """The rig's own motion of the level's vertices (its linear blend skinning)."""
+        frame = data.frame
+        R = _rotation(frame.axes[:, 0], angle)
+        local = data.rest - frame.centre
+        return data.weight[:, None] * (local @ R.T - local)
+
+    def _lid_rows(self, data, rings=1):
+        """The rows of the relief that the rig turns as one piece with their neighbours
+        within ``rings`` rings."""
+        bumped = np.linalg.norm(data.relief, axis=1) > 1e-5
+        rigid = (data.weight > 0.999).astype(float)
+        A = B.neighbours(data.topology.triangles, len(rigid))
+        for _ in range(rings):
+            rigid = np.where(A @ rigid > 1.0 - 1e-9, rigid, 0.0)
+        return np.flatnonzero(bumped & (rigid > 0))
+
+    def test_level_carry(self):
+        from opensculptboy.export.detail import resolve
+
+        data = relief_card()
+        self.assertIn(1, data.poses.levels)
+        detail = resolve(data.model, data.card, 1, data.folder)
+        # the rows whose neighbours within the carry's smoothing turn as one piece
+        rows = self._lid_rows(data, SMOOTH_PASSES)
+        self.assertGreater(len(rows), 30)
+        # the problem: level 0's pose subdivided leaves the relief in its rest direction
+        poses = card_eye_poses(data.card, data.folder)
+        subdivided = detail.targets(poses.blink_poses()["L"].closed[None])[0]
+        ideal = self._ideal(data, RELIEF_ANGLE)
+        error = np.linalg.norm(subdivided[rows] - ideal[rows], axis=1).max() * 1000
+        self.assertGreater(error, 0.15)
+        # the level's own carry: closed and half closed as the rig moves the level
+        got = card_blink_poses(data.card, detail, data.folder, data.rest)["L"]
+        for value, angle in (
+            (got.closed, RELIEF_ANGLE),
+            (got.half, 0.5 * RELIEF_ANGLE),
+        ):
+            want = self._ideal(data, angle)
+            error = np.linalg.norm(value[rows] - want[rows], axis=1).max() * 1000
+            self.assertLess(error, 0.03, angle)
+        # poses written without the levels' carry turn the relief with the lid
+        old = EyePoses(poses.names, poses.offsets, poses.stats, poses.lashes)
+        with tempfile.TemporaryDirectory() as tmp:
+            old.save(pathlib.Path(tmp) / "card.eye_poses.safetensors")
+            for name in ("card.detail0.safetensors", "card.detail1.safetensors"):
+                (pathlib.Path(tmp) / name).write_bytes(
+                    (data.folder / name).read_bytes()
+                )
+            turned = card_blink_poses(data.card, detail, tmp, data.rest)["L"]
+        # ... by about the rig's own turn of the lid, on top of level 0's pose subdivided
+        # (level 0's smoothed carry turns a little less than the rig)
+        R = _rotation(data.frame.axes[:, 0], RELIEF_ANGLE)
+        want = subdivided + data.relief @ R.T - data.relief
+        error = np.linalg.norm(turned.closed[rows] - want[rows], axis=1).max()
+        unturned = np.linalg.norm(subdivided[rows] - want[rows], axis=1).max()
+        self.assertLess(error, 0.5 * unturned)
+
+    def test_turn_relief(self):
+        # a rigid turn of a level's smooth surface turns its relief with it
+        data = relief_card()
+        frame = data.frame
+        R = _rotation(frame.axes[:, 0], RELIEF_ANGLE)
+        local = data.smooth - frame.centre
+        motion = data.weight[:, None] * (local @ R.T - local)
+        turned = B.turn_relief(data.rest, motion, data.relief, data.topology.triangles)
+        rows = self._lid_rows(data)
+        want = self._ideal(data, RELIEF_ANGLE)
+        np.testing.assert_allclose(turned[rows], want[rows], atol=2e-5)
+        # rows that do not move keep their offsets
+        still = np.linalg.norm(motion, axis=1) == 0
+        np.testing.assert_array_equal(turned[still], motion[still])
+
+    def _file(self, card, name):
+        path = relief_card().folder / name
+        export_glb(path, card, detail_level=1, detail_dir=relief_card().folder)
+        return FileEyes(path)
+
+    def _check_relief(self, eyes, sides=("L",), lumps=True):
+        for side in sides:
+            for inbetween in (True, False) if lumps else ():
+                for t in STAGES[1:]:
+                    weights = stage_weights((side,), t, inbetween)
+                    m = eyes.measure(weights, side, closed=t == 1.0)
+                    with self.subTest(side=side, inbetween=inbetween, t=t):
+                        self.assertLessEqual(m["lumps_mm"], LUMPS_MM)
+                        self.assertEqual(m["folded_triangles"], 0)
+            # the upper lashes stay in front of the lids at every weight of the path
+            lids, _, lash, upper = eyes.eyes[side]
+            rest_x = eyes.positions({})
+            for t in FINE_STAGES:
+                x = eyes.positions(stage_weights((side,), t, True))
+                depth, _ = B.lash_penetration(
+                    lids, x[eyes.first], eyes.rest, x[lash][upper], rest_x[lash][upper]
+                )
+                with self.subTest(side=side, lashes=t):
+                    self.assertLessEqual(depth, FRONT_MM)
+
+    def test_reference_file(self):
+        data = relief_card()
+        eyes = self._file(data.card, "relief.glb")
+        blinks = eyes.glb.json["scenes"][0]["extras"]["opensculptboy"]["eyes"]["blinks"]
+        self.assertEqual(blinks["eyeBlinkLeft"]["source"], "reference")
+        self._check_relief(eyes)
+
+    def test_rig_file(self):
+        # a card without a reference's blink: the upper lashes of anny's own blink stay in
+        # front of the lids as well
+        import dataclasses
+
+        data = relief_card()
+        card = dataclasses.replace(data.card, material={"eyes": {}})
+        eyes = self._file(card, "relief_rig.glb")
+        self._check_relief(eyes, ("L", "R"), lumps=False)
+
+
 class TestConvertedPoses(unittest.TestCase):
     """``opensculptboy convert`` carries a card's eye poses and mouth poses to the other
     mesh with the row maps of its detail offsets, so the converted card blinks."""
@@ -872,9 +1160,21 @@ class TestConvertedPoses(unittest.TestCase):
         # the reference's blink of each eye: anny's own blink, as rows of anny's level 0
         cls.offsets = np.stack([targets["L"], targets["R"]])
         lashes = np.zeros((2, 5, 3))
-        EyePoses(("close_l", "close_r"), cls.offsets, {}, lashes).save(
-            cls.folder / "card.eye_poses.safetensors"
+        # a level 1 correction on some rows of anny's level 1
+        from opensculptboy.detail import level
+
+        count = level("anny", 1).vertex_count
+        cls.level_rows = np.arange(0, count, 7)
+        cls.level_values = np.stack(
+            [np.full((len(cls.level_rows), 3), 1e-4 * (k + 1)) for k in range(2)]
         )
+        EyePoses(
+            ("close_l", "close_r"),
+            cls.offsets,
+            {},
+            lashes,
+            {1: (cls.level_rows, cls.level_values)},
+        ).save(cls.folder / "card.eye_poses.safetensors")
         card = Character(
             name="converted",
             material={
@@ -925,6 +1225,17 @@ class TestConvertedPoses(unittest.TestCase):
             atol=1e-6,
         )
         self.assertEqual(poses.lashes.shape, (2, 5, 3))  # rows of the lashes, kept
+        # the level's correction, carried with the level's row maps
+        c1 = LevelCorrespondence(1, self.rest)
+        rows, values = poses.levels[1]
+        full = np.zeros((2, len(c1.sculpt_to_anny), 3))
+        full[:, rows] = values
+        mine = np.zeros(len(c1.anny_to_sculpt), bool)
+        mine[self.level_rows] = True
+        kept = (c1.sculpt_to_anny >= 0) & mine[np.maximum(c1.sculpt_to_anny, 0)]
+        self.assertGreater(kept.sum(), 100)
+        np.testing.assert_allclose(full[0, kept], 1e-4, atol=1e-9)
+        np.testing.assert_allclose(full[1, kept], 2e-4, atol=1e-9)
         self._check_blink(self._export(sculpt))
 
         back = self.folder / "back" / "card.json"
