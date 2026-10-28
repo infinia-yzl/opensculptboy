@@ -141,6 +141,8 @@ export interface App {
   gpuSupported(): boolean;
   // why the picture stopped refining: 'converged' or 'samples'
   refined(): string;
+  // the renderer's side of the character sheet (sheet/host.ts)
+  sheetHost(): import('../sheet/host.ts').SheetHost;
 }
 
 // what main.ts calls back into the interface

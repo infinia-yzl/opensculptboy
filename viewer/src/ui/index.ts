@@ -17,6 +17,7 @@ import { lookHistory } from './history.ts';
 import { icon } from './icons.ts';
 import { isPhone, makeSegment, WIDE, type Segment } from './segments.ts';
 import { helpSheet } from './shortcuts.ts';
+import { sheetSection } from './sheet_ui.ts';
 import { stageSections } from './stage_ui.ts';
 import { wearablesSection } from './wearables_ui.ts';
 import { makeStats, type Stats } from './stats.ts';
@@ -88,17 +89,20 @@ export function initUI(app: App): UI {
   // ---------------------------------------------------------------- the segments
   const cs = characterSections(ed);
   const ss = stageSections(app);
+  const sheet = sheetSection(app, () => layout());
   let prevL = false, prevR = false;
   const layout = () => {
     const lo = left.isOpen(), ro = right.isOpen();
     // on a narrower screen the two inspectors take turns
     if (lo && ro && innerWidth < WIDE) { if (!prevL) right.close(); else left.close(); return; }
     prevL = left.isOpen(); prevR = right.isOpen();
+    // the Sheet section shows its layout view beside the 3D view
+    sheet.setOpen(right.isOpen() && right.current() === 'sheet');
     if (isPhone() || app.shot) { nav.setInsets(0, 0); document.body.classList.toggle('sheet-open', prevL || prevR); document.body.classList.remove('vb-compact', 'vb-fold'); return; }
     document.body.classList.remove('sheet-open');
     // the free space lies between the right edge of the left segment and the left edge of the right one
     const r = (el: HTMLElement) => el.hidden ? null : el.getBoundingClientRect();
-    const lr = [r(left.rail), r(left.panel)].filter(Boolean) as DOMRect[], rr = [r(right.rail), r(right.panel)].filter(Boolean) as DOMRect[];
+    const lr = [r(left.rail), r(left.panel)].filter(Boolean) as DOMRect[], rr = [r(right.rail), r(right.panel), r(sheet.view)].filter(Boolean) as DOMRect[];
     const l = lr.length ? Math.max(...lr.map((x) => x.right)) : 0, rt = rr.length ? innerWidth - Math.min(...rr.map((x) => x.left)) : 0;
     nav.setInsets(l, rt);
     // the view bar folds its labels, then itself, as the free space narrows
@@ -118,6 +122,7 @@ export function initUI(app: App): UI {
     { id: 'pose', label: 'Pose', icon: 'pose', key: 'p', el: ss.pose },
     { id: 'rig', label: 'Rig', icon: 'bones', key: 'r', el: ss.rig },
     { id: 'scene', label: 'Scene', icon: 'scene', key: 'l', el: ss.scene },
+    { id: 'sheet', label: 'Sheet', icon: 'sheet', key: 's', el: sheet.el },
   ], layout);
   if (!app.clips().length) { right.sections[0].el.remove(); (right.rail.querySelector('#tab-pose') as HTMLElement).hidden = true; }
 
@@ -263,7 +268,7 @@ export function initUI(app: App): UI {
     app.setRigBone(name, !!name);
   });
 
-  document.body.append(top, left.rail, left.panel, right.rail, right.panel, nav.rail, viewbar, stats.el, help, shotDlg, boneTip);
+  document.body.append(top, left.rail, left.panel, right.rail, right.panel, sheet.view, nav.rail, viewbar, stats.el, help, shotDlg, boneTip);
   if (coach) document.body.append(coach);
 
   // ---------------------------------------------------------------- the keyboard
@@ -277,7 +282,7 @@ export function initUI(app: App): UI {
       return;
     }
     if (typing(e) || mod) return;
-    if (help.open) return;
+    if (help.open || document.querySelector('dialog[open]')) return;
     if (e.altKey) {
       const m = /^Digit([1-4])$/.exec(e.code);
       if (m) { const names = Object.keys(app.presets); const n = names[+m[1] - 1]; if (n) { e.preventDefault(); app.applyPreset(n); } }
@@ -291,7 +296,7 @@ export function initUI(app: App): UI {
       '0': () => nav.reset(), '1': () => nav.frame('body'), '2': () => nav.frame('upper'), '3': () => nav.frame('face'),
       '4': () => nav.angle('front'), '5': () => nav.angle('three'), '6': () => nav.angle('side'), '7': () => nav.angle('back'),
       c: () => left.toggle('characters'), b: () => left.toggle('body'), f: () => left.toggle('face'), h: () => left.toggle('hair'), e: () => left.toggle('skin'),
-      p: () => right.toggle('pose'), r: () => right.toggle('rig'), l: () => right.toggle('scene'),
+      p: () => right.toggle('pose'), r: () => right.toggle('rig'), l: () => right.toggle('scene'), s: () => right.toggle('sheet'),
       H: () => app.setHairVisible(!app.hairVisible()), t: () => app.setTurntable(!app.turntable()),
       B: () => app.setRigView(app.rigView() === 'skeleton' ? 'off' : 'skeleton'),
       W: () => app.setRigView(app.rigView() === 'weights' ? 'off' : 'weights'),
