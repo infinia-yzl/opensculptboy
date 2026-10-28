@@ -68,11 +68,11 @@ export function figureFrames(boxes: Box[], ground: number, height: number, pad =
 }
 
 // the face frame: from just below the chin to just above the top of the head or its hair, so the face (the chin to the
-// hairline, about three quarters of the head) fills about 60 % of the height; tall headgear is cut a third of the head's
-// height above its top
+// hairline, about three quarters of the head) fills about 60 % of the height; tall hair and headgear are cut a sixth of
+// the head's height above its top, so the face keeps its share on every character
 export function faceFrame(chinY: number, crownY: number, hairTop: number, headX: number, height: number, aspect = 0.8): Frame {
   const H = Math.max(0.05, crownY - chinY);
-  const y0 = chinY - H * 0.09, y1 = Math.min(Math.max(hairTop, crownY), crownY + H * 0.3) + H * 0.05;
+  const y0 = chinY - H * 0.09, y1 = Math.min(Math.max(hairTop, crownY), crownY + H * 0.15) + H * 0.05;
   const width = Math.max(2, 2 * Math.round(height * aspect / 2));
   return { cx: headX, cy: (y0 + y1) / 2, halfH: (y1 - y0) / 2, width, height };
 }

@@ -119,17 +119,17 @@ const out = {};
   assert.ok(Math.abs(hf.cx - 0.01) < 1e-12);
   out.head = hf;
   // the face frame: the chin and the top of the head inside, the head about three quarters of the height (the face,
-  // from the chin to the hairline, about 60 %), tall headgear cut a third of the head above its top
+  // from the chin to the hairline, about 60 %), tall headgear cut a sixth of the head above its top
   const chin = 0.414, crown = 0.61, H = crown - chin;
-  const ff2 = faceFrame(chin, crown, 0.65, 0.0, 960, 0.8);
+  const ff2 = faceFrame(chin, crown, 0.635, 0.0, 960, 0.8);
   assert.equal(ff2.width, 768);
   const lo = ff2.cy - ff2.halfH, hi = ff2.cy + ff2.halfH;
-  assert.ok(lo < chin && hi > 0.65, 'the chin and the hair inside');
+  assert.ok(lo < chin && hi > 0.635, 'the chin and the hair inside');
   const share = H / (hi - lo);
   assert.ok(share > 0.7 && share < 0.82, `the head fills ${share}`);
   assert.ok(Math.abs(0.75 * share - 0.58) < 0.05, 'the face fills about 60 %');
   const tall = faceFrame(chin, crown, crown + 0.4, 0.0, 960, 0.8);
-  assert.ok(tall.cy + tall.halfH < crown + 0.4 * H, 'tall headgear is cut');
+  assert.ok(tall.cy + tall.halfH < crown + 0.25 * H, 'tall headgear is cut');
   out.face = { frame: ff2, share };
 }
 
