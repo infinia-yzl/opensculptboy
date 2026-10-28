@@ -7,10 +7,13 @@
 import type { Background } from './settings.ts';
 import type { Item, PageLayout } from './layout.ts';
 
-const COLOURS: Record<Background, { bg: string | null; ink: string; muted: string; faint: string; line: string }> = {
-  paper: { bg: '#f1eee8', ink: '#1d1b19', muted: '#6d665e', faint: '#a39b91', line: '#d6d0c7' },
+// the colours of each background: the text and the lines follow the ground, so they stay readable on it (a
+// transparent page keeps the paper's text colours, for a light place)
+export const COLOURS: Record<Background, { bg: string | null; ink: string; muted: string; faint: string; line: string }> = {
+  grey: { bg: '#3b3936', ink: '#f0ebe4', muted: '#c4bcb2', faint: '#a1998f', line: '#5c5751' },
+  paper: { bg: '#f1eee8', ink: '#1d1b19', muted: '#6d665e', faint: '#857d73', line: '#d6d0c7' },
   dark: { bg: '#141518', ink: '#ece7e1', muted: '#a39b93', faint: '#6f6962', line: '#34332f' },
-  transparent: { bg: null, ink: '#1d1b19', muted: '#6d665e', faint: '#a39b91', line: '#d6d0c7' },
+  transparent: { bg: null, ink: '#1d1b19', muted: '#6d665e', faint: '#857d73', line: '#d6d0c7' },
 };
 const FONTS = { serif: '"Instrument Serif", "Iowan Old Style", Georgia, "Times New Roman", serif', sans: '"Instrument Sans", "Helvetica Neue", Arial, system-ui, sans-serif' };
 
@@ -32,7 +35,7 @@ export function compose(layout: PageLayout, background: Background, picture: Pic
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(layout.width * scale)); c.height = Math.max(1, Math.round(layout.height * scale));
   const g = c.getContext('2d')!;
-  const col = COLOURS[background] || COLOURS.paper;
+  const col = COLOURS[background] || COLOURS.grey;
   if (col.bg) { g.fillStyle = col.bg; g.fillRect(0, 0, c.width, c.height); }
   g.scale(scale, scale);
   g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';

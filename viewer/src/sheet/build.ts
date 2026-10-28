@@ -9,7 +9,7 @@
 
 import { face } from '../face/api.ts';
 import type { FaceState } from '../face/api.ts';
-import type { SheetHost, SheetView } from './host.ts';
+import type { MeterReading, SheetHost, SheetView } from './host.ts';
 import { alphaOf, coverage, faceFrame, figureFrames, headFrame, maskBox, pageLayout, type Box, type Frame, type PageLayout, type PanelInput } from './layout.ts';
 import { expressionLabel, PANEL_LABELS, panelStyle, shownPanels, TURNAROUND_POSE, VIEWS, type PanelId, type PoseSlot, type SheetSettings } from './settings.ts';
 import { styleById } from './styles.ts';
@@ -19,12 +19,15 @@ export const HEIGHTS = { turnaround: 2048, expressions: 960, poses: 1536 };
 // the expression cells: portrait for the face framing, wider for the head and shoulders
 export const CELL_ASPECT = { face: 0.8, shoulders: 0.9 };
 const PROBE = 192;
+// the height of the meter's picture of the whole figure
+const METER_H = 320;
 const PIXELS_PER_FRAME = 2.2e6;
 
 export interface Picture { data: ImageData; bitmap: ImageBitmap | null; w: number; h: number; coverage: number; label: string }
 // boxes: what the probes saw of each picture's figure, in metres on the target plane (layout.ts Box)
 export interface PanelResult { id: PanelId; title: string; labels: string[]; frames: Frame[]; boxes: Box[]; groundRow?: number; pictures: (Picture | null)[]; ms: number }
-export interface SheetResult { settings: SheetSettings; name: string; panels: PanelResult[]; layout: PageLayout; ms: number; notes: string[] }
+// meter: the reading that set the exposure of the studio lights (null with the page's lights)
+export interface SheetResult { settings: SheetSettings; name: string; panels: PanelResult[]; layout: PageLayout; ms: number; notes: string[]; meter: MeterReading | null }
 
 export interface BuildEvents {
   // the share of the work done, and what runs now
@@ -68,11 +71,13 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
   const name = settings.name || host.characterName();
   const panels = planPanels(settings, host);
   const notes: string[] = [];
-  const result = (): SheetResult => ({ settings, name, panels, layout: layoutOf(settings, name, panels), ms: Math.round(performance.now() - t0), notes });
+  let meter: MeterReading | null = null;
+  const result = (): SheetResult => ({ settings, name, panels, layout: layoutOf(settings, name, panels), ms: Math.round(performance.now() - t0), notes, meter });
   // the work in pixels drawn: the probes and every pass of every picture, with the estimated sizes until the frames
   let total = 0, done = 0, budget = 0;
   const aspect = CELL_ASPECT[settings.panels.expressions.framing];
   for (const P of panels) for (const s of estimatePanel(P.id, P.labels.length, k, aspect)) total += (s.w * s.h * S) + PROBE * PROBE;
+  if (settings.render.lights === 'studio') total += PROBE * PROBE + METER_H * METER_H;
   let label = '';
   const say = (l: string) => { label = l; ev.progress?.(Math.min(0.99, done / Math.max(1, total)), label); };
   const tick = async (px: number) => {
@@ -118,6 +123,15 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
   const savedFace: FaceState = face().get();
   host.hold(true);
   try {
+    host.lights(settings.render.lights);
+    if (settings.render.lights === 'studio') {
+      // one exposure for the whole sheet, metered on the whole figure from the front in the turnaround's pose
+      say('Metering the light');
+      show(settings.panels.turnaround.pose); host.turn(0);
+      const style = panelStyle(settings, 'turnaround');
+      const ff = figureFrames([await probeFigure(0, style)], host.figure().ground, METER_H);
+      meter = await host.meter({ turn: 0, ...ff.frames[0] }, settings.render.exposure, tick);
+    }
     for (const P of panels) {
       const tp = performance.now(), style = panelStyle(settings, P.id);
       if (P.id === 'turnaround') {
@@ -196,6 +210,7 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
     }
   } finally {
     await face().set(savedFace).catch(() => {});
+    host.lights('page');
     host.hold(false);
   }
   ev.progress?.(1, 'Done');
@@ -206,6 +221,7 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
 export function report(r: SheetResult, pngBytes = 0) {
   return {
     width: r.layout.width, height: r.layout.height, ms: r.ms, png_bytes: pngBytes, name: r.name, notes: r.notes.slice(),
+    lights: r.settings.render.lights, meter: r.meter,
     panels: Object.fromEntries(r.panels.map((P) => [P.id, { ms: P.ms, ground_row: P.groundRow ?? null, frames: P.frames, boxes: P.boxes,
       pictures: P.pictures.map((p, i) => (p ? { label: p.label, w: p.w, h: p.h, coverage: p.coverage } : { label: P.labels[i], w: 0, h: 0, coverage: 0 })),
       rect: r.layout.rects[P.id] || null }])),
