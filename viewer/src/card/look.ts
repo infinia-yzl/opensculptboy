@@ -461,14 +461,16 @@ export class CardLook {
 
   // the parts keep their place on the head of the card's body: they move and scale with the head, and the lashes and
   // the brows take the eye targets' offsets of the blink shown
-  private moveParts() {
+  // (only: the parts to move, for a face or a blink, which leave the hair where it is)
+  private moveParts(only?: (p: PartMesh) => boolean) {
     const body = this.host.body(), head = this.host.headBone(), J = body.joints, jh = [J[head * 3], J[head * 3 + 1], J[head * 3 + 2]];
     const ph = this.placedHead!, s = body.headScale() / ph.scale;
     for (const p of this.parts) {
+      if (only && !only(p)) continue;
       const at = p.geo.attributes.position as any, A = at.array as Float32Array, R = p.rest, B = p.blink, F = p.face;
       for (let i = 0; i < A.length; i += 3) for (let c = 0; c < 3; c++) A[i + c] = jh[c] + (R[i + c] - ph.joint[c] + (B ? B[i + c] : 0)) * s + (F ? F[i + c] : 0);
       at.needsUpdate = true;
-      p.geo.computeBoundingSphere();
+      if (!only) p.geo.computeBoundingSphere();
     }
   }
 
@@ -554,12 +556,13 @@ export class CardLook {
       // the inner mouth's own offsets in the card's poses
       if (p.inner && P) P.inner.forEach((D, k) => { const f = m.poses[k]; if (f && D && D.length === F.length) for (let i = 0; i < F.length; i++) F[i] += f * D[i]; });
     }
-    if (this.parts.length) this.moveParts();
+    if (this.parts.length) this.moveParts((p) => p.kind !== 'hair');
     // the patch of a sculpt card: its blend of the coarse body's face
     const q = this.patch;
     if (q?.geo && (q as any).base) {
-      if (m?.coarse) {
-        const D = this.patchFace || (this.patchFace = new Float32Array(q.rows.length * 3)), C = m.coarse;
+      const C = m ? m.coarse() : null;
+      if (C) {
+        const D = this.patchFace || (this.patchFace = new Float32Array(q.rows.length * 3));
         for (let i = 0; i < q.rows.length; i++) {
           let x = 0, y = 0, z = 0;
           for (let e = q.start[i]; e < q.start[i + 1]; e++) { const c = q.cols[e] * 3, w = q.values[e]; x += w * C[c]; y += w * C[c + 1]; z += w * C[c + 2]; }
@@ -620,7 +623,7 @@ export class CardLook {
       shapes.forEach((D, t) => { const k = w[t]; if (k) for (let i = 0; i < out.length; i++) out[i] += k * D[i]; });
     };
     for (const p of this.parts) if (p.blink) sum(this.partBlinks.get(p), p.blink);
-    if (this.parts.length) this.moveParts();
+    if (this.parts.length) this.moveParts((p) => !!p.blink);
     const q = this.patch;
     if (q?.geo && (q as any).base && this.patchBlinks) {
       const D = this.patchBlink || (this.patchBlink = new Float32Array(q.geo.attributes.position.array.length));

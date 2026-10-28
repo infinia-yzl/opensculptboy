@@ -1723,17 +1723,20 @@ function initFace() {
     redraw: () => { shadowsDirty = true; resetAccum(); },
     morph: () => FACE_MORPH,
     strands: (at) => {
+      // the page's own brows and lashes, when they show (a card's own take their place)
+      const sets = ['brows', 'lashes'].filter((n) => !CARD_PARTS || (CARD_PARTS as any)[n]);
+      if (!sets.length) return;
       const A = BODY.anny, P = A.pos;
-      if (!at) A.followStrands(['brows', 'lashes']);
+      if (!at) A.followStrands(sets);
       else {
         // the face's positions of the strands' corners for a moment, then the rest again
         const ids = strandCorners(), keep = new Float32Array(ids.length * 3), o = [0, 0, 0];
         for (let i = 0; i < ids.length; i++) { const v = ids[i] * 3; keep[i * 3] = P[v]; keep[i * 3 + 1] = P[v + 1]; keep[i * 3 + 2] = P[v + 2]; }
         for (let i = 0; i < ids.length; i++) { at(ids[i], o); const v = ids[i] * 3; P[v] = o[0]; P[v + 1] = o[1]; P[v + 2] = o[2]; }
-        A.followStrands(['brows', 'lashes']);
+        A.followStrands(sets);
         for (let i = 0; i < ids.length; i++) { const v = ids[i] * 3; P[v] = keep[i * 3]; P[v + 1] = keep[i * 3 + 1]; P[v + 2] = keep[i * 3 + 2]; }
       }
-      for (const h of HAIRSETS) if (h.name === 'brows' || h.name === 'lashes') h.tex.needsUpdate = true;
+      for (const h of HAIRSETS) if (sets.includes(h.name)) h.tex.needsUpdate = true;
     },
     eyes: (turns) => {
       for (const s of ['l', 'r']) { const G = turns[s]; if (G) EYE_TURN[s].set(G[0], G[1], G[2], G[3], G[4], G[5], G[6], G[7], G[8]); }

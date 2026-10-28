@@ -35,7 +35,7 @@ export interface FaceMotion {
   lower(x: number, y: number, z: number, out: number[]): void;   // the offset of a point of the lower jaw
   tongue(x: number, y: number, z: number, out: number[], key?: number): void;  // the offset of a point of the tongue (key: a number of the point, which keeps its nearest vertices of Anny's tongue)
   jawTurn: Float64Array;                                      // the jaw's turn (row-major), for the normals of the lower jaw
-  coarse: Float32Array | null;                                // the face's offsets of the coarse body
+  coarse(): Float32Array | null;                              // the face's offsets of the coarse body (made when asked)
   poses: Float32Array;                                        // the weight of each of the card's poses
 }
 
@@ -389,13 +389,18 @@ export class PageFace implements FaceDriver {
         for (const [i, d] of best) { const g = f / Math.max(d, 1e-5) / sw; for (let c = 0; c < 3; c++) out[c] += g * off[i * 3 + c]; }
       }
     };
-    // the face's offsets of the coarse body (for a sculpt card's patch)
-    const C = rig.body.coarse, V = C.slice();
-    rig.coarseFace(w, V);
-    const coarse = new Float32Array(V.length);
-    for (let i = 0; i < V.length; i++) coarse[i] = V[i] - C[i];
-    const P = this.poses;
-    if (P && pw) P.coarse.forEach((c, j) => { const f = pw[j]; if (f) for (let i = 0; i < c.idx.length; i++) for (let q = 0; q < 3; q++) coarse[c.idx[i] * 3 + q] += f * c.d[i * 3 + q]; });
+    // the face's offsets of the coarse body (for a sculpt card's patch), made when asked
+    let made: Float32Array | null = null;
+    const coarse = () => {
+      if (made) return made;
+      const C = rig.body.coarse, V = C.slice();
+      rig.coarseFace(w, V);
+      made = new Float32Array(V.length);
+      for (let i = 0; i < V.length; i++) made[i] = V[i] - C[i];
+      const P = this.poses;
+      if (P && pw) P.coarse.forEach((c, j) => { const f = pw[j]; if (f) for (let i = 0; i < c.idx.length; i++) for (let q = 0; q < 3; q++) made![c.idx[i] * 3 + q] += f * c.d[i * 3 + q]; });
+      return made;
+    };
     return { skin, region: layer.region, lower, tongue: tongueAt, jawTurn: R, coarse, poses: pw || new Float32Array(0) };
   }
 
