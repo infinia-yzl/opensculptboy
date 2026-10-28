@@ -471,17 +471,19 @@ export class AnnyBody {
 
   // the frame of each strand on the current body: a strand point is root + scalp * (t1 x + t2 y + n z) for its local
   // coordinates (x, y, z), with the frame (t1, t2, n) of the triangle under the root (anny.hair.StrandBinding); with a
-  // tip binding, the frame of the triangle under the tip follows
-  followStrands() {
+  // tip binding, the frame of the triangle under the tip follows. `only` names the sets that follow (the brows and the
+  // lashes for a face); the scalp's size stays as the hair gave it
+  followStrands(only?: string[]) {
     const P = this.pos, F = new Float64Array(9);
     const hair = this.strands.hair;
     if (!hair) return;
-    const hr = anchors(P, hair.corners, hair.bary, hair.counts.length);
-    this.scalp = rmsSize(hr);
+    const hr = only && !only.includes('hair') ? null : anchors(P, hair.corners, hair.bary, hair.counts.length);
+    if (hr) this.scalp = rmsSize(hr);
     const k = this.scalp;
-    for (const s of Object.values(this.strands)) {
+    for (const [name, s] of Object.entries(this.strands)) {
+      if (only && !only.includes(name)) continue;
       const nS = s.counts.length, M = s.frames, stride = s.tipCorners ? 24 : 12;
-      const parts: [Uint32Array, Float64Array, number][] = [[s.corners, s === hair ? hr : anchors(P, s.corners, s.bary, nS), 0]];
+      const parts: [Uint32Array, Float64Array, number][] = [[s.corners, s === hair && hr ? hr : anchors(P, s.corners, s.bary, nS), 0]];
       if (s.tipCorners) parts.push([s.tipCorners, anchors(P, s.tipCorners, s.tipBary, nS), 12]);
       for (const [C, A, off] of parts) {
         for (let i = 0; i < nS; i++) {

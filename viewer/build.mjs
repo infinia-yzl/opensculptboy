@@ -24,7 +24,7 @@ async function encodeData() {
   await MeshoptEncoder.ready;
   const man = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json')));
   const read = (name) => new Uint8Array(fs.readFileSync(path.join(dir, name + '.raw')));
-  const META_KEYS = ['eyes', 'eye_mesh', 'lut', 'skin', 'rig', 'motion', 'correctives', 'shape', 'stool', 'authoring', 'hair'];
+  const META_KEYS = ['eyes', 'eye_mesh', 'lut', 'skin', 'rig', 'motion', 'correctives', 'shape', 'stool', 'authoring', 'hair', 'expressions'];
   const header = { buffers: [], meta: Object.fromEntries(META_KEYS.map((k) => [k, man[k]])) };
   const parts = [];
   let offset = 0;
@@ -39,8 +39,9 @@ async function encodeData() {
   const COMPANIONS = ['_row', '_detail', '_skin', '_uv'];
   const REMAP = {};
   // the vertices that the page moves on every frame of a clip: the records of these sparse buffers (the corrective
-  // shapes). They go first in the vertex order, so the upload of a frame is one small range.
-  const HOT = { head: ['corr'] };
+  // shapes), then the vertices of the faces. They go first in the vertex order, each set after the one before, so the
+  // upload of a frame or of a face is one small range.
+  const HOT = { head: ['corr', 'face_region'] };
 
   // meshes: '<name>_v' with '<name>_i' are reordered for the vertex cache; the companion streams follow
   function encodeMesh(prefix) {
@@ -48,18 +49,18 @@ async function encodeData() {
     const vdata = read(prefix + '_v');
     const idx = new Uint32Array(read(prefix + '_i').buffer.slice(0));
     const [remap, unique] = MeshoptEncoder.reorderMesh(idx, true, false);
-    // a stable partition of the optimised order: the hot vertices, then the others
-    const hot = new Uint8Array(unique);
-    for (const name of HOT[prefix] || []) {
+    // a stable partition of the optimised order: the hot vertices of each set in turn, then the others
+    const sets = HOT[prefix] || [], hot = new Uint8Array(unique).fill(255);
+    sets.forEach((name, k) => {
       const b = bufs[name];
-      if (!b) continue;
+      if (!b) return;
       const dv = new DataView(read(name).buffer.slice(0));
-      for (let i = 0; i < b.count; i++) hot[remap[dv.getUint32(i * b.stride, true)]] = 1;
-    }
+      for (let i = 0; i < b.count; i++) { const r = remap[dv.getUint32(i * b.stride, true)]; if (hot[r] === 255) hot[r] = k; }
+    });
     const perm = new Uint32Array(unique);
     let nHot = 0;
-    for (let v = 0; v < unique; v++) if (hot[v]) perm[v] = nHot++;
-    for (let v = 0, k = nHot; v < unique; v++) if (!hot[v]) perm[v] = k++;
+    for (let k = 0; k < sets.length; k++) for (let v = 0; v < unique; v++) if (hot[v] === k) perm[v] = nHot++;
+    for (let v = 0, k = nHot; v < unique; v++) if (hot[v] === 255) perm[v] = k++;
     for (let i = 0; i < remap.length; i++) if (remap[i] !== 0xffffffff) remap[i] = perm[remap[i]];
     for (let i = 0; i < idx.length; i++) idx[i] = perm[idx[i]];
     const nv = new Uint8Array(unique * hv.stride);

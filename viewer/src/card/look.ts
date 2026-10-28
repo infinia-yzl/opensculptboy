@@ -15,8 +15,10 @@ import { sphereFit, vertexNormals } from '../body.ts';
 import type { FileSet } from '../wearables/files.ts';
 import { readSafetensors } from '../wearables/package.ts';
 import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from '../wearables/shading.ts';
-import { BLINK_SECONDS, blinkCurve, blinksOf, blinkWeights, cardPlan, eyeAxes, groomOf, irisRadius, outerRadius, pagePoints, pageVectors, partOf, uvTangents,
-  type Blinks, type CardPlan, type Frame, type Groom, type Part } from './data.ts';
+import { BLINK_SECONDS, blinkCurve, blinksOf, blinkWeights, cardPlan, eyeAxes, groomOf, irisRadius, mouthPosesOf, outerRadius, pagePoints, pageVectors, partOf, tonguePoints,
+  uvTangents, type Blinks, type CardPlan, type Frame, type Groom, type MouthPoses, type Part } from './data.ts';
+import type { CardPoses, FaceMotion } from '../face/expressions.ts';
+import { nearestVertices } from '../face/rig.ts';
 
 // what the card's look needs from the renderer (main.ts)
 export interface CardHost {
@@ -46,17 +48,23 @@ export interface CardHost {
   blinkShapes(shapes: BodyShape[] | null): void;
   blinkWeights(w: Float32Array): void;
   moved(): void;                                      // a frame of a blink: the picture and the shadows again
+  faceChanged(): void;                                // the card's faces came or went (face/expressions.ts)
 }
 
 export interface BodyShape { idx: Uint32Array; d: Float32Array; n: Float32Array }
 type PartKind = 'lashes' | 'mouth' | 'teeth' | 'hair' | 'brows';
 
-interface PartMesh { name: string; kind: PartKind; mesh: any; geo: THREE_NS.BufferGeometry; rest: Float32Array; normals: Float32Array; materials: any[]; depth: any[]; blink: Float32Array | null }
+// face: the offsets of the face shown (face/expressions.ts); bind: the fine vertex under each point (the lashes and the
+// brows follow the skin); arch and tongue: the points of the lower jaw and of the tongue (the teeth and the inner mouth)
+interface PartMesh { name: string; kind: PartKind; mesh: any; geo: THREE_NS.BufferGeometry; rest: Float32Array; normals: Float32Array; materials: any[]; depth: any[]; blink: Float32Array | null;
+  face: Float32Array | null; bind: Uint32Array | null; arch: Uint8Array | null; tongue: Uint8Array | null; inner: boolean }
 
 // the blinks of a card: its eye targets, their offsets on the page (the parts' and the patch's in the page frame), the
 // state of the panel and of the timer
 interface BlinkState {
   data: Blinks; ready: boolean; auto: boolean; close: number; squint: number; start: number; next: number; active: boolean; vertices: number;
+  // the face's closure and squint of each eye (face/expressions.ts), which the blinks start from as well
+  face: { close: { L: number; R: number }; squint: { L: number; R: number } };
 }
 
 const ANISOTROPY = 8;
@@ -75,6 +83,8 @@ export class CardLook {
   private parts: PartMesh[] = [];
   private partData: { name: string; part: Part; kind: PartKind }[] = [];
   private blink: BlinkState | null = null;
+  private mouthPoses: MouthPoses | null = null; private cardPoses: CardPoses | null = null;
+  private face: FaceMotion | null = null; private patchFace: Float32Array | null = null;
   private eyeState: { saved: any[]; meshes: any[] } | null = null;
   private iris: Record<string, number> = {};
   private placedHead: { joint: number[]; scale: number } | null = null;
@@ -195,8 +205,16 @@ export class CardLook {
         if (data.level !== plan.shown) notes.push(`the blinks hold level ${data.level}; the page shows level ${plan.shown} and plays them on the parts alone`);
         const q = typeof location !== 'undefined' ? new URLSearchParams(location.search) : null;
         const auto = !(q && (q.has('shot') || q.get('blink') === 'off'));
-        this.blink = { data, ready: false, auto, close: 0, squint: 0, start: -1, next: performance.now() + 1500, active: false, vertices: 0 };
+        this.blink = { data, ready: false, auto, close: 0, squint: 0, start: -1, next: performance.now() + 1500, active: false, vertices: 0,
+          face: { close: { L: 0, R: 0 }, squint: { L: 0, R: 0 } } };
       } catch (err: any) { fail(`blinks: ${err.message || err}`, err); }
+    }
+    // the reference's mouth poses, which the page plays as faces
+    if (plan.mouthPoses) {
+      try {
+        const st = readSafetensors(await files.bytes(plan.mouthPoses, folder));
+        this.mouthPoses = mouthPosesOf(st.tensors, st.metadata);
+      } catch (err: any) { fail(`mouth poses: ${err.message || err}`, err); }
     }
     // the body: the card's local changes and its detail offsets, with the page's own detail layers left out
     this.plan = plan; this.notes = notes; this.failures = failures;
@@ -246,6 +264,7 @@ export class CardLook {
     this.host.uniforms.uCardHide.value = this.patch && this.skin ? 1 : 0;
     this.bodyChanged();
     this.timing.place = performance.now() - t0;
+    this.host.faceChanged();
   }
 
   // the body changed (a slider, the card's own body): the tangents of the normal maps, the eyes and the parts follow
@@ -253,6 +272,7 @@ export class CardLook {
     if (!this.plan || !this.placed) return;
     const t0 = performance.now();
     if (this.blink) this.blink.ready = false;   // the body's shapes follow the new body when the eyes move next
+    for (const p of this.parts) p.bind = null;   // the parts bind to the new body's skin when the face moves next
     this.placeEyes();
     this.placeParts();
     this.placePatch();
@@ -292,7 +312,7 @@ export class CardLook {
       e.mesh.geometry = geo; e.mesh.material = mat; e.u = mat.uniforms; e.card = true; e.shape.identity();
       e.mesh.userData.rot0 = new T.Matrix3().set(P[0], P[1], P[2], P[3], P[4], P[5], P[6], P[7], P[8]);
       if (old !== this.eyeState!.saved[i].geo) old.dispose();
-      e.card = { iris, cornea, bulge, sphere, radius: r };
+      e.card = { iris, cornea, bulge, sphere, radius: r, center: c };
     });
   }
 
@@ -400,6 +420,7 @@ export class CardLook {
       if (shown && dx * dx + dy * dy + dz * dz < near2) { P[o] = BP[q]; P[o + 1] = BP[q + 1]; P[o + 2] = BP[q + 2]; border.push(i); }
     }
     (p as any).base = P.slice(); (p as any).border = border;
+    this.patchFace = null;
     this.patchNormals();
     this.patchBorder = border.length;
   }
@@ -441,12 +462,118 @@ export class CardLook {
     const body = this.host.body(), head = this.host.headBone(), J = body.joints, jh = [J[head * 3], J[head * 3 + 1], J[head * 3 + 2]];
     const ph = this.placedHead!, s = body.headScale() / ph.scale;
     for (const p of this.parts) {
-      const at = p.geo.attributes.position as any, A = at.array as Float32Array, R = p.rest, B = p.blink;
-      for (let i = 0; i < A.length; i += 3) for (let c = 0; c < 3; c++) A[i + c] = jh[c] + (R[i + c] - ph.joint[c] + (B ? B[i + c] : 0)) * s;
+      const at = p.geo.attributes.position as any, A = at.array as Float32Array, R = p.rest, B = p.blink, F = p.face;
+      for (let i = 0; i < A.length; i += 3) for (let c = 0; c < 3; c++) A[i + c] = jh[c] + (R[i + c] - ph.joint[c] + (B ? B[i + c] : 0)) * s + (F ? F[i + c] : 0);
       at.needsUpdate = true;
       p.geo.computeBoundingSphere();
     }
   }
+
+  // ---------------------------------------------------------------- faces (face/expressions.ts)
+  // The card's own face (its facial actions), its mouth poses as faces, and its eye targets for the face's blinks and
+  // squints. The face's motion moves the parts: the lashes and the brows with the skin under them, the lower teeth and
+  // gums, the tongue and the floor of the mouth with the jaw, the inner mouth with the poses' own offsets, and a sculpt
+  // card's patch with the coarse body.
+  get facialActions(): Record<string, number> { return this.plan?.facialActions || {}; }
+  setFaceEyes(close: { L: number; R: number }, squint: { L: number; R: number }) {
+    const b = this.blink;
+    if (!b) return;
+    b.face = { close: { ...close }, squint: { ...squint } };
+    if (!b.active && this.placed) this.showEyes(b.close);
+  }
+  // the poses on the page: offsets of the coarse body, of the rows of the level shown and of the inner mouth's points
+  poses(): CardPoses | null {
+    const m = this.mouthPoses, plan = this.plan;
+    if (!m || !plan || !m.names.length) return null;
+    if (this.cardPoses) return this.cardPoses;
+    const frame = this.host.frame(), u32 = (name: string) => { const x = this.host.buffer(name); return x ? new Uint32Array(x) : null; };
+    const coarseRows = u32('card_coarse');
+    if (!coarseRows) return null;
+    const topology = ['anny', 'sculpt'].includes(plan.topology) ? plan.topology : 'anny';
+    const level = plan.shown > 0 && m.levels[plan.shown] ? plan.shown : 0;
+    const pageRows = level ? u32(`card_rows_${topology}_${level}`) : null;
+    const at = new Map<number, number>();
+    if (level) m.levels[level].rows.forEach((r, k) => at.set(r, k));
+    const P = m.names.length, sparse = (full: Float32Array) => {
+      const idx: number[] = [], d: number[] = [];
+      for (let i = 0; i < full.length / 3; i++) if (full[i * 3] || full[i * 3 + 1] || full[i * 3 + 2]) { idx.push(i); d.push(full[i * 3], full[i * 3 + 1], full[i * 3 + 2]); }
+      return { idx: Uint32Array.from(idx), d: Float32Array.from(d) };
+    };
+    const coarse = [], rows = [], inner: (Float32Array | null)[] = [], mouth = this.partData.find((x) => x.kind === 'mouth');
+    for (let k = 0; k < P; k++) {
+      coarse.push(sparse(pageVectors(m.skin.subarray(k * m.rows * 3, (k + 1) * m.rows * 3), coarseRows, coarseRows.length, frame)));
+      if (level && pageRows) {
+        const L = m.levels[level], n = L.rows.length, full = new Float32Array(pageRows.length * 3), src = L.offsets.subarray(k * n * 3, (k + 1) * n * 3);
+        for (let i = 0; i < pageRows.length; i++) {
+          const q = at.get(pageRows[i]);
+          if (q === undefined) continue;
+          const v = pageVectors(src.subarray(q * 3, q * 3 + 3), null, 1, frame);
+          full[i * 3] = v[0]; full[i * 3 + 1] = v[1]; full[i * 3 + 2] = v[2];
+        }
+        rows.push(sparse(full));
+      } else rows.push({ idx: new Uint32Array(0), d: new Float32Array(0) });
+      inner.push(mouth && m.points === mouth.part.points.length / 3 ? pageVectors(m.inner.subarray(k * m.points * 3, (k + 1) * m.points * 3), null, m.points, frame) : null);
+    }
+    this.cardPoses = { names: m.names.slice(), coarse, level: level && pageRows ? level : 0, rows, inner };
+    return this.cardPoses;
+  }
+  // the face's motion on the parts and on the patch (null: the face at rest)
+  followFace(m: FaceMotion | null) {
+    this.face = m;
+    if (!this.plan || !this.placed) return;
+    const body = this.host.body(), o = [0, 0, 0], P = this.cardPoses;
+    for (const p of this.parts) {
+      const n = p.rest.length / 3;
+      if (!m) { p.face = null; continue; }
+      const F = p.face || (p.face = new Float32Array(n * 3));
+      const A = p.geo.attributes.position.array as Float32Array;
+      if (p.kind === 'lashes' || p.kind === 'brows') {
+        if (!p.bind) p.bind = nearestVertices(A, body.pos, m.region, 0.004);
+        for (let i = 0; i < n; i++) { m.skin(p.bind[i], o); F[i * 3] = o[0]; F[i * 3 + 1] = o[1]; F[i * 3 + 2] = o[2]; }
+      } else if ((p.kind === 'mouth' || p.kind === 'teeth') && p.arch) {
+        // the points at the place the head gives them (the face's own offsets are taken off first)
+        for (let i = 0; i < n; i++) {
+          const x = A[i * 3] - F[i * 3], y = A[i * 3 + 1] - F[i * 3 + 1], z = A[i * 3 + 2] - F[i * 3 + 2];
+          if (p.tongue && p.tongue[i]) m.tongue(x, y, z, o); else if (p.arch[i]) m.lower(x, y, z, o); else { o[0] = o[1] = o[2] = 0; }
+          F[i * 3] = o[0]; F[i * 3 + 1] = o[1]; F[i * 3 + 2] = o[2];
+        }
+        // the lower jaw's normals turn with the jaw
+        const N = p.geo.attributes.normal.array as Float32Array, R = m.jawTurn, N0 = p.normals;
+        for (let i = 0; i < n; i++) {
+          const q = i * 3, x = N0[q], y = N0[q + 1], z = N0[q + 2];
+          if (p.arch[i]) { N[q] = R[0] * x + R[1] * y + R[2] * z; N[q + 1] = R[3] * x + R[4] * y + R[5] * z; N[q + 2] = R[6] * x + R[7] * y + R[8] * z; }
+          else { N[q] = x; N[q + 1] = y; N[q + 2] = z; }
+        }
+        p.geo.attributes.normal.needsUpdate = true;
+      } else { p.face = null; continue; }
+      // the inner mouth's own offsets in the card's poses
+      if (p.inner && P) P.inner.forEach((D, k) => { const f = m.poses[k]; if (f && D && D.length === F.length) for (let i = 0; i < F.length; i++) F[i] += f * D[i]; });
+    }
+    if (this.parts.length) this.moveParts();
+    // the patch of a sculpt card: its blend of the coarse body's face
+    const q = this.patch;
+    if (q?.geo && (q as any).base) {
+      if (m?.coarse) {
+        const D = this.patchFace || (this.patchFace = new Float32Array(q.rows.length * 3)), C = m.coarse;
+        for (let i = 0; i < q.rows.length; i++) {
+          let x = 0, y = 0, z = 0;
+          for (let e = q.start[i]; e < q.start[i + 1]; e++) { const c = q.cols[e] * 3, w = q.values[e]; x += w * C[c]; y += w * C[c + 1]; z += w * C[c + 2]; }
+          D[i * 3] = x; D[i * 3 + 1] = y; D[i * 3 + 2] = z;
+        }
+      } else this.patchFace = null;
+      this.showPatch();
+    }
+    this.host.moved();
+  }
+  // the patch at rest, with the blink's and the face's offsets
+  private showPatch() {
+    const q = this.patch;
+    if (!q?.geo || !(q as any).base) return;
+    const P = q.geo.attributes.position.array as Float32Array, B = (q as any).base as Float32Array, D = this.patchBlink, F = this.patchFace;
+    for (let i = 0; i < P.length; i++) P[i] = B[i] + (D ? D[i] : 0) + (F ? F[i] : 0);
+    this.patchNormals();
+  }
+  private patchBlink: Float32Array | null = null;
 
   // ---------------------------------------------------------------- blinks
   // The page plays the GLB export's eye targets (opensculptboy.eyes.page): on the fine body as sparse shapes of its
@@ -479,7 +606,8 @@ export class CardLook {
   private showEyes(close: number) {
     const b = this.blink!;
     if (!b.ready) this.prepareBlinks();
-    const w = blinkWeights(b.data.names, { L: close, R: close }, { L: b.squint, R: b.squint });
+    const f = b.face;
+    const w = blinkWeights(b.data.names, { L: Math.max(close, f.close.L), R: Math.max(close, f.close.R) }, { L: Math.max(b.squint, f.squint.L), R: Math.max(b.squint, f.squint.R) });
     this.host.blinkWeights(w);
     const sum = (shapes: Float32Array[] | undefined, out: Float32Array) => {
       out.fill(0);
@@ -490,10 +618,9 @@ export class CardLook {
     if (this.parts.length) this.moveParts();
     const q = this.patch;
     if (q?.geo && (q as any).base && this.patchBlinks) {
-      const P = q.geo.attributes.position.array as Float32Array, B = (q as any).base as Float32Array, D = new Float32Array(P.length);
+      const D = this.patchBlink || (this.patchBlink = new Float32Array(q.geo.attributes.position.array.length));
       sum(this.patchBlinks, D);
-      for (let i = 0; i < P.length; i++) P[i] = B[i] + D[i];
-      this.patchNormals();
+      this.showPatch();
     }
     this.host.moved();
   }
@@ -637,7 +764,8 @@ export class CardLook {
     mesh.bind(this.host.skeleton(), new T.Matrix4());
     mesh.frustumCulled = false; mesh.name = `card ${name}`; mesh.userData.depthMat = depth;
     this.host.scene.add(mesh); this.host.opaque.push(mesh);
-    return { name, kind, mesh, geo, rest, normals, materials: [mat], depth: [depth], blink: null };
+    return { name, kind, mesh, geo, rest, normals: normals.slice(), materials: [mat], depth: [depth], blink: null, face: null, bind: null,
+      arch: part.arch && part.arch.length === n ? part.arch : null, tongue: tonguePoints(part), inner: kind === 'mouth' };
   }
 
   private texture(slot: string, srgb: boolean): THREE_NS.Texture {
@@ -662,6 +790,7 @@ export class CardLook {
       p.geo.dispose(); p.materials.forEach((m) => m.dispose()); p.depth.forEach((m) => { if (m !== this.host.depth) m.dispose(); });
     }
     this.parts = []; this.partData = []; this.placedHead = null; this.placed = false;
+    this.mouthPoses = null; this.cardPoses = null; this.face = null; this.patchFace = null; this.patchBlink = null;
     if (this.blink) { this.host.blinkShapes(null); this.blink = null; }
     this.partBlinks.clear(); this.patchBlinks = null;
     if (this.patch?.mesh) {
@@ -690,6 +819,7 @@ export class CardLook {
     const had = !!this.plan;
     this.plan = null; this.notes = []; this.failures = 0;
     if (restore && had) { this.host.setBodyCard(null); this.host.setPageParts(null); this.host.changed(); }
+    if (had) this.host.faceChanged();
   }
 
   stats() {

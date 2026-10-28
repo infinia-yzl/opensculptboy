@@ -10,7 +10,8 @@
 //   - the parts that the exports append: the reference's lashes, teeth and inner mouth, in the card's rest frame;
 //   - the reference's hair and brows (opensculptboy.groom), with the materials of the exports;
 //   - the eye targets of the GLB export (opensculptboy.eyes.page): the blinks, their in-between correctives and the
-//     squints, which the page plays on a timer.
+//     squints, which the page plays on a timer and for the faces;
+//   - the reference's mouth poses (opensculptboy.mouth.poses), which the page plays as faces ('mouth.<pose>').
 
 export interface Frame { scale: number; rotation: number[]; offset: number[] }   // Anny's frame to the page's: p = s R x + o
 
@@ -31,6 +32,8 @@ export interface CardPlan {
   hair: null | GroomPlan;
   brows: null | GroomPlan;
   blinks: string | null;               // the file of the exports' eye targets
+  mouthPoses: string | null;           // the file of the reference's mouth poses
+  facialActions: Record<string, number>;   // the card's own face (its facial actions)
   localChanges: Record<string, number>;
   notes: string[];
 }
@@ -101,13 +104,15 @@ export function cardPlan(card: any): CardPlan {
     if (te.mesh && te.source !== 'generic') teeth = { mesh: te.mesh, color: Array.isArray(te.color) ? te.color : [0.72, 0.66, 0.56], roughness: num(te.roughness, 0.35) };
     else notes.push('the page leaves out the generic teeth');
   }
-  if (card?.facial_actions && Object.values(card.facial_actions).some((v: any) => v)) notes.push('the page leaves out the card\'s facial actions');
   // the reference's hair, and its brows, which come with the eyes as the lashes do
   const hair = material.hair === false ? null : groomPlan(material.hair);
   const brows = eyes && material.brows !== false ? groomPlan(material.brows) : null;
   const blinks = eyes && typeof re?.blinks === 'string' ? re.blinks : null;
+  const mouthPoses = mouth && typeof mo.poses === 'string' ? mo.poses : null;
+  const facialActions: Record<string, number> = {};
+  for (const [k, v] of Object.entries<any>(card?.facial_actions || {})) if (typeof v === 'number' && isFinite(v) && v) facialActions[k] = v;
   return { topology: String(card?.topology || 'anny').replace(/-quads$/, ''), levels, shown, textures, bakeLevel, skin, eyes, lashes, mouth, teeth, hair, brows, blinks,
-    localChanges: card?.local_changes && typeof card.local_changes === 'object' ? card.local_changes : {}, notes };
+    mouthPoses, facialActions, localChanges: card?.local_changes && typeof card.local_changes === 'object' ? card.local_changes : {}, notes };
 }
 
 // vectors of Anny's frame in the page's frame, one per page row: s R values[rows[i]] (rows: identity when null)
@@ -191,16 +196,48 @@ export function irisRadius(lum: (u: number, v: number) => number, left: boolean)
 }
 
 // ------------------------------------------------------------------ the parts in the card's rest frame
-export interface Part { points: Float64Array; normals: Float64Array | null; uvs: Float32Array | null; triangles: Uint32Array }
+// arch: per point 0 with the head and 1 with the jaw (the teeth and the inner mouth); part: per triangle its part
+// (opensculptboy.teeth.mesh.PARTS: teeth, gums, palate, tongue, floor, throat)
+export interface Part { points: Float64Array; normals: Float64Array | null; uvs: Float32Array | null; triangles: Uint32Array; arch?: Uint8Array | null; part?: Uint8Array | null }
+export const TONGUE_PART = 3;
 
 // a part file of the bake (opensculptboy/lashes@1, opensculptboy/teeth@1, opensculptboy/inner-mouth@1): points,
-// normals, UVs (OBJ convention, turned to glTF's) and triangles
+// normals, UVs (OBJ convention, turned to glTF's), triangles, and the arch of each point and the part of each triangle
 export function partOf(tensors: Record<string, { values: ArrayLike<number> }>): Part {
   const P = tensors.points, N = tensors.normals, U = tensors.uvs, T = tensors.triangles;
   if (!P || !T) throw new Error('the file holds no points and triangles');
   let uvs: Float32Array | null = null;
   if (U) { uvs = Float32Array.from(U.values); for (let i = 1; i < uvs.length; i += 2) uvs[i] = 1 - uvs[i]; }
-  return { points: Float64Array.from(P.values), normals: N ? Float64Array.from(N.values) : null, uvs, triangles: Uint32Array.from(T.values) };
+  return { points: Float64Array.from(P.values), normals: N ? Float64Array.from(N.values) : null, uvs, triangles: Uint32Array.from(T.values),
+    arch: tensors.arch ? Uint8Array.from(tensors.arch.values) : null, part: tensors.part ? Uint8Array.from(tensors.part.values) : null };
+}
+
+// the points on the tongue's triangles (part TONGUE_PART), or null
+export function tonguePoints(part: Part): Uint8Array | null {
+  if (!part.part) return null;
+  const out = new Uint8Array(part.points.length / 3);
+  let any = false;
+  for (let t = 0; t < part.part.length; t++) if (part.part[t] === TONGUE_PART) { for (let k = 0; k < 3; k++) out[part.triangles[t * 3 + k]] = 1; any = true; }
+  return any ? out : null;
+}
+
+// ------------------------------------------------------------------ mouth poses (opensculptboy.mouth.poses)
+export interface MouthPoses { names: string[]; skin: Float32Array; inner: Float32Array; levels: Record<number, { rows: Uint32Array; offsets: Float32Array }>; rows: number; points: number }
+
+// a mouth poses file (opensculptboy/mouth-poses@1): per pose the offsets of the rows of anny's level 0 (P x V0 x 3), of
+// the points of the inner mouth (P x M x 3) and, per detail level, the rows of that level and their corrections
+export function mouthPosesOf(tensors: Record<string, { values: ArrayLike<number>; shape?: number[] }>, metadata: Record<string, string>): MouthPoses {
+  if (metadata.format !== 'opensculptboy/mouth-poses@1') throw new Error('the file is not a mouth poses file (opensculptboy/mouth-poses@1)');
+  const names: string[] = JSON.parse(metadata.names || '[]'), S = tensors.skin, I = tensors.inner;
+  if (!S) throw new Error('the file holds no skin offsets');
+  const P = names.length || 1, levels: MouthPoses['levels'] = {};
+  for (const key of Object.keys(tensors)) {
+    const m = /^level(\d+)_rows$/.exec(key);
+    if (!m || !tensors[`level${m[1]}_offsets`]) continue;
+    levels[Number(m[1])] = { rows: Uint32Array.from(tensors[key].values), offsets: Float32Array.from(tensors[`level${m[1]}_offsets`].values) };
+  }
+  const skin = Float32Array.from(S.values), inner = I ? Float32Array.from(I.values) : new Float32Array(0);
+  return { names, skin, inner, levels, rows: skin.length / 3 / P, points: inner.length / 3 / P };
 }
 
 // per-vertex tangents (x, y, z, handedness) from glTF UVs: the UV gradient summed over the triangles and made
