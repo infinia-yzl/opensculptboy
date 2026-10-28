@@ -272,15 +272,15 @@ uniform highp sampler3D uHairOcc; uniform vec3 uHairOccLo; uniform vec3 uHairOcc
 #ifdef CARD_SKIN
 // a character card's baked skin: the UV of anny's atlas (glTF convention) with the head tile's island in z (the
 // card's maps replace the baked colour and the pores, whose attributes stay out of the shader)
-attribute vec3 cardUV;
-varying vec2 vCardUV; varying float vCardTile;
+attribute vec4 cardUV;
+varying vec2 vCardUV; varying float vCardTile; varying float vCardHide;
 #endif
 ${COVER_GLSL}
 void main() {
   mat4 S = skinMat();
   mat3 M = mat3(modelMatrix) * mat3(S);
 #ifdef CARD_SKIN
-  vCardUV = cardUV.xy; vCardTile = cardUV.z;
+  vCardUV = cardUV.xy; vCardTile = cardUV.z; vCardHide = cardUV.w;
 #endif
   vec4 wp = modelMatrix * (S * vec4(coveredPosition(), 1.0));
   vWPos = wp.xyz; vObj = rest;
@@ -337,7 +337,8 @@ varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying 
 uniform sampler2D uCardBase; uniform sampler2D uCardNormal; uniform sampler2D uCardRough;
 uniform sampler2D uHeadBase; uniform sampler2D uHeadNormal; uniform sampler2D uHeadRough; uniform vec4 uHeadXf;
 uniform float uCardNormalScale; uniform float uCardRoughK; uniform float uCardF0; uniform float uCardSSS;
-varying vec2 vCardUV; varying float vCardTile;
+uniform float uCardHide;   // 1: the faces that a sculpt card's patches replace leave the picture
+varying vec2 vCardUV; varying float vCardTile; varying float vCardHide;
 // the tangent frame of the UVs from the screen derivatives of the position and the UV (three.js perturbNormal2Arb);
 // glTF's normal maps have +Y up on UVs whose v runs down, so the map's y turns over
 vec3 cardNormal(vec3 N, vec3 p, vec2 uv, vec3 tn) {
@@ -461,6 +462,7 @@ void main() {
 #ifdef CARD_SKIN
   // ---------------- a card's baked skin: the maps of the atlas, or of the head tile on its island (both sampled, so
   // that the mip levels hold across the border)
+  if (uCardHide > 0.5 && vCardHide > 0.001) discard;
   vec2 cuv = vCardUV, huv = cuv * uHeadXf.xy + uHeadXf.zw;
   float onHead = step(0.5, vCardTile);
   vec3 cardBase = texture(uCardBase, cuv).rgb;

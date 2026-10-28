@@ -29,7 +29,7 @@ export interface CardHost {
   body(): AnnyBody;
   geometry(): THREE_NS.BufferGeometry;
   manifest(): any;
-  buffer(name: string): Uint32Array | null;          // a buffer of the model data (card_coarse, card_rows_*)
+  buffer(name: string): ArrayBuffer | null;          // a copy of a buffer of the model data (card_coarse, card_rows_*, card_patch_*)
   frame(): Frame;
   headBone(): number;
   skinMaterial(defines: Record<string, string>, uniforms: Record<string, any>): THREE_NS.ShaderMaterial;
@@ -58,7 +58,10 @@ export class CardLook {
   private eyeState: { saved: any[]; meshes: any[] } | null = null;
   private iris: Record<string, number> = {};
   private placedHead: { joint: number[]; scale: number } | null = null;
-  private placed = false;   // the card's sliders shape the body: the eyes and the parts may take their places
+  private placed = false;
+  private coarse0: Float32Array | null = null;   // the level-0 offsets of the coarse body (page frame)
+  private patch: null | { rows: Uint32Array; start: Uint32Array; cols: Uint32Array; values: Float32Array; uvs: Float32Array; near: Uint32Array;
+    triangles: Uint32Array; offsets: Float32Array; mesh: any; geo: THREE_NS.BufferGeometry | null } = null;   // the card's sliders shape the body: the eyes and the parts may take their places
   timing: Record<string, number> = {};
 
   constructor(host: CardHost) { this.host = host; }
@@ -80,7 +83,8 @@ export class CardLook {
     // fine body
     let coarse: Float32Array | null = null;
     const levels: (Float32Array | null)[] = [null, null];
-    const coarseRows = this.host.buffer('card_coarse');
+    const u32 = (name: string) => { const b = this.host.buffer(name); return b ? new Uint32Array(b) : null; };
+    const coarseRows = u32('card_coarse');
     const read = async (rel: string) => readSafetensors(await files.bytes(rel, folder)).tensors.offsets?.values;
     if (plan.levels[0] !== undefined) {
       try {
@@ -92,18 +96,27 @@ export class CardLook {
       } catch (err: any) { fail(`detail level 0: ${err.message || err}`, err); }
     }
     if (plan.shown > 0) {
-      const rows = this.host.buffer(`card_rows_${topology}_${plan.shown}`);
+      const rows = u32(`card_rows_${topology}_${plan.shown}`);
       try {
         const v = await read(plan.levels[plan.shown]);
         if (!v || !rows) throw new Error('the page or the file holds no rows of this level');
         let max = 0; for (let i = 0; i < rows.length; i++) max = Math.max(max, rows[i]);
         if (v.length < (max + 1) * 3) throw new Error(`the offsets hold ${v.length / 3} rows; level ${plan.shown} needs ${max + 1}`);
-        levels[plan.shown - 1] = pageVectors(v, rows, rows.length, frame);
+        const lv = levels[plan.shown - 1] = pageVectors(v, rows, rows.length, frame);
+        // the rows whose stencil a patch of the topology changed take the nearest row's offset and the move between them
+        const fix = this.host.buffer(`card_fix_${topology}_${plan.shown}`);
+        if (fix) {
+          const f = new Float32Array(fix), ids = new Uint32Array(fix);
+          for (let q = 0; q < f.length; q += 4) { const o = ids[q] * 3; lv[o] += f[q + 1]; lv[o + 1] += f[q + 2]; lv[o + 2] += f[q + 3]; }
+        }
+        // a sculpt card: the faces of the patches, drawn in place of the faces of anny that they replace
+        if (topology === 'sculpt') this.loadPatch(v, plan.shown, frame);
         const fb = man?.card?.levels?.[topology]?.fallback?.[String(plan.shown)];
         if (fb) notes.push(`${fb} rows of level ${plan.shown} take the nearest row of the ${topology} topology`);
       } catch (err: any) { fail(`detail level ${plan.shown}: ${err.message || err}`, err); plan.shown = 0; }
     }
     const hasDetail = !!coarse || levels.some(Boolean);
+    this.coarse0 = coarse;
     const unknown = Object.keys(plan.localChanges).filter((k) => !(body.local?.tables.labels || []).includes(k));
     if (unknown.length) notes.push(`the page has no local changes ${unknown.slice(0, 4).join(', ')}${unknown.length > 4 ? ' and others' : ''}`);
     if (Object.keys(plan.localChanges).length && !body.local) notes.push('the page has no local changes');
@@ -173,6 +186,7 @@ export class CardLook {
       if (!uniforms.uCardNormal.value) uniforms.uCardNormal.value = uniforms.uCardBase.value;
       if (!uniforms.uCardRough.value) uniforms.uCardRough.value = uniforms.uCardBase.value;
       for (const k of ['uHeadBase', 'uHeadNormal', 'uHeadRough']) if (!uniforms[k].value) uniforms[k].value = uniforms.uCardBase.value;
+      uniforms.uCardHide = { value: this.patch ? 1 : 0 };
       this.skin = this.host.skinMaterial(defines, uniforms);
       this.host.setSkinMaterial(this.skin);
     }
@@ -186,6 +200,7 @@ export class CardLook {
     const t0 = performance.now();
     this.placeEyes();
     this.placeParts();
+    this.placePatch();
     this.host.changed();
     this.timing.follow = performance.now() - t0;
   }
@@ -267,6 +282,63 @@ export class CardLook {
     let lo = 0, hi = 1;
     for (let i = 0; i < 30; i++) { const mid = 0.5 * (lo + hi); if (fits(mid)) lo = mid; else hi = mid; }
     return { bulge: lo, sphere };
+  }
+
+  // ---------------------------------------------------------------- the sculpt patch
+  private loadPatch(offsets: ArrayLike<number>, level: number, frame: Frame) {
+    const b = (name: string) => this.host.buffer(`card_patch_${level}_${name}`);
+    const rows = b('rows'), start = b('start'), cols = b('cols'), values = b('values'), uvs = b('uvs'), near = b('near'), tris = b('triangles');
+    if (!rows || !start || !cols || !values || !uvs || !near || !tris) return;
+    const R = new Uint32Array(rows);
+    let max = 0; for (let i = 0; i < R.length; i++) max = Math.max(max, R[i]);
+    if (offsets.length < (max + 1) * 3) return;
+    this.patch = { rows: R, start: new Uint32Array(start), cols: new Uint32Array(cols), values: new Float32Array(values), uvs: new Float32Array(uvs),
+      near: new Uint32Array(near), triangles: new Uint32Array(tris), offsets: pageVectors(offsets, R, R.length, frame), mesh: null, geo: null };
+  }
+
+  // the patch's vertices on the current body: its blend of the coarse body without the level-0 offsets, plus the
+  // card's offsets of the level; the other fields of each vertex come from the nearest vertex of the page's body
+  private placePatch() {
+    const p = this.patch;
+    if (!p || !this.skin) return;
+    const T = this.host.THREE, body = this.host.body(), C = body.coarse, O = this.coarse0, n = p.rows.length;
+    if (!p.geo) {
+      const page = this.host.geometry().attributes as any, geo = new T.BufferGeometry();
+      const copy = (name: string, size: number) => {
+        const a = page[name];
+        if (!a) return;
+        const src = a.array, out = new (src.constructor as any)(n * size);
+        for (let i = 0; i < n; i++) for (let k = 0; k < size; k++) out[i * size + k] = src[p.near[i] * size + k];
+        geo.setAttribute(name, new T.BufferAttribute(out, size, a.normalized));
+      };
+      for (const [name, size] of [['attrA', 4], ['attrB', 4], ['attrC', 4], ['attrW', 4], ['attrV', 4], ['rest', 3], ['skinIndex', 4], ['skinWeight', 4], ['skinIndex2', 4], ['skinWeight2', 4]] as [string, number][]) copy(name, size);
+      const uv = new Uint16Array(n * 4), tile = page.cardUV.array as Uint16Array;
+      for (let i = 0; i < n; i++) { uv[i * 4] = Math.round(p.uvs[i * 2] * 65535); uv[i * 4 + 1] = Math.round(p.uvs[i * 2 + 1] * 65535); uv[i * 4 + 2] = tile[p.near[i] * 4 + 2]; }
+      geo.setAttribute('cardUV', new T.BufferAttribute(uv, 4, true));
+      geo.setAttribute('position', new T.BufferAttribute(new Float32Array(n * 3), 3));
+      geo.setAttribute('normal', new T.BufferAttribute(new Float32Array(n * 3), 3));
+      geo.setAttribute('nsmooth', new T.BufferAttribute(new Float32Array(n * 3), 3));
+      geo.setIndex(new T.BufferAttribute(p.triangles, 1));
+      const mesh = new T.SkinnedMesh(geo, this.skin);
+      mesh.bind(this.host.skeleton(), new T.Matrix4());
+      mesh.frustumCulled = false; mesh.name = 'card patch'; mesh.userData.depthMat = this.host.depth;
+      this.host.scene.add(mesh); this.host.opaque.push(mesh);
+      p.geo = geo; p.mesh = mesh;
+    }
+    const P = p.geo.attributes.position.array as Float32Array;
+    for (let i = 0; i < n; i++) {
+      let x = 0, y = 0, z = 0;
+      for (let e = p.start[i]; e < p.start[i + 1]; e++) {
+        const c = p.cols[e] * 3, w = p.values[e];
+        x += w * (C[c] - (O ? O[c] : 0)); y += w * (C[c + 1] - (O ? O[c + 1] : 0)); z += w * (C[c + 2] - (O ? O[c + 2] : 0));
+      }
+      P[i * 3] = x + p.offsets[i * 3]; P[i * 3 + 1] = y + p.offsets[i * 3 + 1]; P[i * 3 + 2] = z + p.offsets[i * 3 + 2];
+    }
+    const N = p.geo.attributes.normal.array as Float32Array;
+    vertexNormals(P, p.triangles, N);
+    (p.geo.attributes.nsmooth.array as Float32Array).set(N);
+    p.geo.attributes.position.needsUpdate = true; p.geo.attributes.normal.needsUpdate = true; p.geo.attributes.nsmooth.needsUpdate = true;
+    p.geo.computeBoundingSphere();
   }
 
   // ---------------------------------------------------------------- the parts
@@ -353,6 +425,13 @@ export class CardLook {
       p.geo.dispose(); p.materials.forEach((m) => m.dispose()); p.depth.forEach((m) => { if (m !== this.host.depth) m.dispose(); });
     }
     this.parts = []; this.partData = []; this.placedHead = null; this.placed = false;
+    if (this.patch?.mesh) {
+      this.host.scene.remove(this.patch.mesh);
+      const i = this.host.opaque.indexOf(this.patch.mesh);
+      if (i >= 0) this.host.opaque.splice(i, 1);
+      this.patch.geo!.dispose();
+    }
+    this.patch = null; this.coarse0 = null;
     if (this.eyeState) {
       const eyes = this.host.eyes();
       eyes.forEach((e, i) => {
@@ -377,6 +456,7 @@ export class CardLook {
   stats() {
     const eyes = this.host.eyes().filter((e) => e.card).map((e) => ({ side: e.side, ...e.card }));
     return { active: !!this.plan, level: this.plan?.shown ?? null, topology: this.plan?.topology ?? null, textures: [...this.images.keys()].sort(),
+      patch: this.patch ? { vertices: this.patch.rows.length, triangles: this.patch.triangles.length / 3 } : null,
       skin: !!this.skin, parts: this.parts.map((p) => ({ name: p.name, vertices: p.rest.length / 3 })), eyes, notes: this.notes, timing: this.timing };
   }
 }

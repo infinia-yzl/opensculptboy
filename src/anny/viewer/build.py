@@ -346,12 +346,15 @@ def card_buffers(pk, man, body, model, seams, base_index, body_used, eye_ids, co
     from opensculptboy import viewer as card
 
     mask = (base_index[model.faces.numpy()] < 13380).all(1)
-    tile = card.head_tile(model, seams, np.nonzero(mask)[0])
+    body_faces = np.nonzero(mask)[0]
+    tile = card.head_tile(model, seams, body_faces)
+    hidden = card.pocket(seams, body_faces)
     n = len(seams.source)
     rec = np.zeros((n, 8), np.uint8)
     uv16 = np.clip(np.round(seams.uvs * 65535), 0, 65535).astype("<u2")
     rec[:, 0:4] = uv16.view(np.uint8).reshape(n, 4)
     rec[:, 4] = tile["flags"]
+    rec[:, 5] = hidden
     pk.add("head_uv", rec, "vertex", n, 8)
     nv = int(seams.source.max()) + 1
     copies = np.arange(nv, n)
@@ -382,10 +385,43 @@ def card_buffers(pk, man, body, model, seams, base_index, body_used, eye_ids, co
             r = rows[topology][k]
             pk.add(f"card_rows_{topology}_{k}", r, "vertex", len(r), 4)
             levels[topology][k] = int(len(r))
+            miss, delta = rows[topology][f"{k}_missed"], rows[topology][f"{k}_delta"]
+            if len(miss):
+                # the move of each such row in the page's frame (a rotation and a scale of anny's)
+                fix = np.zeros((len(miss), 4), np.float32)
+                fix[:, 0] = miss.view(np.float32)
+                fix[:, 1:] = P.RIG.scale * delta @ M.T
+                pk.add(f"card_fix_{topology}_{k}", fix, "raw", fix.nbytes, 1)
+    # the faces of the sculpt topology's patches, drawn in place of the hidden pocket on a sculpt card
+    patches = {}
+    fine = body.V[seams.source]
+    for k in (1, 2):
+        p = card.sculpt_patch(
+            k, compact, P.RIG.preview["coarse"]["V"][compact], fine, hidden
+        )
+        if p is None:
+            continue
+        for name in ("rows", "start", "cols", "values", "uvs", "triangles"):
+            pk.add(f"card_patch_{k}_{name}", p[name], "raw", p[name].nbytes, 1)
+        pk.add(
+            f"card_patch_{k}_near",
+            p["near"].astype("<u4").view(np.uint8).reshape(-1, 4),
+            "sparse",
+            len(p["near"]),
+            4,
+            body="head",
+            fields=1,
+            sort="none",
+        )
+        patches[str(k)] = dict(
+            vertices=int(len(p["rows"])), triangles=int(len(p["triangles"]))
+        )
     man["card"] = dict(
         copies=int(len(copies)),
         head_tile=tile["transforms"],
         levels=levels,
+        patches=patches,
+        hidden=int(hidden.sum()),
     )
 
 

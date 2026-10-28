@@ -211,14 +211,17 @@ def _match(
 ):
     """The row of ``target`` (M, 3) equal to each row of ``page`` (P, 3) (random values through the
     same stencil), else the row of ``target_shape`` nearest to the row of ``page_shape`` (a body
-    through both stencils); and the count of the rows found by the shape."""
+    through both stencils); and for those rows found by the shape, their indices and the move
+    (target_shape minus page_shape) that takes the page's row to the target's on that body."""
     from scipy.spatial import cKDTree
 
     dist, rows = cKDTree(target).query(page, k=1)
-    missed = dist > tol
-    if missed.any():
+    missed = np.nonzero(dist > tol)[0]
+    delta = np.zeros((len(missed), 3))
+    if len(missed):
         rows[missed] = cKDTree(target_shape).query(page_shape[missed], k=1)[1]
-    return rows.astype(np.uint32), int(missed.sum())
+        delta = target_shape[rows[missed]] - page_shape[missed]
+    return rows.astype(np.uint32), missed.astype(np.uint32), delta.astype(np.float32)
 
 
 def detail_rows(
@@ -237,7 +240,9 @@ def detail_rows(
     full levels of Catmull-Clark subdivision of its quads (``viewer/src/subdivision.ts``).
     Returns ``{"coarse": compact, "<topology>": {"1": rows, "2": rows, "fallback": {...}}}``:
     for each page row of a level, the row of the full level of that topology whose stencil is the
-    same, or, where the topology's patches changed the stencil, the nearest row on the template.
+    same, or, where the topology's patches changed the stencil, the nearest row on the template;
+    ``"<level>_missed"`` lists those page rows and ``"<level>_delta"`` the move from the page's
+    template position to that row's, which the page adds to the card's offset there.
     """
     from anny.utils.subdivision import catmull_clark
 
@@ -270,7 +275,10 @@ def detail_rows(
                 levels[k].operators[k - 1].apply(x_t),
                 levels[k].operators[k - 1].apply(shape_t),
             )
-            entry[str(k)], missed[str(k)] = _match(x_p, x_t, s_p, shape_t)
+            rows, miss, delta = _match(x_p, x_t, s_p, shape_t)
+            entry[str(k)] = rows
+            entry[f"{k}_missed"], entry[f"{k}_delta"] = miss, delta
+            missed[str(k)] = int(len(miss))
         entry["fallback"] = missed
         out[topology] = entry
     return out
@@ -287,3 +295,109 @@ def _topology_template(topology: str, template: np.ndarray, count: int) -> np.nd
         sculpt_data().positions(np.asarray(template, dtype=np.float64)),
         dtype=np.float64,
     )
+
+
+def sculpt_patch(
+    level_k: int,
+    compact: np.ndarray,
+    coarse_page: np.ndarray,
+    fine_page: np.ndarray,
+    hidden: np.ndarray,
+) -> dict | None:
+    """
+    The faces that the patches of the ``sculpt`` topology add (:mod:`opensculptboy.topology`), on
+    the full level ``level_k`` of the sculpt mesh, for the page to draw in place of Anny's faces
+    that they replace.
+
+    ``compact`` (C,) is the Anny vertex of each coarse vertex of the page, ``coarse_page`` (C, 3)
+    the page's coarse vertices of Anny's default body, ``fine_page`` (V, 3) the page's drawn
+    vertices of that body and ``hidden`` (V,) the drawn vertices that the page leaves out on a
+    sculpt card. Returns, per drawn vertex of the patch (one copy per side of a UV seam), the row
+    of the level (where a card's offsets of that level apply), the sparse weights of the page's
+    coarse vertices that give its parametric position (``start``, ``cols``, ``values``), its UV
+    (glTF convention) and the nearest drawn vertex of the page that is not hidden (whose skin
+    weights and shading fields it takes), and the triangles; or None without a sculpt topology.
+    """
+    from anny.utils.subdivision import SparseOperator
+    from scipy.spatial import cKDTree
+
+    from opensculptboy.detail.subdivision import level, split_quads
+    from opensculptboy.topology.sculpt import sculpt_data
+
+    try:
+        data = sculpt_data()
+        lv = level("sculpt", level_k)
+    except (ValueError, KeyError, FileNotFoundError):
+        return None
+    n, m = data.vertex_count, data.new_vertex_count
+    kept = int(data.kept_faces().sum())
+    patch = lv.base_faces >= kept
+    quads, uv_quads = lv.quads[patch], lv.uv_quads[patch]
+    # the parametric rows: the level's operators from the sculpt mesh, whose new vertices blend Anny's
+    rows, cols, vals = [np.arange(n)], [np.arange(n)], [np.ones(n)]
+    for k in range(data.anchors.shape[1]):
+        keep = data.weights[:, k] > 0
+        rows.append(n + np.nonzero(keep)[0])
+        cols.append(data.anchors[keep, k])
+        vals.append(data.weights[keep, k])
+    blend = SparseOperator(
+        np.concatenate(rows), np.concatenate(cols), np.concatenate(vals), (n + m, n)
+    )
+    # the drawn vertices: one per vertex and UV of the patch's corners
+    tris = split_quads(quads)
+    uv_tris = split_quads(uv_quads)
+    pairs = np.stack([tris.ravel(), uv_tris.ravel()], 1)
+    unique, inverse = np.unique(pairs, axis=0, return_inverse=True)
+    vertex_rows = unique[:, 0]
+    # the rows of the level from the sculpt mesh, composed from the last operator back
+    op = lv.operators[-1].select_rows(vertex_rows)
+    for earlier in reversed(lv.operators[:-1]):
+        op = op @ earlier
+    op = op @ blend
+    of_anny = -np.ones(n, np.int64)
+    of_anny[np.asarray(compact)] = np.arange(len(compact))
+    page_cols = of_anny[op.cols]
+    if (page_cols < 0).any():
+        raise ValueError(
+            "A vertex of the patch blends Anny vertices that the page lacks."
+        )
+    start = np.concatenate(
+        [[0], np.cumsum(np.bincount(op.rows, minlength=len(unique)))]
+    )
+    position = np.zeros((len(unique), 3))
+    np.add.at(
+        position, op.rows, op.values[:, None] * np.asarray(coarse_page)[page_cols]
+    )
+    visible = np.nonzero(~np.asarray(hidden, bool))[0]
+    near = visible[cKDTree(np.asarray(fine_page)[visible]).query(position)[1]]
+    uv = np.asarray(lv.uvs)[unique[:, 1]].copy()
+    uv[:, 1] = 1.0 - uv[:, 1]
+    return {
+        "rows": vertex_rows.astype(np.uint32),
+        "start": start.astype(np.uint32),
+        "cols": page_cols.astype(np.uint32),
+        "values": op.values.astype(np.float32),
+        "uvs": uv.astype(np.float32),
+        "near": near.astype(np.uint32),
+        "triangles": inverse.reshape(-1, 3).astype(np.uint32),
+    }
+
+
+def pocket(seams: Seams, body_faces: np.ndarray) -> np.ndarray:
+    """(N + D,) the drawn vertices of the page whose every triangle lies on a face of Anny that the
+    patches of the sculpt topology replace; the page leaves them out on a sculpt card."""
+    from opensculptboy.topology.sculpt import sculpt_data
+
+    flags = np.zeros(len(seams.source), np.uint8)
+    try:
+        data = sculpt_data()
+    except (ValueError, KeyError, FileNotFoundError):
+        return flags
+    removed = np.zeros(
+        max(int(np.max(body_faces)), int(data.removed_faces.max())) + 1, bool
+    )
+    removed[data.removed_faces] = True
+    on = removed[np.asarray(body_faces)[seams.base_faces]]
+    flags[np.unique(seams.triangles[on])] = 1
+    flags[np.unique(seams.triangles[~on])] = 0
+    return flags

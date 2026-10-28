@@ -1051,7 +1051,7 @@ function initCardLook() {
     THREE, scene, opaque, uniforms: U, depth: depthMat, envDefines: () => ENV_DEFINES, toMRT,
     skeleton: () => RIG.skel,
     body: () => BODY.anny, geometry: () => BODY.geo, manifest: () => MANIFEST,
-    buffer: (name: string) => { const b = B[name]; return b ? new Uint32Array(b.data.buffer.slice(b.data.byteOffset, b.data.byteOffset + b.data.byteLength)) : null; },
+    buffer: (name: string) => { const b = B[name]; return b ? b.data.buffer.slice(b.data.byteOffset, b.data.byteOffset + b.data.byteLength) : null; },
     frame: () => ({ scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset }),
     headBone: () => RIG.head,
     skinMaterial: (defines: any, uniforms: any) => new THREE.ShaderMaterial({ uniforms: Object.assign({}, U, uniforms), vertexShader: SKIN_VS, fragmentShader: SKIN_FS,
@@ -2258,10 +2258,13 @@ async function init() {
   hg.setIndex(new THREE.BufferAttribute(B.head_i.data, 1));
   // anny's atlas on the fine body (a card's baked skin): the UV in steps of 1/65535 and the head tile's island
   if (B.head_uv) {
-    const d = B.head_uv.data, n = B.head_uv.info.count, uv = new Uint16Array(n * 3);
+    const d = B.head_uv.data, n = B.head_uv.info.count, uv = new Uint16Array(n * 4);
     const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
-    for (let i = 0; i < n; i++) { uv[i * 3] = dv.getUint16(i * 8, true); uv[i * 3 + 1] = dv.getUint16(i * 8 + 2, true); uv[i * 3 + 2] = d[i * 8 + 4] ? 65535 : 0; }
-    hg.setAttribute('cardUV', new THREE.BufferAttribute(uv, 3, true));
+    for (let i = 0; i < n; i++) {
+      uv[i * 4] = dv.getUint16(i * 8, true); uv[i * 4 + 1] = dv.getUint16(i * 8 + 2, true);
+      uv[i * 4 + 2] = d[i * 8 + 4] ? 65535 : 0; uv[i * 4 + 3] = d[i * 8 + 5] ? 65535 : 0;   // the head tile, the sculpt pocket
+    }
+    hg.setAttribute('cardUV', new THREE.BufferAttribute(uv, 4, true));
   }
   addSkin(hg, B.head_skin);
   hg.setAttribute('normal', new THREE.BufferAttribute(normalsOf(hg.attributes.position.array, B.head_i.data), 3));
