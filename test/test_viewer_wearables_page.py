@@ -140,7 +140,9 @@ class TestWearablesPage(unittest.TestCase):
         self.assertNotIn("push", out["fast"])
         self.assertTrue(out["settled"]["full"])
         print(f"slider: fast {out['fast']}, settled {out['settled']}")
-        # the heavier body, with the cape hidden and the smock in the tunic's slot
+        # the heavier body, with the cape hidden and the smock in the tunic's slot: the smock
+        # rests on the rigid plate, and the push-out moves single vertices by some millimetres
+        # where the page's body and the plate's estimated turn differ slightly from Python's
         heavy = card_body(Character(phenotype={"weight": 0.9}), template_model())
         worn = worn_pieces(
             self.card, self.dir, show=["work/smock"], hide=["travel/cape"]
