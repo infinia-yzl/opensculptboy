@@ -110,6 +110,17 @@ class TestCarry(unittest.TestCase):
         carried = Carrier(self.posed, self.rest, self.head, Skin()).points(point)
         local = (carried - self.t) @ self.R
         self.assertAlmostEqual(float(np.linalg.norm(local)), 0.0905, delta=1e-4)
+        # rows inside the head (a mouth's cavity) lie far from the reference's skin and give
+        # no offset, even to a point nearer to them than to the skin
+        inner = 0.5 * self.posed[:100]
+        posed = np.concatenate([self.posed, inner])
+        rest = posed @ self.R.T + self.t
+        head = np.arange(len(posed))
+        point = np.array([[0.0, 0.0, 0.0895], [0.0, 0.0, 0.06]])
+        carried = Carrier(posed, rest, head, Skin()).points(point)
+        local = (carried - self.t) @ self.R
+        self.assertAlmostEqual(float(np.linalg.norm(local[0])), 0.0905, delta=1e-4)
+        self.assertAlmostEqual(float(np.linalg.norm(local[1])), 0.061, delta=2e-4)
 
 
 class TestUnpose(unittest.TestCase):
