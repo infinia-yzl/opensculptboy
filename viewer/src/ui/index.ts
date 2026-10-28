@@ -19,6 +19,7 @@ import { isPhone, makeSegment, WIDE, type Segment } from './segments.ts';
 import { helpSheet } from './shortcuts.ts';
 import { sheetSection } from './sheet_ui.ts';
 import { stageSections } from './stage_ui.ts';
+import { expressionSection } from './expression_ui.ts';
 import { wearablesSection } from './wearables_ui.ts';
 import { makeStats, type Stats } from './stats.ts';
 import { toast } from './toast.ts';
@@ -90,6 +91,7 @@ export function initUI(app: App): UI {
   const cs = characterSections(ed);
   const ss = stageSections(app);
   const sheet = sheetSection(app, () => layout());
+  const xs = expressionSection();
   let prevL = false, prevR = false, sheetWas = false;
   const layout = () => {
     const lo = left.isOpen(), ro = right.isOpen();
@@ -123,6 +125,7 @@ export function initUI(app: App): UI {
   ], layout);
   const right: Segment = makeSegment('right', 'Stage', [
     { id: 'pose', label: 'Pose', icon: 'pose', key: 'p', el: ss.pose },
+    { id: 'expression', label: 'Expression', icon: 'expression', key: 'x', el: xs.el },
     { id: 'rig', label: 'Rig', icon: 'bones', key: 'r', el: ss.rig },
     { id: 'scene', label: 'Scene', icon: 'scene', key: 'l', el: ss.scene },
     { id: 'sheet', label: 'Sheet', icon: 'sheet', key: 's', el: sheet.el, onShow: () => sheet.refresh() },
@@ -299,7 +302,7 @@ export function initUI(app: App): UI {
       '0': () => nav.reset(), '1': () => nav.frame('body'), '2': () => nav.frame('upper'), '3': () => nav.frame('face'),
       '4': () => nav.angle('front'), '5': () => nav.angle('three'), '6': () => nav.angle('side'), '7': () => nav.angle('back'),
       c: () => left.toggle('characters'), b: () => left.toggle('body'), f: () => left.toggle('face'), h: () => left.toggle('hair'), e: () => left.toggle('skin'),
-      p: () => right.toggle('pose'), r: () => right.toggle('rig'), l: () => right.toggle('scene'), s: () => right.toggle('sheet'),
+      p: () => right.toggle('pose'), x: () => right.toggle('expression'), r: () => right.toggle('rig'), l: () => right.toggle('scene'), s: () => right.toggle('sheet'),
       H: () => app.setHairVisible(!app.hairVisible()), t: () => app.setTurntable(!app.turntable()),
       B: () => app.setRigView(app.rigView() === 'skeleton' ? 'off' : 'skeleton'),
       W: () => app.setRigView(app.rigView() === 'weights' ? 'off' : 'weights'),
@@ -342,12 +345,13 @@ export function initUI(app: App): UI {
       h('span', { text: name }));
     if (L.name !== 'Custom') ed.origin = L.name;
   };
-  syncLook(); ss.sync(); paintView(); paintRing();
+  syncLook(); ss.sync(); xs.sync(); paintView(); paintRing();
   let tFrame = 0;
   const hooks: Hooks = {
     look: syncLook,
     motion: () => { ss.sync(); if (app.rigView() === 'off') boneTip.hidden = true; },
     hair: () => { cs.sync(app.look()); ss.sync(); },
+    face: () => xs.sync(),
     frame(now, dt, drew, jsMs) {
       stats.frame(now, dt, drew, jsMs);
       if (now - tFrame > 100) { tFrame = now; ss.frame(); paintRing(); paintView(); }

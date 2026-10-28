@@ -430,6 +430,129 @@ def card_buffers(pk, man, body, model, seams, base_index, body_used, eye_ids, co
     )
 
 
+def expression_buffers(pk, man, body, compact, src, count, verbose=True):
+    """
+    The faces of the page (opensculptboy.viewer.face_tables), when OpenSculptBoy is installed:
+
+    - ``face_action_ids`` and ``face_action_offsets``: each facial action's target as sparse
+      offsets on the coarse body (records of x, y, z and a pad in steps of 1e-5, page frame), as
+      the face shapes are; the page subdivides them for its fine body;
+    - ``face_jaw``: the coarse vertices that the jaw and the tongue chain of the ``anny-mouth``
+      rig move, and their weights (uint32 and float32 pairs);
+    - ``face_region``: the drawn vertices of the fine body that any action or the jaw moves, so
+      that build.mjs puts them together in the vertex order and an upload of a face is one range;
+    - ``man["expressions"]``: the actions, the jaw's turn (a rotation vector and its pivot on
+      Anny's default body, which the page carries with the head), the turns of the eyeballs, the
+      motion of Anny's tongue, and the VRM presets and visemes of
+      ``opensculptboy/data/vrm/expressions.json``.
+    """
+    try:
+        from opensculptboy import viewer as card
+        from opensculptboy.export.vrm_tables import DATA_DIR as VRM_DATA
+    except ImportError:
+        return
+    from scipy.spatial.transform import Rotation
+
+    t0 = time.time()
+    rig = P.RIG
+    F = card.face_tables()
+    n_coarse = len(rig.preview["coarse"]["V"])
+    assert F.rest.shape[0] == n_coarse, (
+        "the face model and the page number anny's vertices differently"
+    )
+    off = rig.scale * F.offsets[:, compact] @ M.T
+    starts, counts, ids, recs = [], [], [], []
+    for a in range(len(F.labels)):
+        moved = np.nonzero(np.linalg.norm(off[a], axis=1) > 1e-6)[0]
+        q = np.round(off[a, moved] / 1e-5)
+        assert np.abs(q).max(initial=0) < 32767
+        r = np.zeros((len(moved), 4), np.int16)
+        r[:, :3] = q
+        starts.append(int(sum(counts)))
+        counts.append(int(len(moved)))
+        ids.append(moved)
+        recs.append(r)
+    ids = np.concatenate(ids).astype(np.uint32)
+    pk.add("face_action_ids", ids, "raw", ids.size * 4, 1)
+    rec = np.concatenate(recs)
+    pk.add("face_action_offsets", rec, "vertex", len(rec), 8)
+    jw = F.jaw_weights[compact]
+    on = np.nonzero(jw > 1e-6)[0]
+    pairs = np.zeros((len(on), 2), np.uint32)
+    pairs[:, 0] = on
+    pairs[:, 1] = jw[on].astype("<f4").view(np.uint32)
+    pk.add("face_jaw", pairs, "raw", pairs.nbytes, 1)
+    # the drawn vertices that any action or the jaw moves
+    D = np.zeros((n_coarse, 3))
+    for a in range(len(F.labels)):
+        D += np.abs(F.offsets[a])
+    W = np.zeros((n_coarse, 1))
+    W[:, 0] = F.jaw_weights
+    moved = (np.abs(body.subdivision(D)).sum(1) > 1e-7) | (
+        body.subdivision(W)[:, 0] > 1e-6
+    )
+    region = np.nonzero(moved[src])[0].astype(np.uint32)
+    pk.add(
+        "face_region",
+        region.view(np.uint8).reshape(-1, 4),
+        "sparse",
+        len(region),
+        4,
+        body="head",
+        fields=1,
+        sort="none",
+    )
+    rotvec = M @ Rotation.from_matrix(F.rotation).as_rotvec()
+    tongue_rest = rig.to_legacy(F.rest[F.tongue])
+    tongue = {}
+    for name, m in F.tongue_motion.items():
+        if m[0] == "rigid":
+            R = M @ m[1] @ M.T
+            # p -> R p + t in the page frame, for the page's points p = s M x + o
+            t = rig.scale * (M @ m[2]) + rig.offset - R @ rig.offset
+            tongue[name] = dict(
+                kind="rigid",
+                rotation=R.ravel().round(8).tolist(),
+                translation=t.round(8).tolist(),
+            )
+        else:
+            d = rig.scale * m[1] @ M.T
+            tongue[name] = dict(kind="follow", offsets=d.ravel().round(7).tolist())
+    eye_turns = {}
+    for name, entry in F.eye_turns.items():
+        eye_turns[name] = {
+            s.lower(): (M @ v).round(7).tolist() for s, v in entry.items()
+        }
+    with open(VRM_DATA / "expressions.json", encoding="utf-8") as f:
+        vrm = json.load(f)
+    man["expressions"] = dict(
+        format="opensculptboy/page-faces@1",
+        actions=F.labels,
+        starts=starts,
+        counts=counts,
+        step=1e-5,
+        cleared=F.cleared,
+        jaw=dict(
+            action="jawOpen",
+            rotation=rotvec.round(8).tolist(),
+            angle_degrees=round(float(np.degrees(np.linalg.norm(rotvec))), 4),
+            pivot=rig.to_legacy(F.pivot).round(7).tolist(),
+            vertices=int(len(on)),
+        ),
+        eye_turns=eye_turns,
+        tongue=dict(rest=tongue_rest.ravel().round(7).tolist(), motion=tongue),
+        region=int(len(region)),
+        presets={k: v["mix"] for k, v in vrm["presets"].items()},
+        visemes={k: v["mix"] for k, v in vrm.get("customs", {}).items()},
+    )
+    if verbose:
+        print(
+            f"faces: {len(ids)} coarse offsets, {len(region)} fine vertices, jaw turn "
+            f"{man['expressions']['jaw']['angle_degrees']:.1f} degrees "
+            f"({time.time() - t0:.0f} s)"
+        )
+
+
 def with_copies(shape, source, count):
     """a corrective shape with the records of the seam copies of its vertices"""
     copies = np.arange(count, len(source))
@@ -739,6 +862,9 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
     )
     pk.add("corr_support", support, "raw", support.size * 4, 1)
     man["correctives"] = dict(step=1e-5, nstep=0.01, shapes=entries, spec=drivers)
+
+    # ---------------- faces: the facial actions, the jaw's turn and the presets (opensculptboy.viewer)
+    expression_buffers(pk, man, body, compact, src, nV, verbose)
 
     # ---------------- hair: the scalp layout and the styles (anny.hair.styles), bound to the skin
     man["hair"] = hair_buffers(pk, body, weights, len(space["bones"]))

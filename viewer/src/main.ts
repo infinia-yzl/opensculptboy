@@ -33,6 +33,9 @@ import { detect as detectPicture } from './picture.ts';
 import { silhouetteSvg } from './flat.ts';
 import { Wardrobe } from './wearables/view.ts';
 import { CardLook } from './card/look.ts';
+import { PageFace } from './face/expressions.ts';
+import { decodeFaceData, type FaceData as FaceActionData } from './face/rig.ts';
+import { FACE_GLSL, FaceMorph, faceUniforms } from './face/morph.ts';
 import { QueryPool, setQueryPool } from './wearables/pool.ts';
 
 const qs = new URLSearchParams(location.search);
@@ -43,7 +46,7 @@ const SHOT = qs.has('shot');
 // skin diffusion: screen-space pass by default, '?sss=lut' switches to the pre-integrated curvature LUT
 const SSS_ON = qs.get('sss') !== 'lut';
 // the interface (ui/index.ts) hooks into the renderer once the model is ready; until then these do nothing
-const HOOKS: any = { look() {}, motion() {}, hair() {}, frame() {}, passBegin() {}, passEnd() {}, interacted() {} };
+const HOOKS: any = { look() {}, motion() {}, hair() {}, face() {}, frame() {}, passBegin() {}, passEnd() {}, interacted() {} };
 let UI: any = null;
 // the view that the navigation (ui/camera_nav.ts) shares: the yaw of the framings, the width of the free space
 // between the inspectors (0: the whole window), and whether the user moved the pivot away from a framing
@@ -790,7 +793,7 @@ function makeStrandMesh(hair: Hair, p, defines) {
 // The body comes from anny (body.ts): the sliders set anny's blend-shape coefficients, the coarse body and the
 // joints follow, the fine surface is rebuilt by subdivision with its detail layers, and the eyes, the hair, the
 // skeleton and the corrective shapes follow the body. Every slider runs from 0 to 1, and anny's default is 0.5.
-const BODY: any = { ready: false, anny: null as AnnyBody | null, geo: null, values: null, face: null, faceSliders: [], sliders: [], lastMs: 0, lastTotalMs: 0, lastTiming: {} };
+const BODY: any = { ready: false, anny: null as AnnyBody | null, geo: null, values: null, face: null, faceSliders: [], sliders: [], lastMs: 0, lastTotalMs: 0, lastTiming: {}, faceData: null };
 // anny's race phenotypes: their values mix by their shares
 const RACES = ['african', 'asian', 'caucasian'];
 // The characters are humanoid 3D models: the `age` parameter blends the proportions of the mesh, from compact to
@@ -853,6 +856,9 @@ function initBody(meta: any, B: any, geo: any) {
   };
   const body = new AnnyBody(meta, bufs, at.position.array, at.normal.array, at.nsmooth.array);
   body.detailStep = B.head_detail.info.step || 1e-5;
+  // the facial actions, the jaw's turn and the presets of the faces (face/rig.ts)
+  BODY.faceData = meta.expressions && B.face_action_ids && B.face_action_offsets && B.face_jaw
+    ? decodeFaceData(meta.expressions, u32('face_action_ids'), i16('face_action_offsets'), u32('face_jaw')) as FaceActionData : null;
   startBodyWorker(meta, bufs, body);
   BODY.anny = body; BODY.geo = geo;
   BODY.sliders = sm.sliders.map((name: string) => ({ name, label: SLIDER_LABELS[name] || name.charAt(0).toUpperCase() + name.slice(1),
@@ -929,6 +935,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
   mark('ribbons');
   updateEyeShape();
   rebaseCorrectives();
+  FACE?.invalidate();
   mark('correctives');
   rigForBody();
   mark('rig');
@@ -939,6 +946,8 @@ function finishBodyShape(t0: number, bodyMs: number) {
   BODY.lastTiming = Object.assign({}, BODY.anny.timing, steps);
   WEAR?.bodyChanged();
   CARD?.bodyChanged();
+  FACE?.bodyChanged();
+  warmFace();
 }
 
 // ------------------------------------------------------------------ the body build in a worker
@@ -1058,7 +1067,7 @@ function initCardLook() {
     frame: () => ({ scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset }),
     headBone: () => RIG.head,
     skinMaterial: (defines: any, uniforms: any) => new THREE.ShaderMaterial({ uniforms: Object.assign({}, U, uniforms), vertexShader: SKIN_VS, fragmentShader: SKIN_FS,
-      defines: Object.assign({}, ENV_DEFINES, SSS_ON ? { SSS_SCREEN: '' } : {}, BODY.geo.attributes.skinIndex2 ? SKIN8_DEF : {}, defines), glslVersion: THREE.GLSL3, blending: THREE.NoBlending }),
+      defines: Object.assign({}, ENV_DEFINES, SSS_ON ? { SSS_SCREEN: '' } : {}, BODY.geo.attributes.skinIndex2 ? SKIN8_DEF : {}, FACE_DEF, defines), glslVersion: THREE.GLSL3, blending: THREE.NoBlending }),
     setSkinMaterial: (m: any) => {
       if (m) { if (!PAGE_SKIN) PAGE_SKIN = BODY_MESH.material; BODY_MESH.material = m; }
       else if (PAGE_SKIN) { BODY_MESH.material = PAGE_SKIN; PAGE_SKIN = null; }
@@ -1073,6 +1082,15 @@ function initCardLook() {
     blinkShapes: setBlinkShapes,
     blinkWeights: applyBlink,
     moved: () => { shadowsDirty = true; resetAccum(); },
+    faceChanged: () => {
+      if (!FACE?.ready) return;
+      FACE.cardChanged();
+      warmFace();
+      // the card's own face (its facial actions), as its exports bake it in
+      const fa = CARD?.active ? CARD.facialActions : {};
+      FACE.set({ actions: Object.keys(fa).length ? { ...fa } : {} });
+      HOOKS.face();
+    },
   });
 }
 function initWardrobe() {
@@ -1646,6 +1664,7 @@ function clearBlink() {
   markRange(at.position, lo, hi); markRange(at.normal, lo, hi); markRange(at.nsmooth, lo, hi);
 }
 function setBlinkShapes(shapes: any[] | null) {
+  if (FACE?.ready) { FACE.blinkShapes(shapes); return; }
   clearBlink();
   BLINK.shapes = null; BLINK.nt = 0;
   if (!shapes || !shapes.length || !BODY.ready) return;
@@ -1654,12 +1673,98 @@ function setBlinkShapes(shapes: any[] | null) {
     acc: new Float32Array(n * 3), nt: 0, base: BODY.anny.pos.slice(), nbase: BODY.anny.nrm.slice(), sbase: BODY.anny.ns.slice() });
 }
 function applyBlink(w: Float32Array) {
+  if (FACE?.ready) { FACE.blinkWeights(w); return; }
   if (!BLINK.shapes || w.length !== BLINK.shapes.length) return;
   BLINK.w.set(w); BLINK.wn.set(w);
   const at = BODY.geo.attributes;
   const [lo, hi] = sparseApply(BLINK, BLINK.shapes, BLINK.w, BLINK.wn, BODY.anny.pos, BODY.anny.nrm, BODY.anny.ns, BLINK.base, BLINK.nbase, BLINK.sbase);
   markRange(at.position, lo, hi); markRange(at.normal, lo, hi); markRange(at.nsmooth, lo, hi);
 }
+// ------------------------------------------------------------------ faces
+// The face of the figure (face/expressions.ts): Anny's facial actions, jawOpen as the jaw's turn, a card's own mouth
+// poses and eye targets, the gaze and the head's turn. The shapes move the fine body over a copy of its rest, on the
+// page's thread as the correctives do; an upload sends the range of the face's vertices, which the build puts together
+// in the vertex order (build.mjs). The face registers itself as the page's face (face/api.ts).
+let FACE: PageFace | null = null;
+const FACE_DRAWN: (() => void)[] = [];
+// the face on the GPU (face/morph.ts): the uniforms of FACE_GLSL in U, the define of the body's materials, and the layers
+let FACE_U: ReturnType<typeof faceUniforms> | null = null, FACE_DEF: Record<string, string> = {}, FACE_MORPH: FaceMorph | null = null;
+function initFaceMorph(B: any) {
+  // the face's block: the vertices of face_region, which the build puts together in the vertex order
+  if (!BODY.faceData || !B.face_region || qs.get('facegpu') === 'off') return;
+  const r = B.face_region, ids = new Uint32Array(r.data.buffer, r.data.byteOffset, r.info.count);
+  let lo = Infinity, hi = -1;
+  for (let i = 0; i < ids.length; i++) { if (ids[i] < lo) lo = ids[i]; if (ids[i] > hi) hi = ids[i]; }
+  if (hi < lo || hi - lo + 1 > 2 * ids.length) return;   // a scattered block (old data): the faces stay on the CPU
+  FACE_U = faceUniforms(THREE);
+  Object.assign(U, FACE_U);
+  FACE_DEF = { FACE_MORPH: '' };
+  FACE_MORPH = new FaceMorph(THREE, FACE_U, lo, hi - lo + 1);
+}
+// the strands' corners: the vertices whose face positions the brows and the lashes follow
+let STRAND_CORNERS: Uint32Array | null = null;
+function strandCorners() {
+  if (STRAND_CORNERS) return STRAND_CORNERS;
+  const set = new Set<number>(), A = BODY.anny;
+  for (const n of ['brows', 'lashes']) { const s = A.strands[n]; if (!s) continue; for (const v of s.corners) set.add(v); if (s.tipCorners) for (const v of s.tipCorners) set.add(v); }
+  return (STRAND_CORNERS = Uint32Array.from(set));
+}
+function initFace() {
+  if (!BODY.faceData || !RIG.ready) return;
+  const head = new THREE.Vector3();
+  FACE = new PageFace({
+    body: () => BODY.anny,
+    data: () => BODY.faceData,
+    upload: (lo, hi) => {
+      const at = BODY.geo.attributes;
+      markRange(at.position, lo, hi); markRange(at.normal, lo, hi); markRange(at.nsmooth, lo, hi);
+      shadowsDirty = true; resetAccum();
+    },
+    redraw: () => { shadowsDirty = true; resetAccum(); },
+    morph: () => FACE_MORPH,
+    strands: (at) => {
+      // the page's own brows and lashes, when they show (a card's own take their place)
+      const sets = ['brows', 'lashes'].filter((n) => !CARD_PARTS || (CARD_PARTS as any)[n]);
+      if (!sets.length) return;
+      const A = BODY.anny, P = A.pos;
+      if (!at) A.followStrands(sets);
+      else {
+        // the face's positions of the strands' corners for a moment, then the rest again
+        const ids = strandCorners(), keep = new Float32Array(ids.length * 3), o = [0, 0, 0];
+        for (let i = 0; i < ids.length; i++) { const v = ids[i] * 3; keep[i * 3] = P[v]; keep[i * 3 + 1] = P[v + 1]; keep[i * 3 + 2] = P[v + 2]; }
+        for (let i = 0; i < ids.length; i++) { at(ids[i], o); const v = ids[i] * 3; P[v] = o[0]; P[v + 1] = o[1]; P[v + 2] = o[2]; }
+        A.followStrands(sets);
+        for (let i = 0; i < ids.length; i++) { const v = ids[i] * 3; P[v] = keep[i * 3]; P[v + 1] = keep[i * 3 + 1]; P[v + 2] = keep[i * 3 + 2]; }
+      }
+      for (const h of HAIRSETS) if (sets.includes(h.name)) h.tex.needsUpdate = true;
+    },
+    eyes: (turns) => {
+      for (const s of ['l', 'r']) { const G = turns[s]; if (G) EYE_TURN[s].set(G[0], G[1], G[2], G[3], G[4], G[5], G[6], G[7], G[8]); }
+      if (RIG.ready) { placeEyesOnHead(); shadowsDirty = true; resetAccum(); }
+    },
+    head: (turn, tilt, nod) => { setHeadTurn(turn, tilt, nod); HOOKS.motion(); },
+    toDefault: (p) => { head.set(p[0], p[1], p[2]).applyMatrix4(HEADMAP.inv); return [head.x, head.y, head.z]; },
+    headScale: () => HEADMAP.k,
+    card: () => (CARD?.active ? CARD : null),
+    drawn: () => new Promise<void>((resolve) => { FACE_DRAWN.push(resolve); resetAccum(); setTimeout(resolve, 1500); }),
+  });
+  if (!FACE.init()) { FACE = null; return; }
+  setTimeout(warmFace, 3000);
+}
+// the warm-up: the shapes of every action and of a card's faces, and the copy of a new body's rest, one step at a time
+// while the page rests, so that a first face shows at once
+let FACE_WARMING = false;
+function warmFace() {
+  if (!FACE || FACE_WARMING || SHOT || typeof requestIdleCallback === 'undefined') return;
+  FACE_WARMING = true;
+  const step = (d: IdleDeadline) => {
+    if (!FACE) { FACE_WARMING = false; return; }
+    if (accCount < MAX_ACC && !d.didTimeout) { requestIdleCallback(step, { timeout: 4000 }); return; }   // the page draws: later
+    if (FACE.warm()) requestIdleCallback(step, { timeout: 4000 }); else FACE_WARMING = false;
+  };
+  requestIdleCallback(step, { timeout: 4000 });
+}
+
 // take the correction off (before the sliders rebuild the rest shape)
 function clearCorrectives() {
   if (!CORR.ready) return;
@@ -1771,8 +1876,28 @@ function evalMotion() {
   }
   const q = MOTION.q;
   RIG.bones.forEach((b: any, i: number) => b.quaternion.set(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]));
+  turnHead();
   placeRoot();
   poseChanged();
+}
+// the face's turn of the head (face/expressions.ts): degrees, to the figure's left, toward its left shoulder and down,
+// shared by the neck and the head in their own frames as the head's correction of a picture shares it
+const HEAD_TURN = { turn: 0, tilt: 0, nod: 0 };
+const HEAD_TURN_SHARES: [string, number][] = [['neck01', 0.3], ['neck02', 0.25], ['neck03', 0.2], ['head', 0.25]];
+const _hq = new THREE.Quaternion(), _he = new THREE.Euler();
+function turnHead() {
+  const { turn, tilt, nod } = HEAD_TURN;
+  if (!turn && !tilt && !nod) return;
+  for (const [name, share] of HEAD_TURN_SHARES) {
+    const b = RIG.bones.find((x: any) => x.name === name);
+    if (!b) continue;
+    _he.set(nod * share * DEG, turn * share * DEG, -tilt * share * DEG, 'YXZ');
+    b.quaternion.multiply(_hq.setFromEuler(_he));
+  }
+}
+function setHeadTurn(turn: number, tilt: number, nod: number) {
+  HEAD_TURN.turn = turn; HEAD_TURN.tilt = tilt; HEAD_TURN.nod = nod;
+  if (MOTION.cur) evalMotion();
 }
 // start a pose or a clip, blending from what the figure shows now
 function setMotion(name: string, opts: any = {}) {
@@ -1950,6 +2075,23 @@ function upperFrame() {
   for (const j of FIG.joints) if (j.p.y > lo) wx = Math.max(wx, Math.abs(j.p.x - FIG.head.x));
   return { target: [FIG.head.x, (lo + hi) / 2, w ? (w.p.z + FIG.head.z) / 2 : 0.03], yaw: 24, pitch: 4, halfH: (hi - lo) / 2, halfW: Math.max(0.24 * k, wx + 0.08) };
 }
+// the eyes ride on the head, turned about their centres by the face's gaze (face/expressions.ts)
+const EYE_TURN: Record<string, THREE.Matrix3> = { l: new THREE.Matrix3(), r: new THREE.Matrix3() };
+const _eyeM = new THREE.Matrix4(), _eyeT = new THREE.Matrix4(), _eyeC = new THREE.Vector3(), _eyeR = new THREE.Matrix3();
+function placeEyesOnHead() {
+  _m3.setFromMatrix4(_headSkin);
+  for (const e of RIG.eyes) {
+    const G = EYE_TURN[e.side];
+    // the centre in the frame the eye's geometry lies in: the default body's (carried by e.shape) or, for a card's eye,
+    // the current body's
+    if (e.card && e.card.center) _eyeC.fromArray(e.card.center); else _eyeC.fromArray(e.center0);
+    _eyeM.setFromMatrix3(G);
+    _eyeT.makeTranslation(_eyeC.x, _eyeC.y, _eyeC.z).multiply(_eyeM).multiply(new THREE.Matrix4().makeTranslation(-_eyeC.x, -_eyeC.y, -_eyeC.z));
+    e.mesh.matrix.multiplyMatrices(_headSkin, e.shape).multiply(_eyeT); e.mesh.matrixWorldNeedsUpdate = true;
+    _eyeR.copy(_m3).multiply(G);
+    e.u.uEyeRot.value.copy(_eyeR).multiply(e.mesh.userData.rot0);
+  }
+}
 // everything that rides on the head, the shadow cameras, the floor shade and the stool follow the pose
 const _headSkin = new THREE.Matrix4(), _headFull = new THREE.Matrix4(), _m3 = new THREE.Matrix3(), _v = new THREE.Vector3();
 const COUNTS: Record<string, number> = { pose: 0, body: 0 };   // for tests: how often the pose and the body changed
@@ -1965,11 +2107,7 @@ function poseChanged() {
   _headFull.multiplyMatrices(_headSkin, HEADMAP.m);
   U.uHeadInv.value.copy(_headFull).invert();
   U.uHeadRot.value.setFromMatrix4(_headSkin);
-  _m3.setFromMatrix4(_headSkin);
-  for (const e of RIG.eyes) {
-    e.mesh.matrix.multiplyMatrices(_headSkin, e.shape); e.mesh.matrixWorldNeedsUpdate = true;
-    e.u.uEyeRot.value.copy(_m3).multiply(e.mesh.userData.rot0);
-  }
+  placeEyesOnHead();
   for (const h of hairObjs) h.userData.hu.uHeadC.value.copy(h.userData.center).applyMatrix4(_headFull);
   // shadow cameras: the head map follows the head, the body map covers every joint
   SHADOW_FOCUS.head.set(0, 0.5, 0.03).applyMatrix4(_headFull);
@@ -2309,19 +2447,23 @@ async function init() {
   initBody(meta, B, hg);
   buildRig(meta.rig, BODY.anny.jointsDefault);
   updateHeadMap();
-  const skinMat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: SKIN_VS, fragmentShader: SKIN_FS, defines: Object.assign({}, ENV_DEFINES, SSS_ON ? { SSS_SCREEN: '' } : {}, hg.attributes.skinIndex2 ? SKIN8_DEF : {}), glslVersion: THREE.GLSL3, blending: THREE.NoBlending });
+  initFaceMorph(B);
+  const skinMat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: SKIN_VS, fragmentShader: SKIN_FS, defines: Object.assign({}, ENV_DEFINES, SSS_ON ? { SSS_SCREEN: '' } : {}, hg.attributes.skinIndex2 ? SKIN8_DEF : {}, FACE_DEF), glslVersion: THREE.GLSL3, blending: THREE.NoBlending });
   const head = skinned(hg, skinMat);
   // the body in the shadow maps: the pocket that a sculpt card hides casts no shadow either (its patch casts its own)
   const hideDepth = !!hg.attributes.cardUV;
   head.userData.depthMat = new THREE.ShaderMaterial({
-    uniforms: { uWearOn: U.uWearOn, uCardHide: U.uCardHide }, defines: Object.assign({}, depthMat.defines, hg.attributes.skinIndex2 ? SKIN8_DEF : {}, hideDepth ? { CARD_HIDE: '' } : {}), side: THREE.DoubleSide,
+    uniforms: Object.assign({ uWearOn: U.uWearOn, uCardHide: U.uCardHide }, FACE_U || {}), defines: Object.assign({}, depthMat.defines, hg.attributes.skinIndex2 ? SKIN8_DEF : {}, hideDepth ? { CARD_HIDE: '' } : {}, FACE_DEF), side: THREE.DoubleSide,
     fragmentShader: depthMat.fragmentShader.replace('void main(){', '#ifdef CARD_HIDE\nuniform float uCardHide; varying float vHide;\n#endif\nvoid main(){\n#ifdef CARD_HIDE\n if (uCardHide > 0.5 && vHide > 0.001) discard;\n#endif\n'),
-    vertexShader: SKIN_GLSL + '\nattribute vec4 attrV; uniform vec4 uWearOn;\n#ifdef CARD_HIDE\nattribute vec4 cardUV; varying float vHide;\n#endif\n' + COVER_GLSL
-      + '\nvoid main(){\n#ifdef CARD_HIDE\n vHide = cardUV.w;\n#endif\n gl_Position = projectionMatrix * modelViewMatrix * (skinMat() * vec4(coveredPosition(), 1.0)); }',
+    vertexShader: SKIN_GLSL + FACE_GLSL + '\nattribute vec4 attrV; uniform vec4 uWearOn;\n#ifdef CARD_HIDE\nattribute vec4 cardUV; varying float vHide;\n#endif\n' + COVER_GLSL
+      + '\nvoid main(){\n#ifdef CARD_HIDE\n vHide = cardUV.w;\n#endif\n faceMorph(position, normal, normal);\n gl_Position = projectionMatrix * modelViewMatrix * (skinMat() * vec4(coveredPosition(), 1.0)); }',
   });
+  // the face on the GPU moves the body's own vertices (other meshes drawn with a skin material, a card's patch, leave it)
+  if (FACE_U) head.onBeforeRender = (_r: any, _s: any, _c: any, _g: any, m: any) => { if (FACE_U!.uFaceOn.value !== 1) { FACE_U!.uFaceOn.value = 1; m.uniformsNeedUpdate = true; } };
   scene.add(head); opaque.push(head); BODY_MESH = head;
   initMotion(meta, B);
   initCorrectives(meta, B);
+  initFace();
   STOOL = buildStool();
   // eyes: built on anny's default body; a matrix carries each one to the current body (body.ts)
   for (const s of ['l', 'r']) {
@@ -2725,9 +2867,12 @@ function animate() {
   // the hair's physics: it sleeps once the hair rests, so the picture can refine
   if (HAIR && hairShown() && !hairClock && HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); }
   CARD?.tick(now);   // a card's blinks (card/look.ts): the frames of a blink draw again
+  FACE?.tick(now);   // a face that fades in (face/expressions.ts)
   // while the sheet renders its pictures, the page's own view stays still: its last picture, dimmed
   if (SHEET.hold) sheetStillView();
   else if (accCount < MAX_ACC) renderPass();
+  // a face waits for a drawn frame; while the sheet holds the view, the sheet's own pictures draw the face
+  if ((DYN.rendered || SHEET.hold) && FACE_DRAWN.length) { const w = FACE_DRAWN.splice(0); for (const r of w) r(); }
   const jsMs = performance.now() - now;
   if (DYN.rendered) { PERF.frames++; PERF.jsMs += jsMs; }
   updatePerf(now);
@@ -3270,4 +3415,39 @@ window.__look = () => currentLook;
 // anny's face-shape values from a test (missing names take 0), and a face drawn from the distribution
 window.setFace = (v) => syncBody(() => { applyLook(Object.assign({}, currentLook, { face: v }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs }; });
 window.randomFace = () => { randomFace(); return currentLook.face; };
+// the face (face/api.ts) from a test: an expression state, a preset, and the face's numbers
+window.setExpression = (state) => (FACE ? FACE.set(state).then(() => FACE!.stats()) : Promise.resolve(null));
+window.setPresetFace = (name, weight = 1) => (FACE ? FACE.set(FACE.preset(name, weight)).then(() => FACE!.stats()) : Promise.resolve(null));
+window.faceStats = () => (FACE ? FACE.stats() : null);
+// the face on the GPU against the exact face on the CPU (face/rig.ts FaceLayer) for a mix of actions: the positions of
+// the face's block (metres), and the turn between the normals (degrees, 99th percentile and largest)
+window.faceCheck = async (actions: Record<string, number>) => {
+  if (!FACE || !FACE_MORPH || !FACE.layer || !FACE.rig) return null;
+  await FACE.set({ actions });
+  const M = FACE_MORPH, layer = FACE.layer, rig = FACE.rig, P = BODY.anny.pos, N = BODY.anny.nrm, n = M.count, st = M.start;
+  const gpu = new Float32Array(n * 3), o = [0, 0, 0];
+  for (let r = 0; r < n; r++) { const v = st + r; M.at(v, P[v * 3], P[v * 3 + 1], P[v * 3 + 2], o); gpu[r * 3] = o[0]; gpu[r * 3 + 1] = o[1]; gpu[r * 3 + 2] = o[2]; }
+  // the GPU's normals: the rest normal plus the weighted changes of the layers, as FACE_GLSL adds them
+  const w = new Float32Array(rig.names.length);
+  for (const [k, x] of Object.entries(actions)) { const i = rig.index.get(k); if (i !== undefined) w[i] = x; }
+  const dn = new Float32Array(n * 3), add = (sh: any, k: number) => { if (!sh.nIdx) return; for (let i = 0; i < sh.nIdx.length; i++) { const r = sh.nIdx[i] - st; if (r >= 0 && r < n) for (let c = 0; c < 3; c++) dn[r * 3 + c] += k * sh.dn[i * 3 + c]; } };
+  for (let a = 0; a < w.length; a++) if (w[a] && a !== rig.jaw) add(rig.fineShape(a), w[a]);
+  const keepN = new Float32Array(n * 3);
+  for (let r = 0; r < n; r++) for (let c = 0; c < 3; c++) keepN[r * 3 + c] = N[(st + r) * 3 + c];
+  layer.apply(w);
+  let max = 0, sum = 0;
+  const turns: number[] = [];
+  for (let r = 0; r < n; r++) {
+    const v = st + r, d = Math.hypot(P[v * 3] - gpu[r * 3], P[v * 3 + 1] - gpu[r * 3 + 1], P[v * 3 + 2] - gpu[r * 3 + 2]);
+    max = Math.max(max, d); sum += d;
+    if (!dn[r * 3] && !dn[r * 3 + 1] && !dn[r * 3 + 2]) continue;
+    let x = keepN[r * 3] + dn[r * 3], y = keepN[r * 3 + 1] + dn[r * 3 + 1], z = keepN[r * 3 + 2] + dn[r * 3 + 2];
+    const l = Math.hypot(x, y, z) || 1; x /= l; y /= l; z /= l;
+    turns.push(Math.acos(Math.min(1, x * N[v * 3] + y * N[v * 3 + 1] + z * N[v * 3 + 2])) * 180 / Math.PI);
+  }
+  layer.apply(new Float32Array(rig.names.length));
+  turns.sort((a, b) => a - b);
+  return { vertices: n, max, mean: sum / n, normal_p99: turns.length ? turns[Math.floor(turns.length * 0.99)] : 0, normal_max: turns.length ? turns[turns.length - 1] : 0 };
+};
+window.__FACE = () => FACE;
 init().catch(e => { console.error(e); showError('The model could not be loaded: ' + e.message); });
