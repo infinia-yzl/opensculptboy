@@ -49,7 +49,7 @@ class TestGroomHandoff(unittest.TestCase):
         roles = sorted({p.role for p in self.handoff.parts})
         self.assertEqual(roles, ["brows", "hair", "skin"])
         hair = [p for p in self.handoff.parts if p.role == "hair"]
-        self.assertEqual(sorted(p.material for p in hair), ["hair_strands", "hair_cap"])
+        self.assertEqual(sorted(p.material for p in hair), ["hair_cap", "hair_strands"])
         cards = next(p for p in hair if p.material == "hair_strands")
         self.assertEqual(cards.alpha_mode, "BLEND")
         self.assertTrue(cards.double_sided)
