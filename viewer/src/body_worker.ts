@@ -10,10 +10,10 @@
 // Messages to the worker:
 //   { type: 'init', meta, bufs, detailStep }
 //   { type: 'update', id, gen, t, values, face, out: { pos, nrm, ns, coarse, joints } }
-//   { type: 'offsets', offsets } (the coarse offsets of a card's level-0 detail layer, or null; AnnyBody.coarseOffsets)
+//   { type: 'card', card } (a character card's local changes and detail offsets, or null; AnnyBody.setCard)
 // Messages from the worker:
 //   { type: 'ready', ms } or { type: 'error', message }
-//   { type: 'done', id, gen, t, ms, timing, eyes, values, face, out } (id, gen and t come back as they went)
+//   { type: 'done', id, gen, t, ms, timing, eyes, floor, values, face, out } (id, gen and t come back as they went)
 
 import { AnnyBody } from './body.ts';
 
@@ -28,13 +28,13 @@ self.onmessage = (e: MessageEvent) => {
       body = new AnnyBody(m.meta, m.bufs);
       body.detailStep = m.detailStep;
       post({ type: 'ready', ms: performance.now() - t0 });
-    } else if (m.type === 'offsets' && body) {
-      body.coarseOffsets = m.offsets;
+    } else if (m.type === 'card' && body) {
+      body.setCard(m.card);
     } else if (m.type === 'update' && body) {
       const r = body.update(m.values, m.face);
       const o = m.out;
       o.pos.set(body.pos); o.nrm.set(body.nrm); o.ns.set(body.ns); o.coarse.set(body.coarse); o.joints.set(body.joints);
-      post({ type: 'done', id: m.id, gen: m.gen, t: m.t, ms: r.ms, timing: body.timing, eyes: body.eyes, values: body.values, face: body.faceValues, out: o },
+      post({ type: 'done', id: m.id, gen: m.gen, t: m.t, ms: r.ms, timing: body.timing, eyes: body.eyes, floor: body.floorShift, values: body.values, face: body.faceValues, out: o },
         [o.pos.buffer, o.nrm.buffer, o.ns.buffer, o.coarse.buffer, o.joints.buffer]);
     }
   } catch (err) {

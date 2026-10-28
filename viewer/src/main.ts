@@ -19,9 +19,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { AnnyBody, vertexNormals as normalsOf } from './body.ts';
-import { sampleFace, type FaceData } from './anny_shape.ts';
+import { sampleFace, type FaceData, type LocalData } from './anny_shape.ts';
 import {
-  BG_GLSL, COVER_GLSL, EYE_FS, EYE_VS, GLSL_COMMON, HAIR_FS, HAIR_VS, HEAD_OUT_GLSL, NOISE_GLSL, PROP_FS, PROP_VS, SKIN_FS, SKIN_GLSL,
+  BG_GLSL, COVER_GLSL, EYE_CARD_FS, EYE_CARD_VS, EYE_FS, EYE_VS, GLSL_COMMON, HAIR_FS, HAIR_VS, HEAD_OUT_GLSL, NOISE_GLSL, PROP_FS, PROP_VS, SKIN_FS, SKIN_GLSL,
   SKIN_VS, SSS_GLSL,
 } from './shading.ts';
 import { Hair } from './hair/gpu.ts';
@@ -32,6 +32,7 @@ import { Retargeter, adjustHead, cardBones, quaternions, type M3, type RestBody,
 import { detect as detectPicture } from './picture.ts';
 import { silhouetteSvg } from './flat.ts';
 import { Wardrobe } from './wearables/view.ts';
+import { CardLook } from './card/look.ts';
 
 const qs = new URLSearchParams(location.search);
 const DEG = Math.PI / 180;
@@ -828,12 +829,21 @@ function initBody(meta: any, B: any, geo: any) {
     face = { tables: sm.face, lmTemplate: f32('face_lm_template'), lmBlend: f32('face_lm_blend'), ids: u32('face_ids'), offsets,
       boneDeltas: f32('face_bones'), prior: B.face_prior ? f32('face_prior') : undefined };
   }
+  // MakeHuman's local changes: sparse offsets on the coarse body (records of x, y, z and a pad) and bone-head deltas
+  let local: LocalData | undefined;
+  if (sm.local && B.local_offsets) {
+    const o4 = i16('local_offsets'), n = o4.length / 4, offsets = new Int16Array(n * 3);
+    for (let i = 0; i < n; i++) { offsets[i * 3] = o4[i * 4]; offsets[i * 3 + 1] = o4[i * 4 + 1]; offsets[i * 3 + 2] = o4[i * 4 + 2]; }
+    local = { tables: sm.local, ids: u32('local_ids'), offsets, boneDeltas: f32('local_bones') };
+  }
   const bufs = {
     template: f32('coarse_template'), components,
     projection: f32('shape_projection').subarray(0, sm.components * sm.blend_shapes),
     jointTemplate: f32('joint_template'), jointBlend: f32('joint_blend'),
     quads: u32('coarse_quads'), rows, detail: detailRaw, relief,
     index: geo.index.array, rest: at.rest.array, nsmooth: at.nsmooth.array.slice(), coarseSkin: B.coarse_skin.data, face,
+    // the copies of the fine vertices on the seams of anny's atlas, and MakeHuman's local changes
+    seams: B.head_seam ? u32('head_seam').slice(0, B.head_seam.info.count * 2) : undefined, local,
   };
   const body = new AnnyBody(meta, bufs, at.position.array, at.normal.array, at.nsmooth.array);
   body.detailStep = B.head_detail.info.step || 1e-5;
@@ -921,6 +931,7 @@ function finishBodyShape(t0: number, bodyMs: number) {
   BODY.lastMs = bodyMs; BODY.lastTotalMs = performance.now() - t0;
   BODY.lastTiming = Object.assign({}, BODY.anny.timing, steps);
   WEAR?.bodyChanged();
+  CARD?.bodyChanged();
 }
 
 // ------------------------------------------------------------------ the body build in a worker
@@ -981,7 +992,7 @@ function receiveBody(m: any) {
   const t0 = performance.now(), A = BODY.anny, o = m.out;
   clearCorrectives();
   A.pos.set(o.pos); A.nrm.set(o.nrm); A.ns.set(o.ns); A.coarse.set(o.coarse); A.joints.set(o.joints);
-  A.eyes = m.eyes; A.values = m.values; A.faceValues = m.face;
+  A.eyes = m.eyes; A.floorShift = m.floor; A.values = m.values; A.faceValues = m.face;
   const t1 = performance.now();
   A.followStrands();
   A.timing = Object.assign({}, m.timing, { 'copy to the page': Math.round((t1 - t0) * 10) / 10, strands: Math.round((performance.now() - t1) * 10) / 10 });
@@ -1000,7 +1011,7 @@ function bodySphere(sphere: any, V: Float32Array, n: number) {
 function updateEyeShape() {
   for (const e of RIG.eyes) {
     const s = e.side, c0 = e.center0, g = BODY.anny.eyes[s];
-    if (!g) continue;
+    if (!g || e.card) continue;
     e.shape.makeTranslation(g.center[0], g.center[1], g.center[2]).multiply(new THREE.Matrix4().makeScale(g.scale, g.scale, g.scale))
       .multiply(new THREE.Matrix4().makeTranslation(-c0[0], -c0[1], -c0[2]));
   }
@@ -1008,10 +1019,47 @@ function updateEyeShape() {
 
 // ------------------------------------------------------------------ wearables
 // The wardrobe (wearables/view.ts): a card's outfits and packages from the user's own files, dressed on the body and
-// skinned by the rig. The level-0 offsets of the card's detail layer move the coarse body.
+// skinned by the rig. The card's look (card/look.ts) shapes the body with its local changes and detail layer, and
+// draws its skin, eyes and parts.
 let WEAR: Wardrobe | null = null;
+let CARD: CardLook | null = null;
+function setBodyCard(c: any) {
+  const A = BODY.anny;
+  if (!c && !A.coarseOffsets && !A.localValues && !A.levelOffsets.some(Boolean) && A.pageDetail) return;
+  A.setCard(c); BODY.values = null;
+  BW.worker?.postMessage({ type: 'card', card: c ? { local: c.local || null, coarse: c.coarse ? c.coarse.slice() : null,
+    levels: (c.levels || []).map((l: any) => (l ? l.slice() : null)), pageDetail: c.pageDetail ?? true } : null });
+  syncBody(() => applyBodyShape(currentLook.phenotype, currentLook.face));
+  HOOKS.look();
+}
+let PAGE_SKIN: any = null;   // the page's own skin material while a card's skin shows
+function initCardLook() {
+  const fr = MANIFEST.shape.frame, B = (window as any).__BUFFERS;
+  CARD = new CardLook({
+    THREE, scene, opaque, uniforms: U, depth: depthMat, envDefines: () => ENV_DEFINES, toMRT,
+    skeleton: () => RIG.skel,
+    body: () => BODY.anny, geometry: () => BODY.geo, manifest: () => MANIFEST,
+    buffer: (name: string) => { const b = B[name]; return b ? new Uint32Array(b.data.buffer.slice(b.data.byteOffset, b.data.byteOffset + b.data.byteLength)) : null; },
+    frame: () => ({ scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset }),
+    headBone: () => RIG.head,
+    skinMaterial: (defines: any, uniforms: any) => new THREE.ShaderMaterial({ uniforms: Object.assign({}, U, uniforms), vertexShader: SKIN_VS, fragmentShader: SKIN_FS,
+      defines: Object.assign({}, ENV_DEFINES, SSS_ON ? { SSS_SCREEN: '' } : {}, BODY.geo.attributes.skinIndex2 ? SKIN8_DEF : {}, defines), glslVersion: THREE.GLSL3, blending: THREE.NoBlending }),
+    setSkinMaterial: (m: any) => {
+      if (m) { if (!PAGE_SKIN) PAGE_SKIN = BODY_MESH.material; BODY_MESH.material = m; }
+      else if (PAGE_SKIN) { BODY_MESH.material = PAGE_SKIN; PAGE_SKIN = null; }
+      shadowsDirty = true; resetAccum();
+    },
+    eyeMaterial: (uniforms: any) => new THREE.ShaderMaterial({ uniforms: Object.assign({}, U, uniforms), vertexShader: EYE_CARD_VS, fragmentShader: toMRT(EYE_CARD_FS),
+      defines: ENV_DEFINES, glslVersion: THREE.GLSL3, blending: THREE.NoBlending }),
+    eyes: () => RIG.eyes,
+    setPageParts: (on: any) => { CARD_PARTS = on; updateHairVisibility(); HOOKS.hair(); },
+    setBodyCard,
+    changed: () => { if (RIG.ready) poseChanged(); shadowsDirty = true; resetAccum(); },
+  });
+}
 function initWardrobe() {
   const fr = MANIFEST.shape.frame;
+  initCardLook();
   WEAR = new Wardrobe({
     THREE, scene, opaque,
     skeleton: () => RIG.skel,
@@ -1024,13 +1072,9 @@ function initWardrobe() {
       subdivision: BODY.anny.sub, geometry: BODY.geo }),
     // a card's offsets and sliders build the body on the page, so that the dress that follows sees the card's body;
     // the worker keeps the offsets for the slider edits after it
-    setBodyOffsets: (o: Float32Array | null) => {
-      if (!o && !BODY.anny.coarseOffsets) return;
-      BODY.anny.coarseOffsets = o; BODY.values = null;
-      BW.worker?.postMessage({ type: 'offsets', offsets: o ? o.slice() : null });
-      syncBody(() => applyBodyShape(currentLook.phenotype, currentLook.face));
-      HOOKS.look();
-    },
+    loadCard: (card: any, files: any, folder: string) => CARD!.load(card, files, folder),
+    placeCard: () => CARD!.place(),
+    unloadCard: () => CARD!.unload(),
     applyCard: (card: any) => {
       const phenotype = Object.assign(baselinePhenotype(), card.phenotype || {});
       syncBody(() => applyLook(Object.assign({}, currentLook, { name: card.name || currentLook.name, phenotype, face: Object.assign({}, card.face_shapes || {}) }), false));
@@ -1235,6 +1279,7 @@ void main() {
   const g = BODY_MESH.geometry, P = g.attributes.position.array, idx = g.index.array;
   const si = [g.attributes.skinIndex, g.attributes.skinIndex2].filter(Boolean), sw = [g.attributes.skinWeight, g.attributes.skinWeight2].filter(Boolean);
   const n = si[0].count, nb = RIG.bones.length, touched = new Uint32Array(nb), led = new Float64Array(nb), area = new Float64Array(n);
+  const nWeld = BODY.anny.nWeld;   // the copies of the seam vertices count once
   for (let t = 0; t < idx.length; t += 3) {
     const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
     _sa.set(P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]); _sb.set(P[c] - P[a], P[c + 1] - P[a + 1], P[c + 2] - P[a + 2]);
@@ -1246,12 +1291,12 @@ void main() {
     let best = -1, bw = 0;
     for (let s = 0; s < si.length; s++) for (let k = 0; k < 4; k++) {
       const w = sw[s].array[v * 4 + k], b = si[s].array[v * 4 + k];
-      if (w > 0) { touched[b]++; if (w > bw) { bw = w; best = b; } }
+      if (w > 0) { if (v < nWeld) touched[b]++; if (w > bw) { bw = w; best = b; } }
     }
     if (best >= 0) led[best] += area[v];
     total += area[v];
   }
-  WEIGHTS.stats = { vertices: n, area: total, touched, led };
+  WEIGHTS.stats = { vertices: nWeld, area: total, touched, led };
 }
 function setRigBone(name: string | null, kept = false) {
   const i = name ? RIG.bones.findIndex((b: any) => b.name === name) : -1;
@@ -2004,9 +2049,12 @@ const CHARACTERS: any[] = [
 const LOOK_PARTS: any = { hair: null, brows: null, lashes: null, hairMeshes: [], eyes: [], iris: null };
 let currentLook: any = JSON.parse(JSON.stringify(BASELINE_LOOK));
 let hairWanted = true;
+// a card's look (card/look.ts) hides the page's hair, and the brows and lashes that its maps and parts replace
+let CARD_PARTS: { hair: boolean; brows: boolean; lashes: boolean } | null = null;
 function updateHairVisibility() {
-  LOOK_PARTS.hairMeshes.forEach((m: any, i: number) => { m.visible = !WEIGHTS.on && (i > 0 || hairWanted); });
-  U.uHairOn.value = hairWanted && HAIR ? 1 : 0;
+  const hairOn = hairWanted && (!CARD_PARTS || CARD_PARTS.hair);
+  LOOK_PARTS.hairMeshes.forEach((m: any, i: number) => { m.visible = !WEIGHTS.on && (i === 0 ? hairOn : i === 1 ? !CARD_PARTS || CARD_PARTS.brows : !CARD_PARTS || CARD_PARTS.lashes); });
+  U.uHairOn.value = hairOn && HAIR ? 1 : 0;
   shadowsDirty = true; resetAccum();
 }
 // read a preset: unknown fields are ignored, missing ones fall back to the baseline and to anny's defaults
@@ -2192,6 +2240,13 @@ async function init() {
   // the fine body of anny's default body, then anny's body for the sliders
   const hg = buildHead(B.head_v);
   hg.setIndex(new THREE.BufferAttribute(B.head_i.data, 1));
+  // anny's atlas on the fine body (a card's baked skin): the UV in steps of 1/65535 and the head tile's island
+  if (B.head_uv) {
+    const d = B.head_uv.data, n = B.head_uv.info.count, uv = new Uint16Array(n * 3);
+    const dv = new DataView(d.buffer, d.byteOffset, d.byteLength);
+    for (let i = 0; i < n; i++) { uv[i * 3] = dv.getUint16(i * 8, true); uv[i * 3 + 1] = dv.getUint16(i * 8 + 2, true); uv[i * 3 + 2] = d[i * 8 + 4] ? 65535 : 0; }
+    hg.setAttribute('cardUV', new THREE.BufferAttribute(uv, 3, true));
+  }
   addSkin(hg, B.head_skin);
   hg.setAttribute('normal', new THREE.BufferAttribute(normalsOf(hg.attributes.position.array, B.head_i.data), 3));
   hg.computeBoundingSphere();
@@ -2781,6 +2836,8 @@ window.hairGuides = () => HAIR.readGuides(renderer);
 window.frameStats = frameStats;
 // the wardrobe for tests: its counts and times (the files load through the Wearables section's file input)
 window.wearStats = () => WEAR ? WEAR.stats() : null;
+// the card's look for tests: its level, maps, eyes, parts and notes
+window.cardStats = () => CARD ? CARD.stats() : null;
 window.__WEAR = () => WEAR;
 // the rest vertices of the dressed pieces (the page's frame) and the page's frame, for the page test
 window.wearPieces = () => WEAR ? WEAR.pieces.map((p) => ({ ref: p.ref, shown: p.shown, hidden: p.hiddenGroups, vertices: Array.from(p.vertices) })) : [];
@@ -2799,6 +2856,8 @@ window.setMotion = (name, t = 0, paused = true) => { MOTION.playing = !paused; r
 window.__MOTION = MOTION; window.__RIG = RIG;
 // the camera and the navigation state, for tests of the interface
 window.__view = { camera, controls, VIEW, FIG, ground: () => GROUND_Y, frame: () => DYN.frame, tweening: () => !!tween };
+// the renderer and the body's mesh, for tests of the shaders
+window.__renderer = renderer; window.__bodyMesh = () => BODY_MESH;
 window.__BODY = BODY;
 // anny's sliders from a test: returns the times of the update (ms)
 window.setSliders = (v) => syncBody(() => { applyLook(Object.assign({}, currentLook, { phenotype: Object.assign({}, currentLook.phenotype, v) }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming }; });

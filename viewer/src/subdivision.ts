@@ -203,11 +203,18 @@ export class FineSubdivision {
     this.nOut = lastRows.length;
   }
   buffers: Record<number, Float32Array[]> = {};
-  // the result is a buffer of this object, overwritten by the next call with the same channel count
-  apply(x: Float32Array, ch = 3): Float32Array {
+  // the result is a buffer of this object, overwritten by the next call with the same channel count; add[i], when
+  // given, adds to the output of operator i before the next one (a card's detail offsets of level i + 1)
+  apply(x: Float32Array, ch = 3, add?: (Float32Array | null)[]): Float32Array {
     const bufs = this.buffers[ch] || (this.buffers[ch] = this.ops.map((op) => new Float32Array(op.rows * ch)));
     let y: Float32Array = x;
-    this.ops.forEach((op, i) => { y = op.apply(y, ch, bufs[i]); });
+    this.ops.forEach((op, i) => {
+      y = op.apply(y, ch, bufs[i]);
+      const a = add && i < this.ops.length - 1 ? add[i] : null;
+      if (a) for (let k = 0; k < a.length; k++) y[k] += a[k];
+    });
     return y;
   }
+  // the row count of each level's output
+  levelRows(): number[] { return this.ops.map((op) => op.rows); }
 }

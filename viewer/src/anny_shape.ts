@@ -214,31 +214,64 @@ export function faceRowWeights(t: FaceTables, values: ArrayLike<number>, scales:
   return out;
 }
 
-// add the face-shape rows to coarse vertices (nc * 3) and to bone heads (nb * 3)
-export function addFace(face: FaceData, weights: Float64Array, coarse: Float32Array, joints?: Float32Array) {
-  const t = face.tables, step = t.step, nb = t.bones.length;
+// sparse rows of offsets on the coarse body with bone-head deltas: the face shapes (FaceData) and the local changes
+// (LocalData) share this form
+export interface SparseRows {
+  tables: { starts: number[]; counts: number[]; bones: number[]; step: number };
+  ids: Uint32Array;           // coarse vertex of each sparse offset
+  offsets: Int16Array;        // (total, 3) offsets in steps of tables.step
+  boneDeltas: Float32Array;   // (rows, bones, 3) bone-head deltas of each row on tables.bones
+}
+
+// ------------------------------------------------------------------ local changes (MakeHuman's modifiers)
+// Each local change owns two rows: its positive direction, weighted by max(v, 0), and its negative direction,
+// weighted by max(-v, 0), as Anny._get_phenotype_blendshape_coefficients weighs them; the rows are not scaled.
+export interface LocalData extends SparseRows {
+  tables: { labels: string[]; starts: number[]; counts: number[]; bones: number[]; step: number };
+}
+
+// the weight of each local-change row for values by label (missing labels take 0)
+export function localRowWeights(local: LocalData, values: Record<string, number> | null | undefined): Float64Array {
+  const labels = local.tables.labels, out = new Float64Array(labels.length * 2);
+  if (!values) return out;
+  labels.forEach((name, i) => {
+    const v = values[name];
+    if (typeof v !== 'number' || !isFinite(v)) return;
+    out[i * 2] = v > 0 ? v : 0;
+    out[i * 2 + 1] = v < 0 ? -v : 0;
+  });
+  return out;
+}
+
+// add weighted sparse rows to coarse vertices (nc * 3) and to bone heads (nb * 3)
+export function addRows(data: SparseRows, weights: Float64Array, coarse: Float32Array, joints?: Float32Array) {
+  const t = data.tables, step = t.step, nb = t.bones.length;
   for (let r = 0; r < weights.length; r++) {
     const w = weights[r];
     if (w === 0) continue;
     const ws = w * step, end = t.starts[r] + t.counts[r];
     for (let k = t.starts[r]; k < end; k++) {
-      const o = face.ids[k] * 3, q = k * 3;
-      coarse[o] += ws * face.offsets[q];
-      coarse[o + 1] += ws * face.offsets[q + 1];
-      coarse[o + 2] += ws * face.offsets[q + 2];
+      const o = data.ids[k] * 3, q = k * 3;
+      coarse[o] += ws * data.offsets[q];
+      coarse[o + 1] += ws * data.offsets[q + 1];
+      coarse[o + 2] += ws * data.offsets[q + 2];
     }
     if (joints) {
       const o = r * nb * 3;
       for (let j = 0; j < nb; j++) {
         const b = t.bones[j] * 3, q = o + j * 3;
-        joints[b] += w * face.boneDeltas[q];
-        joints[b + 1] += w * face.boneDeltas[q + 1];
-        joints[b + 2] += w * face.boneDeltas[q + 2];
+        joints[b] += w * data.boneDeltas[q];
+        joints[b + 1] += w * data.boneDeltas[q + 1];
+        joints[b + 2] += w * data.boneDeltas[q + 2];
       }
     }
   }
 }
 
+// add the face-shape rows to coarse vertices (nc * 3) and to bone heads (nb * 3)
+export function addFace(face: FaceData, weights: Float64Array, coarse: Float32Array, joints?: Float32Array) {
+  addRows(face, weights, coarse, joints);
+}
 // the face-shape distribution (anny.faces.distribution) for anny's slider values: mean (F) and a low-rank factor (F, rank)
 export function facePriorParameters(face: FaceData, values: Record<string, number>): { mean: Float64Array; factor: Float64Array } {
   const p = face.tables.prior, F = face.tables.names.length, R = p.rank;

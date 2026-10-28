@@ -257,7 +257,11 @@ vec3 coveredPosition() {
 export const SKIN_VS = /* glsl */`
 ${SKIN_GLSL}
 ${HEAD_OUT_GLSL}
-attribute vec3 nsmooth; attribute vec3 albedo; attribute vec4 attrA; attribute vec4 attrB; attribute vec4 attrC; attribute vec4 attrD; attribute vec4 attrW; attribute vec4 attrV;
+attribute vec3 nsmooth; attribute vec4 attrA; attribute vec4 attrB; attribute vec4 attrC; attribute vec4 attrW; attribute vec4 attrV;
+#ifndef CARD_SKIN
+// (ANGLE on Direct3D counts the declared attributes against the limit of 16, so a card's skin leaves these out)
+attribute vec3 albedo; attribute vec4 attrD;
+#endif
 attribute vec3 rest;   // rest shape: skin detail, moles and creases stay fixed to the surface while the body shape changes
 uniform vec4 uWearOn;
 varying vec3 vWPos; varying vec3 vN; varying vec3 vNs; varying vec3 vAlb; varying vec3 vObj; varying vec4 vA; varying vec4 vB; varying vec4 vC; varying vec4 vD; varying vec3 vAx;
@@ -265,10 +269,19 @@ varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying 
 // the hair over the skin (anny.hair.styles.density_volume, on anny's default head): occlusion, the density near the
 // scalp, and the cover of the scalp by strands long enough to shade it (fades and short cuts); both tint the scalp
 uniform highp sampler3D uHairOcc; uniform vec3 uHairOccLo; uniform vec3 uHairOccSize; uniform float uHairOn; uniform mat4 uHeadInv;
+#ifdef CARD_SKIN
+// a character card's baked skin: the UV of anny's atlas (glTF convention) with the head tile's island in z (the
+// card's maps replace the baked colour and the pores, whose attributes stay out of the shader)
+attribute vec3 cardUV;
+varying vec2 vCardUV; varying float vCardTile;
+#endif
 ${COVER_GLSL}
 void main() {
   mat4 S = skinMat();
   mat3 M = mat3(modelMatrix) * mat3(S);
+#ifdef CARD_SKIN
+  vCardUV = cardUV.xy; vCardTile = cardUV.z;
+#endif
   vec4 wp = modelMatrix * (S * vec4(coveredPosition(), 1.0));
   vWPos = wp.xyz; vObj = rest;
   vN = normalize(M * normal);
@@ -276,8 +289,13 @@ void main() {
   // the rest normal and the turn of the skin: surface detail is worked out in the rest pose and turned with the skin
   vN0 = normal; vR0 = M[0]; vR1 = M[1]; vR2 = M[2];
   vHOut = M * headOutRest(rest);   // the head of anny's default body (uHeadInv maps to it)
+#ifdef CARD_SKIN
+  vAlb = vec3(0.0);
+  vA = attrA; vB = attrB; vC = attrC; vD = vec4(0.0);
+#else
   vAlb = pow(albedo, vec3(2.2));
   vA = attrA; vB = attrB; vC = attrC; vD = attrD;
+#endif
   if (uHairOn > 0.5) {
     vec3 hq = (uHeadInv * vec4(wp.xyz + vN * 0.0015, 1.0)).xyz;
     vec3 hv = textureLod(uHairOcc, (hq - uHairOccLo) / uHairOccSize, 0.0).rgb;
@@ -312,6 +330,27 @@ uniform vec4 uKnA[28]; uniform vec4 uKnB[28];
 uniform vec4 uEyeL; uniform vec4 uEyeR;
 varying vec3 vWPos; varying vec3 vN; varying vec3 vNs; varying vec3 vAlb; varying vec3 vObj; varying vec4 vA; varying vec4 vB; varying vec4 vC; varying vec4 vD; varying vec3 vAx;
 varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying vec3 vHOut;
+#ifdef CARD_SKIN
+// a character card's skin, as the glTF export's skin material holds it: base colour, normal and roughness maps on
+// anny's atlas, the head tile's maps through its texture transform (scale, offset), the factors, the reflectance of
+// the IOR, and the share of the diffuse light that the subsurface pass spreads
+uniform sampler2D uCardBase; uniform sampler2D uCardNormal; uniform sampler2D uCardRough;
+uniform sampler2D uHeadBase; uniform sampler2D uHeadNormal; uniform sampler2D uHeadRough; uniform vec4 uHeadXf;
+uniform float uCardNormalScale; uniform float uCardRoughK; uniform float uCardF0; uniform float uCardSSS;
+varying vec2 vCardUV; varying float vCardTile;
+// the tangent frame of the UVs from the screen derivatives of the position and the UV (three.js perturbNormal2Arb);
+// glTF's normal maps have +Y up on UVs whose v runs down, so the map's y turns over
+vec3 cardNormal(vec3 N, vec3 p, vec2 uv, vec3 tn) {
+  vec3 q0 = dFdx(p), q1 = dFdy(p);
+  vec2 st0 = dFdx(uv), st1 = dFdy(uv);
+  vec3 q1perp = cross(q1, N), q0perp = cross(N, q0);
+  vec3 T = q1perp * st0.x + q0perp * st1.x;
+  vec3 B = q1perp * st0.y + q0perp * st1.y;
+  float det = max(dot(T, T), dot(B, B));
+  float k = det == 0.0 ? 0.0 : inversesqrt(det);
+  return normalize(T * (tn.x * k) - B * (tn.y * k) + N * tn.z);
+}
+#endif
 float h31(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
 float vn3(vec3 p) { vec3 i = floor(p); vec3 f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(mix(h31(i), h31(i + vec3(1,0,0)), f.x), mix(h31(i + vec3(0,1,0)), h31(i + vec3(1,1,0)), f.x), f.y),
@@ -419,6 +458,34 @@ void main() {
     return;
   }
 
+#ifdef CARD_SKIN
+  // ---------------- a card's baked skin: the maps of the atlas, or of the head tile on its island (both sampled, so
+  // that the mip levels hold across the border)
+  vec2 cuv = vCardUV, huv = cuv * uHeadXf.xy + uHeadXf.zw;
+  float onHead = step(0.5, vCardTile);
+  vec3 cardBase = texture(uCardBase, cuv).rgb;
+  float cardRough = 1.0;
+#ifdef CARD_ROUGH
+  cardRough = texture(uCardRough, cuv).g;
+#endif
+#ifdef CARD_HEAD
+  cardBase = mix(cardBase, texture(uHeadBase, huv).rgb, onHead);
+#ifdef CARD_ROUGH
+  cardRough = mix(cardRough, texture(uHeadRough, huv).g, onHead);
+#endif
+#endif
+  vec3 Nd = N;
+#ifdef CARD_NORMAL
+  vec3 tn = texture(uCardNormal, cuv).xyz * 2.0 - 1.0;
+#ifdef CARD_HEAD
+  tn = mix(tn, texture(uHeadNormal, huv).xyz * 2.0 - 1.0, onHead);
+#endif
+  tn.xy *= uCardNormalScale;
+  Nd = cardNormal(N, vWPos, mix(cuv, huv, onHead), tn);
+#endif
+  float cav = 1.0;
+  vec3 albedo = cardBase;
+#else
   // ---------------- skin microstructure: fine lines everywhere, pores on the face
   // (worked out in the rest pose with the rest normal N0, then turned with the skin)
   float cav;
@@ -465,6 +532,7 @@ void main() {
     float d = length(vObj - a.xyz);
     if (d < a.w * 1.3) albedo = mix(albedo, albedo * vec3(0.25, 0.21, 0.22), smoothstep(a.w, a.w * 0.5, d) * uMoleB[i].x);
   }
+#endif
 
   // ---------------- diffuse light that enters the skin
 #ifdef SSS_SCREEN
@@ -510,8 +578,17 @@ void main() {
   rough1 = sqrt(sqrt(rough1 * rough1 * rough1 * rough1 + kvar));
   rough2 = sqrt(sqrt(rough2 * rough2 * rough2 * rough2 + kvar));
   float f0 = 0.028;
+#ifdef CARD_SKIN
+  // the card's roughness map and factor in one lobe, with the reflectance of its IOR and specular factor
+  rough1 = rough2 = clamp(cardRough * uCardRoughK, 0.08, 1.0);
+  rough1 = rough2 = sqrt(sqrt(rough1 * rough1 * rough1 * rough1 + kvar));
+  f0 = uCardF0;
+#endif
   float specOcc = clamp(pow(ao, 1.5) * mix(0.55, 1.0, cav), 0.0, 1.0) * hocc;
   float w2 = mix(mix(mix(0.10, 0.15, face), 0.35, lip), 0.6, wet);
+#ifdef CARD_SKIN
+  w2 = 0.0;
+#endif
   float ks = mix(specSphere(Nd, V, L, rough1, f0, uKeyTan), specSphere(Nd, V, L, rough2, f0, uKeyTan), w2);
   float kr = mix(specSphere(Nd, V, Lr, rough1, f0, 0.05), specSphere(Nd, V, Lr, rough2, f0, 0.05), 0.18);
   float gz = smoothstep(0.02, 0.25, dot(N, V));
@@ -530,7 +607,13 @@ void main() {
 
   vec3 color = spec;
 #ifdef SSS_SCREEN
+#ifdef CARD_SKIN
+  // the card's subsurface weight: that share of the diffuse light goes through the diffusion pass
+  outSSS = vec4(min(diffSkin * uCardSSS, vec3(64.0)), 1.0);
+  color += diffSkin * (1.0 - uCardSSS);
+#else
   outSSS = vec4(min(diffSkin, vec3(64.0)), 1.0);
+#endif
 #else
   color += diffSkin;
   outSSS = vec4(0.0);
@@ -610,6 +693,58 @@ void main() {
   spec += envSpecular(Nw, Vw, rough, f0) * uEnvSpec * pow(ao, 1.5) * headEnvOcc(vWPos, Nw, Vw);
   col += spec;
   col = min(col, vec3(64.0));
+  if (any(isnan(col))) col = vec3(0.0);
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+// the eyes of a character card (opensculptboy.eyes): the single-surface eyeball with the corneal bulge, the baked eye
+// texture in the layout of opensculptboy.eyes.texture (one square per eye, polar about the gaze), a diffuse eyeball
+// under a clear coat of the cornea's roughness and IOR, as the glTF export's 'eyes' material without a cornea shell
+export const EYE_CARD_VS = /* glsl */`
+attribute vec3 eyelocal; attribute vec3 eyenormal; attribute float eyeao;
+varying vec3 vWPos; varying vec3 vL; varying vec3 vNl; varying float vAO;
+void main() {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWPos = wp.xyz; vL = eyelocal; vNl = eyenormal; vAO = eyeao;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}`;
+
+export const EYE_CARD_FS = /* glsl */`
+${GLSL_COMMON}
+uniform mat3 uEyeRot;
+uniform sampler2D uEyeLayout; uniform float uEyeLeft; uniform float uScleraRough; uniform float uCoatRough; uniform float uCoatF0;
+varying vec3 vWPos; varying vec3 vL; varying vec3 vNl; varying float vAO;
+const float FRONT_SHARE = 0.9;
+void main() {
+  vec3 lp = vL;
+  float ao = clamp(vAO, 0.0, 1.0);
+  vec3 Nw = normalize(uEyeRot * vNl);
+  vec3 Vw = normalize(cameraPosition - vWPos);
+  vec3 L = normalize(uKeyDir), Lr = normalize(uRimDir);
+  vec2 sh = keyShadow(vWPos, Nw, 0.6);
+  float vis = sh.x * sh.y;
+  if (uMannequin > 0.5) {
+    vec3 c = vec3(0.46, 0.45, 0.43) * (uKeyColor * max(dot(Nw, L), 0.0) * vis + shIrr(Nw) * uEnvDiff * ao);
+    gl_FragColor = vec4(min(c, vec3(64.0)), 1.0);
+    return;
+  }
+  // the layout: the distance from the gaze axis in front, 2 minus it behind, and the angle about the gaze
+  float rho = length(lp.xy);
+  float s = lp.z >= 0.0 ? rho : 2.0 - rho;
+  float phi = atan(lp.y, lp.x);
+  float t = s <= 1.0 ? 0.5 * FRONT_SHARE * s : 0.5 * FRONT_SHARE + 0.5 * (1.0 - FRONT_SHARE) * (s - 1.0);
+  t = min(t, 0.5);
+  vec2 uv = vec2(mix(0.75, 0.25, uEyeLeft) + 0.5 * t * cos(phi), 1.0 - (0.5 + t * sin(phi)));
+  vec3 base = texture2D(uEyeLayout, uv).rgb;
+  vec3 diff = base * (uKeyColor * max(dot(Nw, L), 0.0) * vis + uRimColor * max(dot(Nw, Lr), 0.0) * 0.4 * ao + shIrr(Nw) * uEnvDiff * ao);
+  // the eyeball's own surface and the clear coat (the wet cornea)
+  vec3 spec = PI * uKeyColor * specSphere(Nw, Vw, L, uScleraRough, 0.04, uKeyTan) * vis * 0.3;
+  vec3 dnx = dFdx(Nw), dny = dFdy(Nw);
+  float rc = sqrt(sqrt(uCoatRough * uCoatRough * uCoatRough * uCoatRough + min(0.5 * (dot(dnx, dnx) + dot(dny, dny)), 0.2)));
+  spec += PI * uKeyColor * specSphere(Nw, Vw, L, rc, uCoatF0, uKeyTan) * vis;
+  spec += PI * uRimColor * specSphere(Nw, Vw, Lr, rc, uCoatF0, 0.05) * ao;
+  spec += envSpecular(Nw, Vw, rc, uCoatF0) * uEnvSpec * pow(ao, 1.5) * headEnvOcc(vWPos, Nw, Vw);
+  vec3 col = min(diff + spec, vec3(64.0));
   if (any(isnan(col))) col = vec3(0.0);
   gl_FragColor = vec4(col, 1.0);
 }`;

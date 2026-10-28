@@ -36,7 +36,7 @@ async function encodeData() {
     header.buffers.push(entry);
   }
   const bufs = Object.fromEntries(man.buffers.map((b) => [b.name, b]));
-  const COMPANIONS = ['_row', '_detail', '_skin'];
+  const COMPANIONS = ['_row', '_detail', '_skin', '_uv'];
   const REMAP = {};
   // the vertices that the page moves on every frame of a clip: the records of these sparse buffers (the corrective
   // shapes). They go first in the vertex order, so the upload of a frame is one small range.

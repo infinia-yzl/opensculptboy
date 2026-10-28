@@ -28,7 +28,11 @@ export interface WardrobeHost {
   toMRT(fs: string): string;
   body(): { coarse: Float32Array; joints: Float32Array; nBody: number; quads: Uint32Array; coarseSkin: Uint8Array; bones: string[]; frame: Frame;
     subdivision: { ops: SparseRows[] }; geometry: THREE_NS.BufferGeometry };   // the body's subdivision, coarse to fine
-  setBodyOffsets(offsets: Float32Array | null): void;   // the card's level-0 detail offsets in the page's frame (nBody * 3)
+  // the card's look (card/look.ts): its local changes, detail layer, maps, eyes and parts; placed once the card's
+  // sliders shape the body; unloaded with the card
+  loadCard(card: any, files: FileSet, folder: string): Promise<{ notes: string[]; failures: number }>;
+  placeCard(): void;
+  unloadCard(): void;
   applyCard(card: any): void;                            // the card's sliders and face into the look
   changed(): void;                                       // a new picture: shadows and accumulation
 }
@@ -87,12 +91,15 @@ export class Wardrobe {
     for (const p of jsons) {
       try {
         const j = JSON.parse(await files.byPath.get(p)!.text());
-        if (j && (Array.isArray(j.outfits) || Array.isArray(j.wearables)) && (!card || (j.outfits?.length && !card.outfits?.length))) { card = j; cardPath = p; }
+        // a card: outfits or loose pieces, or the fields of a character (a card without wearables shows its look alone)
+        const isCard = j && typeof j === 'object' && !Array.isArray(j) && (Array.isArray(j.outfits) || Array.isArray(j.wearables) || j.detail || j.material || j.phenotype || j.schema);
+        const rank = (c: any) => (c.outfits?.length ? 2 : 0) + (c.detail || c.material ? 1 : 0);
+        if (isCard && (!card || rank(j) > rank(card))) { card = j; cardPath = p; }
       } catch (e) { /* not a card */ }
     }
     if (!card) {
       const packs = [...files.byPath.keys()].filter((p) => p.endsWith('.wearable.json'));
-      if (!packs.length) throw new Error('The files hold no character card with outfits and no wearable package.');
+      if (!packs.length) throw new Error('The files hold no character card and no wearable package.');
       card = { name: 'wearables', wearables: packs.map((p) => ({ id: p.split('/').pop()!.replace('.wearable.json', ''), file: p, enabled: true })) };
       cardPath = '';
     }
@@ -129,22 +136,16 @@ export class Wardrobe {
     for (const k of Object.keys(card.wearable_overrides || {})) {
       try { resolveRef(k, refs, cardOutfit(card)); } catch (e) { delete card.wearable_overrides[k]; notes.push(`override ${k}: no such piece`); }
     }
-    if ((card.local_changes && Object.keys(card.local_changes).length)) notes.push('the card\'s local changes are not shown in the page');
-    // the level-0 offsets of the card's detail layer
-    let offsets: Float32Array | null = null;
-    const level0 = (card.detail?.levels || []).find((l: any) => Number(l.subdiv) === 0);
-    if (level0) {
-      try { offsets = this.pageOffsets(readSafetensors(await files.bytes(level0.offsets, folder)).tensors.offsets?.values); }
-      catch (err: any) { fail(`detail level 0: ${err.message || err}`, err); }
-    }
-    if ((card.detail?.levels || []).some((l: any) => Number(l.subdiv) > 0)) notes.push('the page shows level 0 of the card\'s detail layer');
     this.cancel();
     this.clearMeshes();
+    // the card's look: its local changes and detail layer shape the body before the dress sees it
+    const look = await this.host.loadCard(card, files, folder);
+    notes.push(...look.notes); failures += look.failures;
     this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes; this.failures = failures;
     this.outfit = cardOutfit(card);   // a card that names no outfit wears none, as in an export
     this.show = []; this.hide = []; this.cache = new DressCache(); this.worn = []; this.pieces = [];
-    this.host.setBodyOffsets(offsets);
     if (card.phenotype || card.face_shapes) this.host.applyCard(card);
+    this.host.placeCard();
     this.redress();
     return { pieces: packages.size, notes };
   }
@@ -153,23 +154,12 @@ export class Wardrobe {
     return [...(card.outfits || []).flatMap((o: any) => (o.pieces || []).map((p: any) => `${o.id}/${p.piece}`)),
       ...(card.wearables || []).map((w: any) => w.id || String(w.file).split('/').pop()!.split('.')[0])];
   }
-  // Anny's frame (metres, Z up) to the page's, for offsets (vectors): scale and turn, no move
-  private pageOffsets(values: ArrayLike<number> | undefined): Float32Array {
-    const b = this.host.body(), R = b.frame.rotation, s = b.frame.scale, n = b.nBody, out = new Float32Array(n * 3);
-    if (!values || values.length < n * 3) throw new Error(`the offsets hold ${values ? values.length / 3 : 0} rows; the body has ${n}`);
-    for (let i = 0; i < n; i++) {
-      const x = values[i * 3], y = values[i * 3 + 1], z = values[i * 3 + 2];
-      for (let r = 0; r < 3; r++) out[i * 3 + r] = s * (R[r * 3] * x + R[r * 3 + 1] * y + R[r * 3 + 2] * z);
-    }
-    return out;
-  }
-
   unload() {
     this.cancel();
     this.clearMeshes();
     // the dress cache holds the packages (their garments and texture bytes) by reference
     this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
-    this.host.setBodyOffsets(null);
+    this.host.unloadCard();
     this.restoreBody();
     this.host.changed(); this.notify();
   }
