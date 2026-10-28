@@ -137,6 +137,8 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
       } else if (P.id === 'expressions') {
         const E = settings.panels.expressions, h = Math.round(HEIGHTS.expressions * k);
         let turn = -VIEWS[E.view].yaw;
+        say('Expressions: preparing the faces');
+        await host.warmFaces();
         say('Expressions: framing');
         show(E.pose);
         await face().set({ actions: {} });

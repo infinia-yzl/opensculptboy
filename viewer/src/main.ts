@@ -1746,7 +1746,8 @@ function initFace() {
     toDefault: (p) => { head.set(p[0], p[1], p[2]).applyMatrix4(HEADMAP.inv); return [head.x, head.y, head.z]; },
     headScale: () => HEADMAP.k,
     card: () => (CARD?.active ? CARD : null),
-    drawn: () => new Promise<void>((resolve) => { FACE_DRAWN.push(resolve); resetAccum(); setTimeout(resolve, 1500); }),
+    // a still page (?shot) draws no frames of its own: there the sheet's pictures, which draw the face, wait for the next frame
+    drawn: () => new Promise<void>((resolve) => { if (SHOT && SHEET.hold) { requestAnimationFrame(() => resolve()); return; } FACE_DRAWN.push(resolve); resetAccum(); setTimeout(resolve, 1500); }),
   });
   if (!FACE.init()) { FACE = null; return; }
   setTimeout(warmFace, 3000);
@@ -3221,6 +3222,16 @@ const SHEET_HOST = {
     const q = new Float32Array(MOTION.nb * 4), root = [0, 0, 0];
     sampleClip(c, 0, q, root);
     return Array.from(q, (x: number) => Math.round(x * 1e5) / 1e5);
+  },
+  // the face's warm-up (face/expressions.ts warm) in slices of about 8 ms between frames, so the first faces of the
+  // grid cost no long frame
+  warmFaces: async () => {
+    let more = !!FACE;
+    while (more) {
+      const t = performance.now();
+      while (more && performance.now() - t < 8) more = FACE!.warm();
+      if (more) await nextFrame();
+    }
   },
   poses: () => MOTION.clips.filter((c: any) => c.kind === 'pose').map((c: any) => ({ name: c.name, label: c.label, group: c.group || '' })),
   characterName: () => (WEAR?.loaded ? WEAR.cardName : '') || (currentLook.name && currentLook.name !== 'Custom' ? currentLook.name : '') || 'Character',

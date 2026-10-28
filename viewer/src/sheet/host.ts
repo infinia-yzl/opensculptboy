@@ -36,6 +36,8 @@ export interface SheetHost {
   figure(): FigureInfo;
   // the rotations of a pose of the library, or of the pose shown (name ''), as quaternions per bone
   poseQuaternions(name: string): number[] | null;
+  // prepare every facial action's shapes (and a card's own faces) in short steps between frames
+  warmFaces(): Promise<void>;
   // the poses of the library: name, label, group
   poses(): { name: string; label: string; group: string }[];
   // the name of the card opened in the Wearables section, else of the look shown
