@@ -48,7 +48,7 @@
   /* the interface fades in once the model is ready, and stays away in the still pictures of the tests (?shot) */
   .topbar, .rail, .insp, .viewbar, .hrail, .stats, .coach { opacity: 0; transition: opacity 0.5s ease; }
   body.ready .topbar, body.ready .rail, body.ready .insp, body.ready .viewbar, body.ready .hrail, body.ready .stats, body.ready .coach { opacity: 1; }
-  body.shot .topbar, body.shot .rail, body.shot .insp, body.shot .viewbar, body.shot .hrail, body.shot .stats, body.shot .coach, body.shot .toasts, body.shot .menu { display: none !important; }
+  body.shot .cs-view, body.shot .topbar, body.shot .rail, body.shot .insp, body.shot .viewbar, body.shot .hrail, body.shot .stats, body.shot .coach, body.shot .toasts, body.shot .menu { display: none !important; }
   .glass { background: var(--panel); border: 1px solid var(--line); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
 
   /* ------------------------------------------------------------ tooltips */
@@ -373,6 +373,43 @@
   .light-dot { position: absolute; width: 10px; height: 10px; translate: -50% -50%; border-radius: 50%; background: #fff6e4; box-shadow: 0 0 12px 4px rgba(255, 240, 210, 0.55); }
   .light-dot.behind { background: transparent; box-shadow: 0 0 0 2px rgba(255, 240, 210, 0.7); }
 
+  /* ------------------------------------------------------------ the character sheet: its section and layout view */
+  .cs-view {
+    position: fixed; z-index: 11; top: calc(var(--top-h) + var(--gap)); bottom: var(--gap); right: calc(var(--gap) * 3 + var(--rail-w) + var(--insp-w));
+    width: clamp(300px, 38vw, 780px); box-sizing: border-box; display: flex; flex-direction: column; border-radius: var(--r-l); overflow: hidden;
+  }
+  .cs-vhead { display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 0 8px 0 18px; }
+  .cs-vhead h2 { margin: 0; font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 24px; line-height: 1; }
+  .cs-vstatus { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cs-vbody { flex: 1; min-height: 0; overflow: auto; padding: 14px; display: grid; place-items: start center; background: rgba(0, 0, 0, 0.22); scrollbar-width: thin; }
+  .cs-page { display: block; max-width: 100%; height: auto; border-radius: 3px; box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5); }
+  .cs-page:not([src]) { display: none; }
+  .cs-bar { height: 2px; background: var(--line); overflow: hidden; border-radius: 2px; transition: opacity 0.3s ease; }
+  .cs-bar:not([data-on]) { opacity: 0; }
+  .cs-bar span { display: block; height: 100%; background: var(--accent); transform-origin: 0 50%; transform: scaleX(0); transition: transform 0.2s ease; }
+  .cs-view .cs-bar { border-radius: 0; }
+  .cs-primary { background: var(--accent); color: var(--ground); border-color: transparent; }
+  .cs-primary:hover:not(:disabled) { background: var(--accent-2); border-color: transparent; }
+  .cs-pose {
+    display: inline-flex; align-items: center; gap: 7px; min-height: 32px; min-width: 0; max-width: 100%; padding: 0 8px 0 10px; box-sizing: border-box;
+    font: 500 12.5px/1 var(--sans); color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 9px; cursor: pointer;
+  }
+  .cs-pose:hover { background: var(--raised-2); border-color: var(--line-2); }
+  .cs-pose span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .cs-pose .ico { color: var(--muted); }
+  .cs-slots { display: grid; gap: 6px; }
+  .cs-slot { display: flex; align-items: center; gap: 6px; }
+  .cs-slot .cs-pose { flex: 1; }
+  .cs-n { width: 16px; flex: none; text-align: right; font: 11.5px var(--mono); color: var(--muted); }
+  .cs-field { display: grid; gap: 5px; }
+  .cs-field span { font-size: 12px; color: var(--muted); }
+  .cs-input { height: 34px; box-sizing: border-box; padding: 0 10px; border-radius: 9px; background: rgba(0, 0, 0, 0.28); border: 1px solid var(--line); color: var(--text); font: 13px var(--sans); }
+  .cs-input:focus { border-color: var(--accent-line); outline: none; }
+  .cs-switch { padding: 2px; }
+  .cs-switch .switch-label:empty { display: none; }
+  .fold[data-off] .fold-title { color: var(--faint); }
+  .cs-picker-body { display: grid; gap: 12px; padding: 4px 24px 24px; }
+
   /* ------------------------------------------------------------ view bar */
   .viewbar {
     position: fixed; z-index: 10; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
@@ -533,8 +570,9 @@
     .wide-only, .actions .sep { display: none !important; }
     .phone-only { display: inline-grid !important; }
     .rail { top: auto; bottom: 0; height: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px)); padding: 4px 4px env(safe-area-inset-bottom, 0px); border-radius: 0; border-width: 1px 0 0; }
-    .rail-left { left: 0; width: calc(100% * 5 / 8); }
-    .rail-right { right: 0; width: calc(100% * 3 / 8); border-left-width: 1px; }
+    .rail-left { left: 0; width: calc(100% * 6 / 10); }
+    .rail-right { right: 0; width: calc(100% * 4 / 10); border-left-width: 1px; }
+    .cs-view { left: 8px; right: 8px; width: auto; top: calc(var(--top-h) + 4px); bottom: calc(46vh + var(--tab-h) + env(safe-area-inset-bottom, 0px) + 8px); }
     .rail-list { flex-direction: row; gap: 0; height: 100%; }
     .rail-tab { flex: 1; padding: 6px 0 4px; align-content: center; border-radius: 10px; }
     .rail-label { font-size: 10px; }

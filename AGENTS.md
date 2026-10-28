@@ -146,6 +146,7 @@ cd viewer && node build.mjs --reuse-data   # the page alone, with the model data
 cd viewer && npx tsc --noEmit         # type-check the page
 uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and vertices of a moving frame
 uv run python -m unittest test.test_viewer_expressions     # the page's faces against Anny: actions, the jaw's turn, the sparse subdivision (node)
+uv run python -m unittest test.test_viewer_sheet   # the character sheet: settings and layout in node, a sheet of the default character in the built page (local only)
 ```
 
 ## Architecture
