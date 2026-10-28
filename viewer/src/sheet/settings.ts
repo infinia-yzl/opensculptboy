@@ -17,7 +17,9 @@ export type ViewName = 'front' | 'three' | 'side' | 'back';
 export type Background = 'paper' | 'dark' | 'transparent';
 
 export interface TurnaroundPanel { on: boolean; style: string | null; pose: PoseSlot; views: ViewName[] }
-export interface ExpressionsPanel { on: boolean; style: string | null; pose: PoseSlot; view: ViewName; items: string[] }
+// framing: 'face' frames each cell from below the chin to above the head, 'shoulders' takes the head and shoulders
+export type Framing = 'face' | 'shoulders';
+export interface ExpressionsPanel { on: boolean; style: string | null; pose: PoseSlot; view: ViewName; framing: Framing; items: string[] }
 export interface PosesPanel { on: boolean; style: string | null; view: ViewName; slots: PoseSlot[] }
 export interface InfoPanel { on: boolean }
 
@@ -69,7 +71,7 @@ export function defaultSettings(): SheetSettings {
     format: SETTINGS_FORMAT, style: 'textured', background: 'paper', name: '', title: '',
     panels: {
       turnaround: { on: true, style: null, pose: { pose: TURNAROUND_POSE }, views: [...VIEW_ORDER] },
-      expressions: { on: true, style: null, pose: { pose: TURNAROUND_POSE }, view: 'front', items: [...DEFAULT_EXPRESSIONS] },
+      expressions: { on: true, style: null, pose: { pose: TURNAROUND_POSE }, view: 'front', framing: 'face', items: [...DEFAULT_EXPRESSIONS] },
       poses: { on: true, style: null, view: 'three', slots: DEFAULT_POSES.map((pose) => ({ pose })) },
       info: { on: true },
     },
@@ -115,7 +117,8 @@ export function normaliseSettings(input: any, styles: string[] = ['textured']): 
     title: str(s.title, ''),
     panels: {
       turnaround: { on: bool(T.on, true), style: style(T.style), pose: normalisePose(T.pose, d.panels.turnaround.pose), views },
-      expressions: { on: bool(E.on, true), style: style(E.style), pose: normalisePose(E.pose, d.panels.expressions.pose), view: view(E.view, 'front'), items },
+      expressions: { on: bool(E.on, true), style: style(E.style), pose: normalisePose(E.pose, d.panels.expressions.pose), view: view(E.view, 'front'),
+        framing: E.framing === 'shoulders' ? 'shoulders' : 'face', items },
       poses: { on: bool(P.on, true), style: style(P.style), view: view(P.view, 'three'), slots },
       info: { on: bool(I.on, true) },
     },

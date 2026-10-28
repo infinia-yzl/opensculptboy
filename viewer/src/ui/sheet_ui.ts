@@ -163,6 +163,13 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
     input.addEventListener('input', () => { set(input.value); keep(); preview(); });
     return h('label.cs-field', {}, h('span', { text: label }), input);
   };
+  const framingChoice = () => {
+    const seg = segmented('Framing', [{ value: 'face', label: 'Face', tip: 'From below the chin to above the head: the face fills most of the picture' },
+      { value: 'shoulders', label: 'Head and shoulders', tip: 'The head with the shoulders and the top of the chest' }],
+    (v) => { S.panels.expressions.framing = v as any; changed(); }, 'seg-fill');
+    seg.set(S.panels.expressions.framing);
+    return seg.el;
+  };
   const expressionNames = () => {
     const names = faceReady() ? face().presetNames() : [];
     const all = names.length ? names : EXPRESSION_ORDER;
@@ -200,9 +207,10 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
       exprs.append(c);
     }
     const expressions = panelFold('expressions', [
-      h('p.note', { text: 'Head and shoulders, one picture per expression.' }),
+      h('p.note', { text: 'One picture per expression, framed on the face or on the head and shoulders.' }),
       h('div.row', {}, h('span.row-label', { text: 'Pose' }), poseButton('The expressions\' pose', P.expressions.pose, (s) => { P.expressions.pose = s; changed(); })),
       viewChoice('View', ['front', 'three', 'side'], P.expressions.view, (v) => { P.expressions.view = v; changed(); }),
+      framingChoice(),
       exprs,
       ...(faceReady() ? [] : [h('p.note', { text: 'This page shows every expression with the neutral face for now.' })])]);
     // the poses

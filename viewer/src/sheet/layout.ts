@@ -5,7 +5,7 @@
 // - maskBox: the box of what a probe picture covers, in metres on the plane through the camera's target;
 // - figureFrames: one camera frame per view or pose of a full figure, framed from the boxes, with one scale (pixels per
 //   metre) and one ground line for all of them;
-// - headFrame: the head-and-shoulders frame of the expression grid;
+// - faceFrame and headFrame: the face and the head-and-shoulders frames of the expression grid;
 // - pageLayout: the places of the panels' pictures, labels, ground lines and texts on the page.
 // The sheet's cameras look along the horizontal, so a box's x runs to the picture's right and its y up the world.
 
@@ -65,6 +65,16 @@ export function figureFrames(boxes: Box[], ground: number, height: number, pad =
     return { cx: (b.x0 + b.x1) / 2, cy: (y0 + y1) / 2, halfH: (y1 - y0) / 2, width, height };
   });
   return { pxPerM, y0, y1, groundRow: (y1 - ground) * pxPerM, frames };
+}
+
+// the face frame: from just below the chin to just above the top of the head or its hair, so the face (the chin to the
+// hairline, about three quarters of the head) fills about 60 % of the height; tall headgear is cut a third of the head's
+// height above its top
+export function faceFrame(chinY: number, crownY: number, hairTop: number, headX: number, height: number, aspect = 0.8): Frame {
+  const H = Math.max(0.05, crownY - chinY);
+  const y0 = chinY - H * 0.09, y1 = Math.min(Math.max(hairTop, crownY), crownY + H * 0.3) + H * 0.05;
+  const width = Math.max(2, 2 * Math.round(height * aspect / 2));
+  return { cx: headX, cy: (y0 + y1) / 2, halfH: (y1 - y0) / 2, width, height };
 }
 
 // the head-and-shoulders frame: from above the top of the head (and its hair) to below the shoulders, centred on the

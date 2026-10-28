@@ -16,13 +16,16 @@ export interface FigureInfo {
   ground: number;
   top: number;                                   // the top of the head (without the hair)
   head: [number, number, number];                // the face
+  chin: [number, number, number];                // the bottom of the chin
+  crown: [number, number, number];               // the top of the skull
+  headDir: [number, number, number];             // where the face looks
   lo: [number, number, number]; hi: [number, number, number];   // the box of the joints
   joints: Record<string, [number, number, number]>;
 }
 
 export interface SheetHost {
-  // hold the scene for the sheet: no hair physics, no blink timer, a paused clip, and one pass of the page's own view
-  // per change; off puts back the pose, the turn and the settings of before
+  // hold the scene for the sheet: no hair physics, no blink timer, a paused clip, and the page's own view kept on its
+  // last picture, dimmed; off puts back the pose, the turn and the settings of before
   hold(on: boolean): void;
   // show a pose of the library or a pose of its own at once; false for an unknown pose
   showPose(slot: PoseSlot): boolean;

@@ -10,13 +10,14 @@
 import { face } from '../face/api.ts';
 import type { FaceState } from '../face/api.ts';
 import type { SheetHost, SheetView } from './host.ts';
-import { alphaOf, coverage, figureFrames, headFrame, maskBox, pageLayout, type Box, type Frame, type PageLayout, type PanelInput } from './layout.ts';
+import { alphaOf, coverage, faceFrame, figureFrames, headFrame, maskBox, pageLayout, type Box, type Frame, type PageLayout, type PanelInput } from './layout.ts';
 import { expressionLabel, PANEL_LABELS, panelStyle, shownPanels, TURNAROUND_POSE, VIEWS, type PanelId, type PoseSlot, type SheetSettings } from './settings.ts';
 import { styleById } from './styles.ts';
 
 // the pictures' heights at print size (render scale 1)
 export const HEIGHTS = { turnaround: 2048, expressions: 960, poses: 1536 };
-export const CELL_ASPECT = 0.9;
+// the expression cells: portrait for the face framing, wider for the head and shoulders
+export const CELL_ASPECT = { face: 0.8, shoulders: 0.9 };
 const PROBE = 192;
 const PIXELS_PER_FRAME = 2.2e6;
 
@@ -35,8 +36,8 @@ export class SheetCancelled extends Error { constructor() { super('The sheet was
 
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-export function estimatePanel(id: PanelId, n: number, k: number): { w: number; h: number }[] {
-  if (id === 'expressions') { const h = Math.round(HEIGHTS.expressions * k); return Array.from({ length: n }, () => ({ w: Math.round(h * CELL_ASPECT), h })); }
+export function estimatePanel(id: PanelId, n: number, k: number, aspect = CELL_ASPECT.face): { w: number; h: number }[] {
+  if (id === 'expressions') { const h = Math.round(HEIGHTS.expressions * k); return Array.from({ length: n }, () => ({ w: 2 * Math.round(h * aspect / 2), h })); }
   const h = Math.round((id === 'turnaround' ? HEIGHTS.turnaround : HEIGHTS.poses) * k);
   return Array.from({ length: n }, () => ({ w: Math.round(h * (id === 'turnaround' ? 0.4 : 0.5)), h }));
 }
@@ -46,7 +47,7 @@ export function layoutOf(settings: SheetSettings, name: string, panels: PanelRes
   const k = settings.render.scale;
   const inputs: PanelInput[] = panels.map((P) => ({
     id: P.id, title: P.title, labels: P.labels, groundRow: P.groundRow,
-    sizes: P.frames.length ? P.frames.map((f) => ({ w: f.width, h: f.height })) : estimatePanel(P.id, P.labels.length, k),
+    sizes: P.frames.length ? P.frames.map((f) => ({ w: f.width, h: f.height })) : estimatePanel(P.id, P.labels.length, k, CELL_ASPECT[settings.panels.expressions.framing]),
   }));
   return pageLayout({ k, name, title: settings.title, subtitle: 'Humanoid 3D character, made with OpenSculptBoy', panels: inputs });
 }
@@ -70,7 +71,8 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
   const result = (): SheetResult => ({ settings, name, panels, layout: layoutOf(settings, name, panels), ms: Math.round(performance.now() - t0), notes });
   // the work in pixels drawn: the probes and every pass of every picture, with the estimated sizes until the frames
   let total = 0, done = 0, budget = 0;
-  for (const P of panels) for (const s of estimatePanel(P.id, P.labels.length, k)) total += (s.w * s.h * S) + PROBE * PROBE;
+  const aspect = CELL_ASPECT[settings.panels.expressions.framing];
+  for (const P of panels) for (const s of estimatePanel(P.id, P.labels.length, k, aspect)) total += (s.w * s.h * S) + PROBE * PROBE;
   let label = '';
   const say = (l: string) => { label = l; ev.progress?.(Math.min(0.99, done / Math.max(1, total)), label); };
   const tick = async (px: number) => {
@@ -108,7 +110,7 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
   };
   // a panel's work from the estimate to its real frames
   const reframe = (P: PanelResult, frames: Frame[]) => {
-    for (const s of estimatePanel(P.id, P.labels.length, k)) total -= s.w * s.h * S;
+    for (const s of estimatePanel(P.id, P.labels.length, k, aspect)) total -= s.w * s.h * S;
     for (const f of frames) total += f.width * f.height * S;
     P.frames = frames;
     ev.changed?.(result());
@@ -133,21 +135,37 @@ export async function buildSheet(host: SheetHost, settings: SheetSettings, ev: B
           await picture(P, i, { turn: turns[i], ...ff.frames[i] }, style);
         }
       } else if (P.id === 'expressions') {
-        const E = settings.panels.expressions, turn = -VIEWS[E.view].yaw;
+        const E = settings.panels.expressions, h = Math.round(HEIGHTS.expressions * k);
+        let turn = -VIEWS[E.view].yaw;
         say('Expressions: framing');
         show(E.pose);
-        host.turn(turn);
         await face().set({ actions: {} });
+        if (E.framing === 'face') {
+          // the face looks straight at the camera: the figure turns by the head's own turn in the pose (up to 45°)
+          host.turn(0);
+          const d = host.figure().headDir, psi = Math.atan2(d[0], d[2]) * 180 / Math.PI;
+          turn -= Math.max(-45, Math.min(45, psi));
+        }
+        host.turn(turn);
         const F = host.figure(), J = F.joints;
         const neck = J.neck01 ? J.neck01[1] : F.top - 0.3;
         const size = Math.max(0.1, F.top - neck);
-        const probe: SheetView = { turn, cx: F.head[0], cy: F.head[1] + size * 0.2, halfH: size * 1.9, width: PROBE, height: PROBE };
+        const head = Math.max(0.05, F.crown[1] - F.chin[1]);
+        const probe: SheetView = E.framing === 'face'
+          ? { turn, cx: F.head[0], cy: (F.chin[1] + F.crown[1]) / 2 + head * 0.1, halfH: head * 1.0, width: PROBE, height: PROBE }
+          : { turn, cx: F.head[0], cy: F.head[1] + size * 0.2, halfH: size * 1.9, width: PROBE, height: PROBE };
         const img = await styleById(style).render(host, probe, 1, tick);
         const m = maskBox(alphaOf(img.data), PROBE, PROBE, probe);
-        const top = m ? m.box.y1 : F.top + 0.03;
-        const sh = ['upperarm01.L', 'upperarm01.R'].filter((n) => J[n]).map((n) => J[n][1]);
-        const shoulder = sh.length ? sh.reduce((a, b) => a + b, 0) / sh.length : neck - size * 0.35;
-        const fr = headFrame(top, shoulder, F.head[0], Math.round(HEIGHTS.expressions * k), CELL_ASPECT);
+        let fr: Frame;
+        if (E.framing === 'face') {
+          fr = faceFrame(F.chin[1], F.crown[1], m ? m.box.y1 : F.crown[1], F.head[0], h, CELL_ASPECT.face);
+        } else {
+          const top = m ? m.box.y1 : F.top + 0.03;
+          const sh = ['upperarm01.L', 'upperarm01.R'].filter((n) => J[n]).map((n) => J[n][1]);
+          const shoulder = sh.length ? sh.reduce((a, b) => a + b, 0) / sh.length : neck - size * 0.35;
+          fr = headFrame(top, shoulder, F.head[0], h, CELL_ASPECT.shoulders);
+        }
+        P.boxes = m ? [m.box] : [];
         reframe(P, E.items.map(() => fr));
         for (let i = 0; i < E.items.length; i++) {
           say(`Expressions: ${P.labels[i]}`);

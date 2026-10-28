@@ -1939,7 +1939,8 @@ function poseSilhouette(size = 512, margin = 24) {
 }
 
 // the posed figure, for the navigation and the framings: the box of its joints, its face, the top of its head
-const FIG: any = { lo: new THREE.Vector3(-0.3, -0.84, -0.15), hi: new THREE.Vector3(0.3, 0.6, 0.2), top: 0.625, head: new THREE.Vector3(0, 0.495, 0.035), joints: [] };
+const FIG: any = { lo: new THREE.Vector3(-0.3, -0.84, -0.15), hi: new THREE.Vector3(0.3, 0.6, 0.2), top: 0.625, head: new THREE.Vector3(0, 0.495, 0.035), joints: [],
+  chin: new THREE.Vector3(0, 0.414, 0.125), crown: new THREE.Vector3(0, 0.61, 0.03), headDir: new THREE.Vector3(0, 0, 1) };
 // the Upper body view: from the waist to the top of the head, as wide as the joints above the waist
 function upperFrame() {
   if (!RIG.ready || !FIG.joints.length) return FRAMES.upper;
@@ -1983,6 +1984,10 @@ function poseChanged() {
   FIG.lo.set(mn[0], mn[1], mn[2]); FIG.hi.set(mx[0], mx[1], mx[2]);
   FIG.head.set(0, 0.495, 0.035).applyMatrix4(_headFull);
   FIG.top = _v.set(0, 0.625, 0.03).applyMatrix4(_headFull).y;
+  // the bottom of the chin, the top of the skull and where the face looks, from anny's default head (the character sheet)
+  FIG.chin.set(0, 0.414, 0.125).applyMatrix4(_headFull);
+  FIG.crown.set(0, 0.61, 0.03).applyMatrix4(_headFull);
+  FIG.headDir.set(0, 0, 1).applyMatrix3(_m3).normalize();
   mn[1] = Math.min(mn[1], GROUND_Y);
   SHADOW_FOCUS.body.set((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2);
   SHADOW_FOCUS.bodyHalf = Math.max(0.95 * hipHeight() / MANIFEST.authoring.hip_height, 0.5 * Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) + 0.2);
@@ -2510,10 +2515,10 @@ void main(){
 });
 const dispMat = new THREE.ShaderMaterial({
   uniforms: { tAcc: { value: null }, uSeed: { value: 0 }, uSat: { value: parseFloat(qs.get('sat') || '1.15') }, uContrast: { value: parseFloat(qs.get('con') || '1.05') }, uVignette: { value: 0.22 },
-    uUvScale: sssU.uUvScale, uUvMax: { value: new THREE.Vector2(1, 1) } },
+    uUvScale: sssU.uUvScale, uUvMax: { value: new THREE.Vector2(1, 1) }, uDim: { value: 1 } },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = position.xy*0.5+0.5; gl_Position = vec4(position.xy, 0.0, 1.0); }',
   fragmentShader: `uniform sampler2D tAcc; uniform float uSeed; uniform float uSat; uniform float uContrast; uniform float uVignette; uniform vec2 uUvScale;
-    uniform vec2 uUvMax; varying vec2 vUv;
+    uniform vec2 uUvMax; uniform float uDim; varying vec2 vUv;
     float h12(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233)) + uSeed) * 43758.5453); }
     void main(){
       // the corner that the frame fills, up to the centre of its last texel (beyond it lies an older frame)
@@ -2525,7 +2530,7 @@ const dispMat = new THREE.ShaderMaterial({
       rgb = sRGBTransferOETF(vec4(rgb, 1.0)).rgb;
       rgb = clamp((rgb - 0.5) * uContrast + 0.5, 0.0, 1.0);
       rgb += (h12(gl_FragCoord.xy) - 0.5) / 255.0;
-      gl_FragColor = vec4(rgb, 1.0);
+      gl_FragColor = vec4(rgb * uDim, 1.0);
     }`,
   depthTest: false, depthWrite: false, toneMapped: true, blending: THREE.NoBlending,
 });
@@ -2720,8 +2725,9 @@ function animate() {
   // the hair's physics: it sleeps once the hair rests, so the picture can refine
   if (HAIR && hairShown() && !hairClock && HAIR.stepPhysics(dt)) { shadowsDirty = true; resetAccum(); }
   CARD?.tick(now);   // a card's blinks (card/look.ts): the frames of a blink draw again
-  // while the sheet renders its pictures, the page's own view draws one pass after each change
-  if (accCount < (SHEET.hold ? 1 : MAX_ACC)) renderPass();
+  // while the sheet renders its pictures, the page's own view stays still: its last picture, dimmed
+  if (SHEET.hold) sheetStillView();
+  else if (accCount < MAX_ACC) renderPass();
   const jsMs = performance.now() - now;
   if (DYN.rendered) { PERF.frames++; PERF.jsMs += jsMs; }
   updatePerf(now);
@@ -2734,6 +2740,7 @@ window.addEventListener('resize', () => {
     else frameCamera(currentFrame);
   }
   renderer.setSize(innerWidth, innerHeight, false); allocRTs(); resetAccum();
+  SHEET.still = null;   // the still picture of a sheet build went with the old targets
 });
 
 // ------------------------------------------------------------------ UI wiring
@@ -2865,8 +2872,8 @@ function stature() {
 // looking along the horizontal, while the figure turns on its vertical axis (RIG.holder), so the page's lights fall on
 // every view alike. The pictures accumulate as the page's own view does, into targets that grow to the largest
 // picture, and the display pass keeps the coverage as alpha for a transparent background. While the sheet holds the
-// scene, the page's own view draws one pass after each change, and each picture draws the share of the hair strands
-// that the page's view draws for a head of its size.
+// scene, the page's own view shows its last picture, dimmed, and each picture draws the share of the hair strands that
+// the page's view draws for a head of its size.
 const SHEET_FOV = 8;
 const SHEET: any = { hold: false, saved: null, T: null, disp: null, cam: new THREE.PerspectiveCamera(SHEET_FOV, 1, 1, 30) };
 function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
@@ -2890,12 +2897,14 @@ function sheetHold(on: boolean) {
       blink: blink ? blink.auto : false, turn: RIG.holder.rotation.y, lod: HAIR ? HAIR.lod : 1 };
     MOTION.playing = false;
     if (HAIR?.physics) HAIR.setPhysics(false);
+    // the page's own view keeps its last picture until the sheet is done
+    SHEET.still = accCount ? { tex: dispMat.uniforms.tAcc.value, uv: sssU.uUvScale.value.clone(), max: dispMat.uniforms.uUvMax.value.clone() } : null;
     if (blink?.auto) CARD.setBlinkAuto(false);
     SHEET.hold = true;
     return;
   }
   const s = SHEET.saved;
-  SHEET.hold = false;
+  SHEET.hold = false; SHEET.still = null;
   RIG.holder.rotation.y = s.turn; if (STOOL) STOOL.rotation.y = s.turn;
   if (s.motion && MOTION.byName[s.motion]) setMotion(s.motion, { instant: true, t: s.t, remember: false });
   MOTION.playing = s.playing;
@@ -2904,6 +2913,17 @@ function sheetHold(on: boolean) {
   if (SHEET.T) { for (const rt of SHEET.T.all) rt.dispose(); SHEET.T = null; }
   poseChanged(); shadowsDirty = true; resetAccum();
   HOOKS.motion();
+}
+// the page's own view while the sheet holds the scene: the picture it showed last, dimmed, so the figure does not jump
+// through the sheet's poses and turns
+function sheetStillView() {
+  const s = SHEET.still;
+  if (!s) return;
+  sssU.uUvScale.value.copy(s.uv); dispMat.uniforms.uUvMax.value.copy(s.max); dispMat.uniforms.tAcc.value = s.tex;
+  dispMat.uniforms.uDim.value = 0.6;
+  quadMesh.material = dispMat;
+  renderer.setRenderTarget(null); renderer.render(quadScene, quadCam);
+  dispMat.uniforms.uDim.value = 1;
 }
 function sheetShowPose(slot: any) {
   if (!MOTION.cur || !slot) return false;
@@ -3046,7 +3066,7 @@ const SHEET_HOST = {
     const v = (p: any) => [p.x, p.y, p.z];
     const joints: Record<string, number[]> = {};
     for (const j of FIG.joints) joints[j.name] = v(j.p);
-    return { ground: GROUND_Y, top: FIG.top, head: v(FIG.head), lo: v(FIG.lo), hi: v(FIG.hi), joints };
+    return { ground: GROUND_Y, top: FIG.top, head: v(FIG.head), chin: v(FIG.chin), crown: v(FIG.crown), headDir: v(FIG.headDir), lo: v(FIG.lo), hi: v(FIG.hi), joints };
   },
   poseQuaternions: (name: string) => {
     if (!MOTION.nb) return null;

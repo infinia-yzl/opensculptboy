@@ -109,7 +109,7 @@ class TestSheetPage(unittest.TestCase):
         self.assertEqual({q["h"] for q in turn}, {512})
         self.assertEqual({q["h"] for q in panels["poses"]["pictures"]}, {384})
         self.assertEqual(
-            {(q["w"], q["h"]) for q in panels["expressions"]["pictures"]}, {(216, 240)}
+            {(q["w"], q["h"]) for q in panels["expressions"]["pictures"]}, {(192, 240)}
         )
         side, front = turn[2], turn[0]
         self.assertLess(side["w"], front["w"])
