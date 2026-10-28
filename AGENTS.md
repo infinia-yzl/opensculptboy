@@ -126,6 +126,14 @@ uv run python -m anny.faces.authoring.benchmark     # benchmark.html in ANNY_CAC
 uv run python -m anny.faces.authoring.review        # review.png in ANNY_CACHE_DIR/faces: random faces to judge by eye
 ```
 
+### Expression shapes
+```bash
+uv run python -m opensculptboy.expressions.authoring.ict --card card.json --out out.glb --eyes --teeth   # ICT-FaceKit's expression shapes carried onto Anny's face (--only NAMES, --smooth, --strength, --report FILE)
+uv run python -m opensculptboy.expressions.authoring.faces --out faces.json  # the review's faces: 52 actions at 1.0 and 0.5, VRM presets and visemes, 20 expressions, colliding mixes
+blender -b --factory-startup -P src/opensculptboy/expressions/authoring/blender_faces.py -- --glb out.glb --faces faces.json --out renders/ --helper src/opensculptboy/export/blender_skin.py   # front and 3/4, textured and clay
+uv run python -m unittest test.test_expression_transfer test.test_expression_faces  # the transfer with synthetic data (the ICT data test is local only) and the review's faces
+```
+
 ### Hair
 ```bash
 uv sync --extra viewer
