@@ -337,6 +337,7 @@ varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying 
 uniform sampler2D uCardBase; uniform sampler2D uCardNormal; uniform sampler2D uCardRough;
 uniform sampler2D uHeadBase; uniform sampler2D uHeadNormal; uniform sampler2D uHeadRough; uniform vec4 uHeadXf;
 uniform float uCardNormalScale; uniform float uCardRoughK; uniform float uCardF0; uniform float uCardSSS;
+uniform float uCardBounce;   // the share of the key light that the skin around reflects (card/look.ts)
 uniform float uCardHide;   // 1: the faces that a sculpt card's patches replace leave the picture
 varying vec2 vCardUV; varying float vCardTile; varying float vCardHide;
 // the tangent frame of the UVs from the screen derivatives of the position and the UV (three.js perturbNormal2Arb);
@@ -565,6 +566,12 @@ void main() {
   trans += uRimColor * tb * sqrt(max(-dot(Ns, Lr), 0.0) * max(-dot(N, Lr), 0.0)) * hocc;
   trans += shIrr(-Ns) * uEnvDiff * tb * 0.6;
   E += trans * uTrans * (1.0 - 0.65 * uMelanin) * sqrt(ao) / max(albedo, vec3(0.05));
+#ifdef CARD_SKIN
+  // the key light that the skin around reflects once more (the page traces no second bounce, which lights the hollows
+  // under the brows and beside the nose in the GLB's path-traced renders): a share of the key's light, coloured by
+  // the skin, more where the surface is occluded
+  E += uKeyColor * uCardBounce * albedo * (1.0 - 0.5 * ao);
+#endif
   vec3 diffSkin = albedo * E;
 
   // ---------------- specular: two lobes, drier on the body, oily in the T-zone

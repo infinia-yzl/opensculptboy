@@ -44,6 +44,9 @@ export interface CardHost {
 interface PartMesh { name: string; mesh: any; geo: THREE_NS.BufferGeometry; rest: Float32Array; normals: Float32Array; materials: any[]; depth: any[] }
 
 const ANISOTROPY = 8;
+// the share of the key light that the skin around a point reflects onto it (shading.ts, CARD_SKIN), set against the
+// GLB's renders in Blender (Cycles) on the page's cameras and lights
+export const CARD_BOUNCE = 0.06;
 
 export class CardLook {
   host: CardHost;
@@ -191,10 +194,12 @@ export class CardLook {
       if (!uniforms.uCardNormal.value) uniforms.uCardNormal.value = uniforms.uCardBase.value;
       if (!uniforms.uCardRough.value) uniforms.uCardRough.value = uniforms.uCardBase.value;
       for (const k of ['uHeadBase', 'uHeadNormal', 'uHeadRough']) if (!uniforms[k].value) uniforms[k].value = uniforms.uCardBase.value;
-      uniforms.uCardHide = { value: this.patch ? 1 : 0 };
+      uniforms.uCardBounce = { value: CARD_BOUNCE };
       this.skin = this.host.skinMaterial(defines, uniforms);
       this.host.setSkinMaterial(this.skin);
     }
+    // the pocket leaves the picture and the shadow maps while the patch shows
+    this.host.uniforms.uCardHide.value = this.patch && this.skin ? 1 : 0;
     this.bodyChanged();
     this.timing.place = performance.now() - t0;
   }
@@ -447,7 +452,7 @@ export class CardLook {
       if (i >= 0) this.host.opaque.splice(i, 1);
       this.patch.geo!.dispose();
     }
-    this.patch = null; this.coarse0 = null;
+    this.patch = null; this.coarse0 = null; this.host.uniforms.uCardHide.value = 0;
     if (this.eyeState) {
       const eyes = this.host.eyes();
       eyes.forEach((e, i) => {

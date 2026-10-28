@@ -271,6 +271,7 @@ const U = {
   uMoleA: { value: Array.from({ length: 16 }, () => new THREE.Vector4(0, -9, 0, 0.0001)) },
   uMoleB: { value: Array.from({ length: 16 }, () => new THREE.Vector4()) },
   uWearOn: { value: new THREE.Vector4(0, 0, 0, 0) },
+  uCardHide: { value: 0 },   // 1 while a sculpt card hides the pocket at the inner eye corners (card/look.ts)
   // look: skin tint over the baked skin colour, scalp colour under the hair, melanin (0 light to 1 deep), hair shadow density
   uSkinTint: { value: new THREE.Vector3(1, 1, 1) }, uScalpCol: { value: new THREE.Vector3() }, uScalp0: { value: new THREE.Vector3() },
   uMelanin: { value: 0 }, uHairShadowK: { value: 1 },
@@ -2276,9 +2277,13 @@ async function init() {
   updateHeadMap();
   const skinMat = new THREE.ShaderMaterial({ uniforms: U, vertexShader: SKIN_VS, fragmentShader: SKIN_FS, defines: Object.assign({}, ENV_DEFINES, SSS_ON ? { SSS_SCREEN: '' } : {}, hg.attributes.skinIndex2 ? SKIN8_DEF : {}), glslVersion: THREE.GLSL3, blending: THREE.NoBlending });
   const head = skinned(hg, skinMat);
+  // the body in the shadow maps: the pocket that a sculpt card hides casts no shadow either (its patch casts its own)
+  const hideDepth = !!hg.attributes.cardUV;
   head.userData.depthMat = new THREE.ShaderMaterial({
-    uniforms: { uWearOn: U.uWearOn }, defines: Object.assign({}, depthMat.defines, hg.attributes.skinIndex2 ? SKIN8_DEF : {}), side: THREE.DoubleSide, fragmentShader: depthMat.fragmentShader,
-    vertexShader: SKIN_GLSL + '\nattribute vec4 attrV; uniform vec4 uWearOn;\n' + COVER_GLSL + '\nvoid main(){ gl_Position = projectionMatrix * modelViewMatrix * (skinMat() * vec4(coveredPosition(), 1.0)); }',
+    uniforms: { uWearOn: U.uWearOn, uCardHide: U.uCardHide }, defines: Object.assign({}, depthMat.defines, hg.attributes.skinIndex2 ? SKIN8_DEF : {}, hideDepth ? { CARD_HIDE: '' } : {}), side: THREE.DoubleSide,
+    fragmentShader: depthMat.fragmentShader.replace('void main(){', '#ifdef CARD_HIDE\nuniform float uCardHide; varying float vHide;\n#endif\nvoid main(){\n#ifdef CARD_HIDE\n if (uCardHide > 0.5 && vHide > 0.001) discard;\n#endif\n'),
+    vertexShader: SKIN_GLSL + '\nattribute vec4 attrV; uniform vec4 uWearOn;\n#ifdef CARD_HIDE\nattribute vec4 cardUV; varying float vHide;\n#endif\n' + COVER_GLSL
+      + '\nvoid main(){\n#ifdef CARD_HIDE\n vHide = cardUV.w;\n#endif\n gl_Position = projectionMatrix * modelViewMatrix * (skinMat() * vec4(coveredPosition(), 1.0)); }',
   });
   scene.add(head); opaque.push(head); BODY_MESH = head;
   initMotion(meta, B);
