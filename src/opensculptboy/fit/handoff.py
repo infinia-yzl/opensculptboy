@@ -92,6 +92,15 @@ class HandoffPart:
     joints: list | None = None
     joint_slots: np.ndarray | None = None  # (V, K) int
     joint_weights: np.ndarray | None = None  # (V, K)
+    # a part of the hair or the brows (opensculptboy.groom.handoff): the vertex colours (linear
+    # RGBA, glTF COLOR_0), the material's alpha mode, cutoff and sides, and the rest position
+    # (Anny's frame) and parent of each joint of its skin
+    colors: np.ndarray | None = None  # (V, 4)
+    alpha_mode: str | None = None
+    alpha_cutoff: float = 0.5
+    double_sided: bool = False
+    joint_positions: dict | None = None
+    joint_parents: dict | None = None
 
     @property
     def is_skin(self) -> bool:
@@ -414,6 +423,11 @@ def load_handoff(folder: str | pathlib.Path) -> Handoff:
     mouth = mouth_parts(folder, appearance)
     if mouth:  # the described pieces take the place of the mouth's primitives
         parts = [p for p in parts if p.role != "mouth"] + mouth
+    from opensculptboy.groom.handoff import GROOM_ROLES, groom_parts
+
+    grooms = groom_parts(folder, appearance)
+    if grooms:  # read again with their skins, vertex colours and alpha
+        parts = [p for p in parts if p.role not in GROOM_ROLES] + grooms
     return Handoff(
         folder, parts, landmarks, appearance, mouth_textures(folder, appearance)
     )

@@ -34,6 +34,8 @@ import re
 
 import numpy as np
 
+from opensculptboy.groom.handoff import GROOM_ROLES
+
 # name -> (kind, anny label, weight); the weight scales the landmark term of the fit.
 LANDMARKS = {
     "eye_outer_l": ("craniofacial", "ex.L", 1.0),
@@ -274,6 +276,8 @@ class Reference:
     mouth_textures: dict = dataclasses.field(default_factory=dict)
     # the parts of role "lashes", for the lashes of the bake
     lash_parts: list = dataclasses.field(default_factory=list)
+    # the parts of roles "hair" and "brows", for the grooms of the bake (opensculptboy.groom)
+    groom_parts: list = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         self.vertices = np.asarray(self.vertices, dtype=np.float64)
@@ -382,6 +386,7 @@ class Reference:
             [p for p in handoff.parts if p.role == "mouth"],
             dict(getattr(handoff, "mouth_textures", None) or {}),
             [p for p in handoff.parts if p.role == "lashes"],
+            [p for p in handoff.parts if p.role in GROOM_ROLES],
         )
 
     def eye_values(self) -> dict:
@@ -464,6 +469,17 @@ class Reference:
                     normals=None if p.normals is None else p.normals @ R.T,
                 )
                 for p in self.lash_parts
+            ],
+            [
+                dataclasses.replace(
+                    p,
+                    vertices=p.vertices @ R.T + t,
+                    normals=None if p.normals is None else p.normals @ R.T,
+                    joint_positions=None
+                    if p.joint_positions is None
+                    else {k: R @ v + t for k, v in p.joint_positions.items()},
+                )
+                for p in self.groom_parts
             ],
         )
         return moved

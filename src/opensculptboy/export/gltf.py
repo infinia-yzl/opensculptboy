@@ -241,7 +241,7 @@ def export_glb(
         images = level_normals(
             model, character, images, detail, mesh, ears, base, detail_dir
         )
-    eyed, lash_png, blinks = None, None, None
+    eyed, lash_png, blinks, brows = None, None, None, None
     teeth = character.teeth_material()
     mouth = character.mouth_material()
     if mouth is not None:  # the reference's inner mouth holds its own teeth
@@ -278,6 +278,9 @@ def export_glb(
             if "eye_layout" in images and "eye_base_color" not in images:
                 layout = (images["eye_layout"], images.get("eye_layout_normal"))
             lashes, lash_png = eyed_lashes(character, detail_dir)
+            from opensculptboy.groom.export import card_groom
+
+            brows = card_groom(character, "brows", detail_dir)
             eyed = eyed_mesh(
                 model,
                 mesh,
@@ -288,6 +291,7 @@ def export_glb(
                 skin_baked=baked_skin(images),
                 lashes=lashes,
                 layout=layout,
+                brows=None if brows is None else brows[0],
             )
             # the blinks closed around the eyes (opensculptboy.eyes.blink), from the
             # reference's blinks when the card has them, with an in-between corrective
@@ -369,6 +373,19 @@ def export_glb(
         springs = piece_springs(wear_body, dressed, model, dressing)
     else:
         springs = None
+    # the reference's hair (opensculptboy.groom): a mesh of its own, with its spring chains
+    hair = []
+    if character.groom_section("hair") is not None:
+        from opensculptboy.groom.export import hair_pieces
+        from opensculptboy.wearables.export import Dressing, piece_springs
+        from opensculptboy.wearables.fit import card_body
+
+        if wear_body is None:
+            wear_body = card_body(character, model, detail_dir)
+        hair = hair_pieces(character, wear_body, detail_dir, max_influences)
+        springs = piece_springs(
+            wear_body, (dressed or []) + hair, model, dressing or Dressing()
+        )
     doc = GltfDocument(f"OpenSculptBoy glTF exporter (anny {_anny_version()})")
     head_material, head, ear_material = None, None, None
     if skin is not None:
@@ -406,6 +423,8 @@ def export_glb(
         eye_parts = _eye_part_materials(
             doc, model, body, eyed, eye, images, lash_png, character.lash_material()
         )
+        if brows is not None:  # the reference's brows (opensculptboy.groom)
+            eye_parts += _brow_materials(doc, eyed, brows)
     else:
         eye_material, eyes = _eye_material(
             doc, model, body, images, None if detail is None else detail.topology
@@ -525,17 +544,17 @@ def export_glb(
     )
     mesh_node = doc.add_node({"name": character.name, "mesh": mesh_index, "skin": skin})
     piece_nodes = []
-    if dressed:
+    if dressed or hair:
         from opensculptboy.wearables.gltf import add_pieces
 
         piece_nodes = add_pieces(
             doc,
-            dressed,
+            (dressed or []) + hair,
             skin,
             C3,
             joint_type,
-            visibility=dressing.wardrobe and dressing.visibility,
-            all_groups=dressing.wardrobe,
+            visibility=bool(dressing and dressing.wardrobe and dressing.visibility),
+            all_groups=bool(dressing and dressing.wardrobe),
         )
 
     if character.pose:
@@ -575,7 +594,7 @@ def export_glb(
     doc.scene_name = character.name
     doc.scene_nodes = roots + [mesh_node]
     for node, shown in piece_nodes:  # without visibility, the hidden pieces stay out
-        if shown or (dressing.wardrobe and dressing.visibility):
+        if shown or (dressing and dressing.wardrobe and dressing.visibility):
             doc.scene_nodes.append(node)
     if dressing is not None and dressing.wardrobe and not dressing.visibility:
         # a second scene holds every piece, for tools that switch scenes
@@ -627,6 +646,12 @@ def export_glb(
     if toothed is not None:
         key = "teeth" if mouth is None else "inner_mouth"
         doc.scene_extras["opensculptboy"][key] = toothed.extras
+    if hair:
+        doc.scene_extras["opensculptboy"]["hair"] = _groom_extras(hair[0], springs)
+    if brows is not None and eyed is not None:
+        doc.scene_extras["opensculptboy"]["brows"] = dict(
+            _brow_extras(eyed, brows[0]), source="reference"
+        )
     if tier is not None:
         doc.scene_extras["opensculptboy"]["tier"] = dict(tier)
     if dressing is not None:
@@ -637,6 +662,8 @@ def export_glb(
         )
         if spring_extras is not None:
             doc.scene_extras["opensculptboy"]["wearables"]["springs"] = spring_extras
+    elif spring_extras is not None:  # the hair's chains alone
+        doc.scene_extras["opensculptboy"]["springs"] = spring_extras
     size = doc.write(path)
     summary = dict(
         path=str(path),
@@ -659,6 +686,11 @@ def export_glb(
         if springs is not None:
             summary["spring_chains"] = len(springs.chains)
             summary["joints"] += springs.skin_joint_count
+    elif springs is not None:  # the hair's chains alone
+        summary["spring_chains"] = len(springs.chains)
+        summary["joints"] += springs.skin_joint_count
+    if hair:
+        summary["hair"] = int(len(hair[0].garment.triangles))
     return summary
 
 
@@ -838,6 +870,57 @@ def _eye_part_materials(
             points=int(len(eyed.lashes.points)),
             triangles=int(len(eyed.lashes.triangles)),
         )
+    return out
+
+
+def _groom_extras(piece, springs) -> dict:
+    """The ``hair`` entry of a file's scene extras: what the hair holds and its chains."""
+    garment = piece.garment
+    chains = [] if springs is None else [c for c in springs.chains if c.piece == "hair"]
+    return dict(
+        piece.groom.extras(),
+        points=int(len(garment.vertices)),
+        triangles=int(len(garment.triangles)),
+        spring_chains=[c.name for c in chains],
+        vertex_colors=getattr(piece, "colors", None) is not None,
+    )
+
+
+def _brow_extras(eyed, data) -> dict:
+    """The ``brows`` entry of a file's scene extras."""
+    return {
+        "format": "opensculptboy/groom@1",
+        "kind": "brows",
+        "materials": [m.name for m in data.materials],
+        "points": int(len(data.points)),
+        "triangles": int(len(data.triangles)),
+        "parts": sum(1 for p in eyed.parts if p.name == "brows"),
+    }
+
+
+def _brow_materials(doc: GltfDocument, eyed, brows):
+    """The materials and triangle masks of the reference's brows on an eyed mesh: each groom
+    material as the reference draws it (base colour texture and factor, roughness, alpha mode
+    and sides), its extras naming the groom (``opensculptboy_groom``)."""
+    from opensculptboy.groom.export import GROOM_EXTRAS, brow_masks
+
+    data, textures = brows
+    out = []
+    for k, mask in sorted(brow_masks(eyed).items()):
+        m = data.materials[k]
+        entry = pbr_material(f"brows:{m.name}", tuple(m.base_color), 0.0, m.roughness)
+        image = textures.get(m.name, {}).get("base_color")
+        if image is not None:
+            texture = doc.add_texture(doc.add_image(image, mime_type(image), m.name))
+            entry["pbrMetallicRoughness"]["baseColorTexture"] = {"index": texture}
+        if m.alpha_mode != "OPAQUE":
+            entry["alphaMode"] = m.alpha_mode
+        if m.alpha_mode == "MASK":
+            entry["alphaCutoff"] = float(m.alpha_cutoff)
+        if m.double_sided:
+            entry["doubleSided"] = True
+        entry["extras"] = {GROOM_EXTRAS: {"kind": "brows", "material": m.name}}
+        out.append((doc.add_material(entry), mask))
     return out
 
 

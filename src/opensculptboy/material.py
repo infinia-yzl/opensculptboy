@@ -124,6 +124,8 @@ _KEYS |= {
     "mouth",
     "tiers",
     "lashes",
+    "hair",
+    "brows",
 }
 _SUBSURFACE_KEYS = set(SUBSURFACE_DEFAULTS) | {"color"}
 
@@ -186,7 +188,16 @@ class SkinMaterial:
             k: v
             for k, v in data.items()
             if k
-            not in ("subsurface", "eyes", "reference_eyes", "teeth", "mouth", "lashes")
+            not in (
+                "subsurface",
+                "eyes",
+                "reference_eyes",
+                "teeth",
+                "mouth",
+                "lashes",
+                "hair",
+                "brows",
+            )
         }
         subsurface = dict(SUBSURFACE_DEFAULTS)
         subsurface.update(data.get("subsurface", {}))
@@ -287,6 +298,9 @@ def check_material(data: dict) -> dict:
         check_lashes(data["lashes"])
     if "mouth" in data:
         check_mouth(data["mouth"])
+    for kind in GROOM_KINDS:
+        if kind in data and data[kind] is not False:
+            check_groom(data[kind], kind)
     _check_tiers(data.get("tiers", {}))
     subsurface = data.get("subsurface", {})
     if not isinstance(subsurface, dict):
@@ -582,14 +596,16 @@ def check_reference_eyes(data: dict) -> dict:
     (:meth:`opensculptboy.fit.reference.Reference.eye_values`): some of ``cornea_radius_mm``,
     ``cornea_roughness`` and ``cornea_ior``, as numbers, and ``gaze``, the direction in which
     each eye (``"L"``, ``"R"``) looks at rest (:func:`opensculptboy.texture.eyes.
-    bake_eye_layout`), and ``poses``, the file of the reference's blinks
-    (:mod:`opensculptboy.eyes.poses`). The eyes' ``"auto"`` values take
+    bake_eye_layout`), ``poses``, the file of the reference's blinks
+    (:mod:`opensculptboy.eyes.poses`), and ``blinks``, the file of the exports' blink and squint
+    targets that the web viewer plays (:mod:`opensculptboy.eyes.page`). The eyes' ``"auto"``
+    values take
     them, and the section turns the eyes on for a card without ``material.eyes``
     (:func:`eyes_section`).
     """
     if not isinstance(data, dict):
         raise ValueError("material reference_eyes must be a JSON object.")
-    keys = set(_CORNEA_RANGES) | {"gaze", "poses"}
+    keys = set(_CORNEA_RANGES) | {"gaze", "poses", "blinks"}
     unknown = sorted(set(data) - keys)
     if unknown:
         raise ValueError(
@@ -611,11 +627,12 @@ def check_reference_eyes(data: dict) -> dict:
                 f"reference_eyes gaze {side} must be a direction of 3 numbers within "
                 "about 37 degrees of -Y."
             )
-    poses = data.get("poses")
-    if poses is not None and (not isinstance(poses, str) or not poses):
-        raise ValueError("reference_eyes poses must name a file (a string).")
+    for key in ("poses", "blinks"):
+        value = data.get(key)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"reference_eyes {key} must name a file (a string).")
     for key, value in data.items():
-        if key in ("gaze", "poses"):
+        if key in ("gaze", "poses", "blinks"):
             continue
         if isinstance(value, (str, bool)):
             raise ValueError(f"reference_eyes {key} must be a number (got {value!r}).")
@@ -917,6 +934,69 @@ def check_mouth(data: dict) -> dict:
         _number(data["roughness_factor"], "mouth roughness_factor", 0.0, None)
     if "clearcoat" in data:
         _number(data["clearcoat"], "mouth clearcoat", 0.0, 1.0)
+    return data
+
+
+# The reference's hair and brows of a fitted card (``material.hair``, ``material.brows``,
+# :mod:`opensculptboy.groom`), which the bake writes: ``mesh`` names the groom file and
+# ``textures`` maps each of its materials to its texture files by slot (``base_color``,
+# ``normal``), all relative to the card. ``false`` leaves the groom out. The brows come with the
+# eyes of opensculptboy.eyes, as the lashes do.
+GROOM_KINDS = ("hair", "brows")
+GROOM_KEYS = ("source", "mesh", "textures")
+GROOM_TEXTURE_SLOTS = ("base_color", "normal")
+
+
+@dataclasses.dataclass
+class GroomSection:
+    """A card's ``material.hair`` or ``material.brows``: the groom file and the textures of its
+    materials."""
+
+    kind: str
+    mesh: str
+    textures: dict = dataclasses.field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict, kind: str) -> "GroomSection":
+        data = check_groom(dict(data or {}), kind)
+        if not data.get("mesh"):
+            raise ValueError(f"material {kind} needs the mesh of the bake.")
+        return cls(
+            kind,
+            data["mesh"],
+            {k: dict(v) for k, v in (data.get("textures") or {}).items()},
+        )
+
+    def extras(self) -> dict[str, Any]:
+        """What the files record of the groom."""
+        return {"source": "reference", "materials": sorted(self.textures)}
+
+
+def check_groom(data: dict, kind: str = "hair") -> dict:
+    """Raise ValueError for a ``material.hair`` or ``material.brows`` section that is not
+    valid; returns it."""
+    if not isinstance(data, dict):
+        raise ValueError(f"material {kind} must be a JSON object or false.")
+    unknown = sorted(set(data) - set(GROOM_KEYS))
+    if unknown:
+        raise ValueError(
+            f"Unknown {kind} keys {unknown}; the keys are {sorted(GROOM_KEYS)}."
+        )
+    if data.get("source", "reference") != "reference":
+        raise ValueError(f"material {kind} source must be 'reference'.")
+    if data.get("mesh") is not None and not isinstance(data["mesh"], str):
+        raise ValueError(f"material {kind} mesh must be a path.")
+    textures = data.get("textures", {})
+    if not isinstance(textures, dict):
+        raise ValueError(f"material {kind} textures must map materials to their files.")
+    for name, slots in textures.items():
+        if not isinstance(slots, dict) or set(slots) - set(GROOM_TEXTURE_SLOTS):
+            raise ValueError(
+                f"material {kind} textures {name!r} must map some of "
+                f"{list(GROOM_TEXTURE_SLOTS)} to paths."
+            )
+        if not all(isinstance(v, str) for v in slots.values()):
+            raise ValueError(f"material {kind} textures {name!r} must hold paths.")
     return data
 
 

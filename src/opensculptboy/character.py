@@ -86,6 +86,8 @@ class Character:
             "teeth",
             "mouth",
             "lashes",
+            "hair",
+            "brows",
         }:
             return None
         from opensculptboy.material import SkinMaterial
@@ -136,6 +138,19 @@ class Character:
         from opensculptboy.material import MouthMaterial
 
         return MouthMaterial.from_dict(self.material["mouth"])
+
+    def groom_section(self, kind: str):
+        """The :class:`~opensculptboy.material.GroomSection` of ``material.hair`` or
+        ``material.brows`` (the reference's hair or brows, :mod:`opensculptboy.groom`), or None:
+        the brows come with the eyes of :meth:`eye_material`, as the lashes do."""
+        data = (self.material or {}).get(kind)
+        if not data:
+            return None
+        if kind == "brows" and self.eye_material() is None:
+            return None
+        from opensculptboy.material import GroomSection
+
+        return GroomSection.from_dict(data, kind)
 
     def detail_levels(self) -> list[int]:
         """The subdivision levels of the detail layer, in increasing order."""
