@@ -365,24 +365,25 @@ def export_glb(
     if dressing is not None:
         from opensculptboy.wearables.export import covered_body_triangles, dress_card
 
-        from opensculptboy.wearables.export import piece_springs
-
         wear_body, dressed = dress_card(
             character, model, detail_dir, dressing, max_influences
         )
-        springs = piece_springs(wear_body, dressed, model, dressing)
-    else:
-        springs = None
     # the reference's hair (opensculptboy.groom): a mesh of its own, with its spring chains
     hair = []
     if character.groom_section("hair") is not None:
         from opensculptboy.groom.export import hair_pieces
-        from opensculptboy.wearables.export import Dressing, piece_springs
         from opensculptboy.wearables.fit import card_body
 
         if wear_body is None:
             wear_body = card_body(character, model, detail_dir)
         hair = hair_pieces(character, wear_body, detail_dir, max_influences)
+    # The spring chains of the pieces and the hair, rigged once: rig_springs blends the
+    # pieces' skin weights into the chains in place, so a second call would read the
+    # chains' joints as bones.
+    springs = None
+    if dressed or hair:
+        from opensculptboy.wearables.export import Dressing, piece_springs
+
         springs = piece_springs(
             wear_body, (dressed or []) + hair, model, dressing or Dressing()
         )
