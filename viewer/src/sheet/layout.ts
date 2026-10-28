@@ -119,7 +119,7 @@ export function pageLayout(input: PageInput): PageLayout {
     y += 48 * k;
   };
   const labelUnder = (x: number, w: number, top: number, text: string) => {
-    if (text) items.push({ type: 'text', x: x + w / 2, y: top + LABEL * 1.15, text, size: LABEL, font: 'sans', weight: 500, align: 'center', role: 'muted', maxW: w + G * 0.8 });
+    if (text) items.push({ type: 'text', x: x + w / 2, y: top + LABEL * 1.45, text, size: LABEL, font: 'sans', weight: 500, align: 'center', role: 'muted', maxW: w + G * 0.8 });
   };
   let first = true;
   for (const P of input.panels) {

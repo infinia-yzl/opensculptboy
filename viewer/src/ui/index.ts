@@ -90,14 +90,17 @@ export function initUI(app: App): UI {
   const cs = characterSections(ed);
   const ss = stageSections(app);
   const sheet = sheetSection(app, () => layout());
-  let prevL = false, prevR = false;
+  let prevL = false, prevR = false, sheetWas = false;
   const layout = () => {
     const lo = left.isOpen(), ro = right.isOpen();
     // on a narrower screen the two inspectors take turns
     if (lo && ro && innerWidth < WIDE) { if (!prevL) right.close(); else left.close(); return; }
     prevL = left.isOpen(); prevR = right.isOpen();
-    // the Sheet section shows its layout view beside the 3D view
-    sheet.setOpen(right.isOpen() && right.current() === 'sheet');
+    // the Sheet section shows its layout view beside the 3D view, and the Character segment's inspector makes room
+    const sheetNow = right.isOpen() && right.current() === 'sheet', opening = sheetNow && !sheetWas;
+    sheetWas = sheetNow;
+    sheet.setOpen(sheetNow);
+    if (opening && left.isOpen() && !isPhone()) { left.close(); return; }
     if (isPhone() || app.shot) { nav.setInsets(0, 0); document.body.classList.toggle('sheet-open', prevL || prevR); document.body.classList.remove('vb-compact', 'vb-fold'); return; }
     document.body.classList.remove('sheet-open');
     // the free space lies between the right edge of the left segment and the left edge of the right one

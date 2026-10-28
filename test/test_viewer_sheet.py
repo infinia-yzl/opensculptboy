@@ -54,7 +54,7 @@ class TestSheetPage(unittest.TestCase):
     def test_default_character(self):
         from playwright.sync_api import sync_playwright
 
-        settings = {"render": {"scale": 0.25, "samples": 2}, "title": "Test sheet"}
+        settings = {"render": {"scale": 0.25, "samples": 1}, "title": "Test sheet"}
         with sync_playwright() as p:
             kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
             browser = p.chromium.launch(args=ARGS, **kw)
