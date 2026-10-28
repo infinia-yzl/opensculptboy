@@ -496,5 +496,38 @@ class TestPageBlinks(unittest.TestCase):
                     self.assertGreater(checked, 50)
 
 
+class TestGroomWithOutfit(unittest.TestCase):
+    """A card with an outfit that has springs and the reference's hair: the GLB export rigs
+    the chains of both once (a second call read the chains' joints as bones)."""
+
+    def test_glb(self):
+        import dataclasses
+
+        from test.wearable_fixtures import write_loose
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            model = Character().build_model(dtype=torch.float64)
+            with torch.no_grad():
+                rest = model()["rest_vertices"][0].numpy()
+            sections, _, _, _ = card_grooms(model, rest, folder)
+            card = dataclasses.replace(
+                write_loose(folder), material=dict(sections, eyes={"cornea": False})
+            )
+            path = folder / "dressed.glb"
+            summary = export_glb(path, card, model, detail_dir=folder)
+            glb = GLB(path)
+            self.assertEqual(structure_errors(glb), [])
+            extras = glb.json["scenes"][0]["extras"]["opensculptboy"]
+            self.assertEqual(len(extras["hair"]["spring_chains"]), 1)
+            self.assertGreater(
+                summary["spring_chains"], 1
+            )  # the cape's, the skirt's, the hair's
+            self.assertEqual(
+                len(extras["wearables"]["springs"]["chains"]), summary["spring_chains"]
+            )
+            evaluate_nodes(glb)
+
+
 if __name__ == "__main__":
     unittest.main()
