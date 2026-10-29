@@ -42,6 +42,8 @@ export function makeOpener(deps: OpenDeps): Opener {
   async function open(picked: PickedFile[]): Promise<boolean> {
     if (!picked.length) { fail({ title: 'The drop held no files', body: 'Drop the files themselves, or choose them with Choose files.' }); return false; }
     ui.set({ openBusy: picked.length > 1 ? `Reading ${picked.length} files` : 'Reading the file', openError: null });
+    // a drop with the dialog closed says that the files are on their way
+    if (!ui.get().openDialog) toast(ui.get().openBusy + '…');
     let sheet: any = null, look: any = null;
     const rest: PickedFile[] = [], pictures: PickedFile[] = [];
     for (const p of picked) {
