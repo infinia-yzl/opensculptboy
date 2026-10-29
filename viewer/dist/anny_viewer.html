@@ -1447,6 +1447,9 @@ body.tool-open .welcome, body.char-open .welcome { display: none; }
 /* a custom swatch in a line of swatches keeps a swatch's size */
 .osb-swatch-line .osb-sw--custom { width: 28px; height: 28px; min-width: 28px; flex: none; }
 body[data-width="phone"] .osb-swatch-line .osb-sw--custom { width: 36px; height: 36px; min-width: 36px; }
+/* the key of a mode shows on hover in a space of its own, so the lintel keeps its width and the modes stay in place */
+.osb-modes .osb-mode > .osb-hint { display: inline-block; visibility: hidden; }
+.osb-modes .osb-mode:is(:hover, :focus-visible) > .osb-hint { visibility: visible; }
 
 </style>
 <title>OpenSculptBoy</title>
