@@ -1,27 +1,26 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The Wearables section of the Character segment: a character card with its outfits and wearable packages opened
-// from the user's own files (picked or dropped on the page), the outfits, every piece with a switch (a piece of
+// The Wearables section of the Dress mode: a character card with its outfits and wearable packages opened from the
+// user's own files (through the page's Open path, shell/open.ts), the outfits, every piece with a switch (a piece of
 // another outfit takes its slot), the groups that hides rules hide, and the covered-skin switch. The files stay in
 // the browser.
 
 import type { App } from './app.ts';
 import { chip, sectionHead, slider, textButton, toggle } from './controls.ts';
 import { h } from './dom.ts';
-import { toast } from './toast.ts';
-import { fromDrop, fromInput, type PickedFile } from '../wearables/files.ts';
+import type { PickedFile } from '../wearables/files.ts';
+import type { CardResult } from '../shell/open.ts';
 import type { PieceRow, Wardrobe } from '../wearables/view.ts';
 
-export function wearablesSection(app: App): HTMLElement {
+export interface WearablesUI { el: HTMLElement; load(picked: PickedFile[]): Promise<CardResult> }
+
+export function wearablesSection(app: App, opener: { pickFiles(): void; pickFolder(): void }): WearablesUI {
   const el = h('section');
   const W = (): Wardrobe | null => app.wardrobe();
   const remove = textButton('Remove', () => { W()?.unload(); paint(); }, 'close', 'tb-quiet');
   const head = sectionHead('Wearables', remove);
   const msg = h('p.inline-msg.wear-msg', { role: 'status' });
-  const files = h('input', { type: 'file', multiple: true, hidden: true, accept: '.json,.glb,.safetensors' }) as HTMLInputElement;
-  const folder = h('input', { type: 'file', multiple: true, hidden: true }) as HTMLInputElement;
-  folder.setAttribute('webkitdirectory', '');
   // the error of the last load that read no card, else the wardrobe's notes (with its failures) show in the message
   let loadError = '';
   const showNotes = () => {
@@ -30,36 +29,24 @@ export function wearablesSection(app: App): HTMLElement {
     msg.textContent = w.notes.length ? w.notes.join('. ') + '.' : '';
     msg.dataset.kind = w.failures ? 'error' : '';
   };
-  const open = async (picked: PickedFile[]) => {
+  // the files of a card or of wearable packages, from the page's Open path (shell/open.ts)
+  const load = async (picked: PickedFile[]): Promise<CardResult> => {
     const w = W();
-    if (!w) return;
-    if (!picked.length) { loadError = 'The drop held no files.'; console.error(`Wearables: ${loadError}`); paint(); return; }
+    if (!w) throw new Error('The page has no wardrobe.');
     loadError = ''; msg.textContent = 'Reading the files…'; msg.dataset.kind = '';
     try {
       const r = await w.load(picked);
-      toast(`${w.cardName}: ${w.pieces.length} of ${r.pieces} pieces shown`);
+      paint();
+      return { name: w.cardName, pieces: r.pieces, worn: w.pieces.length };
     } catch (e: any) {
       loadError = e.message || String(e);
       console.error(`Wearables: ${loadError}`, e);
+      paint();
+      throw e;
     }
-    paint();
   };
-  files.addEventListener('change', () => { open(fromInput(files.files || [])); files.value = ''; });
-  folder.addEventListener('change', () => { open(fromInput(folder.files || [])); folder.value = ''; });
-  const drop = h('div.wear-drop', { text: 'Drop a card and its packages, or their folder, anywhere on the page.' });
-  // a drop anywhere on the page: files of a card or of wearable packages
-  const holds = (e: DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files');
-  document.addEventListener('dragover', (e) => { if (holds(e)) { e.preventDefault(); document.body.classList.add('wear-dragging'); } });
-  document.addEventListener('dragleave', (e) => { if (e.target === document.documentElement || !e.relatedTarget) document.body.classList.remove('wear-dragging'); });
-  document.addEventListener('drop', async (e) => {
-    if (!holds(e)) return;
-    e.preventDefault(); document.body.classList.remove('wear-dragging');
-    let picked: PickedFile[];
-    try { picked = await fromDrop(e.dataTransfer!); }
-    catch (err: any) { loadError = `The dropped files could not be read: ${err.message || err}`; console.error(`Wearables: ${loadError}`, err); paint(); return; }
-    open(picked);
-  });
-  const tools = h('div.btn-row', {}, textButton('Open files', () => files.click(), 'upload'), textButton('Open folder', () => folder.click(), 'upload'));
+  const drop = h('div.wear-drop.osb-drop.osb-drop--compact', {}, h('p.osb-note', { text: 'Drop a card and its packages, or their folder, anywhere on the page.' }));
+  const tools = h('div.btn-row', {}, textButton('Open files', () => opener.pickFiles(), 'upload'), textButton('Open folder', () => opener.pickFolder(), 'folder'));
   const body = h('div.wear-body');
   const skinT = toggle('Hide covered skin', (on) => { W()?.setKeepSkin(!on); paint(); }, 'Leave out the body triangles under the shown pieces');
   const stats = h('p.note.wear-stats');
@@ -71,7 +58,7 @@ export function wearablesSection(app: App): HTMLElement {
   const eyes = h('div.wear-eyes', {}, blinkT.el, h('div.btn-row', {}, textButton('Blink once', () => C()?.blinkNow())), closeS.el, squintS.el);
   el.append(head.el,
     h('p.sec-lead', { text: 'A character card with its outfits and wearable packages, from your own files. The page reads them here and sends nothing.' }),
-    tools, drop, msg, files, folder, body);
+    tools, drop, msg, body);
 
   const row = (r: PieceRow, worn: string | null) => {
     const other = r.outfit !== null && r.outfit !== worn;
@@ -120,5 +107,5 @@ export function wearablesSection(app: App): HTMLElement {
   // a full dress repaints the section (the counts and times); the quick dress of a slider edit leaves it
   W()?.listeners.push(() => { if (W()?.loaded && (W()!.timing as any).full) paint(); else showNotes(); });
   paint();
-  return el;
+  return { el, load };
 }

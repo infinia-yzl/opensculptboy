@@ -12,13 +12,13 @@ let box: HTMLElement | null = null;
 
 export function toast(text: string, kind: 'info' | 'error' = 'info', ms = 2500) {
   if (!box) {
-    box = h('div.toasts', { role: 'status', 'aria-live': 'polite' });
+    box = h('div.toasts.osb-toasts', { role: 'status', 'aria-live': 'polite' });
     document.body.append(box);
   }
   // one message at a time for the same text (a held key repeats it)
   for (const old of Array.from(box.children)) if ((old as HTMLElement).dataset.text === text) old.remove();
-  const close = h('button.toast-x', { type: 'button', 'aria-label': 'Dismiss' }, icon('close', 14));
-  const t = h('div.toast', { dataset: { kind, text } }, h('span', { text }), close);
+  const close = h('button.toast-x.osb-toast-x', { type: 'button', 'aria-label': 'Dismiss' }, icon('close', 14));
+  const t = h('div.toast.osb-toast', { dataset: { kind, text } }, h('span.osb-i', {}, icon(kind === 'error' ? 'alert' : 'check', 16)), h('span', { text }), close);
   const remove = () => { t.classList.add('out'); setTimeout(() => t.remove(), 220); };
   close.addEventListener('click', remove);
   box.append(t);

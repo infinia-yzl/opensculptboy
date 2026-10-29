@@ -1,0 +1,35 @@
+/* OpenSculptBoy
+   Apache License, Version 2.0
+
+   Tailwind for the interface (build.mjs compiles it with the classes that src/shell uses). The theme maps shadcn/ui's
+   colour roles onto the design system's tokens, as the design system's README gives them ("shadcn theme"); the tokens
+   keep their own names (--accent is the gold, --raised-2 the hover ground), so shadcn's roles live only in Tailwind's
+   theme. Dark mode follows the root's data-theme. */
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme inline {
+  --color-background: var(--ground);
+  --color-foreground: var(--text);
+  --color-card: var(--panel);
+  --color-card-foreground: var(--text);
+  --color-popover: var(--panel);
+  --color-popover-foreground: var(--text);
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--on-accent);
+  --color-secondary: var(--raised-2);
+  --color-secondary-foreground: var(--text);
+  --color-muted: var(--well);
+  --color-muted-foreground: var(--text-muted);
+  --color-accent: var(--raised-2);
+  --color-accent-foreground: var(--text);
+  --color-destructive: var(--bad);
+  --color-border: var(--line);
+  --color-input: var(--line-control);
+  --color-ring: var(--focus);
+  --color-faint: var(--text-faint);
+  --radius-lg: 4px;
+  --radius-md: 2px;
+  --radius-sm: 0px;
+}

@@ -132,6 +132,68 @@ function reusedData() {
 }
 const gz = process.argv.includes('--reuse-data') ? reusedData() : await encodeData();
 
+// ------------------------------------------------------------------ the interface's styles
+// The page carries its styles inline and loads nothing from the network: the fonts as data URLs, the design system's
+// tokens (src/shell/design/tokens.json) as CSS variables for both themes, Tailwind's output for the classes that the
+// interface uses (src/shell/design/tailwind.css, compiled with tailwindcss's own compile(), which has no native parts),
+// the design system's components (osb.css) and the page's own rules (page.css).
+async function interfaceCss() {
+  const D = path.join(here, 'src', 'shell', 'design');
+  const nm = (...p) => path.join(here, 'node_modules', ...p);
+  const b64 = (f) => fs.readFileSync(f).toString('base64');
+  // Cinzel, Instrument Sans and Instrument Serif (SIL Open Font License 1.1), the Latin subset
+  const face = (family, file, weight, style = 'normal') => `@font-face { font-family: "${family}"; font-style: ${style}; font-weight: ${weight}; font-display: block;`
+    + ` src: url(data:font/woff2;base64,${b64(file)}) format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }`;
+  const fonts = [
+    '/* Cinzel (c) Natanael Gama; Instrument Sans and Instrument Serif (c) The Instrument Sans and Instrument Serif Project Authors. SIL Open Font License 1.1 (https://openfontlicense.org). */',
+    face('Cinzel', nm('@fontsource-variable', 'cinzel', 'files', 'cinzel-latin-wght-normal.woff2'), '400 900'),
+    face('Instrument Sans', nm('@fontsource-variable', 'instrument-sans', 'files', 'instrument-sans-latin-wght-normal.woff2'), '400 700'),
+    face('Instrument Serif', nm('@fontsource', 'instrument-serif', 'files', 'instrument-serif-latin-400-italic.woff2'), '400', 'italic'),
+    face('Instrument Serif', nm('@fontsource', 'instrument-serif', 'files', 'instrument-serif-latin-400-normal.woff2'), '400'),
+  ].join('\n');
+
+  // the tokens: every family but type is a list of {name, value}; a value is a string or one value per theme
+  const T = JSON.parse(fs.readFileSync(path.join(D, 'tokens.json'), 'utf8'));
+  const themes = T.color.themes.map((t) => t.id);
+  const val = (v) => typeof v === 'string' ? v.replace(/^\{([\w.-]+)\}$/, 'var(--$1)') : String(v);
+  const per = Object.fromEntries(themes.map((t) => [t, []]));
+  for (const [fam, f] of Object.entries(T)) {
+    if (!f || !Array.isArray(f.tokens)) continue;
+    for (const t of f.tokens) {
+      if (t.value && typeof t.value === 'object') themes.forEach((th, i) => per[th].push(`--${t.name}: ${val(t.value[th] ?? t.value[themes[0]])};`));
+      else per[themes[0]].push(`--${t.name}: ${val(t.value)};`);
+    }
+  }
+  for (const [k, v] of Object.entries(T.type.families)) per[themes[0]].push(`--font-${k}: ${v};`);
+  const tokens = `:root { color-scheme: light; ${per[themes[0]].join(' ')} }\n`
+    + themes.slice(1).map((th) => `:root[data-theme="${th}"] { color-scheme: ${th}; ${per[th].join(' ')} }`).join('\n');
+
+  // Tailwind: the candidates are the words of the interface's sources, sorted, so the output is the same on every machine
+  const { compile } = await import('tailwindcss');
+  const tw = nm('tailwindcss');
+  const loadStylesheet = async (id, base) => {
+    const p = id === 'tailwindcss' ? path.join(tw, 'index.css') : id.startsWith('tailwindcss/') ? path.join(tw, id.slice(12).replace(/(\.css)?$/, '.css')) : path.resolve(base, id);
+    return { path: p, base: path.dirname(p), content: fs.readFileSync(p, 'utf8') };
+  };
+  const compiler = await compile(fs.readFileSync(path.join(D, 'tailwind.css'), 'utf8'), {
+    base: D, loadStylesheet, loadModule: async (id) => { throw new Error('no Tailwind plugins in the page: ' + id); },
+  });
+  const words = new Set();
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(tsx?|html)$/.test(e.name)) for (const w of fs.readFileSync(p, 'utf8').split(/[\s"'`{}<>;]+/)) if (w && w.length < 80) words.add(w);
+    }
+  };
+  walk(path.join(here, 'src', 'shell'));
+  const twCss = compiler.build([...words].sort());
+
+  const osb = fs.readFileSync(path.join(D, 'osb.css'), 'utf8');
+  const own = fs.readFileSync(path.join(D, 'page.css'), 'utf8');
+  return [fonts, twCss, tokens, osb, own].join('\n');
+}
+
 // the body worker (src/body_worker.ts): its own bundle, which the page starts from a string
 const worker = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'body_worker.ts')],
@@ -144,19 +206,26 @@ const queryWorker = await esbuild.build({
   bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
   legalComments: 'none',
 });
-// the script: the TypeScript with three.js in one bundle
+// the script: the TypeScript with three.js and the interface (React, src/shell/) in one bundle
 const bundle = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'main.ts')],
   bundle: true, format: 'esm', minify: true, write: false, target: 'es2022',
   alias: { 'three/addons': 'three/examples/jsm' },
-  define: { __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text), __QUERY_WORKER__: JSON.stringify(queryWorker.outputFiles[0].text) },
+  jsx: 'automatic',
+  define: {
+    __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text), __QUERY_WORKER__: JSON.stringify(queryWorker.outputFiles[0].text),
+    'process.env.NODE_ENV': '"production"',
+  },
   legalComments: 'none',
 });
 const app = bundle.outputFiles[0].text;
+const css = await interfaceCss();
 const shell = fs.readFileSync(path.join(here, 'shell.html'), 'utf8');
 const ref = fs.readFileSync(path.join(here, 'src', 'meshopt_ref.js'), 'utf8');
-const page = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n'
-  + shell + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_B64 = "' + gz.toString('base64') + '";</script>\n'
+const head = '<style id="osb-design">\n' + css + '\n</style>\n' + shell;
+console.log('script', (app.length / 1e6).toFixed(2), 'MB, interface styles', (css.length / 1e6).toFixed(2), 'MB');
+const page = '<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n'
+  + head + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_B64 = "' + gz.toString('base64') + '";</script>\n'
   + '<script type="module">\n' + app.replace(/<\/script/g, '<\\/script') + '\n</script>\n</head><body></body></html>\n';
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, page);
@@ -176,7 +245,7 @@ if (partsAt >= 0) {
     names.push(`data/model-${k + 1}.txt`);
     fs.writeFileSync(path.join(dirOut, names[k]), b64.slice(k * size, (k + 1) * size));
   }
-  const small = shell + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_PARTS = ' + JSON.stringify(names) + ';</script>\n'
+  const small = head + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_PARTS = ' + JSON.stringify(names) + ';</script>\n'
     + '<script type="module">\n' + app.replace(/<\/script/g, '<\\/script') + '\n</script>\n';
   fs.writeFileSync(path.join(dirOut, 'index.html'), small);
   console.log('parts', dirOut, (small.length / 1e6).toFixed(1), 'MB page,', count, 'data files of', (size / 1e6).toFixed(1), 'MB');

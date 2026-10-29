@@ -34,8 +34,8 @@ export function h(spec: string, attrs: Attrs = {}, ...children: (Child | Child[]
 
 // an icon button with an accessible name and a tooltip (the shortcut shows in the tooltip)
 export function iconButton(name: string, label: string, opts: { key?: string; tip?: 'down' | 'up' | 'left' | 'right'; cls?: string; text?: boolean; on?: () => void } = {}) {
-  const b = h('button', { type: 'button', class: 'ib' + (opts.cls ? ' ' + opts.cls : ''), 'aria-label': label,
-    'data-tip': label + (opts.key ? '  ·  ' + opts.key : ''), 'data-tip-pos': opts.tip || 'down' });
+  const b = h('button', { type: 'button', class: 'ib osb-ib' + (opts.cls ? ' ' + opts.cls : ''), 'aria-label': label + (opts.key ? ` (${opts.key})` : ''),
+    'data-tip': label + (opts.key ? '  ' + opts.key : ''), 'data-tip-pos': opts.tip || 'down' });
   b.append(icon(name));
   if (opts.text) b.append(h('span.ib-label', { text: label }));
   if (opts.on) b.addEventListener('click', opts.on);

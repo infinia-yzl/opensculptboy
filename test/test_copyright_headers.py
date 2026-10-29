@@ -2,7 +2,7 @@
 # Copyright (C) 2025 NAVER Corp.
 # Apache License, Version 2.0
 """
-Every ``.py`` file in the repository, and every ``.ts`` and ``.mjs`` file of the viewer, must carry
+Every ``.py`` file in the repository, and every ``.ts``, ``.tsx`` and ``.mjs`` file of the viewer, must carry
 the project copyright header (as ``//`` comments in the viewer's files).
 """
 
@@ -38,7 +38,7 @@ EXCLUDED_DIRS = {
 }
 # The viewer's modules, whose header lines start with // in place of #.
 VIEWER = ROOT / "viewer"
-VIEWER_SUFFIXES = (".ts", ".mjs")
+VIEWER_SUFFIXES = (".ts", ".tsx", ".mjs")
 
 
 def _is_excluded(rel_path: pathlib.Path) -> bool:

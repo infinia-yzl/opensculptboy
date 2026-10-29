@@ -37,20 +37,22 @@ export interface Slider {
   value(): number;
 }
 
-const fmt = (v: number, d: number) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);
+// the width of the slider's thumb (the design system's lozenge), for the marks over the track
+export const THUMB = 10;
+export const fmt = (v: number, d: number) => (Math.abs(v) < 0.5 * 10 ** -d ? 0 : v).toFixed(d);
 
 export function slider(o: SliderOptions): Slider {
   const digits = o.digits ?? 2;
   const input = h('input', { type: 'range', id: o.id, min: String(o.min), max: String(o.max), step: String(o.step ?? 0.01), value: String(o.def) }) as HTMLInputElement;
-  const num = h('input.sl-num', { type: 'text', inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false', 'aria-label': o.label + ' value' }) as HTMLInputElement;
-  const read = h('span.sl-read');
-  const reset = h('button.sl-reset', { type: 'button', 'aria-label': 'Reset ' + o.label, 'data-tip': 'Reset to ' + fmt(o.def, digits), 'data-tip-pos': 'up' }, icon('undoSmall', 14));
-  const mark = h('span.sl-def', { 'aria-hidden': 'true' });
-  const bubble = h('span.sl-bubble', { 'aria-hidden': 'true' });
-  const head = h('div.sl-head', {}, h('label', { for: o.id, text: o.label, title: o.title || '' }), read, reset, num);
-  const track = h('div.sl-track', {}, input, mark, bubble);
-  const el = h('div.sl' + (o.track ? '.sl-custom' : ''), {}, head, track);
-  if (o.ends && o.ends.some(Boolean)) el.append(h('div.sl-ends', { 'aria-hidden': 'true' }, ...o.ends.map((t) => h('span', { text: t }))));
+  const num = h('input.sl-num.osb-sl-num', { type: 'text', inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false', 'aria-label': o.label + ' value' }) as HTMLInputElement;
+  const read = h('span.sl-read.osb-sl-read');
+  const reset = h('button.sl-reset.osb-sl-reset', { type: 'button', 'aria-label': 'Reset ' + o.label, 'data-tip': 'Reset to ' + fmt(o.def, digits), 'data-tip-pos': 'up' }, icon('undoSmall', 14));
+  const mark = h('span.sl-def.osb-sl-def', { 'aria-hidden': 'true' });
+  const bubble = h('span.sl-bubble.osb-sl-bubble', { 'aria-hidden': 'true' });
+  const head = h('div.sl-head.osb-sl-head', {}, h('label', { for: o.id, text: o.label, title: o.title || '' }), read, reset, num);
+  const track = h('div.sl-track.osb-sl-track', {}, input, mark, bubble);
+  const el = h('div.sl.osb-sl' + (o.track ? '.sl-custom.osb-sl--colour' : ''), {}, head, track);
+  if (o.ends && o.ends.some(Boolean)) el.append(h('div.sl-ends.osb-sl-ends', { 'aria-hidden': 'true' }, ...o.ends.map((t) => h('span', { text: t }))));
   let editing = false, cur = o.def;
   const start = () => { if (!editing) { editing = true; o.onStart?.(); } };
   const end = () => { if (editing) { editing = false; o.onEnd?.(); } };
@@ -60,8 +62,8 @@ export function slider(o: SliderOptions): Slider {
     input.style.setProperty('--lo', Math.min(p, d) + '%');
     input.style.setProperty('--hi', Math.max(p, d) + '%');
     input.style.setProperty('--p', p + '%');
-    mark.style.left = `calc(${d}% + ${(0.5 - d / 100) * 18}px)`;
-    bubble.style.left = `calc(${p}% + ${(0.5 - p / 100) * 18}px)`;
+    mark.style.left = `calc(${d}% + ${(0.5 - d / 100) * THUMB}px)`;
+    bubble.style.left = `calc(${p}% + ${(0.5 - p / 100) * THUMB}px)`;
     const text = fmt(v, digits);
     if (document.activeElement !== num) num.value = text;
     bubble.textContent = o.readout ? o.readout(v) : text;
@@ -115,7 +117,7 @@ export function slider(o: SliderOptions): Slider {
 // a row of mutually exclusive buttons (aria-pressed); arrow keys move between them
 export interface Segmented { el: HTMLElement; set(value: string): void }
 export function segmented(label: string, items: { value: string; label: string; short?: string; icon?: string; tip?: string }[], onPick: (v: string) => void, cls = ''): Segmented {
-  const el = h('div.seg' + (cls ? '.' + cls : ''), { role: 'group', 'aria-label': label });
+  const el = h('div.seg.osb-seg' + (cls ? '.' + cls + (cls === 'seg-fill' ? '.osb-seg--fill' : '') : ''), { role: 'group', 'aria-label': label });
   const buttons = items.map((it) => {
     const b = h('button', { type: 'button', 'aria-pressed': 'false', dataset: { value: it.value }, 'aria-label': it.short ? it.label : null,
       'data-tip': it.tip || null, 'data-tip-pos': 'up' });
@@ -139,8 +141,8 @@ export function segmented(label: string, items: { value: string; label: string; 
 // an on/off switch
 export interface Switch { el: HTMLElement; set(on: boolean): void }
 export function toggle(label: string, onChange: (on: boolean) => void, tip = ''): Switch {
-  const b = h('button.switch', { type: 'button', role: 'switch', 'aria-checked': 'false', 'data-tip': tip || null, 'data-tip-pos': 'up' },
-    h('span.switch-track', { 'aria-hidden': 'true' }, h('span.switch-knob')), h('span.switch-label', { text: label }));
+  const b = h('button.switch.osb-switch', { type: 'button', role: 'switch', 'aria-checked': 'false', 'data-tip': tip || null, 'data-tip-pos': 'up' },
+    h('span.switch-track.osb-switch-track', { 'aria-hidden': 'true' }, h('span.switch-knob.osb-switch-knob')), h('span.switch-label', { text: label }));
   b.addEventListener('click', () => onChange(b.getAttribute('aria-checked') !== 'true'));
   return { el: b, set(on: boolean) { b.setAttribute('aria-checked', String(on)); } };
 }
@@ -150,22 +152,22 @@ export function searchField(placeholder: string, onQuery: (q: string) => void) {
   const input = h('input.search-input', { type: 'search', placeholder, 'aria-label': placeholder, autocomplete: 'off', spellcheck: 'false' }) as HTMLInputElement;
   input.addEventListener('input', () => onQuery(input.value.trim().toLowerCase()));
   input.addEventListener('keydown', (e) => { if (e.key === 'Escape' && input.value) { e.stopPropagation(); input.value = ''; onQuery(''); } });
-  return { el: h('label.search', {}, icon('search', 16), input), input };
+  return { el: h('label.search.osb-search', {}, icon('search', 16), input), input };
 }
 
 // a folding group: a summary with a title, a count and actions, and a body
 export function foldGroup(title: string, actions: HTMLElement[] = []) {
-  const count = h('span.fold-n');
-  const summary = h('summary', {}, icon('chevron', 14), h('span.fold-title', { text: title }), count, ...actions);
+  const count = h('span.fold-n.osb-fold-n');
+  const summary = h('summary', {}, h('span.osb-i', {}, icon('chevron', 14)), h('span.fold-title.osb-fold-title', { text: title }), count, ...actions);
   for (const a of actions) a.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
-  const body = h('div.fold-body');
-  const el = h('details.fold', {}, summary, body) as HTMLDetailsElement;
+  const body = h('div.fold-body.osb-fold-body');
+  const el = h('details.fold.osb-fold', {}, summary, body) as HTMLDetailsElement;
   return { el, body, count };
 }
 
 // a pressed-state chip button
 export function chip(label: string, onClick: () => void, dot?: string) {
-  const b = h('button.chip', { type: 'button', 'aria-pressed': 'false' });
+  const b = h('button.chip.osb-chip', { type: 'button', 'aria-pressed': 'false' });
   if (dot) b.append(h('i', { style: { background: dot } }));
   b.append(document.createTextNode(label));
   b.addEventListener('click', onClick);
@@ -174,12 +176,13 @@ export function chip(label: string, onClick: () => void, dot?: string) {
 
 // a section header inside an inspector: a title, an optional live note and actions
 export function sectionHead(title: string, ...actions: HTMLElement[]) {
-  const note = h('span.sec-note');
-  return { el: h('header.sec-head', {}, h('h2', { text: title }), note, h('div.sec-actions', {}, ...actions)), note };
+  const note = h('span.sec-note.osb-panel-note');
+  return { el: h('header.sec-head', {}, h('h2.osb-eyebrow', { text: title }), note, h('div.sec-actions', {}, ...actions)), note };
 }
 
 export function textButton(label: string, onClick: () => void, iconName?: string, cls = '') {
-  const b = h('button.tb' + (cls ? '.' + cls : ''), { type: 'button' });
+  const extra: Record<string, string> = { 'tb-quiet': '.osb-btn--quiet', 'cs-primary': '.osb-btn--primary' };
+  const b = h('button.tb.osb-btn' + (cls ? '.' + cls + (extra[cls] || '') : ''), { type: 'button' });
   if (iconName) b.append(icon(iconName, 16));
   b.append(h('span', { text: label }));
   b.addEventListener('click', onClick);
