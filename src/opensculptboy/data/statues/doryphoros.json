@@ -7,7 +7,23 @@
   "licence": "PDM-1.0",
   "credit": "SMK, National Gallery of Denmark: cast KAS11 of the Doryphoros of Polykleitos",
   "stature": 1.8,
-  "masks": [],
+  "masks": [
+    {
+      "kind": "box",
+      "role": "support",
+      "name": "tree stump",
+      "centre": [
+        -0.25,
+        0.34,
+        -0.23
+      ],
+      "size": [
+        0.14,
+        0.7,
+        0.38
+      ]
+    }
+  ],
   "lost": [],
   "landmarks": {}
 }
