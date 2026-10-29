@@ -71,6 +71,9 @@ LANDMARKS = {
     "knee_r": ("bone", "lowerleg01.R", 0.2),
     "ankle_l": ("bone", "foot.L", 0.2),
     "ankle_r": ("bone", "foot.R", 0.2),
+    # the tip of the second toe (MediaPipe's foot_index): turns a foot without data
+    "toe_l": ("bone", "toe2-3.L", 0.2),
+    "toe_r": ("bone", "toe2-3.R", 0.2),
 }
 _SYNONYMS = {
     "outer_eye": "eye_outer",
@@ -110,6 +113,9 @@ _SYNONYMS = {
     "shin": "knee",
     "lower_leg": "knee",
     "foot": "ankle",
+    "foot_index": "toe",
+    "toes": "toe",
+    "toe_tip": "toe",
 }
 
 

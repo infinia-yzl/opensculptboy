@@ -57,6 +57,7 @@ The landmarks are optional. Names match loosely (`LeftEyeOuter`, `eye.outer.L` a
 | `hip_l`, `hip_r` | the head of `upperleg01` | 0 |
 | `knee_l`, `knee_r` | the head of `lowerleg01` | 0.2 |
 | `ankle_l`, `ankle_r` | the head of `foot` | 0.2 |
+| `toe_l`, `toe_r` | the head of `toe2-3`, the tip of the second toe (MediaPipe's `foot_index`) | 0.2 |
 
 The face landmarks are points of the skin, and the body landmarks are joint centres, which sit differently in every rig; the weights reflect that. A source may give a landmark twice, as a joint position and as the nearest point of the skin (`mouth_corner_l_skin`): the face takes the point of the skin. Without landmarks, the fit places the target by its bounding geometry (the crown, the fingertips and the soles), which assumes an upright figure facing +Z.
 
