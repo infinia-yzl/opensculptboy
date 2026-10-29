@@ -290,8 +290,8 @@ class Mask:
     (``centre``, ``size``), ``"sphere"`` (``centre``, ``radius``), ``"half"`` (``point``,
     ``normal``: the side the normal points to), ``"capsule"`` (``start``, ``end``, ``radius``:
     the points within ``radius`` of the segment, for a spear, a sword or a slanted strut) or
-    ``"vertices"`` (``indices`` into the scan's welded vertices). ``role`` is ``"support"`` (a strut, a stump or the plinth: taken out),
-    ``"break"`` (the face of a break where a part was lost: taken out, so that anny keeps its
+    ``"vertices"`` (``indices`` into the scan's welded vertices). ``role`` is ``"support"``
+    (a strut, a stump or the plinth: taken out), ``"break"`` (the face of a break where a part was lost: taken out, so that anny keeps its
     own shape there), ``"drapery"`` (kept as clothing, out of the fit) or ``"hair"`` (kept as a
     sculpted mass of its own, out of the fit).
     """
