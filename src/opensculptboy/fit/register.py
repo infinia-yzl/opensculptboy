@@ -3581,7 +3581,6 @@ def _close_openings(
         if not len(eye):
             continue
         centre = fitted[eye].mean(0)
-        original = fitted.copy()
         near = lining & (np.linalg.norm(fitted - centre, axis=1) < 0.03)
         if not near.any():
             continue
@@ -3591,7 +3590,6 @@ def _close_openings(
         cosine = (radial @ forward) / np.maximum(np.linalg.norm(radial, axis=1), 1e-12)
         # rays far from the forward direction graze the lids and hit the temple
         front = cosine > np.cos(np.radians(options.close_openings_cone))
-        rim = eye[(cosine > 0) & ~front]
         back = eye[~front]
         fitted[back] = centre + options.eyeball_shrink * (fitted[back] - centre)
         rows = eye[front]
@@ -3612,13 +3610,6 @@ def _close_openings(
         # the rest of the front half stays behind the carved surface
         rest = rows[~ok]
         fitted[rest] = centre + options.eyeball_shrink * (fitted[rest] - centre)
-        # the rim of the front half, under the lids, meets the carved lids where they lie
-        # near: shrunk with the back, it left a crack between the carved eye and the lids
-        if len(rim):
-            near, _, d = reference.closest(original[rim])[:3]
-            snap = d < 0.2 * options.close_openings
-            fitted[rim[snap]] = near[snap]
-            carved.append(rim[snap])
         moved += [eye]
     if options.close_inside > 0:
         # the linings of the sockets and of the mouth, and the eyeballs' hidden parts, stay
