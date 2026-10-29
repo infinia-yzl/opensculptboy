@@ -321,6 +321,10 @@ class FitOptions:
     # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
     close_openings_cone: float = 60.0
     close_inside: float = 0.004
+    # and the linings within close_rim (metres) of the skin they line come to close_rim_depth
+    # under the reference, filling the corners of the eyes and the lips
+    close_rim: float = 0.006
+    close_rim_depth: float = 0.0005
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
@@ -3746,10 +3750,24 @@ def _close_openings(
             for done in carved:
                 on[done] = True
             out &= ~on[rows]
-            # each moves in along its own ray from the centre of its opening (the nearer
-            # eyeball's, or the mouth's) to just inside the first marble it meets: moved to
-            # their closest points, the vertices of a corner folded into a crumpled knot
-            out_rows = rows[out]
+            # the linings by the openings' rims (within close_rim of the skin they line) fill
+            # the corners of the eyes and the lips just under the surface: left deep, they
+            # showed as dark gaps where the lids and the lips part
+            T_ = np.asarray(topology.triangles)
+            mixed = hidden[T_].any(1) & ~hidden[T_].all(1)
+            rim_skin = np.unique(T_[mixed][~hidden[T_[mixed]]])
+            rim = np.zeros(len(rows), bool)
+            if len(rim_skin):
+                from scipy.spatial import cKDTree
+
+                d_rim, _ = cKDTree(fitted[rim_skin]).query(fitted[rows])
+                rim = (d_rim < options.close_rim) & lining[rows] & ~on[rows]
+            # each moves along its own ray from the centre of its opening (the nearer
+            # eyeball's, or the mouth's) to the first marble it meets, just under it by the
+            # rims and deeper elsewhere: moved to their closest points, the vertices of a
+            # corner folded into a crumpled knot
+            take = out | rim
+            out_rows = rows[take]
             if len(out_rows):
                 centres = np.asarray(eye_centres + [fitted[lining].mean(0)])
                 if eye_centres:
@@ -3769,9 +3787,16 @@ def _close_openings(
                 hits, index, _ = surface.ray.intersects_location(
                     origin, direction, multiple_hits=False
                 )
+                depth_in = np.where(
+                    rim[take], options.close_rim_depth, options.close_inside
+                )
                 reach = length.copy() * options.eyeball_shrink
+                reach[rim[take]] = length[rim[take]]
                 hit = np.linalg.norm(hits - origin[index], axis=1)
-                reach[index] = np.minimum(length[index], hit - options.close_inside)
+                goal = hit - depth_in[index]
+                reach[index] = np.where(
+                    rim[take][index], goal, np.minimum(length[index], goal)
+                )
                 reach = np.maximum(reach, 0.2 * length)
                 fitted[out_rows] = origin + direction * reach[:, None]
                 moved += [out_rows]
