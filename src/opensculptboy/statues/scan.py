@@ -43,6 +43,14 @@ SNAP_DEGREES = 12.0
 # highest point (the crown), and the reach (share of the height) of the head around the crown
 FACE_BAND = (0.075, 0.105)
 HEAD_REACH = 0.07
+# the band of the chest (shares of the height below the highest point) and its reach around
+# the crown's column, whose widest axis runs across the body; guess_front takes the body's
+# front when the band is this many times wider than deep and the head turns less than
+# MAX_HEAD_TURN degrees from it
+CHEST_BAND = (0.2, 0.3)
+CHEST_REACH = 0.2
+CHEST_ELONGATION = 1.3
+MAX_HEAD_TURN = 60.0
 # the angle (degrees) on each side of a direction against which guess_front measures how far
 # the outline stands out there
 FRONT_SPREAD = 40.0
@@ -141,7 +149,9 @@ def guess_front(vertices: np.ndarray, up: np.ndarray) -> tuple[np.ndarray, float
     highest point; in its band of the nose (:data:`FACE_BAND`, shares of the height below the
     highest point), the outline stands out most in the direction of the nose, beyond the
     outline :data:`FRONT_SPREAD` degrees to each side. The score is that lead over the
-    head's radius (0.1 and more reads as a clear nose).
+    head's radius (0.1 and more reads as a clear nose). The chest then sets the front across
+    its widest axis (:data:`CHEST_BAND`), on the nose's side, so that a turned head leaves
+    the body facing the camera.
     """
     V = np.asarray(vertices, dtype=np.float64)
     up = axis_vector(up)
@@ -164,8 +174,24 @@ def guess_front(vertices: np.ndarray, up: np.ndarray) -> tuple[np.ndarray, float
     lead = reach - beside
     best = int(lead.argmax())
     front = directions[best] @ basis
+    front /= np.linalg.norm(front)
     radius = float(np.median(reach))
-    return front / np.linalg.norm(front), float(lead[best] / max(radius, 1e-12))
+    score = float(lead[best] / max(radius, 1e-12))
+    # a statue often turns its head (the Doryphoros looks 20 degrees to its right): the chest
+    # under it sets the front, across its widest axis, on the side the nose points to
+    chest = flat[(below > CHEST_BAND[0]) & (below < CHEST_BAND[1])]
+    chest = chest[np.linalg.norm(chest - crown, axis=1) < CHEST_REACH * (hi - lo)]
+    if len(chest) >= 10:
+        centred = chest - chest.mean(0)
+        values, vectors = np.linalg.eigh(centred.T @ centred / len(centred))
+        if values[1] > CHEST_ELONGATION**2 * max(values[0], 1e-18):
+            body = vectors[:, 0] @ basis
+            body /= np.linalg.norm(body)
+            if body @ front < 0:
+                body = -body
+            if body @ front > np.cos(np.radians(MAX_HEAD_TURN)):
+                front = body
+    return front, score
 
 
 def frame_rotation(up, front) -> np.ndarray:
