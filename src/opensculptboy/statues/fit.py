@@ -34,9 +34,11 @@ LOST_PARTS = {
 }
 # the nose: the skin within this distance (metres) of the tip of anny's nose (pronasale)
 NOSE_RADIUS = 0.014
-# a solid statue: the eye and mouth linings within this distance (metres) of the scan close
-# the openings
-SOLID_REACH = 0.025
+# a solid statue: the eyeballs' front takes the carved eye within this distance (metres)
+SOLID_REACH = 0.015
+# and seals the closed lips when their rows move up to this distance (metres) to the line
+# where the scan's lips meet
+SOLID_LIP_SHIFT = 0.012
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
 BORDER_RINGS = 2
 
@@ -201,7 +203,12 @@ def fit_statue(
     if lost:
         options = dataclasses.replace(options, no_data=lost_mask(model, lost))
     if solid and options.close_openings == 0:
-        options = dataclasses.replace(options, close_openings=SOLID_REACH)
+        # carved eyes, and closed lips sealed further than a character's would be
+        options = dataclasses.replace(
+            options,
+            close_openings=SOLID_REACH,
+            lip_seal_max_shift=max(options.lip_seal_max_shift, SOLID_LIP_SHIFT),
+        )
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)
     if start_pose and options.initial_pose is None:
@@ -225,7 +232,7 @@ PRUNE_DISTANCE = 0.025
 # the regions of the first fit whose far triangles are hair (kept as a piece) and not props,
 # and those that keep all of their skin
 HAIR_REGIONS = ("scalp", "neck")
-KEEP_REGIONS = ("face", "jaw", "ears")
+KEEP_REGIONS = ("face", "ears", "hands", "torso")
 
 
 def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> dict:
@@ -241,7 +248,6 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
 
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import GLTF_TO_ANNY, load_handoff
-    from opensculptboy.fit.metrics import REGIONS, anny_regions
     from opensculptboy.fit.register import excluded_vertices, fit_model
     from opensculptboy.statues.scan import components
 
@@ -256,13 +262,16 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
     # against the whole fitted surface: a statue's carved eyes lie on anny's eyeballs
     _, _, d = closest_triangles(centres, V, T)
     far = d > distance
-    regions = anny_regions(model)
+    from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+    regions = statue_regions(model)
     rows = np.nonzero(~excluded)[0]
     _, nearest = cKDTree(V[rows]).query(centres)
     region = regions[rows[nearest]]
-    # the face keeps its skin: a first fit may sit off it, and nothing grows off a face
-    far &= ~np.isin(region, [REGIONS.index(r) for r in KEEP_REGIONS])
-    head = np.isin(region, [REGIONS.index(r) for r in HAIR_REGIONS])
+    # the face, the hands and the trunk keep their skin: a first fit sits off a fist and off
+    # what anny's body lacks (the genitals), and props by the trunk are masks' work
+    far &= ~np.isin(region, [STATUE_REGIONS.index(r) for r in KEEP_REGIONS])
+    head = np.isin(region, [STATUE_REGIONS.index(r) for r in HAIR_REGIONS])
     # the skin left must hold together: loose bits of it go with the far triangles
     near = ~far
     pieces = components(ST[near], len(S))
