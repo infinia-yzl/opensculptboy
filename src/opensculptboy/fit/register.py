@@ -317,6 +317,9 @@ class FitOptions:
     # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
     close_openings_cone: float = 60.0
     close_inside: float = 0.0015
+    # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
+    # reference's own by more than this (metres; 0: none)
+    relax_dents: float = 0.0
     # the pose the parameter stage starts from: (B, 3, 3) rotations of the fit model's bones
     # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
     # theirs); None: the rest pose
@@ -3406,6 +3409,29 @@ def fit_levels(
                 options,
                 (w, i, transforms, rotation, translation),
             )
+        if options.relax_dents > 0:
+            skin_rows = np.asarray(mask, bool).copy()
+            skin_rows &= ~(np.asarray(topology.apply(cavity0)) > 0.5)
+            skin_rows &= ~(np.asarray(topology.apply(zone_lips0)) > 0.5)
+            relaxed = relax_dents(
+                fitted, topology.triangles, reference, skin_rows, options.relax_dents
+            )
+            rows = np.nonzero(np.abs(relaxed - fitted).max(1) > 0)[0]
+            if len(rows):
+                fitted = relaxed
+                offsets[subdiv] = offsets[subdiv].copy()
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            _log(options, f"level {subdiv}: {len(rows)} pits relaxed")
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3463,6 +3489,50 @@ def cavity_vertices(model) -> np.ndarray:
     for label in EXCLUDED_LABELS:
         out_base[np.unique(mesh.quads[mesh.face_labels == label])] = True
     return out_base[base_mesh_rows(model)]
+
+
+def dents(vertices: np.ndarray, triangles: np.ndarray) -> np.ndarray:
+    """How far (metres) each vertex lies behind the mean of its ring of neighbours, along its
+    normal: positive in a pit or a crease."""
+    from opensculptboy.fit.reference import vertex_normals
+
+    V = np.asarray(vertices, np.float64)
+    A = _adjacency(len(V), triangles)
+    ring = (A @ V) / np.maximum(np.asarray(A.sum(1)), 1.0)
+    return ((ring - V) * vertex_normals(V, triangles)).sum(1)
+
+
+def relax_dents(
+    fitted: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    rows: np.ndarray,
+    excess: float,
+    rounds: int = 4,
+) -> np.ndarray:
+    """
+    The vertices (V, 3) with the pits that the reference lacks relaxed: a vertex of ``rows``
+    (a mask) that lies deeper behind its ring (:func:`dents`) than the reference's deepest
+    pit among its 8 vertices nearest to it, by more than ``excess`` metres, moves to the mean
+    of its ring, for ``rounds`` rounds. A dense fit of a coarse scan dents single vertices
+    where a few points of the scan pull them (a pit on a statue's forehead).
+    """
+    from scipy.spatial import cKDTree
+
+    V = np.asarray(fitted, np.float64).copy()
+    R = np.asarray(reference.vertices, np.float64)
+    own = dents(R, reference.triangles)
+    _, near = cKDTree(R).query(V, k=min(8, len(R)))
+    allowed = own[near].reshape(len(V), -1).max(1)
+    A = _adjacency(len(V), triangles)
+    count = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
+    rows = np.asarray(rows, bool)
+    for _ in range(rounds):
+        pit = rows & (dents(V, triangles) - np.maximum(allowed, 0.0) > excess)
+        if not pit.any():
+            break
+        V[pit] = (A[pit] @ V) / count[pit, None]
+    return V
 
 
 def _outward(reference) -> float:

@@ -519,6 +519,27 @@ class TestSolid(unittest.TestCase):
         np.testing.assert_allclose(far.upper[:, 1], 0.0)
         self.assertIsNone(meeting_line(upper[:1], lower))
 
+    def test_pits_relax(self):
+        import types
+
+        from opensculptboy.fit.register import dents, relax_dents
+
+        from opensculptboy.fit.reference import vertex_normals
+
+        V, T = _grid(21, 0.1)
+        flat = V.copy()
+        # 2 mm behind the patch, by its normals
+        pit = -0.002 * np.sign(vertex_normals(flat, T)[220, 2])
+        V[220, 2] = pit  # a pit in the middle
+        # the reference: the flat patch, and a pit of its own one corner along
+        reference = types.SimpleNamespace(vertices=flat.copy(), triangles=T)
+        reference.vertices[66, 2] = pit
+        V[66, 2] = pit
+        self.assertGreater(dents(V, T)[220], 0.0015)
+        out = relax_dents(V, T, reference, np.ones(len(V), bool), 0.0005)
+        self.assertLess(abs(out[220, 2]), 0.0005)
+        self.assertEqual(out[66, 2], pit)  # the reference's own pit stays
+
     def test_solid_statue_closes_its_openings(self):
         from unittest import mock
 

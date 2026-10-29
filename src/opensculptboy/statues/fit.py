@@ -39,6 +39,8 @@ SOLID_REACH = 0.015
 # and seals the lips where anny's fitted lips meet when their rows move up to this distance
 # (metres): a statue's lips are carved shut, with no crease for the fit to find
 SOLID_LIP_SHIFT = 0.012
+# the fitted skin's pits deeper than the scan's own by this much (metres) relax
+PIT_EXCESS = 0.0005
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
 BORDER_RINGS = 2
 # and the scan's vertices within this distance (metres) of them
@@ -222,6 +224,9 @@ def fit_statue(
         no_data = lost_mask(model, lost)
         no_data[np.asarray(covered, np.int64)] = True
         options = dataclasses.replace(options, no_data=no_data)
+    if options.relax_dents == 0:
+        # a dense fit of a coarse scan dents single vertices (a pit on a forehead)
+        options = dataclasses.replace(options, relax_dents=PIT_EXCESS)
     if solid and options.close_openings == 0:
         # carved eyes, and closed lips sealed further than a character's would be
         options = dataclasses.replace(
@@ -366,11 +371,32 @@ COVER_MARGIN = 0.002
 COVER_SKIN = 0.004
 
 
+def parametric_vertices(result, model) -> np.ndarray:
+    """The posed and placed vertices (V, 3) of a fit's sliders and pose without its offsets,
+    or its level 0 for a result without a character."""
+    if getattr(result, "character", None) is None:
+        return np.asarray(result.meshes[0][0], np.float64)
+    import torch
+
+    c = result.character
+    with torch.no_grad():
+        posed = model(
+            pose_parameters=c.pose_parameters(model),
+            phenotype_kwargs=dict(c.phenotype),
+            local_changes_kwargs=dict(c.local_changes) or None,
+            face_shape_kwargs=dict(c.face_shapes) or None,
+        )["vertices"][0]
+    return posed.double().cpu().numpy() @ np.asarray(result.rotation).T + np.asarray(
+        result.translation
+    )
+
+
 def covered_skin(folder, result, model=None) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
-    of the head that a hat or fused locks cover, by a first fit (``result``, its level 0):
-    those whose nearest piece of the statue is a hair or drapery piece rather than the skin.
+    of the head that a hat or fused locks cover, by a first fit (``result``, its sliders and
+    pose): those whose nearest piece of the statue is a hair or drapery piece rather than the
+    skin.
     The scan has no skin under the hat and the locks, and the skin's cut at their edges would
     pull the skull flat onto it; :func:`fit_statue` gives those vertices no data, so that the
     skull keeps anny's own shape under them and follows the fitted skin around it. Returns
@@ -386,7 +412,9 @@ def covered_skin(folder, result, model=None) -> int:
     handoff = load_handoff(folder)
     skin = handoff.skin_parts()[0]
     covers = [p for p in handoff.parts if p.role in ("hair", "clothing")]
-    V = np.asarray(result.meshes[0][0], np.float64)
+    # the sliders and the pose alone: the first fit's level 0 already lies flat on the skin's
+    # cut under the hat, and its skull would read as uncovered skin
+    V = parametric_vertices(result, model)
     marked = np.zeros(len(V), bool)
     if covers:
         regions = statue_regions(model)
