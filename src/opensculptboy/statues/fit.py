@@ -41,6 +41,9 @@ SOLID_REACH = 0.015
 SOLID_LIP_SHIFT = 0.012
 # and untangles the folds by the lids' and the lips' corners in this many rounds
 SOLID_UNFOLD = 10
+# and stitches the lips' rows that are each other's nearest within this distance (metres),
+# as the seal left a slit in the middle of Doryphoros' mouth
+SOLID_LIP_CONTACT = 0.006
 # the fitted skin's pits deeper than the scan's own by this much (metres) relax
 PIT_EXCESS = 0.0005
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
@@ -242,6 +245,7 @@ def fit_statue(
             lip_seal_max_shift=max(options.lip_seal_max_shift, SOLID_LIP_SHIFT),
             lip_seal_self=True,
             unfold_rounds=SOLID_UNFOLD,
+            lip_contact=max(options.lip_contact, SOLID_LIP_CONTACT),
         )
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)

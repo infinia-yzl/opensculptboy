@@ -328,6 +328,9 @@ class FitOptions:
     # and the linings within close_rim (metres) of the skin they line come to close_rim_depth
     # under the reference, filling the corners of the eyes and the lips
     close_rim: float = 0.006
+    # the eyeballs' rims tuck under the carved lids that their rays meet within this distance
+    # (metres) of them; a ray that grazes the lids and meets the temple further off is left
+    close_lid: float = 0.008
     close_rim_depth: float = 0.0005
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
@@ -3742,7 +3745,7 @@ def _close_openings(
         rest = rows[~ok]
         fitted[rest] = centre + options.eyeball_shrink * (fitted[rest] - centre)
         # the rim of the front half tucks under the carved lids where its own ray meets them
-        # within two thirds of close_rim: shrunk with the back, it left a gap above the eye through which
+        # within close_lid: shrunk with the back, it left a gap above the eye through which
         # the socket showed dark (snapped to the nearest marble, it crumpled the corner)
         if len(rim):
             radial_rim = original[rim] - centre
@@ -3752,7 +3755,7 @@ def _close_openings(
                 np.repeat(centre[None], len(rim), 0), direction, multiple_hits=False
             )
             hit = np.linalg.norm(hits - centre, axis=1)
-            near = np.abs(hit - length[index]) < 0.66 * options.close_rim
+            near = np.abs(hit - length[index]) < options.close_lid
             take = index[near]
             goal = hit[near] - options.close_rim_depth
             fitted[rim[take]] = centre + direction[take] * goal[:, None]
