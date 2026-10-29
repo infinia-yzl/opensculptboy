@@ -1,6 +1,6 @@
 # Web viewer
 
-`viewer/dist/anny_viewer.html` shapes and poses a character in a browser. It is one HTML file that draws with WebGL2, with skin, eye and hair shading. Open it in a browser; it needs no server.
+`viewer/dist/anny_viewer.html` shapes and poses a character in a browser. It is one HTML file that draws with WebGL2, with skin, eye and hair shading. Open it in a browser; it needs no server, apart from the [AI providers](#ai-providers) panel, which needs the page served at `http://localhost:8765`.
 
 ## Using it
 
@@ -105,6 +105,38 @@ The **Sheet** mode (the `S` key) makes a character sheet of the figure shown: on
 - The section keeps its settings in one plain object (`viewer/src/sheet/settings.ts`, format `opensculptboy/sheet-settings@1`): the style, the background, the name and the title, each panel with its switch, its pose slots (a library name, or the bone rotations of a pose from a picture), its view, its framing and its expressions, and the render scale, samples, lights and exposure stops. The page remembers it in the browser; a background that the user never picked follows the default.
 - Scripts use the same build: `window.sheet.build(settings)` resolves to the PNG bytes of the page (`window.sheet.base64(bytes)` gives them as text), `window.sheet.report()` gives the page's size, the build time, the lights and the meter's reading (the exposure, the limit that set it, and the clipped share and luminance percentiles of the figure), and each picture's size and coverage, `window.sheet.picture(panel, index)` one picture as a PNG with its transparent background, and `window.sheet.defaults()` and `window.sheet.normalise(settings)` the settings object.
 - `viewer/src/sheet/layout.ts` holds the framing and the page layout without the DOM. `test.test_viewer_sheet` checks them and the settings in node (`viewer/test/sheet.mjs`), and builds a sheet of the default character in the built page (local only).
+
+## AI providers
+
+The Scene section holds a temporary **AI providers** panel, until the redesigned interface replaces it. It keeps API keys of Anthropic, OpenAI and OpenRouter on this device, encrypted, and unlocks them with a passkey: Windows Hello, Touch ID, a phone or a security key. The page needs no helper program. The logic lives in `viewer/src/ai/` without a framework, so any interface can use it: `vault.ts` (the key vault), `session.ts` (keys for one visit), `crypto.ts`, `passkey.ts` (WebAuthn with the PRF extension), `store.ts` (IndexedDB) and `providers.ts` (the provider adapters). `test.test_viewer_ai` checks it in node with a fake passkey and fake providers (`viewer/test/ai_vault.mjs`), and in the built page with Chromium's virtual authenticator (local only).
+
+### Where the page must be open
+
+For now the page serves the panel at `http://localhost` alone; a hosted copy is a later choice. Passkeys need a secure page with a domain name, which `http://localhost` is. Chromium refuses passkeys to a page opened as a file, and it gives every page opened as a file one shared storage, so the panel stays off on such a page and shows the way instead: in the page's folder run `python -m http.server 8765 --bind 127.0.0.1`, then open `http://localhost:8765/anny_viewer.html`. `--bind 127.0.0.1` keeps the server off the network. The address must say `localhost`, because passkeys refuse an address in numbers such as `127.0.0.1`. The vault belongs to the page's origin, port included, so the page keeps port 8765: another port opens an empty vault. The **Open folder** button and a dropped card folder work on a served page as on a file page.
+
+### What is stored where
+
+- IndexedDB of the page's origin, database `opensculptboy-ai`: for each passkey its credential ID, a random 32-byte PRF salt and the data key wrapped with AES-GCM under that passkey's key; for each provider the API key sealed with AES-GCM (a random 12-byte nonce, and additional data that names the provider, so that a record moved to another provider does not decrypt), the date it was added and the result of its last check.
+- The authenticator: the passkey and its secret. Only the authenticator can compute the PRF output, and only after the person confirms with a fingerprint, a face, a PIN or a touch of the key.
+- Memory, while the vault is unlocked: the data key as a non-extractable WebCrypto key, which no script can read out. The vault locks on **Lock**, and when the page closes or goes to the back-forward cache; it has no idle lock. An API key is decrypted for one call and handed to the adapter. JavaScript cannot erase a string, so that copy lasts until the garbage collector frees it.
+- The character card, the exports, localStorage, the URL and the console never get a key. The key field is a password field outside any form, with spell checking off, and it empties as soon as the key is stored.
+
+### The passkey's role
+
+Setup creates a passkey with the PRF extension and a random salt. Unlock asks the passkey for its PRF output with that salt and with user verification. HKDF-SHA-256 turns the output into the key-wrapping key, which unwraps the data key; the page then drops the output and the wrapping key. No server checks the passkey's signature: the protection comes from the PRF output, which only the authenticator can give. A second passkey (`KeyVault.addPasskey`) wraps the same data key, so either passkey opens the vault. **Forget** removes one key's record and needs no unlock. **Forget all** removes every record and asks the authenticator to drop the passkey, where the browser has `PublicKeyCredential.signalUnknownCredential`. An authenticator without PRF cannot make the key, so setup stores nothing and the panel switches to keys for this visit (`viewer/src/ai/session.ts`), with a plain line that says so: a pasted key stays in memory for the visit, serves its checks and calls, and is gone when the page closes or reloads. The page remembers only that this browser's passkey had no PRF (a flag in the interface's saved state), and **Try a passkey again** leaves that mode. A lost passkey loses the stored keys; the provider's dashboard makes new ones.
+
+PRF support in 2026: Windows Hello on Windows 11 with the February 2026 update and Chrome or Edge 147 or later, or Firefox 148 or later; Windows 10 has none. Safari 18 or later with iCloud Keychain on macOS 15 and iOS 18. Chrome with Google Password Manager passkeys on every platform. Security keys with `hmac-secret` in Chrome, Edge and Firefox. Password-manager extensions vary.
+
+### What an attacker can read
+
+- With a copy of the browser profile: the ciphertexts, the salts and the credential IDs. Without the authenticator and the person's confirmation, these give no key. The passkey's secret stays in the authenticator (a TPM for Windows Hello, the Secure Enclave on Apple devices).
+- With code running in the page while the vault is unlocked, such as an injected script or a browser extension that may read the page: the decrypted keys, because the page itself must use them. The vault loads no code from outside the page; MediaPipe's code loads from its CDN only for **From a picture**.
+- With control of the person's account on the computer: the same as code in the page, once the person unlocks. The vault protects keys at rest; while the page stays open and unlocked, a key can be used, so **Lock** ends that time.
+- Another page on `localhost`, at any port, shares the passkey's relying party ID `localhost`, so it can ask for the same passkey. The authenticator then shows its prompt, and without the salt from this origin's database the page gets an unrelated output.
+
+### Provider calls
+
+Each call goes from the browser straight to the provider, with no cookies and no referrer: `api.anthropic.com` with the header `anthropic-dangerous-direct-browser-access: true`, `api.openai.com` and `openrouter.ai`. Their answers to a browser's preflight allow any origin (measured on 2026-10-29). The key check reads the model list (Anthropic and OpenAI) or the key's own record (OpenRouter, whose model list needs no key). `complete(key, messages)` sends one chat and returns its text; errors come out in plain words, with anything that looks like a key taken out of the provider's message.
 
 ## Frame budget
 
