@@ -3434,6 +3434,35 @@ def fit_levels(
                 _log(
                     options, f"level {subdiv}: {len(rows)} vertices without data filled"
                 )
+        if options.unfold_rounds > 0:
+            every = np.ones(len(fitted), bool)
+            on = np.asarray(mask, bool) & ~(np.asarray(topology.apply(cavity0)) > 0.5)
+            if _level_no_data(options) is not None:
+                on &= ~(np.asarray(topology.apply(_level_no_data(options))) > 0.5)
+            fitted_new, count = unfold(
+                fitted,
+                topology.triangles,
+                reference,
+                every,
+                on,
+                options.unfold_rounds,
+            )
+            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
+            if len(rows):
+                fitted = fitted_new
+                offsets[subdiv] = offsets[subdiv].copy()
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            _log(options, f"level {subdiv}: {count} folded vertices untangled")
         if options.close_openings > 0:
             fitted, offsets[subdiv] = _close_openings(
                 model,
@@ -3468,35 +3497,6 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {len(rows)} pits relaxed")
-        if options.unfold_rounds > 0:
-            every = np.ones(len(fitted), bool)
-            on = np.asarray(mask, bool) & ~(np.asarray(topology.apply(cavity0)) > 0.5)
-            if _level_no_data(options) is not None:
-                on &= ~(np.asarray(topology.apply(_level_no_data(options))) > 0.5)
-            fitted_new, count = unfold(
-                fitted,
-                topology.triangles,
-                reference,
-                every,
-                on,
-                options.unfold_rounds,
-            )
-            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
-            if len(rows):
-                fitted = fitted_new
-                offsets[subdiv] = offsets[subdiv].copy()
-                offsets[subdiv][rows] = (
-                    R_.unpose(
-                        fitted[rows],
-                        w[rows],
-                        i[rows],
-                        transforms,
-                        rotation,
-                        translation,
-                    )
-                    - parametric[rows]
-                )
-            _log(options, f"level {subdiv}: {count} folded vertices untangled")
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3710,6 +3710,7 @@ def _close_openings(
             continue
         centre = fitted[eye].mean(0)
         eye_centres.append(centre)
+        original = fitted.copy()
         near = lining & (np.linalg.norm(fitted - centre, axis=1) < 0.03)
         if not near.any():
             continue
@@ -3719,6 +3720,7 @@ def _close_openings(
         cosine = (radial @ forward) / np.maximum(np.linalg.norm(radial, axis=1), 1e-12)
         # rays far from the forward direction graze the lids and hit the temple
         front = cosine > np.cos(np.radians(options.close_openings_cone))
+        rim = eye[(cosine > 0) & ~front]
         back = eye[~front]
         fitted[back] = centre + options.eyeball_shrink * (fitted[back] - centre)
         rows = eye[front]
@@ -3739,6 +3741,22 @@ def _close_openings(
         # the rest of the front half stays behind the carved surface
         rest = rows[~ok]
         fitted[rest] = centre + options.eyeball_shrink * (fitted[rest] - centre)
+        # the rim of the front half tucks under the carved lids where its own ray meets them
+        # within two thirds of close_rim: shrunk with the back, it left a gap above the eye through which
+        # the socket showed dark (snapped to the nearest marble, it crumpled the corner)
+        if len(rim):
+            radial_rim = original[rim] - centre
+            length = np.linalg.norm(radial_rim, axis=1)
+            direction = radial_rim / np.maximum(length, 1e-12)[:, None]
+            hits, index, _ = surface.ray.intersects_location(
+                np.repeat(centre[None], len(rim), 0), direction, multiple_hits=False
+            )
+            hit = np.linalg.norm(hits - centre, axis=1)
+            near = np.abs(hit - length[index]) < 0.66 * options.close_rim
+            take = index[near]
+            goal = hit[near] - options.close_rim_depth
+            fitted[rim[take]] = centre + direction[take] * goal[:, None]
+            carved.append(rim[take])
         moved += [eye]
     if options.close_inside > 0:
         # the linings of the sockets and of the mouth, and the eyeballs' hidden parts, stay
