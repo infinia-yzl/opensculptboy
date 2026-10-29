@@ -420,6 +420,59 @@ class TestPrune(unittest.TestCase):
             self.assertEqual(sorted(p.role for p in handoff.parts), ["hair", "skin"])
             self.assertTrue((pathlib.Path(folder) / "removed.glb").exists())
 
+    def test_a_hat_seats_on_the_skull(self):
+        import trimesh
+
+        from opensculptboy.statues.fit import open_border, seat_piece
+
+        skull = trimesh.creation.icosphere(4, radius=0.1)
+        hat = trimesh.creation.icosphere(4, radius=0.11)
+        keep = hat.triangles_center[:, 2] > 0.02
+        hat = trimesh.Trimesh(hat.vertices, hat.faces[keep])
+        hat.remove_unreferenced_vertices()
+        V, moved = seat_piece(hat.vertices, hat.faces, skull.vertices, skull.faces)
+        self.assertGreater(moved, 10)
+        radius = np.linalg.norm(V, axis=1)
+        rim = open_border(hat.vertices, hat.faces, rings=0, reach=0.0)
+        # the rim comes down onto the skull, just inside it; the crown stays
+        self.assertLess(np.abs(radius[rim] - 0.0995).max(), 0.001)
+        top = hat.vertices[:, 2] > 0.09
+        np.testing.assert_allclose(V[top], hat.vertices[top])
+
+    def test_feet_on_a_removed_piece_take_no_data(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import covered_skin
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        # the scan lacks the feet (cut 6 cm up), and a block stood where they were
+        cut = (V[T][:, :, 2] < V[:, 2].min() + 0.06).any(1)
+        block = trimesh.creation.box(extents=(0.5, 0.4, 0.05))
+        block.apply_translation((V[:, 0].mean(), V[:, 1].mean(), V[:, 2].min() + 0.02))
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(
+                write_handoff(pathlib.Path(tmp) / "h", V, T[~cut], name="statue")
+            )
+            _write_removed(
+                folder / "removed.glb",
+                np.asarray(block.vertices),
+                np.asarray(block.faces),
+                np.ones(len(block.faces), np.int64),
+                ["skin", "support"],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            count = covered_skin(folder, result, model)
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            covered = np.asarray(appearance["statue"]["covered"])
+            self.assertGreater(count, 20)
+            self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.08)
+
     def test_skull_under_a_hat_takes_no_data(self):
         import types
 

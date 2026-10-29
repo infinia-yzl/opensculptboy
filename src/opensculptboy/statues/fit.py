@@ -369,6 +369,9 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
 COVER_REGIONS = {
     "clothing": ("scalp", "ears", "neck", "face"),
     "hair": ("scalp", "neck"),
+    # the pieces the conversion and the pruning took out (supports, the plinth, props): a foot
+    # set on a removed head, a leg by a sword and a sole on the plinth keep anny's shape
+    "removed": ("feet", "legs", "hands", "arms", "torso"),
 }
 # a vertex is covered when a hair or drapery piece lies this much (metres) nearer to it than
 # the skin, and the skin is further than COVER_SKIN
@@ -396,6 +399,25 @@ def parametric_vertices(result, model) -> np.ndarray:
     )
 
 
+def _removed_pieces(folder) -> list:
+    """The pieces of a handoff's removed.glb as ("removed", vertices, triangles) in anny's
+    frame."""
+    import trimesh
+
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
+    path = pathlib.Path(folder) / "removed.glb"
+    if not path.exists():
+        return []
+    scene = trimesh.load(str(path), force="scene")
+    out = []
+    for geometry in scene.geometry.values():
+        if len(getattr(geometry, "faces", [])):
+            V = np.asarray(geometry.vertices, np.float64) @ GLTF_TO_ANNY.T
+            out.append(("removed", V, np.asarray(geometry.faces)))
+    return out
+
+
 def covered_skin(folder, result, model=None) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
@@ -416,7 +438,12 @@ def covered_skin(folder, result, model=None) -> int:
     model = model or fit_model()
     handoff = load_handoff(folder)
     skin = handoff.skin_parts()[0]
-    covers = [p for p in handoff.parts if p.role in ("hair", "clothing")]
+    covers = [
+        (p.role, p.vertices, p.triangles)
+        for p in handoff.parts
+        if p.role in ("hair", "clothing")
+    ]
+    covers += _removed_pieces(folder)
     # the sliders and the pose alone: the first fit's level 0 already lies flat on the skin's
     # cut under the hat, and its skull would read as uncovered skin
     V = parametric_vertices(result, model)
@@ -427,9 +454,9 @@ def covered_skin(folder, result, model=None) -> int:
         rows = np.nonzero(~excluded)[0]
         _, _, d_skin = closest_triangles(V[rows], skin.vertices, skin.triangles)
         nearest = {}
-        for part in covers:
-            _, _, d = closest_triangles(V[rows], part.vertices, part.triangles)
-            nearest[part.role] = np.minimum(nearest.get(part.role, np.inf), d)
+        for role, pv, pt in covers:
+            _, _, d = closest_triangles(V[rows], pv, pt)
+            nearest[role] = np.minimum(nearest.get(role, np.inf), d)
         for role, d_cover in nearest.items():
             head = np.isin(
                 regions[rows], [STATUE_REGIONS.index(r) for r in COVER_REGIONS[role]]
@@ -442,3 +469,57 @@ def covered_skin(folder, result, model=None) -> int:
     appearance.setdefault("statue", {})["covered"] = np.nonzero(marked)[0].tolist()
     path.write_text(json.dumps(appearance, indent=2) + "\n", encoding="utf-8")
     return int(marked.sum())
+
+
+# a hat or a piece of hair seats its open border on the fitted skin within this distance
+# (metres), sunk this far into it, and the move fades out over SEAT_BLEND from the border
+SEAT_REACH = 0.02
+SEAT_SINK = 0.0005
+SEAT_BLEND = 0.025
+
+
+def seat_piece(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    skin_vertices: np.ndarray,
+    skin_triangles: np.ndarray,
+    reach: float = SEAT_REACH,
+    sink: float = SEAT_SINK,
+    blend: float = SEAT_BLEND,
+) -> tuple[np.ndarray, int]:
+    """
+    The vertices (V, 3) of a piece cut from a statue (a hat, locks of hair) seated on the
+    fitted skin, and the number of border vertices that moved. The piece was cut where it
+    met the scan's skin, and the fitted skin under it keeps anny's shape there, so a gap
+    showed between them. Each vertex of the piece's open border within ``reach`` of the skin
+    moves onto it, ``sink`` inside; the moves are averaged along the border over 5 mm and fade
+    out smoothly within ``blend`` of the border, so that the piece keeps its carving.
+    """
+    from scipy.spatial import cKDTree
+
+    from anny.hair import closest_triangles
+
+    V = np.asarray(vertices, np.float64).copy()
+    T = np.asarray(triangles)
+    SV = np.asarray(skin_vertices, np.float64)
+    ST = np.asarray(skin_triangles)
+    border = np.nonzero(open_border(V, T, rings=0, reach=0.0))[0]
+    if len(border) == 0:
+        return V, 0
+    tri, bary, d = closest_triangles(V[border], SV, ST)
+    corners = SV[ST[tri]]
+    on = np.einsum("nk, nkd -> nd", bary, corners)
+    normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
+    move = on - sink * normal - V[border]
+    move[d > reach] = 0.0
+    tree = cKDTree(V[border])
+    groups = tree.query_ball_point(V[border], 0.005)
+    move = np.array([move[g].mean(0) for g in groups])
+    r, k = tree.query(V, distance_upper_bound=blend)
+    near = np.isfinite(r)
+    t = np.zeros(len(V))
+    t[near] = 1.0 - r[near] / blend
+    w = t * t * (3.0 - 2.0 * t)
+    V[near] += w[near, None] * move[k[near]]
+    return V, int((np.abs(move).max(1) > 0).sum())

@@ -398,6 +398,21 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
     for part in handoff.parts:
         if not part.is_skin:
             save(f"part_{part.role}_{part.name}", part.vertices, part.triangles)
+    # the hat and the locks seated on the finest fitted skin, for review and for the card
+    from opensculptboy.statues.fit import seat_piece
+
+    finest = result.meshes[max(result.meshes)]
+    seated = {}
+    (out / "card").mkdir(parents=True, exist_ok=True)
+    for part in handoff.parts:
+        if part.is_skin or part.role not in ("hair", "clothing"):
+            continue
+        V, moved = seat_piece(part.vertices, part.triangles, *finest)
+        save(f"seated_{part.role}_{part.name}", V, part.triangles)
+        seated[part.name] = {"role": part.role, "border_moved": moved}
+        trimesh.Trimesh(_gltf(V), part.triangles, process=False).export(
+            str(out / "card" / f"{config.name}.{part.name}.glb")
+        )
     removed = pathlib.Path(folder) / "removed.glb"
     if removed.exists():
         trimesh.load(str(removed), force="mesh").export(str(meshes / "removed.ply"))
@@ -414,6 +429,7 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
             "local_changes": len(c.local_changes),
         },
         "stages": {},
+        "seated": seated,
     }
     # the whole statue over the skull: the skin with its hair and drapery pieces
     covers = [
