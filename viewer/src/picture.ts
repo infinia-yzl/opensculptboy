@@ -1,16 +1,13 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// MediaPipe's pose and hand landmarkers in the page, for the pose from a picture. The page loads MediaPipe's code,
-// its WebAssembly and its models from their CDNs the first time a picture comes in, so everything else works offline.
+// MediaPipe's pose and hand landmarkers in the page, for the pose from a picture. MediaPipe's code is bundled into the
+// page, and its WebAssembly and its two models sit in the page's data block (build.mjs, mediapipe_assets.ts), so the
+// page loads nothing from another host and works offline.
 
+import { HandLandmarker, PoseLandmarker } from '@mediapipe/tasks-vision';
+import { mediapipeAssets, runLoader } from './mediapipe_assets.ts';
 import { fromMediapipe, type Landmarks } from './pose_from_image.ts';
-
-const CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1';
-const MODELS = {
-  pose: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task',
-  hand: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task',
-};
 
 interface Point { x: number; y: number; z: number; visibility?: number }
 interface Found { landmarks: Point[][]; worldLandmarks: Point[][] }
@@ -20,12 +17,16 @@ let loading: Promise<{ pose: Landmarker; hand: Landmarker }> | null = null;
 function landmarkers() {
   if (!loading) {
     loading = (async () => {
-      const url = `${CDN}/vision_bundle.mjs`;
-      const vision = await import(/* @vite-ignore */ url);
-      const files = await vision.FilesetResolver.forVisionTasks(`${CDN}/wasm`);
-      const make = (cls: any, model: string, extra: object) =>
-        cls.createFromOptions(files, { baseOptions: { modelAssetPath: model, delegate: 'CPU' }, runningMode: 'IMAGE', ...extra });
-      const [pose, hand] = await Promise.all([make(vision.PoseLandmarker, MODELS.pose, { numPoses: 1 }), make(vision.HandLandmarker, MODELS.hand, { numHands: 2 })]);
+      const assets = await mediapipeAssets();
+      // MediaPipe runs its loader script before each landmarker and clears it after; the page runs the loader itself
+      // (an empty wasmLoaderPath), one landmarker at a time
+      const files = { wasmLoaderPath: '', wasmBinaryPath: assets.wasm };
+      const make = async (cls: any, model: Uint8Array, extra: object) => {
+        await runLoader(assets.loader);
+        return cls.createFromOptions(files, { baseOptions: { modelAssetBuffer: model, delegate: 'CPU' }, runningMode: 'IMAGE', ...extra });
+      };
+      const pose = await make(PoseLandmarker, assets.models.pose, { numPoses: 1 });
+      const hand = await make(HandLandmarker, assets.models.hand, { numHands: 2 });
       return { pose, hand };
     })();
     loading.catch(() => { loading = null; });

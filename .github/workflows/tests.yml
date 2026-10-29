@@ -11,6 +11,7 @@ on:
       - "test/**"
       - "viewer/src/**" # test_viewer_parity runs the page's TypeScript
       - "viewer/test/**" # and the parity scripts
+      - viewer/serve_viewer.py # test_viewer_ai serves the page with it
       - pyproject.toml
       - uv.lock
       - MANIFEST.in # the package data of the wheel
@@ -23,6 +24,7 @@ on:
       - "test/**"
       - "viewer/src/**" # test_viewer_parity runs the page's TypeScript
       - "viewer/test/**" # and the parity scripts
+      - viewer/serve_viewer.py # test_viewer_ai serves the page with it
       - pyproject.toml
       - uv.lock
       - MANIFEST.in # the package data of the wheel

@@ -1,7 +1,10 @@
+<!-- The page loads nothing from other hosts: its scripts, fonts, MediaPipe and MediaPipe's models are inside it. The
+     policy lets only the page's own scripts run (build.mjs puts their SHA-256 hashes in place of SCRIPT_HASHES) and
+     lets the page connect only to itself and to the three AI providers' API hosts (docs/viewer.md, "AI providers"). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src SCRIPT_HASHES 'wasm-unsafe-eval' blob:; worker-src blob:; connect-src 'self' blob: https://api.anthropic.com https://api.openai.com https://openrouter.ai; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; object-src 'none'">
 <title>OpenSculptBoy Viewer</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link rel="icon" href="data:,">
+<!-- FONTS: build.mjs puts Instrument Sans and Instrument Serif here (@fontsource, OFL-1.1) as data URLs -->
 <style>
   /* the viewer is a dark studio: the figure stands in front of a dark backdrop, so the interface keeps dark tones in
      both colour schemes */

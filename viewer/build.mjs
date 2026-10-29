@@ -14,6 +14,7 @@ import * as esbuild from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -132,6 +133,79 @@ function reusedData() {
 }
 const gz = process.argv.includes('--reuse-data') ? reusedData() : await encodeData();
 
+// MediaPipe for "From a picture": the WebAssembly loader and binary of the npm package @mediapipe/tasks-vision, and
+// the pose and hand models at the bytes pinned here. They go into the page as one gzip container in a block that the
+// browser never runs (a script element of type application/octet-stream), so the page loads no code and no model from
+// another host. The models come from build/mediapipe/ when they are there, else from the page built before (as
+// --reuse-data takes the body data), else from Google's model store, and their SHA-256 must match.
+const MEDIAPIPE_WASM = ['vision_wasm_internal.js', 'vision_wasm_internal.wasm'];
+const MEDIAPIPE_MODELS = {
+  'pose_landmarker_full.task': { sha256: '4eaa5eb7a98365221087693fcc286334cf0858e2eb6e15b506aa4a7ecdcec4ad',
+    url: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task' },
+  'hand_landmarker.task': { sha256: 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1',
+    url: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' },
+};
+const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+function packFiles(files) {
+  const header = { files: [] }, parts = [];
+  let offset = 0;
+  for (const [name, bytes] of files) {
+    header.files.push({ name, offset, length: bytes.length });
+    parts.push(Buffer.from(bytes));
+    const pad = (4 - (bytes.length % 4)) % 4;
+    if (pad) parts.push(Buffer.alloc(pad));
+    offset += bytes.length + pad;
+  }
+  const hjson = Buffer.from(JSON.stringify(header));
+  const hl = Buffer.alloc(8); hl.write('MPA1', 0); hl.writeUInt32LE(hjson.length, 4);
+  return Buffer.concat([hl, hjson, Buffer.alloc((4 - (hjson.length % 4)) % 4), ...parts]);
+}
+function unpackFiles(blob) {
+  const hlen = blob.readUInt32LE(4), header = JSON.parse(blob.subarray(8, 8 + hlen).toString());
+  const base = 8 + hlen + ((4 - (hlen % 4)) % 4);
+  return Object.fromEntries(header.files.map((f) => [f.name, blob.subarray(base + f.offset, base + f.offset + f.length)]));
+}
+const MP_BLOCK = /<script type="application\/octet-stream" id="mediapipe-data">([A-Za-z0-9+/=]+)<\/script>/;
+async function mediapipeData() {
+  const pkg = path.join(here, 'node_modules', '@mediapipe', 'tasks-vision', 'wasm');
+  const files = MEDIAPIPE_WASM.map((n) => [n, fs.readFileSync(path.join(pkg, n))]);
+  let old = null;
+  for (const [name, pin] of Object.entries(MEDIAPIPE_MODELS)) {
+    const local = path.join(dir, 'mediapipe', name);
+    let bytes = fs.existsSync(local) ? fs.readFileSync(local) : null;
+    if (!bytes && fs.existsSync(out)) {
+      if (!old) { const m = fs.readFileSync(out, 'utf8').match(MP_BLOCK); old = m ? unpackFiles(zlib.gunzipSync(Buffer.from(m[1], 'base64'))) : {}; }
+      bytes = old[name] || null;
+    }
+    if (!bytes) {
+      const r = await fetch(pin.url);
+      if (!r.ok) throw new Error(`MediaPipe model ${name}: ${r.status} from ${pin.url}`);
+      bytes = Buffer.from(await r.arrayBuffer());
+      fs.mkdirSync(path.dirname(local), { recursive: true }); fs.writeFileSync(local, bytes);
+    }
+    if (sha256(bytes) !== pin.sha256) throw new Error(`MediaPipe model ${name} has SHA-256 ${sha256(bytes)}, pinned ${pin.sha256}`);
+    files.push([name, bytes]);
+  }
+  const gz = zlib.gzipSync(packFiles(files), { level: 9 });
+  console.log('mediapipe', files.map(([n, b]) => n + ' ' + (b.length / 1e6).toFixed(1) + ' MB').join(', ') + ', gzip', (gz.length / 1e6).toFixed(1), 'MB');
+  return gz;
+}
+const mpData = await mediapipeData();
+
+// the fonts (Instrument Sans 400, 500 and 600, Instrument Serif and its italic; @fontsource, OFL-1.1) as data URLs
+function fontFaces() {
+  const sets = [['instrument-sans', ['400', '500', '600']], ['instrument-serif', ['400', '400-italic']]];
+  let css = '';
+  for (const [pkg, names] of sets) for (const name of names) {
+    const d = path.join(here, 'node_modules', '@fontsource', pkg);
+    css += fs.readFileSync(path.join(d, name + '.css'), 'utf8')
+      .replace(/\/\*[^*]*\*\//g, '')
+      .replace(/url\(\.\/files\/([\w.-]+\.woff2)\) format\('woff2'\), url\([^)]*\) format\('woff'\)/g,
+        (m, file) => `url(data:font/woff2;base64,${fs.readFileSync(path.join(d, 'files', file)).toString('base64')}) format('woff2')`);
+  }
+  return '<style>' + css.replace(/\s*\n\s*/g, ' ').trim() + '</style>';
+}
+
 // the body worker (src/body_worker.ts): its own bundle, which the page starts from a string
 const worker = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'body_worker.ts')],
@@ -153,13 +227,25 @@ const bundle = await esbuild.build({
   legalComments: 'none',
 });
 const app = bundle.outputFiles[0].text;
-const shell = fs.readFileSync(path.join(here, 'shell.html'), 'utf8');
 const ref = fs.readFileSync(path.join(here, 'src', 'meshopt_ref.js'), 'utf8');
+// the shell with its fonts and with the hashes of the page's scripts in its Content Security Policy
+const hash = (text) => `'sha256-${crypto.createHash('sha256').update(text, 'utf8').digest('base64')}'`;
+function shellWith(scripts) {
+  const shell = fs.readFileSync(path.join(here, 'shell.html'), 'utf8');
+  if (!shell.includes('script-src SCRIPT_HASHES') || !shell.includes('<!-- FONTS:')) throw new Error('shell.html lacks SCRIPT_HASHES or the FONTS slot');
+  return shell.replace('script-src SCRIPT_HASHES', 'script-src ' + scripts.map(hash).join(' ')).replace(/<!-- FONTS:[^>]*-->/, fontFaces());
+}
+const appText = '\n' + app.replace(/<\/script/g, '<\\/script') + '\n';
+const refText = '\n' + ref + '\n';
+const dataText = 'window.MODEL_B64 = "' + gz.toString('base64') + '";';
 const page = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n'
-  + shell + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_B64 = "' + gz.toString('base64') + '";</script>\n'
-  + '<script type="module">\n' + app.replace(/<\/script/g, '<\\/script') + '\n</script>\n</head><body></body></html>\n';
+  + shellWith([refText, dataText, appText]) + '\n<script>' + refText + '</script>\n<script>' + dataText + '</script>\n'
+  + '<script type="application/octet-stream" id="mediapipe-data">' + mpData.toString('base64') + '</script>\n'
+  + '<script type="module">' + appText + '</script>\n</head><body></body></html>\n';
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, page);
+// the page's server (serve_viewer.py, docs/viewer.md "AI providers") and its port travel with the page
+for (const [from, to] of [['serve_viewer.py', 'serve_viewer.py'], [path.join('src', 'ai', 'serve.json'), 'serve.json']]) fs.copyFileSync(path.join(here, from), path.join(path.dirname(out), to));
 console.log('page', out, (page.length / 1e6).toFixed(1), 'MB');
 
 // --parts <dir>: the page and its data as separate files, for hosts that limit the size of a file (such as a Claude
@@ -176,8 +262,15 @@ if (partsAt >= 0) {
     names.push(`data/model-${k + 1}.txt`);
     fs.writeFileSync(path.join(dirOut, names[k]), b64.slice(k * size, (k + 1) * size));
   }
-  const small = shell + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_PARTS = ' + JSON.stringify(names) + ';</script>\n'
-    + '<script type="module">\n' + app.replace(/<\/script/g, '<\\/script') + '\n</script>\n';
+  const mpB64 = mpData.toString('base64'), mpCount = Math.ceil(mpB64.length / limit), mpSize = Math.ceil(mpB64.length / mpCount / 4) * 4;
+  const mpNames = [];
+  for (let k = 0; k < mpCount; k++) {
+    mpNames.push(`data/mediapipe-${k + 1}.txt`);
+    fs.writeFileSync(path.join(dirOut, mpNames[k]), mpB64.slice(k * mpSize, (k + 1) * mpSize));
+  }
+  const partsText = 'window.MODEL_PARTS = ' + JSON.stringify(names) + '; window.MEDIAPIPE_PARTS = ' + JSON.stringify(mpNames) + ';';
+  const small = shellWith([refText, partsText, appText]) + '\n<script>' + refText + '</script>\n<script>' + partsText + '</script>\n'
+    + '<script type="module">' + appText + '</script>\n';
   fs.writeFileSync(path.join(dirOut, 'index.html'), small);
   console.log('parts', dirOut, (small.length / 1e6).toFixed(1), 'MB page,', count, 'data files of', (size / 1e6).toFixed(1), 'MB');
 }

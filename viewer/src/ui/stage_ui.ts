@@ -82,13 +82,13 @@ export function stageSections(app: App) {
       const f = file.files && file.files[0]; file.value = '';
       if (!f) return;
       choosePicture.disabled = true;
-      say('Reading the pose. The first picture loads MediaPipe, about 20 MB.');
+      say('Reading the pose. The first picture starts MediaPipe, which takes a few seconds.');
       try {
         const r = await app.poseFromPicture(f);
         showHead();
         say(r.hands === 2 ? 'Posed from the picture, with both hands.' : r.hands === 1 ? 'Posed from the picture, with one hand. The other hand keeps its rest pose.' : 'Posed from the picture. No hands were clear enough, so they keep their rest pose.');
       } catch (e) {
-        say(e instanceof Error && e.message.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : 'The picture could not be read. MediaPipe loads from the internet the first time.', 'error');
+        say(e instanceof Error && e.message.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : 'The picture could not be read' + (e instanceof Error && e.message ? ': ' + e.message : '.'), 'error');
       } finally { choosePicture.disabled = false; }
     });
     // the head's correction: a picture made by an AI model, or a stylised face, can leave the head's turn unclear

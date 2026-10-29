@@ -9,6 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@fontsource/instrument-sans": "5.3.0",
+    "@fontsource/instrument-serif": "5.3.0",
+    "@mediapipe/tasks-vision": "1.0.1",
+    "fflate": "0.8.2",
     "meshoptimizer": "^1.2.0",
     "three": "0.186.0"
   },

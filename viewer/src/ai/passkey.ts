@@ -10,6 +10,7 @@
 // the vault's protection comes from the PRF output alone.
 
 import { b64url, type Bytes } from './crypto.ts';
+import serve from './serve.json' with { type: 'json' };
 
 export type SupportCode = 'ok' | 'file-page' | 'ip-address' | 'insecure' | 'no-webauthn';
 
@@ -22,8 +23,10 @@ export interface Support {
   url?: string;
 }
 
-// the port of the served page: one fixed port, because a page's storage belongs to its origin, port included
-export const LOCAL_PORT = 8765;
+// the port of the served page, from serve.json, which serve_viewer.py reads too: one fixed port, because a page's
+// storage belongs to its origin, port included. 41730 is unassigned in IANA's registry and is no common tool's default.
+export const LOCAL_PORT: number = serve.port;
+export const SERVE_COMMAND = 'python serve_viewer.py --open';
 
 interface Where { protocol: string; hostname: string; port: string; pathname: string; search?: string }
 
@@ -32,8 +35,8 @@ export function pageSupport(where: Where = globalThis.location, scope: any = glo
   const file = decodeURIComponent((where.pathname || '').split('/').pop() || '') || 'anny_viewer.html';
   const local = `http://localhost:${LOCAL_PORT}/${encodeURIComponent(file)}`;
   if (where.protocol === 'file:') {
-    return { ok: false, code: 'file-page', url: local, command: `python -m http.server ${LOCAL_PORT} --bind 127.0.0.1`,
-      message: 'Passkeys do not work in a page opened as a file. Run this command in the page\'s folder, then open ' + local + '.' };
+    return { ok: false, code: 'file-page', url: local, command: SERVE_COMMAND,
+      message: 'Passkeys do not work in a page opened as a file. Run this command in the page\'s folder (serve_viewer.py comes with the page in viewer/dist), and it opens ' + local + '.' };
   }
   if (/^(\d+\.){3}\d+$|^\[?[0-9a-f]*:[0-9a-f:.]*\]?$/i.test(where.hostname)) {
     const url = `${where.protocol}//localhost${where.port ? ':' + where.port : ''}${where.pathname}${where.search || ''}`;
