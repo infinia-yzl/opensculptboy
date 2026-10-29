@@ -8,7 +8,8 @@ fetch (viewer/test/ai_vault.mjs). In the built page, in Chromium through Playwri
 Chromium's virtual authenticator (local only): the page served at http://localhost registers a
 passkey with PRF, stores a key, checks it, locks, unlocks, refuses a bad key, forgets a key and
 forgets everything, with the providers' endpoints mocked; IndexedDB, localStorage and the URL
-never hold a key; an authenticator without PRF stores nothing; and the page opened as a file
+never hold a key; with an authenticator without PRF a key serves one visit and nothing is
+stored; and the page opened as a file
 shows the way to http://localhost and opens no database.
 """
 
@@ -270,17 +271,31 @@ class TestAiPage(unittest.TestCase):
             )
             self.assertFalse(errors, errors)
 
-            # an authenticator without PRF: a clear message, and no record
+            # an authenticator without PRF: the plain line, a key for this visit only, no record
             ctx2 = browser.new_context()
+            ctx2.route("https://api.anthropic.com/**", anthropic)
             tab2 = ctx2.new_page()
             add_authenticator(tab2, prf=False)
-            tab2.goto(
-                f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off", timeout=300000
-            )
+            url = f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off"
+            tab2.goto(url, timeout=300000)
             self.open_panel(tab2)
-            tab2.locator(".ai-panel button", has_text="Set up passkey").click()
-            self.assertIn("no PRF support", self.status(tab2, "cannot lock the vault"))
-            self.assertEqual(tab2.evaluate(DUMP)["counts"], {"keys": 0, "passkeys": 0})
+            panel2 = tab2.locator(".ai-panel")
+            panel2.locator("button", has_text="Set up passkey").click()
+            self.status(tab2, "used for this visit only")
+            panel2.locator(".seg button", has_text="Anthropic").click()
+            panel2.locator("input.ai-key").fill(KEY_A)
+            panel2.locator("button", has_text="Use for this visit").click()
+            self.status(tab2, "The key works")
+            self.assertIn("this visit only", panel2.locator(".ai-row").text_content())
+            dump = tab2.evaluate(DUMP)
+            self.assertEqual(dump["counts"], {"keys": 0, "passkeys": 0})
+            self.assertNotIn(KEY_A[13:33], tab2.evaluate(STORAGE))
+            # a new visit: the key is gone, and the panel stays in the visit mode
+            tab2.goto(url, timeout=300000)
+            self.open_panel(tab2)
+            tab2.locator(".ai-panel button", has_text="Try a passkey again").wait_for()
+            self.assertEqual(panel2.locator(".ai-row").count(), 0)
+            self.assertIn("used for this visit only", panel2.text_content())
 
             # the page opened as a file: the way to http://localhost, and no database
             tab3 = browser.new_context().new_page()

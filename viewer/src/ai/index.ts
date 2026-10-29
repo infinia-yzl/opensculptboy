@@ -3,18 +3,21 @@
 //
 // Connect an AI provider (docs/viewer.md, "AI providers"): the key vault, the passkey and the provider adapters, for
 // any interface. pageVault() gives the page's one vault: records in IndexedDB, the passkey through WebAuthn, and a
-// lock when the page goes away.
+// lock when the page goes away. pageSession() gives the keys of one visit, for a passkey without PRF.
 
 import { idbStore } from './store.ts';
 import { webauthnPasskey } from './passkey.ts';
 import { KeyVault } from './vault.ts';
+import { SessionKeys } from './session.ts';
 
-export { KeyVault, VaultError, cleanKey, IDLE_MS, type KeyInfo, type VaultState } from './vault.ts';
+export { KeyVault, VaultError, cleanKey, type KeyInfo, type VaultState } from './vault.ts';
 export { pageSupport, PasskeyError, LOCAL_PORT, type Support } from './passkey.ts';
 export { PROVIDERS, ProviderError, keyHint, type ChatMessage, type Provider, type ProviderId } from './providers.ts';
+export { SessionKeys, type SessionInfo } from './session.ts';
 export { memoryStore, idbStore, type VaultStore } from './store.ts';
 
 let shared: KeyVault | null = null;
+let visit: SessionKeys | null = null;
 
 export function pageVault(): KeyVault {
   if (shared) return shared;
@@ -23,4 +26,13 @@ export function pageVault(): KeyVault {
   addEventListener('pagehide', () => v.lock());
   shared = v;
   return v;
+}
+
+// the page's keys for this visit alone, where the passkey has no PRF; they go when the page closes
+export function pageSession(): SessionKeys {
+  if (visit) return visit;
+  const s = new SessionKeys();
+  addEventListener('pagehide', () => s.clear());
+  visit = s;
+  return s;
 }

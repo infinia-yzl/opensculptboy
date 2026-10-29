@@ -5,8 +5,8 @@
 //   node viewer/test/ai_vault.mjs
 // A fake passkey stands in for WebAuthn: its PRF output is HMAC-SHA-256 of a secret of its own and the salt, as an
 // authenticator's is. A fake fetch stands in for the providers. It checks the cryptography, the records in the store
-// (no key in the clear), lock, idle lock, unlock, a wrong passkey, a second passkey, forgetting, the page checks, and
-// each provider's requests and errors; a failed check throws, so node exits with an error. It prints a JSON summary.
+// (no key in the clear), lock without a timer, unlock, a wrong passkey, a second passkey, forgetting, the keys of one
+// visit, the page checks, and each provider's requests and errors; a failed check throws, so node exits with an error. It prints a JSON summary.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { aad, b64url, deriveKek, fromB64url, newDek, open, randomBytes, seal, unwrapDek } from '../src/ai/crypto.ts';
 import { memoryStore } from '../src/ai/store.ts';
 import { KeyVault, VaultError, cleanKey } from '../src/ai/vault.ts';
+import { SessionKeys } from '../src/ai/session.ts';
 import { NO_PRF, PasskeyError, pageSupport } from '../src/ai/passkey.ts';
 import { PROVIDERS, ProviderError, keyHint, scrub } from '../src/ai/providers.ts';
 
@@ -111,7 +112,7 @@ const KEY_A = 'sk-ant-api03-' + 'A1b2C3d4'.repeat(10);
 const KEY_O = 'sk-proj-' + 'Z9y8X7w6'.repeat(8);
 {
   const store = memoryStore(), auth = fakeAuthenticator(), timers = fakeTimers();
-  const v = new KeyVault({ store, passkey: auth.driver, timers, idleMs: 60000 });
+  const v = new KeyVault({ store, passkey: auth.driver, timers });
   const events = [];
   v.onChange((why) => events.push(why));
   assert.deepEqual(await v.state(), { passkeys: 0, unlocked: false, keys: [] });
@@ -142,17 +143,12 @@ const KEY_O = 'sk-proj-' + 'Z9y8X7w6'.repeat(8);
   assert.equal(auth.prompts, before + 1);
   assert.equal(await v.use('openai', async (k) => k), KEY_O);
   ok('lock and unlock');
-  // the idle lock: use restarts the time
-  timers.advance(59000);
+  // no idle lock: the vault stays open until Lock or the page's closing, and sets no timer
+  timers.advance(24 * 3600 * 1000);
   assert.equal(v.unlocked(), true);
-  await v.use('openai', async () => 1);
-  timers.advance(59000);
-  assert.equal(v.unlocked(), true);
-  timers.advance(1500);
-  assert.equal(v.unlocked(), false);
-  assert.equal(events.at(-1), 'idle');
   assert.equal(timers.jobs.size, 0);
-  ok('the vault locks itself after the idle time, and use restarts it');
+  assert.equal(await v.use('openai', async (k) => k), KEY_O);
+  ok('the vault stays unlocked without a timer until Lock');
   // a passkey of another vault, and a record changed in the store
   await v.unlock();
   v.lock();
@@ -198,6 +194,28 @@ const KEY_O = 'sk-proj-' + 'Z9y8X7w6'.repeat(8);
   const v3 = new KeyVault({ store: memoryStore(), passkey: noPrf.driver, timers });
   await rejects(v3.setup(), 'no-prf', 'an authenticator without PRF');
   assert.equal((await v3.state()).passkeys, 0);
+}
+
+// ---------------------------------------------------------------- keys for one visit (a passkey without PRF)
+{
+  const store = memoryStore();
+  const visit = new SessionKeys();
+  const events = [];
+  visit.onChange((why) => events.push(why));
+  assert.throws(() => visit.set('anthropic', 'short'), VaultError);
+  visit.set('anthropic', ' ' + KEY_A + ' ');
+  assert.equal(await visit.use('anthropic', async (k) => k), KEY_A);
+  visit.mark('anthropic', true, 'The key works.');
+  assert.deepEqual(visit.list().map((k) => [k.provider, k.ok]), [['anthropic', true]]);
+  assert.ok(!JSON.stringify(visit.list()).includes(KEY_A));
+  await assert.rejects(visit.use('openai', async (k) => k));
+  visit.forget('anthropic');
+  assert.equal(visit.has('anthropic'), false);
+  visit.set('openai', KEY_O); visit.clear();
+  assert.deepEqual(visit.list(), []);
+  assert.deepEqual(events, ['save', 'check', 'forget', 'save', 'forget-all']);
+  assert.deepEqual([store.tables.keys.size, store.tables.passkeys.size], [0, 0]);
+  ok('keys for one visit: held in memory, used, listed without the key, forgotten');
 }
 
 // ---------------------------------------------------------------- the page checks

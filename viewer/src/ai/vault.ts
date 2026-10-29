@@ -7,7 +7,7 @@
 //
 // While the vault is locked, the page holds no key at all: the store has ciphertexts only. Unlock asks the passkey for
 // its PRF output, derives the key-wrapping key, unwraps the data key as a non-extractable CryptoKey and forgets the
-// PRF output. Lock, and an idle time without use, drop the data key. An API key is decrypted only for one call
+// PRF output. Lock, and the page's closing, drop the data key. An API key is decrypted only for one call
 // (`use`), and the vault never returns it in any other way.
 
 import { aad, b64url, deriveKek, FORMAT, newDek, open, randomBytes, rewrapDek, seal, unwrapDek, type Bytes, type Sealed } from './crypto.ts';
@@ -45,18 +45,15 @@ export class VaultError extends Error {
   constructor(code: VaultErrorCode, message: string) { super(message); this.name = 'VaultError'; this.code = code; }
 }
 
-export interface Timers { now(): number; set(fn: () => void, ms: number): any; clear(handle: any): void }
-const realTimers: Timers = { now: () => Date.now(), set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h) };
+// the clock of the records' dates; tests give their own
+export interface Timers { now(): number }
+const realTimers: Timers = { now: () => Date.now() };
 
 export interface VaultOptions {
   store: VaultStore;
   passkey: PasskeyDriver;
-  // the vault locks itself after this time without use (default 10 minutes)
-  idleMs?: number;
   timers?: Timers;
 }
-
-export const IDLE_MS = 10 * 60 * 1000;
 
 // a key as people paste it: one line of printable characters without spaces
 export function cleanKey(key: string): string {
@@ -69,20 +66,17 @@ export function cleanKey(key: string): string {
 
 export class KeyVault {
   private dek: CryptoKey | null = null;
-  private timer: any = null;
   private listeners = new Set<(why: string) => void>();
   private store: VaultStore;
   private passkey: PasskeyDriver;
   private timers: Timers;
-  readonly idleMs: number;
 
   constructor(o: VaultOptions) {
     this.store = o.store; this.passkey = o.passkey;
     this.timers = o.timers || realTimers;
-    this.idleMs = o.idleMs ?? IDLE_MS;
   }
 
-  // a listener for every change: setup, unlock, lock (with "idle" for an idle lock), save, check, forget
+  // a listener for every change: setup, unlock, lock, save, check, forget
   onChange(fn: (why: string) => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   private emit(why: string) { for (const fn of this.listeners) { try { fn(why); } catch (e) { /* a listener's fault stays its own */ } } }
 
@@ -141,24 +135,16 @@ export class KeyVault {
     prf.fill(0);
     const wrapped = await rewrapDek(old.record.wrapped, old.kek, aad.dek(old.record.credentialId), kek, aad.dek(credentialId));
     await this.store.put('passkeys', b64url(credentialId), { format: FORMAT, credentialId, salt, wrapped, created: this.timers.now() } satisfies PasskeyRecord);
-    this.touch(); this.emit('passkey');
+    this.emit('passkey');
   }
 
   lock(why = 'lock'): void {
     const was = this.dek !== null;
     this.dek = null;
-    if (this.timer !== null) { this.timers.clear(this.timer); this.timer = null; }
     if (was) this.emit(why);
   }
 
-  // use counts as activity: the idle time starts again
-  touch(): void {
-    if (!this.dek) return;
-    if (this.timer !== null) this.timers.clear(this.timer);
-    this.timer = this.timers.set(() => { this.timer = null; this.lock('idle'); }, this.idleMs);
-  }
-
-  private open(dek: CryptoKey, why: string) { this.dek = dek; this.touch(); this.emit(why); }
+  private open(dek: CryptoKey, why: string) { this.dek = dek; this.emit(why); }
 
   private need(): CryptoKey {
     if (!this.dek) throw new VaultError('locked', 'The vault is locked. Unlock it with the passkey.');
@@ -170,7 +156,7 @@ export class KeyVault {
     const dek = this.need();
     const sealed = await seal(dek, cleanKey(key), aad.key(provider));
     await this.store.put('keys', provider, { format: FORMAT, provider, sealed, added: this.timers.now() } satisfies KeyRecord);
-    this.touch(); this.emit('save');
+    this.emit('save');
   }
 
   has(provider: string): Promise<boolean> { return this.store.get('keys', provider).then((r) => r !== undefined); }
@@ -184,8 +170,7 @@ export class KeyVault {
     try { key = await open(dek, rec.sealed, aad.key(provider)); } catch (e) {
       throw new VaultError('wrong-passkey', 'The stored key for ' + provider + ' does not decrypt. Forget it and add it again.');
     }
-    this.touch();
-    try { return await fn(key); } finally { key = ''; this.touch(); }
+    try { return await fn(key); } finally { key = ''; }
   }
 
   // the result of a key check, kept with the record (when, whether it worked, the words shown)
