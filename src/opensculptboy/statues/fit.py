@@ -39,6 +39,8 @@ SOLID_REACH = 0.015
 # and seals the lips where anny's fitted lips meet when their rows move up to this distance
 # (metres): a statue's lips are carved shut, with no crease for the fit to find
 SOLID_LIP_SHIFT = 0.012
+# and untangles the folds by the lids' and the lips' corners in this many rounds
+SOLID_UNFOLD = 10
 # the fitted skin's pits deeper than the scan's own by this much (metres) relax
 PIT_EXCESS = 0.0005
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
@@ -234,6 +236,7 @@ def fit_statue(
             close_openings=SOLID_REACH,
             lip_seal_max_shift=max(options.lip_seal_max_shift, SOLID_LIP_SHIFT),
             lip_seal_self=True,
+            unfold_rounds=SOLID_UNFOLD,
         )
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)

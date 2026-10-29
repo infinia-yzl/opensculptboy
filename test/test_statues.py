@@ -593,6 +593,22 @@ class TestSolid(unittest.TestCase):
         self.assertLess(abs(out[220, 2]), 0.0005)
         self.assertEqual(out[66, 2], pit)  # the reference's own pit stays
 
+    def test_folds_untangle(self):
+        from opensculptboy.fit.register import unfold
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        folded = V.copy()
+        # a vertex pulled across its neighbours folds the triangles around it over
+        folded[220, :2] = V[222, :2] + 0.002
+        out, count = unfold(
+            folded, T, reference, np.ones(len(V), bool), np.ones(len(V), bool)
+        )
+        self.assertGreater(count, 0)
+        a, b, c = (out[T[:, k]] for k in range(3))
+        z = np.cross(b - a, c - a)[:, 2]
+        self.assertTrue((np.sign(z) == np.sign(z[0])).all())
+
     def test_solid_statue_closes_its_openings(self):
         from unittest import mock
 

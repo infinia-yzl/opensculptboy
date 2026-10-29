@@ -324,6 +324,9 @@ class FitOptions:
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
+    # untangle the folds within 3 mm of the reference (unfold) in this many rounds on each
+    # level (0: none)
+    unfold_rounds: int = 0
     # the pose the parameter stage starts from: (B, 3, 3) rotations of the fit model's bones
     # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
     # theirs); None: the rest pose
@@ -3457,6 +3460,38 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {len(rows)} pits relaxed")
+        if options.unfold_rounds > 0:
+            every = np.ones(len(fitted), bool)
+            on = np.asarray(mask, bool) & ~(np.asarray(topology.apply(cavity0)) > 0.5)
+            if options.no_data is not None:
+                on &= ~(
+                    np.asarray(topology.apply(np.asarray(options.no_data, np.float64)))
+                    > 0.5
+                )
+            fitted_new, count = unfold(
+                fitted,
+                topology.triangles,
+                reference,
+                every,
+                on,
+                options.unfold_rounds,
+            )
+            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
+            if len(rows):
+                fitted = fitted_new
+                offsets[subdiv] = offsets[subdiv].copy()
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            _log(options, f"level {subdiv}: {count} folded vertices untangled")
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3560,6 +3595,57 @@ def relax_dents(
             break
         V[pit] = (A[pit] @ V) / count[pit, None]
     return V
+
+
+def unfold(
+    fitted: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    rows: np.ndarray,
+    on_surface: np.ndarray,
+    rounds: int = 10,
+    reach: float = 0.003,
+) -> tuple[np.ndarray, int]:
+    """
+    The vertices (V, 3) with the folds near the reference untangled, and the number of
+    vertices moved: the triangles within ``reach`` of the reference whose normals turn
+    against the reference's there are folded over; their vertices of ``rows`` move to the
+    mean of their ring, and those of ``on_surface`` back onto the reference, for ``rounds``
+    rounds. Fitted to a solid statue, the lids' corners and the lips' corners folded into
+    knots and slivers that showed dark.
+    """
+    V = np.asarray(fitted, np.float64).copy()
+    T = np.asarray(triangles)
+    A = _adjacency(len(V), T)
+    count = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
+    rows = np.asarray(rows, bool)
+    on_surface = np.asarray(on_surface, bool)
+    sign = _outward(reference)
+    moved = np.zeros(len(V), bool)
+    for _ in range(rounds):
+        a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
+        normal = np.cross(b - a, c - a)
+        normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
+        centre = (a + b + c) / 3.0
+        near = rows[T].any(1)
+        if not near.any():
+            break
+        idx = np.nonzero(near)[0]
+        _, theirs, d = reference.closest(centre[idx])[:3]
+        flipped = idx[((normal[idx] * theirs).sum(1) * sign < 0.0) & (d < reach)]
+        bad = np.zeros(len(V), bool)
+        bad[T[flipped].ravel()] = True
+        bad &= rows
+        if not bad.any():
+            break
+        # the fold and a ring around it
+        bad |= (A @ bad.astype(np.float64) > 0) & rows
+        V[bad] = (A[bad] @ V) / count[bad, None]
+        back = bad & on_surface
+        if back.any():
+            V[back] = reference.closest(V[back])[0]
+        moved |= bad
+    return V, int(moved.sum())
 
 
 def _outward(reference) -> float:
