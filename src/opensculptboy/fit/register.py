@@ -320,7 +320,7 @@ class FitOptions:
     # (degrees) of the forward direction take the carved eye, and the linings of the sockets
     # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
     close_openings_cone: float = 60.0
-    close_inside: float = 0.0015
+    close_inside: float = 0.004
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
