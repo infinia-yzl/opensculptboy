@@ -2377,7 +2377,15 @@ def _initial_placement(model, reference: Reference, regressor, options):
                 best, height0 = gap, float(h)
         phenotype = torch.full((1, len(labels)), 0.5, dtype=model.dtype)
         phenotype[0, labels.index("height")] = height0
-        out = model(phenotype_kwargs=phenotype)
+        pose = None
+        if options.initial_pose is not None:
+            # the landmarks of the start pose: a statue's joints lie where its pose puts them
+            bones = list(model.bone_labels)
+            pose = torch.eye(4, dtype=model.dtype).repeat(1, len(bones), 1, 1)
+            free = [i for i, b in enumerate(bones) if b not in FIXED_BONES]
+            start = np.asarray(options.initial_pose, dtype=np.float64)[free]
+            pose[0, free, :3, :3] = torch.as_tensor(start, dtype=model.dtype)
+        out = model(pose_parameters=pose, phenotype_kwargs=phenotype)
     anny_points = _landmark_points(model, out, regressor, reference, None)
     names = [
         k
