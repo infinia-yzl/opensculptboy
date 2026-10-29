@@ -78,9 +78,9 @@ export function aiPanel(): HTMLElement {
       const p = PROVIDERS[k.provider as ProviderId];
       const label = p ? p.label : k.provider;
       const state = k.checked ? (k.ok ? 'works' : 'refused') : 'not checked';
-      const row = h('div.ai-row', { dataset: { provider: k.provider } },
+      const row = h('div.ai-row', { dataset: { provider: k.provider } }, h('div.ai-what', {},
         h('span.ai-name', { text: label }),
-        h('span.note', { text: 'added ' + day(k.added) + ' · ' + state, title: k.note || '' }));
+        h('span.note', { text: 'added ' + day(k.added) + ' · ' + state, title: k.note || '' })));
       if (st.unlocked && p) row.append(textButton('Check', () => busy('Checking ' + label + '…', () => check(k.provider as ProviderId))));
       row.append(textButton('Forget', () => busy('', async () => { await vault.forget(k.provider); say(label + ' key forgotten.'); })));
       return row;
@@ -105,7 +105,11 @@ export function aiPanel(): HTMLElement {
     adder.hidden = !st.unlocked;
   }
 
-  vault.onChange((why) => { if (why === 'idle') say('Locked after ' + Math.round(vault.idleMs / 60000) + ' minutes without use.'); if (why === 'lock' || why === 'idle') render(); });
+  vault.onChange((why) => {
+    if (why === 'lock') say('Locked.');
+    if (why === 'idle') say('Locked after ' + Math.round(vault.idleMs / 60000) + ' minutes without use.');
+    if (why === 'lock' || why === 'idle') render();
+  });
   // the panel renders when the fold opens, so the page opens no database before a person asks for it
   let shown = false;
   fold.el.addEventListener('toggle', () => { if (fold.el.open && !shown) { shown = true; render().catch((e) => say(String(e && e.message || e), true)); } });
