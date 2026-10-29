@@ -3512,23 +3512,25 @@ def relax_dents(
 ) -> np.ndarray:
     """
     The vertices (V, 3) with the pits that the reference lacks relaxed: a vertex of ``rows``
-    (a mask) that lies deeper behind its ring (:func:`dents`) than the reference's deepest
-    pit among its 8 vertices nearest to it, by more than ``excess`` metres, moves to the mean
-    of its ring, for ``rounds`` rounds. A dense fit of a coarse scan dents single vertices
-    where a few points of the scan pull them (a pit on a statue's forehead).
+    (a mask) that lies deeper behind its ring (:func:`dents`) than the reference does at the
+    same place and scale (the closest points of the vertex and of its ring, along the vertex's
+    normal), by more than ``excess`` metres, moves to the mean of its ring, for ``rounds``
+    rounds. A dense fit of a coarse scan dents single vertices where a few points of the scan
+    pull them (a pit on a statue's forehead).
     """
-    from scipy.spatial import cKDTree
+    from opensculptboy.fit.reference import vertex_normals
 
     V = np.asarray(fitted, np.float64).copy()
-    R = np.asarray(reference.vertices, np.float64)
-    own = dents(R, reference.triangles)
-    _, near = cKDTree(R).query(V, k=min(8, len(R)))
-    allowed = own[near].reshape(len(V), -1).max(1)
-    A = _adjacency(len(V), triangles)
+    T = np.asarray(triangles)
+    A = _adjacency(len(V), T)
     count = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
+    on = np.asarray(reference.closest(V)[0], np.float64)
+    normal = vertex_normals(V, T)
+    allowed = ((A @ on) / count[:, None] - on) * normal
+    allowed = np.maximum(allowed.sum(1), 0.0)
     rows = np.asarray(rows, bool)
     for _ in range(rounds):
-        pit = rows & (dents(V, triangles) - np.maximum(allowed, 0.0) > excess)
+        pit = rows & (dents(V, T) - allowed > excess)
         if not pit.any():
             break
         V[pit] = (A[pit] @ V) / count[pit, None]

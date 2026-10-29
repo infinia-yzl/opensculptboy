@@ -520,8 +520,6 @@ class TestSolid(unittest.TestCase):
         self.assertIsNone(meeting_line(upper[:1], lower))
 
     def test_pits_relax(self):
-        import types
-
         from opensculptboy.fit.register import dents, relax_dents
 
         from opensculptboy.fit.reference import vertex_normals
@@ -532,8 +530,9 @@ class TestSolid(unittest.TestCase):
         pit = -0.002 * np.sign(vertex_normals(flat, T)[220, 2])
         V[220, 2] = pit  # a pit in the middle
         # the reference: the flat patch, and a pit of its own one corner along
-        reference = types.SimpleNamespace(vertices=flat.copy(), triangles=T)
-        reference.vertices[66, 2] = pit
+        own = flat.copy()
+        own[66, 2] = pit
+        reference = Reference(own, T, {})
         V[66, 2] = pit
         self.assertGreater(dents(V, T)[220], 0.0015)
         out = relax_dents(V, T, reference, np.ones(len(V), bool), 0.0005)
