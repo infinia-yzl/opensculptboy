@@ -3537,6 +3537,11 @@ def relax_dents(
     return V
 
 
+# a solid figure's lid margins: the socket's lining within this distance (metres) of an
+# eyeball's centre
+EYE_MARGIN_REACH = 0.02
+
+
 def _outward(reference) -> float:
     """1 when the reference's normals point out of it, -1 when its triangles turn inward: the
     sign of its volume (a scan with open cuts still encloses most of its figure)."""
@@ -3573,7 +3578,7 @@ def _close_openings(
     except ValueError:
         eyes = {}
     surface = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
-    moved, carved = [], []
+    moved, carved, centres = [], [], []
     for side_rows in eyes.values():
         base = np.zeros(n0)
         base[side_rows] = 1.0
@@ -3581,6 +3586,7 @@ def _close_openings(
         if not len(eye):
             continue
         centre = fitted[eye].mean(0)
+        centres.append(centre)
         original = fitted.copy()
         near = lining & (np.linalg.norm(fitted - centre, axis=1) < 0.03)
         if not near.any():
@@ -3640,8 +3646,22 @@ def _close_openings(
             for done in carved:
                 on[done] = True
             out &= ~on[rows]
+            # the lids' inner margins, just behind the opening, meet the carved eye on the
+            # surface: pushed inside, or left a little behind, they showed as a dark crack
+            # along the lids
+            gap = np.linalg.norm(fitted[rows] - closest, axis=1)
+            margin = (gap < 0.2 * options.close_openings) & ~on[rows]
+            if centres:
+                to_eye = np.linalg.norm(
+                    fitted[rows][:, None] - np.asarray(centres)[None], axis=2
+                ).min(1)
+                margin &= to_eye < EYE_MARGIN_REACH
+            else:
+                margin[:] = False
+            fitted[rows[margin]] = closest[margin]
+            out &= ~margin
             fitted[rows[out]] = closest[out] - options.close_inside * normal[out]
-            moved += [rows[out]]
+            moved += [rows[out | margin]]
     changed = np.unique(np.concatenate(moved)) if moved else np.zeros(0, np.int64)
     offsets = offsets.copy()
     if len(changed):

@@ -363,8 +363,9 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
     return counts
 
 
-# the head's regions whose skin a statue's hat or fused locks may cover
-COVER_REGIONS = ("scalp", "ears", "neck", "face")
+# the regions whose skin a statue's hat or fused locks may cover: the face and the ears keep
+# their data, so that the cheeks meet the locks where the scan joins them
+COVER_REGIONS = ("scalp", "neck")
 # a vertex is covered when a hair or drapery piece lies this much (metres) nearer to it than
 # the skin, and the skin is further than COVER_SKIN
 COVER_MARGIN = 0.002
