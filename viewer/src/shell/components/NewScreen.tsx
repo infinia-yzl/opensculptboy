@@ -7,7 +7,7 @@
 // 3D model, which the Open path reads when OpenSculptBoy wrote it and else explains the fit. Under them: Open a card,
 // Continue with the character shown, and Random.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useShell } from '../context.ts';
 import { useUI } from '../hooks.ts';
 import { actions } from '../state.ts';
@@ -29,6 +29,7 @@ export function NewScreen() {
   const [kind, setKind] = useState<'finished' | 'light'>('light');
   const [finished, setFinished] = useState<Record<string, boolean>>({});
   const [name, setName] = useState('');
+  const start = useRef<HTMLButtonElement>(null);
   // which finished starters lie beside the page (a page opened as a file reads none)
   useEffect(() => {
     if (!open) return;
@@ -49,7 +50,7 @@ export function NewScreen() {
   );
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) actions.hideNew(); }}>
-      <DialogContent className="new-screen osb-stage osb-veins" aria-describedby="new-lead">
+      <DialogContent className="new-screen osb-stage osb-veins" aria-describedby="new-lead" onOpenAutoFocus={(e) => { e.preventDefault(); start.current?.focus(); }}>
         <div className="new-head">
           <DialogTitle className="osb-display" id="new-title">New character</DialogTitle>
           <DialogDescription id="new-lead" className="osb-note">Start from a statue, from the base with the libraries, or from a 3D model of your own.</DialogDescription>
@@ -81,7 +82,7 @@ export function NewScreen() {
               })}
             </div>
             <p className="osb-note new-desc">{S?.description}.{kind === 'finished' && !finished[S?.id || ''] ? ' The finished statues come with the statue cards; until then this starts the light version.' : ''}</p>
-            <Button size="lg" className="new-start" onClick={() => S && legacy.startStarter(S.id, kind === 'finished' && finished[S.id] ? 'finished' : 'light')}>Start with the {S?.name}</Button>
+            <Button ref={start} size="lg" className="new-start" onClick={() => S && legacy.startStarter(S.id, kind === 'finished' && finished[S.id] ? 'finished' : 'light')}>Start with the {S?.name}</Button>
             {anyFinished ? null : <span className="osb-tag new-planned">Finished statues: planned</span>}
           </article>
           <article className="osb-card new-card" aria-labelledby="new-l">

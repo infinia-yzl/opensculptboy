@@ -20,9 +20,9 @@ export interface Stone {
 }
 
 export const STONES: Stone[] = [
-  { id: 'carrara', label: 'Carrara', base: '#e9e5de', vein: '#8f9296', veins: 0.55, metal: 0, wrap: 0.45, rough: [0.62, 0.2], polish: 0.45 },
-  { id: 'travertine', label: 'Travertine', base: '#dcc6a3', vein: '#b29672', veins: 0.4, metal: 0, wrap: 0.25, rough: [0.78, 0.32], polish: 0.3 },
-  { id: 'bardiglio', label: 'Bardiglio', base: '#a9adb0', vein: '#5c6165', veins: 0.6, metal: 0, wrap: 0.3, rough: [0.6, 0.2], polish: 0.5 },
+  { id: 'carrara', label: 'Carrara', base: '#e9e5de', vein: '#a3a6aa', veins: 0.35, metal: 0, wrap: 0.45, rough: [0.62, 0.2], polish: 0.45 },
+  { id: 'travertine', label: 'Travertine', base: '#dcc6a3', vein: '#bda27e', veins: 0.3, metal: 0, wrap: 0.25, rough: [0.78, 0.32], polish: 0.3 },
+  { id: 'bardiglio', label: 'Bardiglio', base: '#a9adb0', vein: '#6c7175', veins: 0.45, metal: 0, wrap: 0.3, rough: [0.6, 0.2], polish: 0.5 },
   { id: 'basalt', label: 'Basalt', base: '#45433f', vein: '#2b2a28', veins: 0.2, metal: 0, wrap: 0, rough: [0.75, 0.3], polish: 0.35 },
   { id: 'bronze', label: 'Bronze', base: '#a76d38', vein: '#5e3a1a', veins: 0.12, metal: 1, wrap: 0, rough: [0.55, 0.22], polish: 0.55 },
   { id: 'verdigris', label: 'Verdigris', base: '#77ab95', vein: '#3f6d5c', veins: 0.45, metal: 0, wrap: 0.1, rough: [0.82, 0.45], polish: 0.2 },

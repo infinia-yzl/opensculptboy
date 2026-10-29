@@ -424,10 +424,11 @@ vec3 stoneAlbedo(vec3 p) {
   float cloud = gnoise(p * 3.1 + 0.7) * 0.6 + gnoise(p * 8.3 + 2.1) * 0.4;
   vec3 q = p + 0.07 * vec3(gnoise(p * 5.0 + 1.0), gnoise(p * 5.0 + 4.0), gnoise(p * 5.0 + 9.0));
   float n = gnoise(q * 6.0) + 0.5 * gnoise(q * 15.0 + 3.0) + 0.25 * gnoise(q * 37.0 + 5.0);
-  float vein = 1.0 - smoothstep(0.0, 0.05, abs(n));
-  float fine = 1.0 - smoothstep(0.0, 0.025, abs(gnoise(q * 29.0 + 11.0)));
-  vec3 a = uStone.rgb * (1.0 + 0.07 * cloud);
-  a = mix(a, uStoneVein.rgb, clamp(vein * 0.75 + fine * 0.3, 0.0, 1.0) * uStoneVein.w);
+  // the veins: thin lines that fade in and out along their length, and finer threads beside them
+  float vein = (1.0 - smoothstep(0.0, 0.03, abs(n))) * smoothstep(-0.1, 0.25, gnoise(p * 2.3 + 5.1));
+  float fine = (1.0 - smoothstep(0.0, 0.015, abs(gnoise(q * 29.0 + 11.0)))) * 0.5;
+  vec3 a = uStone.rgb * (1.0 + 0.05 * cloud);
+  a = mix(a, uStoneVein.rgb, clamp(vein * 0.8 + fine * 0.3, 0.0, 1.0) * uStoneVein.w);
   return a * (0.985 + 0.03 * vn3(p * 700.0));
 }
 // creases over the finger joints: several fine lines on the back of each joint, one or two deep lines on the palm side
