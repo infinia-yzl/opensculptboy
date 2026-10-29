@@ -663,5 +663,75 @@ class TestSolid(unittest.TestCase):
                     self.assertEqual(options.lip_seal_max_shift, SOLID_LIP_SHIFT)
 
 
+class TestStarter(unittest.TestCase):
+    def test_starter_zip(self):
+        import zipfile
+
+        import trimesh
+
+        from opensculptboy.statues.pipeline import StatueConfig
+        from opensculptboy.statues.starter import build_starter
+
+        config = StatueConfig.from_dict(
+            {
+                "format": "opensculptboy.statue/1",
+                "name": "kouros",
+                "scan": "kouros.stl",
+                "title": "Kouros",
+                "licence": "PDM-1.0",
+                "credit": "A museum: cast 1",
+                "source": "https://example.org/kouros",
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "kouros"
+            (root / "card").mkdir(parents=True)
+            (root / "meshes").mkdir()
+            card = {
+                "schema": 2,
+                "name": "kouros",
+                "rig": "anny",
+                "topology": "anny",
+                "detail": {
+                    "levels": [
+                        {"subdiv": k, "offsets": f"kouros.detail{k}.safetensors"}
+                        for k in (0, 1, 2)
+                    ],
+                    "fit": {"seconds": {}},
+                },
+            }
+            (root / "card" / "kouros.json").write_text(json.dumps(card))
+            for k in (0, 1, 2):
+                (root / "card" / f"kouros.detail{k}.safetensors").write_bytes(
+                    bytes([k]) * 100
+                )
+            box = trimesh.creation.box(extents=(0.4, 0.3, 1.8))
+            box.export(str(root / "meshes" / "fitted_level1.ply"))
+            out = pathlib.Path(tmp) / "starters" / "kouros.zip"
+            result = build_starter(root, config, out, levels=(0, 1))
+            self.assertEqual(result["levels"], [0, 1])
+            with zipfile.ZipFile(out) as z:
+                names = set(z.namelist())
+                written = json.loads(z.read("character.json"))
+            self.assertEqual(
+                names,
+                {
+                    "character.json",
+                    "kouros.detail0.safetensors",
+                    "kouros.detail1.safetensors",
+                    "thumbnail.png",
+                },
+            )
+            self.assertEqual(written["schema"], 5)
+            self.assertEqual(written["name"], "Kouros")
+            self.assertEqual(written["look"]["skin"]["stone"], "carrara")
+            self.assertEqual(written["look"]["hair"]["style"], "bald")
+            reference = written["detail"]["fit"]["reference"]
+            self.assertEqual(reference["licence"], "PDM-1.0")
+            self.assertEqual(reference["credit"], "A museum: cast 1")
+            self.assertEqual(len(written["detail"]["levels"]), 2)
+            self.assertTrue(out.with_suffix(".png").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

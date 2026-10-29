@@ -9,6 +9,9 @@ The statue commands, each printing one JSON result:
 - ``python -m opensculptboy.statues convert SCAN --out FOLDER``: a statue scan as an
   appearance handoff folder (see :mod:`opensculptboy.statues.handoff`), with the frame it
   found, the triangles per role and the landmarks in the handoff's frame.
+- ``python -m opensculptboy.statues starter CONFIG --run DIR --out starters/ID.zip``: a fitted
+  statue (the run folder of ``run``) as a finished starter of the web viewer (see
+  :mod:`opensculptboy.statues.starter`).
 """
 
 from __future__ import annotations
@@ -24,6 +27,8 @@ def main(argv=None) -> int:
     words = sys.argv[1:] if argv is None else list(argv)
     if words[:1] == ["run"]:
         return run(words[1:])
+    if words[:1] == ["starter"]:
+        return starter(words[1:])
     if words[:1] == ["convert"]:
         words = words[1:]
     return convert(words)
@@ -85,6 +90,49 @@ def run(argv) -> int:
             run_statue(config, args.out, args.scans, steps, verbose=args.verbose)
         )
     print(json.dumps(results, indent=2, default=float))
+    return 0
+
+
+def starter(argv) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m opensculptboy.statues starter",
+        description="A fitted statue as a finished starter of the web viewer: a .zip of "
+        "its card (with the marble look and the scan's credit), its detail files, its "
+        "pieces and a thumbnail.",
+    )
+    parser.add_argument("config", help="the statue config (JSON)")
+    parser.add_argument(
+        "--run", required=True, help="the --out folder of the statue's pipeline run"
+    )
+    parser.add_argument("--out", required=True, help="the .zip to write")
+    parser.add_argument(
+        "--levels", default="0,1,2", help="the detail levels to pack (default 0,1,2)"
+    )
+    parser.add_argument(
+        "--piece", action="append", default=[], help="a file of a piece to pack"
+    )
+    parser.add_argument("--thumbnail", help="a PNG for the thumbnail (default: drawn)")
+    parser.add_argument(
+        "--variant", help="the variant of the run (<run>/<name>.<variant>)"
+    )
+    args = parser.parse_args(argv)
+    import pathlib
+
+    from opensculptboy.statues.pipeline import StatueConfig
+    from opensculptboy.statues.starter import build_starter
+
+    config = StatueConfig.load(args.config)
+    name = config.name + (f".{args.variant}" if args.variant else "")
+    levels = tuple(int(x) for x in args.levels.split(",") if x)
+    result = build_starter(
+        pathlib.Path(args.run) / name,
+        config,
+        args.out,
+        levels,
+        args.piece,
+        args.thumbnail,
+    )
+    print(json.dumps(result, indent=2))
     return 0
 
 
