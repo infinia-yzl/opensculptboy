@@ -368,7 +368,7 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
 # the scan joins them
 COVER_REGIONS = {
     "clothing": ("scalp", "ears", "neck", "face"),
-    "hair": ("scalp", "neck"),
+    "hair": ("scalp", "ears", "neck"),
     # the pieces the conversion and the pruning took out (supports, the plinth, props): a foot
     # set on a removed head, a leg by a sword and a sole on the plinth keep anny's shape
     "removed": ("feet", "legs", "hands", "arms", "torso"),
@@ -447,17 +447,24 @@ def covered_skin(folder, result, model=None) -> int:
     # the sliders and the pose alone: the first fit's level 0 already lies flat on the skin's
     # cut under the hat, and its skull would read as uncovered skin
     V = parametric_vertices(result, model)
+    # a limb by a removed piece takes the first fit's own level 0: its sliders and pose alone
+    # left a foot on a removed head pointing elsewhere, all of it without data
+    fitted0 = np.asarray(result.meshes[0][0], np.float64)
     marked = np.zeros(len(V), bool)
     if covers:
         regions = statue_regions(model)
         excluded = excluded_vertices(model)[: len(V)]
         rows = np.nonzero(~excluded)[0]
-        _, _, d_skin = closest_triangles(V[rows], skin.vertices, skin.triangles)
+        skins = {}
         nearest = {}
         for role, pv, pt in covers:
-            _, _, d = closest_triangles(V[rows], pv, pt)
+            X = (fitted0 if role == "removed" else V)[rows]
+            if role not in skins:
+                skins[role] = closest_triangles(X, skin.vertices, skin.triangles)[2]
+            _, _, d = closest_triangles(X, pv, pt)
             nearest[role] = np.minimum(nearest.get(role, np.inf), d)
         for role, d_cover in nearest.items():
+            d_skin = skins[role]
             head = np.isin(
                 regions[rows], [STATUE_REGIONS.index(r) for r in COVER_REGIONS[role]]
             )
@@ -476,6 +483,8 @@ def covered_skin(folder, result, model=None) -> int:
 SEAT_REACH = 0.02
 SEAT_SINK = 0.0005
 SEAT_BLEND = 0.025
+# by role, the reach and the blend (metres): a hat's brim was cut a slab above the brow
+SEAT_BY_ROLE = {"clothing": (0.05, 0.04), "hair": (0.03, 0.03)}
 
 
 def seat_piece(
