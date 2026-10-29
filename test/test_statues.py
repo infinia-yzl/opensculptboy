@@ -266,6 +266,21 @@ def _grid(n=11, size=0.1):
     return V, np.asarray(T)
 
 
+class TestStartPose(unittest.TestCase):
+    def test_library_start_finds_the_contrapposto(self):
+        from opensculptboy.statues.fit import library_start
+
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        reference = Reference.from_mesh(V, T, {"crown": V[np.argmax(V[:, 2])]})
+        name, rotations, scores = library_start(
+            _model(), reference, ["weight_shift", "hands_on_hips"]
+        )
+        self.assertEqual(name, "weight_shift")
+        self.assertEqual(rotations.shape, (len(_model().bone_labels), 3, 3))
+        self.assertLess(scores["weight_shift"], scores["rest"])
+
+
 class TestBorders(unittest.TestCase):
     def test_open_border(self):
         from opensculptboy.statues.fit import open_border

@@ -107,12 +107,80 @@ def lost_mask(model, names, rest_vertices: np.ndarray | None = None) -> np.ndarr
     return mask
 
 
-def fit_statue(folder, detail: int = 2, name: str | None = None, options=None):
+def library_start(model, reference, names=None, samples: int = 6000, seed: int = 0):
+    """
+    The pose of anny's library (:mod:`anny.poses`) that comes closest to the reference, as
+    the parameter stage's start: each pose on a body of the reference's height, standing on
+    the floor and centred over the reference, scored by the mean distance both ways between
+    its vertices and points of the reference (a chamfer distance, in metres). Returns the
+    name, the (B, 3, 3) rotations and the scores by name. The reference stands upright in
+    Anny's frame and faces -Y, as :func:`~opensculptboy.statues.scan_to_handoff` writes it.
+    """
+    import anny.poses
+    import torch
+    from scipy.spatial import cKDTree
+
+    rng = np.random.default_rng(seed)
+    R = reference.vertices
+    target = R[rng.choice(len(R), min(samples, len(R)), replace=False)]
+    target_tree = cKDTree(target)
+    best_height, gap = 0.5, None
+    with torch.no_grad():
+        for h in np.linspace(0.0, 1.0, 11):
+            rest = model(phenotype_kwargs={"height": float(h)})["rest_vertices"][0]
+            g = abs(float(np.ptp(rest[:, 2].numpy())) - float(np.ptp(R[:, 2])))
+            if gap is None or g < gap:
+                best_height, gap = float(h), g
+    phenotype = {"height": best_height}
+    library = anny.poses.library()
+    names = list(names or library.names("pose"))
+    scores, poses = {}, {}
+    for name in names:
+        posed = anny.poses.pose_parameters(model, name, phenotype_kwargs=phenotype)
+        V = posed["vertices"][0].double().numpy()
+        if V.ndim == 3:
+            V = V[0]
+        V = V[rng.choice(len(V), min(samples, len(V)), replace=False)]
+        V = V + [
+            *(target[:, :2].mean(0) - V[:, :2].mean(0)),
+            R[:, 2].min() - V[:, 2].min(),
+        ]
+        forward = cKDTree(V).query(target)[0].mean()
+        backward = target_tree.query(V)[0].mean()
+        scores[name] = float(forward + backward)
+        poses[name] = posed["pose_parameters"][0, :, :3, :3].double().numpy()
+    best = min(scores, key=scores.get)
+    rest = np.eye(3)[None].repeat(len(model.bone_labels), 0)
+    if "rest" not in scores:
+        with torch.no_grad():
+            V = model(phenotype_kwargs=phenotype)["vertices"][0].double().numpy()
+        V = V[rng.choice(len(V), min(samples, len(V)), replace=False)]
+        V = V + [
+            *(target[:, :2].mean(0) - V[:, :2].mean(0)),
+            R[:, 2].min() - V[:, 2].min(),
+        ]
+        scores["rest"] = float(
+            cKDTree(V).query(target)[0].mean() + target_tree.query(V)[0].mean()
+        )
+        poses["rest"] = rest
+        best = min(scores, key=scores.get)
+    return best, poses[best], scores
+
+
+def fit_statue(
+    folder,
+    detail: int = 2,
+    name: str | None = None,
+    options=None,
+    start_pose: str | None = "auto",
+):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
     :func:`~opensculptboy.fit.register.fit_reference` with the parts that ``statue.lost`` of
-    appearance.json names left without data. Returns the
-    :class:`~opensculptboy.fit.register.FitResult`.
+    appearance.json names left without data, the pairs on the scan's open borders dropped,
+    and the parameter stage started from ``start_pose``: a pose of anny's library by name,
+    ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. Returns
+    the :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
     from opensculptboy.fit.reference import Reference
@@ -127,6 +195,12 @@ def fit_statue(folder, detail: int = 2, name: str | None = None, options=None):
         options = dataclasses.replace(options, no_data=lost_mask(model, lost))
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)
+    if start_pose and options.initial_pose is None:
+        names = None if start_pose == "auto" else [start_pose]
+        chosen, rotations, scores = library_start(model, reference, names)
+        options = dataclasses.replace(options, initial_pose=rotations)
+        if options.verbose:
+            print(f"start pose: {chosen} ({1000 * scores[chosen]:.1f} mm)", flush=True)
     title = (appearance.get("statue") or {}).get("title")
     return fit_reference(
         reference,

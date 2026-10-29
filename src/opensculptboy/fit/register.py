@@ -308,6 +308,10 @@ class FitOptions:
     # shape and follow the fitted skin around them through the stiffness (None: all of the
     # skin takes data)
     no_data: np.ndarray | None = None
+    # the pose the parameter stage starts from: (B, 3, 3) rotations of the fit model's bones
+    # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
+    # theirs); None: the rest pose
+    initial_pose: np.ndarray | None = None
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -2437,6 +2441,14 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
     params = _Parameters(
         model, rotation0, translation0, height0, options.shared_targets
     )
+    if options.initial_pose is not None:
+        import roma
+
+        start = np.asarray(options.initial_pose, dtype=np.float64)[params.free]
+        with torch.no_grad():
+            params.rotvec.copy_(
+                roma.rotmat_to_rotvec(torch.as_tensor(start, dtype=params.rotvec.dtype))
+            )
     excluded = excluded_vertices(model)
     if options.no_data is not None:
         excluded = excluded | np.asarray(options.no_data, bool)

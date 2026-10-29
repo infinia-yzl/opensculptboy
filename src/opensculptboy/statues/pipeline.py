@@ -18,6 +18,7 @@ A config (``opensculptboy.statue/1``, JSON) names the scan and says what the sca
       "plinth": true,
       "masks": [{"kind": "box", "role": "support", "centre": [-0.2, 0.4, -0.1], "size": [0.2, 0.8, 0.2]}],
       "lost": ["hand.l"],
+      "pose": "auto",
       "landmarks": {"nose_tip": [0.0, 1.62, 0.12], "knee_l": [0.1, 0.5, 0.0]}
     }
 
@@ -25,7 +26,9 @@ Positions of masks and landmarks are in the frame of the converted figure (``rep
 metres, Y up, the figure facing +Z, standing on y = 0), which depends on the config's
 ``stature``, ``up``, ``front`` and ``plinth`` alone; the ``preview`` step draws that frame
 with a grid, so that a person reads the positions off its pictures. Landmark hints of the
-face snap to the nearest point of the scan; hints of joints stay where they are given.
+face snap to the nearest point of the scan; hints of joints stay where they are given. ``pose``
+names the pose of anny's library that the fit starts from, ``"auto"`` (the default) for the
+closest one, or null for the rest pose.
 
 :func:`run_statue` runs the steps in order, each writing into ``<out>/<name>/``:
 
@@ -68,6 +71,7 @@ class StatueConfig:
     masks: list = dataclasses.field(default_factory=list)
     lost: list = dataclasses.field(default_factory=list)
     landmarks: dict = dataclasses.field(default_factory=dict)
+    pose: str | None = "auto"
     detail: int = 2
     notes: str | None = None
     path: pathlib.Path | None = None  # the config file, for relative scan paths
@@ -283,6 +287,7 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False):
         detail=config.detail,
         name=config.name,
         options=FitOptions(verbose=verbose),
+        start_pose=config.pose,
     )
     card = pathlib.Path(card)
     card.parent.mkdir(parents=True, exist_ok=True)
