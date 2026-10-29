@@ -119,6 +119,10 @@ def _mask_in_anny(entry, to_anny, scale: float) -> Mask:
 
     if mask.centre is not None:
         mask.centre = point(mask.centre)
+    if mask.start is not None:
+        mask.start = point(mask.start)
+    if mask.end is not None:
+        mask.end = point(mask.end)
     if mask.point is not None:
         mask.point = point(mask.point)
     if mask.normal is not None:

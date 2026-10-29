@@ -84,6 +84,15 @@ class TestScanFrame(unittest.TestCase):
         self.assertEqual(
             half.inside(np.array([[0, 0, 0.5], [0, 0, 1.5]])).tolist(), [False, True]
         )
+        capsule = Mask.from_dict(
+            {"kind": "capsule", "start": [0, 0, 0], "end": [0, 0, 1], "radius": 0.1}
+        )
+        self.assertEqual(
+            capsule.inside(
+                np.array([[0.05, 0, 0.5], [0.15, 0, 0.5], [0, 0, 1.08]])
+            ).tolist(),
+            [True, False, True],
+        )
         with self.assertRaises(ValueError):
             Mask.from_dict({"kind": "box", "role": "pedestal"})
 

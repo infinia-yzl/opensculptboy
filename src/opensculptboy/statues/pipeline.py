@@ -259,6 +259,17 @@ def preview(config: StatueConfig, folder, out, size=(720, 1080)):
         path = out / f"{label}.png"
         image.save(path)
         pictures[label] = str(path)
+    # the figure that the fit takes, alone
+    skin = [m for m, p in zip(meshes, handoff.parts) if p.is_skin]
+    for label, view in (("figure_front", View(0.0)), ("figure_side", View(-90.0))):
+        image = draw(skin, view, size, 30.0, points)
+        image = _grid_lines(image, view, points, size, 30.0)
+        image = labelled(
+            image, [f"{config.title or config.name}: {label}", "the skin of the fit"]
+        )
+        path = out / f"{label}.png"
+        image.save(path)
+        pictures[label] = str(path)
     return pictures
 
 

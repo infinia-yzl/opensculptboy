@@ -288,8 +288,9 @@ class Mask:
     """
     A region of the scan in Anny's frame (metres) and what it holds. ``kind`` is ``"box"``
     (``centre``, ``size``), ``"sphere"`` (``centre``, ``radius``), ``"half"`` (``point``,
-    ``normal``: the side the normal points to) or ``"vertices"`` (``indices`` into the scan's
-    welded vertices). ``role`` is ``"support"`` (a strut, a stump or the plinth: taken out),
+    ``normal``: the side the normal points to), ``"capsule"`` (``start``, ``end``, ``radius``:
+    the points within ``radius`` of the segment, for a spear, a sword or a slanted strut) or
+    ``"vertices"`` (``indices`` into the scan's welded vertices). ``role`` is ``"support"`` (a strut, a stump or the plinth: taken out),
     ``"break"`` (the face of a break where a part was lost: taken out, so that anny keeps its
     own shape there), ``"drapery"`` (kept as clothing, out of the fit) or ``"hair"`` (kept as a
     sculpted mass of its own, out of the fit).
@@ -303,6 +304,8 @@ class Mask:
     point: tuple | None = None
     normal: tuple | None = None
     indices: tuple | None = None
+    start: tuple | None = None
+    end: tuple | None = None
     name: str | None = None
 
     ROLES = ("support", "break", "drapery", "hair")
@@ -328,6 +331,12 @@ class Mask:
             return (np.abs(P - np.asarray(self.centre)) <= half).all(1)
         if self.kind == "sphere":
             return np.linalg.norm(P - np.asarray(self.centre), axis=1) <= self.radius
+        if self.kind == "capsule":
+            a = np.asarray(self.start, dtype=np.float64)
+            b = np.asarray(self.end, dtype=np.float64)
+            ab = b - a
+            t = np.clip((P - a) @ ab / max(ab @ ab, 1e-18), 0.0, 1.0)
+            return np.linalg.norm(P - (a + t[:, None] * ab), axis=1) <= self.radius
         if self.kind == "half":
             normal = axis_vector(self.normal)
             return (P - np.asarray(self.point)) @ normal >= 0.0
