@@ -123,7 +123,6 @@ def library_start(model, reference, names=None, samples: int = 6000, seed: int =
 
     from opensculptboy.statues.scan import surface_points
 
-    rng = np.random.default_rng(seed)
     R = reference.vertices
     # points spread by area: a scan packs its vertices where it has detail (the curls)
     target = surface_points(R, reference.triangles, samples, seed)[-samples:]
@@ -144,6 +143,13 @@ def library_start(model, reference, names=None, samples: int = 6000, seed: int =
         V = V - [*centre(V), V[:, 2].min()]
         V = V * (height / max(np.ptp(V[:, 2]), 1e-9))
         return V + [*centre(target), R[:, 2].min()]
+
+    def score(V):
+        # the mean of the nearest 90 % of the distances both ways: a hat or a stump left in
+        # the scan weighs little
+        a = np.sort(cKDTree(V).query(target)[0])
+        b = np.sort(target_tree.query(V)[0])
+        return float(a[: int(0.9 * len(a))].mean() + b[: int(0.9 * len(b))].mean())
 
     library = anny.poses.library()
     names = list(names or library.names("pose"))
