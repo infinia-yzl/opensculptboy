@@ -2463,9 +2463,17 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
     fit_rows = np.nonzero(~excluded)[0]
     triangles = model.faces.cpu().numpy()
     rng = np.random.default_rng(options.seed)
+    # a reference's open borders (a statue's cut supports and hat) take no pairs: the
+    # surface past a cut would pull anny's skin onto the cut's edge
+    border = reference.regions.get("border")
+    candidates = (
+        np.arange(len(reference.vertices))
+        if border is None
+        else np.nonzero(~np.asarray(border, bool))[0]
+    )
     sample = rng.choice(
-        len(reference.vertices),
-        min(options.reverse_samples, len(reference.vertices)),
+        candidates,
+        min(options.reverse_samples, len(candidates)),
         replace=False,
     )
     sample_points = torch.as_tensor(reference.vertices[sample])
@@ -2561,7 +2569,15 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
             out, placed, R, t = forward()
         X = placed.numpy()
         if split_target is None:
-            C, N, d, _, _ = reference.closest(X[fit_rows])
+            C, N, d, tri, bary = reference.closest(X[fit_rows])
+            if border is not None:
+                on_border = (
+                    np.asarray(border, bool)[reference.triangles[tri]] | (bary < 1e-6)
+                ).all(1)
+                along = np.sqrt(
+                    np.maximum(d**2 - ((X[fit_rows] - C) * N).sum(1) ** 2, 0.0)
+                )
+                d = np.where(on_border & (along > 0.5 * d) & (d > 2e-4), np.inf, d)
         else:
             C, N, d, off = split_target.closest(X[fit_rows], fit_rows, edge=True)
         normals = vertex_normals(X, triangles)[fit_rows]
