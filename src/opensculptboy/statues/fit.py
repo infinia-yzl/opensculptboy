@@ -223,7 +223,7 @@ def fit_statue(
     if lost or covered:
         no_data = lost_mask(model, lost)
         no_data[np.asarray(covered, np.int64)] = True
-        options = dataclasses.replace(options, no_data=no_data)
+        options = dataclasses.replace(options, no_data=no_data, fill_no_data=True)
     if options.relax_dents == 0:
         # a dense fit of a coarse scan dents single vertices (a pit on a forehead)
         options = dataclasses.replace(options, relax_dents=PIT_EXCESS)

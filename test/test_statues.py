@@ -249,6 +249,7 @@ class TestLostParts(unittest.TestCase):
                 fit_statue(pathlib.Path(tmp) / "h", detail=0)
             options = fit.call_args.kwargs["options"]
             self.assertGreater(np.asarray(options.no_data).sum(), 100)
+            self.assertTrue(options.fill_no_data)
         with self.assertRaises(ValueError):
             scan_to_handoff(
                 (statue["vertices"], statue["triangles"]), tmp, lost=["wing.l"]

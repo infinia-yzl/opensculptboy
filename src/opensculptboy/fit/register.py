@@ -312,6 +312,10 @@ class FitOptions:
     # shape and follow the fitted skin around them through the stiffness (None: all of the
     # skin takes data)
     no_data: np.ndarray | None = None
+    # the offsets of the vertices without data are the harmonic extension of the fitted
+    # offsets around them on every level, so that a skull under a hat or a foot on a removed
+    # piece shrinks or swells with the skin around it, smoothly (False: the stiffness alone)
+    fill_no_data: bool = False
     # a solid figure (FitOptions.close_openings): the eyeballs' vertices within this angle
     # (degrees) of the forward direction take the carved eye, and the linings of the sockets
     # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
@@ -3398,6 +3402,27 @@ def fit_levels(
                 rotation,
                 translation,
             )
+        if options.fill_no_data and options.no_data is not None:
+            from opensculptboy.fit.lips import harmonic_fill
+
+            lost = np.asarray(topology.apply(np.asarray(options.no_data, np.float64)))
+            free = (lost > 0.5) & np.asarray(mask, bool)
+            if free.any():
+                offsets[subdiv] = harmonic_fill(
+                    np.asarray(offsets[subdiv], np.float64), topology.triangles, free
+                )
+                rows = np.nonzero(free)[0]
+                fitted[rows] = R_.pose_vertices(
+                    (parametric + offsets[subdiv])[rows],
+                    w[rows],
+                    i[rows],
+                    transforms,
+                    rotation,
+                    translation,
+                )
+                _log(
+                    options, f"level {subdiv}: {len(rows)} vertices without data filled"
+                )
         if options.close_openings > 0:
             fitted, offsets[subdiv] = _close_openings(
                 model,
@@ -3573,7 +3598,7 @@ def _close_openings(
     except ValueError:
         eyes = {}
     surface = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
-    moved, carved = [], []
+    moved, carved, eye_centres = [], [], []
     for side_rows in eyes.values():
         base = np.zeros(n0)
         base[side_rows] = 1.0
@@ -3581,6 +3606,7 @@ def _close_openings(
         if not len(eye):
             continue
         centre = fitted[eye].mean(0)
+        eye_centres.append(centre)
         near = lining & (np.linalg.norm(fitted - centre, axis=1) < 0.03)
         if not near.any():
             continue
@@ -3616,6 +3642,9 @@ def _close_openings(
         # inside the solid figure: where the carved face is narrower than anny's, they would
         # show through the cheek and at the outer corners of the eyes
         hidden = lining.copy()
+        near_eyes = np.zeros(len(fitted), bool)
+        for centre in eye_centres:
+            near_eyes |= np.linalg.norm(fitted - centre, axis=1) < 0.03
         for side_rows in eyes.values():
             base = np.zeros(n0)
             base[side_rows] = 1.0
@@ -3631,8 +3660,35 @@ def _close_openings(
             for done in carved:
                 on[done] = True
             out &= ~on[rows]
-            fitted[rows[out]] = closest[out] - options.close_inside * normal[out]
-            moved += [rows[out]]
+            # each moves in along its own ray from the centre of its opening (the nearer
+            # eyeball's, or the mouth's) to just inside the first marble it meets: moved to
+            # their closest points, the vertices of a corner folded into a crumpled knot
+            out_rows = rows[out]
+            if len(out_rows):
+                centres = np.asarray(eye_centres + [fitted[lining].mean(0)])
+                if eye_centres:
+                    mouth = (
+                        fitted[lining & ~near_eyes].mean(0)
+                        if (lining & ~near_eyes).any()
+                        else centres[-1]
+                    )
+                    centres[-1] = mouth
+                pick = np.argmin(
+                    np.linalg.norm(fitted[out_rows][:, None] - centres[None], axis=2), 1
+                )
+                origin = centres[pick]
+                ray = fitted[out_rows] - origin
+                length = np.linalg.norm(ray, axis=1)
+                direction = ray / np.maximum(length, 1e-12)[:, None]
+                hits, index, _ = surface.ray.intersects_location(
+                    origin, direction, multiple_hits=False
+                )
+                reach = length.copy() * options.eyeball_shrink
+                hit = np.linalg.norm(hits - origin[index], axis=1)
+                reach[index] = np.minimum(length[index], hit - options.close_inside)
+                reach = np.maximum(reach, 0.2 * length)
+                fitted[out_rows] = origin + direction * reach[:, None]
+                moved += [out_rows]
     changed = np.unique(np.concatenate(moved)) if moved else np.zeros(0, np.int64)
     offsets = offsets.copy()
     if len(changed):
