@@ -312,6 +312,11 @@ class FitOptions:
     # shape and follow the fitted skin around them through the stiffness (None: all of the
     # skin takes data)
     no_data: np.ndarray | None = None
+    # a solid figure (FitOptions.close_openings): the eyeballs' vertices within this angle
+    # (degrees) of the forward direction take the carved eye, and the linings of the sockets
+    # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
+    close_openings_cone: float = 60.0
+    close_inside: float = 0.0015
     # the pose the parameter stage starts from: (B, 3, 3) rotations of the fit model's bones
     # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
     # theirs); None: the rest pose
@@ -3460,6 +3465,15 @@ def cavity_vertices(model) -> np.ndarray:
     return out_base[base_mesh_rows(model)]
 
 
+def _outward(reference) -> float:
+    """1 when the reference's normals point out of it, -1 when its triangles turn inward: the
+    sign of its volume (a scan with open cuts still encloses most of its figure)."""
+    V = np.asarray(reference.vertices, np.float64)
+    T = np.asarray(reference.triangles)
+    a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
+    return 1.0 if float((a * np.cross(b, c)).sum()) >= 0 else -1.0
+
+
 def _close_openings(
     model, topology, fitted, offsets, parametric, reference, options, skin
 ):
@@ -3469,8 +3483,10 @@ def _close_openings(
     lining of its socket) moves onto the reference along the rays from the eyeball's centre
     through its vertices, so that the eyeball takes the carved surface inside the lids
     without folding; a hit further than ``close_openings`` from the vertex is left. The
-    eyeball's back half shrinks by ``eyeball_shrink`` behind it. (The closed lips come from
-    the lip seal, ``lip_seal_max_shift``.)
+    eyeball's back half shrinks by ``eyeball_shrink`` behind it, and the vertices of the front
+    half beyond ``close_openings_cone`` of the forward direction shrink too. The linings and
+    the hidden parts of the eyeballs then move ``close_inside`` behind the reference where
+    they would show through it. (The closed lips come from the lip seal, ``lip_seal_self``.)
     """
     import trimesh
 
@@ -3485,7 +3501,7 @@ def _close_openings(
     except ValueError:
         eyes = {}
     surface = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
-    moved = []
+    moved, carved = [], []
     for side_rows in eyes.values():
         base = np.zeros(n0)
         base[side_rows] = 1.0
@@ -3499,7 +3515,9 @@ def _close_openings(
         forward = fitted[near].mean(0) - centre
         forward /= max(np.linalg.norm(forward), 1e-12)
         radial = fitted[eye] - centre
-        front = (radial @ forward) > 0
+        cosine = (radial @ forward) / np.maximum(np.linalg.norm(radial, axis=1), 1e-12)
+        # rays far from the forward direction graze the lids and hit the temple
+        front = cosine > np.cos(np.radians(options.close_openings_cone))
         back = eye[~front]
         fitted[back] = centre + options.eyeball_shrink * (fitted[back] - centre)
         rows = eye[front]
@@ -3516,10 +3534,33 @@ def _close_openings(
             np.linalg.norm(target - fitted[rows], axis=1) < options.close_openings
         )
         fitted[rows[ok]] = target[ok]
+        carved.append(rows[ok])
         # the rest of the front half stays behind the carved surface
         rest = rows[~ok]
         fitted[rest] = centre + options.eyeball_shrink * (fitted[rest] - centre)
         moved += [eye]
+    if options.close_inside > 0:
+        # the linings of the sockets and of the mouth, and the eyeballs' hidden parts, stay
+        # inside the solid figure: where the carved face is narrower than anny's, they would
+        # show through the cheek and at the outer corners of the eyes
+        hidden = lining.copy()
+        for side_rows in eyes.values():
+            base = np.zeros(n0)
+            base[side_rows] = 1.0
+            hidden |= np.asarray(topology.apply(base)) > 0.5
+        rows = np.nonzero(hidden)[0]
+        if len(rows):
+            closest, normal = reference.closest(fitted[rows])[:2]
+            normal = normal * _outward(reference)
+            depth = ((fitted[rows] - closest) * normal).sum(1)
+            out = depth > -options.close_inside
+            # a carved eyeball's front lies on the surface: it stays
+            on = np.zeros(len(fitted), bool)
+            for done in carved:
+                on[done] = True
+            out &= ~on[rows]
+            fitted[rows[out]] = closest[out] - options.close_inside * normal[out]
+            moved += [rows[out]]
     changed = np.unique(np.concatenate(moved)) if moved else np.zeros(0, np.int64)
     offsets = offsets.copy()
     if len(changed):

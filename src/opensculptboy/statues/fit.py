@@ -213,11 +213,15 @@ def fit_statue(
 
     folder = pathlib.Path(folder)
     appearance = json.loads((folder / "appearance.json").read_text(encoding="utf-8"))
-    lost = list((appearance.get("statue") or {}).get("lost") or [])
+    statue = appearance.get("statue") or {}
+    lost = list(statue.get("lost") or [])
+    covered = list(statue.get("covered") or [])
     options = options or FitOptions()
     model = fit_model(options.topology)
-    if lost:
-        options = dataclasses.replace(options, no_data=lost_mask(model, lost))
+    if lost or covered:
+        no_data = lost_mask(model, lost)
+        no_data[np.asarray(covered, np.int64)] = True
+        options = dataclasses.replace(options, no_data=no_data)
     if solid and options.close_openings == 0:
         # carved eyes, and closed lips sealed further than a character's would be
         options = dataclasses.replace(
@@ -352,3 +356,51 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
         json.dumps(appearance, indent=2) + "\n", encoding="utf-8"
     )
     return counts
+
+
+# the head's regions whose skin a statue's hat or fused locks may cover
+COVER_REGIONS = ("scalp", "ears", "neck", "face")
+# a vertex is covered when a hair or drapery piece lies this much (metres) nearer to it than
+# the skin, and the skin is further than COVER_SKIN
+COVER_MARGIN = 0.002
+COVER_SKIN = 0.004
+
+
+def covered_skin(folder, result, model=None) -> int:
+    """
+    Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
+    of the head that a hat or fused locks cover, by a first fit (``result``, its level 0):
+    those whose nearest piece of the statue is a hair or drapery piece rather than the skin.
+    The scan has no skin under the hat and the locks, and the skin's cut at their edges would
+    pull the skull flat onto it; :func:`fit_statue` gives those vertices no data, so that the
+    skull keeps anny's own shape under them and follows the fitted skin around it. Returns
+    the number of vertices marked.
+    """
+    from anny.hair import closest_triangles
+    from opensculptboy.fit.handoff import load_handoff
+    from opensculptboy.fit.register import excluded_vertices, fit_model
+    from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+    folder = pathlib.Path(folder)
+    model = model or fit_model()
+    handoff = load_handoff(folder)
+    skin = handoff.skin_parts()[0]
+    covers = [p for p in handoff.parts if p.role in ("hair", "clothing")]
+    V = np.asarray(result.meshes[0][0], np.float64)
+    marked = np.zeros(len(V), bool)
+    if covers:
+        regions = statue_regions(model)
+        head = np.isin(regions, [STATUE_REGIONS.index(r) for r in COVER_REGIONS])
+        head[excluded_vertices(model)] = False
+        rows = np.nonzero(head[: len(V)])[0]
+        _, _, d_skin = closest_triangles(V[rows], skin.vertices, skin.triangles)
+        d_cover = np.full(len(rows), np.inf)
+        for part in covers:
+            _, _, d = closest_triangles(V[rows], part.vertices, part.triangles)
+            d_cover = np.minimum(d_cover, d)
+        marked[rows] = (d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN)
+    path = folder / "appearance.json"
+    appearance = json.loads(path.read_text(encoding="utf-8"))
+    appearance.setdefault("statue", {})["covered"] = np.nonzero(marked)[0].tolist()
+    path.write_text(json.dumps(appearance, indent=2) + "\n", encoding="utf-8")
+    return int(marked.sum())

@@ -420,6 +420,43 @@ class TestPrune(unittest.TestCase):
             self.assertEqual(sorted(p.role for p in handoff.parts), ["hair", "skin"])
             self.assertTrue((pathlib.Path(folder) / "removed.glb").exists())
 
+    def test_skull_under_a_hat_takes_no_data(self):
+        import types
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import covered_skin, prune_far
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        top = V[:, 2].max()
+        cap = (V[T][:, :, 2] > top - 0.07).all(1)
+        # the cap of the skull as a hat 4 cm out: pruned to a hair piece, it covers the skull
+        centre = np.array([V[:, 0].mean(), V[V[:, 2] > top - 0.2, 1].mean(), top - 0.1])
+        hat = V.copy()
+        out = hat - centre
+        hat = centre + out * (1 + 0.04 / np.linalg.norm(out, axis=1))[:, None]
+        used = np.unique(T[cap])
+        remap = np.full(len(V), -1)
+        remap[used] = np.arange(len(used))
+        S = np.concatenate([V, hat[used]])
+        F = np.concatenate([T[~cap], remap[T[cap]] + len(V)])
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = write_handoff(pathlib.Path(tmp) / "h", S, F, name="statue")
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            prune_far(folder, result, model)
+            count = covered_skin(folder, result, model)
+            appearance = json.loads(
+                (pathlib.Path(folder) / "appearance.json").read_text("utf-8")
+            )
+            covered = np.asarray(appearance["statue"]["covered"])
+            self.assertEqual(count, len(covered))
+            self.assertIn(int(np.argmax(V[:, 2])), covered)
+            self.assertGreater(count, 50)
+            # the skin the scan keeps keeps its data
+            self.assertLess(V[covered, 2].min(), top)
+            self.assertGreater(V[covered, 2].min(), top - 0.07)
+
 
 class TestRegionDistances(unittest.TestCase):
     def test_regions_and_zero_distance(self):

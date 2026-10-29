@@ -340,9 +340,14 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False):
     pruned = None
     if config.prune:
         # a first fit to level 0 tells the figure from what is left of props and supports
-        from opensculptboy.statues.fit import prune_far
+        from opensculptboy.statues.fit import covered_skin, prune_far
 
-        pruned = prune_far(folder, run(0), distance=float(config.prune))
+        first = run(0)
+        pruned = prune_far(folder, first, distance=float(config.prune))
+        # the skull under a hat and fused locks keeps anny's own shape
+        pruned["covered"] = covered_skin(folder, first)
+        if verbose:
+            print(f"pruned {pruned}", flush=True)
     result = run(config.detail)
     result.pruned = pruned
     card = pathlib.Path(card)
