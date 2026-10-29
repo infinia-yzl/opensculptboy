@@ -187,7 +187,9 @@ def under_cover(
     face, bary, distance = closest_triangles(points, V, T)
     closest = np.einsum("nk, nkd -> nd", bary, V[T[face]])
     a, b, c = (V[T[face, k]] for k in range(3))
-    side = ((points - closest) * np.cross(b - a, c - a)).sum(1)
+    normal = np.cross(b - a, c - a)
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
+    side = ((points - closest) * normal).sum(1)
     out = side > through
     return {
         "vertices": int(keep.sum()),
