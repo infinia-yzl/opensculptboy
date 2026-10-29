@@ -247,9 +247,13 @@ def _grid_lines(image, view, points, size, margin, step=0.1):
     for u in np.arange(np.floor(lo[0] / step) * step, hi[0] + step, step):
         x = u * s + ox
         paint.line([(x, 0), (x, size[1])], fill=(160, 70, 40, 60))
-        paint.text(
-            (x + 2, size[1] - 14), f"{name} {sign * u:+.1f}", (160, 70, 40), font
-        )
+        if round(u / step) % label_every == 0:
+            paint.text(
+                (x + 2, size[1] - 14),
+                f"{name} {sign * u:+.{digits}f}",
+                (160, 70, 40),
+                font,
+            )
     return image
 
 
