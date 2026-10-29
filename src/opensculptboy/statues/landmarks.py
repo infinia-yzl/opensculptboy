@@ -39,8 +39,6 @@ NAMES = {
     "right_knee": "knee_r",
     "left_ankle": "ankle_l",
     "right_ankle": "ankle_r",
-    "left_foot_index": "toe_l",
-    "right_foot_index": "toe_r",
 }
 # the face's points come from the front picture alone (the side picture sees one eye)
 FACE = (
@@ -51,7 +49,7 @@ FACE = (
     "right_eye_inner",
 )
 FACE += ("mouth_left", "mouth_right")
-PAIRS = ("shoulder", "elbow", "wrist", "hip", "knee", "ankle", "foot_index")
+PAIRS = ("shoulder", "elbow", "wrist", "hip", "knee", "ankle")
 # landmarks that MediaPipe sees less clearly than this are left out
 VISIBILITY = 0.5
 SIZE = (768, 1152)
