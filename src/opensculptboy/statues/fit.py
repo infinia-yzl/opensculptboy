@@ -36,8 +36,8 @@ LOST_PARTS = {
 NOSE_RADIUS = 0.014
 # a solid statue: the eyeballs' front takes the carved eye within this distance (metres)
 SOLID_REACH = 0.015
-# and seals the closed lips when their rows move up to this distance (metres) to the line
-# where the scan's lips meet
+# and seals the lips where anny's fitted lips meet when their rows move up to this distance
+# (metres): a statue's lips are carved shut, with no crease for the fit to find
 SOLID_LIP_SHIFT = 0.012
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
 BORDER_RINGS = 2
@@ -224,6 +224,7 @@ def fit_statue(
             options,
             close_openings=SOLID_REACH,
             lip_seal_max_shift=max(options.lip_seal_max_shift, SOLID_LIP_SHIFT),
+            lip_seal_self=True,
         )
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)

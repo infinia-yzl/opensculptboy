@@ -362,6 +362,43 @@ def on_line(points: np.ndarray, line: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return target, inside
 
 
+def meeting_line(
+    upper: np.ndarray,
+    lower: np.ndarray,
+    reference=None,
+    step: float = 5e-4,
+    snap: float = 0.003,
+) -> LipLine | None:
+    """
+    A line where two lip edges (points (N, 3) and (M, 3), anny's frame, the front at -y) meet:
+    the middle of the edges at each x that both span, every ``step`` metres, moved onto the
+    nearest point of ``reference`` (anything with ``closest(points)``) where that lies within
+    ``snap`` metres. A solid statue's lips are carved shut and leave no crease that
+    :func:`lip_line` can find, so the fit closes anny's lips where its own fitted edges meet;
+    None when the edges share less than three steps.
+    """
+    upper = np.asarray(upper, np.float64)
+    lower = np.asarray(lower, np.float64)
+    if len(upper) < 2 or len(lower) < 2:
+        return None
+    upper = upper[np.argsort(upper[:, 0])]
+    lower = lower[np.argsort(lower[:, 0])]
+    x0 = max(upper[0, 0], lower[0, 0])
+    x1 = min(upper[-1, 0], lower[-1, 0])
+    xs = np.arange(x0, x1 + 0.5 * step, step)
+    if len(xs) < 3:
+        return None
+    a = np.stack([np.interp(xs, upper[:, 0], upper[:, k]) for k in range(3)], 1)
+    b = np.stack([np.interp(xs, lower[:, 0], lower[:, k]) for k in range(3)], 1)
+    line = 0.5 * (a + b)
+    if reference is not None:
+        on = np.asarray(reference.closest(line)[0], np.float64)
+        near = np.linalg.norm(on - line, axis=1) < snap
+        line[near] = on[near]
+    line[:, 0] = xs
+    return LipLine(line, line.copy())
+
+
 def _adjacency(n: int, triangles: np.ndarray):
     """The vertex adjacency (n, n) of a triangle mesh, as a CSR matrix of ones."""
     from scipy.sparse import coo_matrix
@@ -425,6 +462,7 @@ class Seal:
     corners: np.ndarray = dataclasses.field(
         default_factory=lambda: np.zeros(0, np.int64)
     )  # the corners moved onto the line's ends
+    line: "LipLine | None" = None  # the line the rows moved onto
 
 
 def lip_corners(vertices: np.ndarray, roll: np.ndarray, box: MouthBox) -> np.ndarray:
@@ -518,6 +556,7 @@ def seal_lips(
         moved,
         shift,
         np.intersect1d(given, rows),
+        line,
     )
 
 

@@ -218,6 +218,10 @@ class FitOptions:
     # lip_seal_max_shift (metres, their mean) to reach the line
     lip_seal_max_gap: float = 0.001
     lip_seal_max_shift: float = 0.004
+    # seal the lips where anny's own fitted edges meet (lips.meeting_line) in place of the
+    # reference's line: a solid statue's lips are carved shut, with no crease or opening to
+    # find, and a figure is closed whatever its mouth
+    lip_seal_self: bool = False
     # after the seal and the repair, the skin within lip_corner_radius (metres) of each end of
     # the reference's lip line (the mouth's visible corners), outside the inside of the mouth,
     # is faired on the reference (fair_skin) with this fairness on each level (_per_level; 0:
@@ -2792,6 +2796,14 @@ def _seal_level(
         posed, *L_.lip_masks(posed, roll, jaw, box, spacing), box, spacing
     )
     corners = L_.lip_corners(posed, roll, box) if with_corners else everything[:0]
+    if line is None:
+        # a solid statue: the lips meet where anny's own fitted edges meet
+        current = pose(parametric + offsets, everything)
+        line = L_.meeting_line(current[upper], current[lower], reference)
+        if line is None:
+            return offsets, L_.Seal(
+                everything[:0], everything[:0], np.zeros(len(everything), bool), 0.0
+            )
     held = None
     if reference is not None and reach > 0:
         from scipy.spatial import cKDTree
@@ -2910,6 +2922,9 @@ def fit_levels(
         ):
             _log(options, "lips: the reference's lips stand apart; no seal")
             lip_line_ = None
+        if options.lip_seal_self and lip_box is not None:
+            _log(options, "lips: sealed where anny's own edges meet")
+            lip_line_ = "self"
     skin0 = None
     if any(f > 0 for f in options.skin_fairness):
         from opensculptboy.fit import metrics as skin_metrics
@@ -3203,7 +3218,7 @@ def fit_levels(
                     parametric,
                     topology,
                     lip_box,
-                    lip_line_,
+                    None if lip_line_ == "self" else lip_line_,
                     np.asarray(topology.apply(zone_lips0)) > 0.5,
                     np.asarray(topology.apply(cavity0)) > 0.5,
                     np.asarray(topology.apply(jaw0)),
@@ -3285,7 +3300,7 @@ def fit_levels(
                     parametric,
                     topology.triangles,
                     target,
-                    lip_line_.ends,
+                    seal.line.ends if seal.line is not None else lip_line_.ends,
                     np.asarray(topology.apply(cavity0)) > 0.5,
                     (seal.upper, seal.lower),
                     lambda p, r: R_.pose_vertices(

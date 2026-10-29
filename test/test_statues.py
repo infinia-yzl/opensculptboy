@@ -439,5 +439,54 @@ class TestRegionDistances(unittest.TestCase):
         self.assertLess(cut["regions"]["torso"]["far"], 0.01)
 
 
+class TestSolid(unittest.TestCase):
+    def test_meeting_line(self):
+        from opensculptboy.fit.lips import meeting_line
+
+        x = np.linspace(-0.02, 0.02, 21)
+        upper = np.c_[x, np.zeros_like(x), np.full_like(x, 0.002)]
+        lower = np.c_[x[2:] * 0.9, np.zeros(19), np.full(19, -0.002)]
+        line = meeting_line(upper, lower)
+        # the middle of the edges, where both span them
+        np.testing.assert_allclose(line.upper[:, 2], 0.0, atol=1e-12)
+        self.assertAlmostEqual(line.upper[0, 0], lower[:, 0].min())
+        self.assertLessEqual(line.upper[-1, 0], lower[:, 0].max() + 1e-12)
+        np.testing.assert_allclose(line.gap(), 0.0)
+
+        class Plane:  # a carved surface 1 mm in front of the lips
+            def closest(self, points):
+                p = np.asarray(points).copy()
+                p[:, 1] = -0.001
+                return p, None, np.abs(np.asarray(points)[:, 1] + 0.001)
+
+        snapped = meeting_line(upper, lower, Plane())
+        np.testing.assert_allclose(snapped.upper[:, 1], -0.001)
+        far = meeting_line(upper, lower, Plane(), snap=0.0005)
+        np.testing.assert_allclose(far.upper[:, 1], 0.0)
+        self.assertIsNone(meeting_line(upper[:1], lower))
+
+    def test_solid_statue_closes_its_openings(self):
+        from unittest import mock
+
+        from opensculptboy.statues import fit_statue
+        from opensculptboy.statues.fit import SOLID_LIP_SHIFT, SOLID_REACH
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            scan_to_handoff(
+                (statue["vertices"], statue["triangles"]), pathlib.Path(tmp) / "h"
+            )
+            for solid in (True, False):
+                with mock.patch("opensculptboy.fit.register.fit_reference") as fit:
+                    fit_statue(
+                        pathlib.Path(tmp) / "h", detail=0, solid=solid, start_pose=None
+                    )
+                options = fit.call_args.kwargs["options"]
+                self.assertEqual(options.lip_seal_self, solid)
+                self.assertEqual(options.close_openings, SOLID_REACH if solid else 0)
+                if solid:
+                    self.assertEqual(options.lip_seal_max_shift, SOLID_LIP_SHIFT)
+
+
 if __name__ == "__main__":
     unittest.main()
