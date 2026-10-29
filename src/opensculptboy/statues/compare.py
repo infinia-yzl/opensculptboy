@@ -11,6 +11,8 @@ both ways: from each fitted vertex to the surface (``forward``) and from points 
 to the fitted mesh (``reverse``, each point in the region of its nearest fitted vertex), in
 millimetres. ``far`` is the share of the fitted vertices more than :data:`FAR` from the
 surface: where the scan has nothing, such as a lost hand, which anny fills with its own shape.
+``uncovered`` is the share of the surface's points more than :data:`UNCOVERED` from the fit,
+which the reverse distances leave out: pieces that the fit does not cover.
 """
 
 from __future__ import annotations
@@ -30,6 +32,10 @@ STATUE_REGIONS = (
 )
 # a fitted vertex further than this (metres) from the scan has no scan under it
 FAR = 0.005
+# a point of the scan further than this (metres) from the fitted surface is a piece that the
+# fit does not cover (a prop, a leftover of a support, a lock of hair standing off): counted
+# as "uncovered" and left out of the reverse distances
+UNCOVERED = 0.02
 _ARM_WORDS = ("clavicle", "shoulder", "upperarm", "lowerarm")
 _LEG_WORDS = ("upperleg", "lowerleg")
 _FOOT_WORDS = ("foot", "toe")
@@ -137,10 +143,14 @@ def region_distances(
 
     def entry(fwd, rev):
         far = np.asarray(fwd)[np.isfinite(fwd)]
+        rev = np.asarray(rev)
         return {
             "forward": _stats(fwd),
-            "reverse": _stats(rev),
+            "reverse": _stats(rev[rev <= UNCOVERED]),
             "far": round(float((far > FAR).mean()), 4) if len(far) else None,
+            "uncovered": round(float((rev > UNCOVERED).mean()), 4)
+            if len(rev)
+            else None,
         }
 
     out["all"] = entry(forward_all[measured], reverse)
