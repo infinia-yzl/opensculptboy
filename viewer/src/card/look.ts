@@ -97,11 +97,20 @@ export class CardLook {
 
   constructor(host: CardHost) { this.host = host; }
   get active() { return !!this.plan; }
+  // what the card brings beyond its sliders, for the Character panel: its baked skin, its detail level, its own eyes,
+  // hair, brows, lashes, mouth and teeth, and the count of its own faces (the mouth poses)
+  summary(): { skin: boolean; detail: number; eyes: boolean; hair: boolean; brows: boolean; lashes: boolean; mouth: boolean; teeth: boolean; faces: number } | null {
+    const p = this.plan;
+    if (!p) return null;
+    const has = (k: PartKind) => this.partData.some((x) => x.kind === k);
+    return { skin: this.images.has('base_color'), detail: p.shown, eyes: !!p.eyes, hair: has('hair'), brows: has('brows'), lashes: has('lashes'),
+      mouth: has('mouth'), teeth: has('teeth'), faces: this.mouthPoses ? this.mouthPoses.names.length : 0 };
+  }
 
   // ---------------------------------------------------------------- loading
   // the card's files: its body (local changes and detail offsets, set on the body at once), its maps and its parts;
   // place() then puts them on the card's body
-  async load(card: any, files: FileSet, folder: string): Promise<{ notes: string[]; failures: number }> {
+  async load(card: any, files: FileSet, folder: string, step: (id: string) => void = () => {}): Promise<{ notes: string[]; failures: number }> {
     this.unload(false);
     const t0 = performance.now();
     const plan = cardPlan(card), notes = [...plan.notes];
@@ -112,6 +121,7 @@ export class CardLook {
     if (topology !== plan.topology) notes.push(`the page has no rows of the ${plan.topology} topology; it reads the card as anny's`);
     // the detail layer: level 0 on the coarse body (the eyes and the wearables read it), and the level shown on the
     // fine body
+    step('body');
     let coarse: Float32Array | null = null;
     const levels: (Float32Array | null)[] = [null, null];
     const u32 = (name: string) => { const b = this.host.buffer(name); return b ? new Uint32Array(b) : null; };
@@ -157,6 +167,7 @@ export class CardLook {
     if (Object.keys(plan.localChanges).length && !body.local) notes.push('the page has no local changes');
     this.timing.offsets = performance.now() - t0;
     // the maps: the images decode while the rest loads
+    step('maps');
     const t1 = performance.now();
     await Promise.all(Object.entries(plan.textures).map(async ([slot, rel]) => {
       try {
@@ -168,6 +179,7 @@ export class CardLook {
     if (plan.textures.base_color && !this.images.has('base_color')) notes.push('the page keeps its own skin');
     this.timing.textures = performance.now() - t1;
     // the parts of the bake
+    step('parts');
     const parts: [string, string | undefined, 'lashes' | 'mouth' | 'teeth'][] = [['lashes', plan.lashes?.mesh, 'lashes'], ['mouth', plan.mouth?.mesh, 'mouth'], ['teeth', plan.teeth?.mesh, 'teeth']];
     for (const [name, rel, kind] of parts) {
       if (!rel) continue;

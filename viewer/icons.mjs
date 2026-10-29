@@ -21,6 +21,8 @@ const TABLE = {
   view: 'eye', sun: 'sun', moon: 'moon', system: 'desktop', settings: 'gear-six', picture: 'image', glb: 'cube', vrm: 'user-square',
   zip: 'file-zip', json: 'file-code', file: 'file', folder: 'folder', alert: 'warning-circle', check: 'check', link: 'arrow-square-out',
   eyedropper: 'eyedropper', silhouette: 'person', planned: 'hourglass-simple', keyboard: 'keyboard', info: 'info',
+  new: 'file-plus', saveCard: 'floppy-disk', key: 'key', lock: 'lock', statue: 'person-simple', walk: 'person-simple-walk', throw: 'person-simple-throw',
+  taichi: 'person-simple-tai-chi', run: 'person-simple-run', continue: 'arrow-counter-clockwise', model: 'cube-transparent', character: 'user-circle', eye: 'eye',
 };
 const dir = path.join(here, 'node_modules', '@phosphor-icons', 'core', 'assets', 'light');
 const lines = Object.entries(TABLE).map(([name, ph]) => {

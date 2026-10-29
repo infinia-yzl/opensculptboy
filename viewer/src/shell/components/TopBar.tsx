@@ -28,11 +28,11 @@ function Identity({ phone }: { phone: boolean }) {
     if (dot.current) { dot.current.style.setProperty('--a', id.a); dot.current.style.setProperty('--b', id.b); }
     if (name.current) name.current.textContent = id.name;
     if (kind.current) { kind.current.textContent = id.kind; kind.current.hidden = !id.kind || phone; }
-    btn.current?.setAttribute('aria-label', `Character: ${id.name}${id.kind ? ', ' + id.kind : ''}. Show the characters`);
+    btn.current?.setAttribute('aria-label', `Character: ${id.name}${id.kind ? ', ' + id.kind : ''}. Show what it holds`);
   });
   return (
-    <Tip label="Characters">
-      <button ref={btn} type="button" className="osb-identity identity" onClick={() => actions.openMode('create', 'characters')}>
+    <Tip label="What the character holds">
+      <button ref={btn} type="button" className="osb-identity identity" aria-expanded={useUI((s) => s.character)} aria-controls="char-panel" onClick={() => actions.toggleCharacter()}>
         <span ref={dot} className="osb-dot" /><span ref={name} className="osb-identity-name" /><small ref={kind} />
       </button>
     </Tip>
@@ -45,7 +45,7 @@ export function ViewMenu() {
   const full = typeof document !== 'undefined' && document.fullscreenEnabled;
   return (
     <DropdownMenu>
-      <Tip label="View: rig, scene, performance, theme">
+      <Tip label="View: rig, scene, performance, theme, settings">
         <DropdownMenuTrigger asChild>
           <button type="button" className="osb-ib" aria-label="View menu"><Icon name="view" /></button>
         </DropdownMenuTrigger>
@@ -99,10 +99,14 @@ export function TopBar() {
         {phone ? (
           <>
             <Tip label="Undo" keys="Ctrl Z"><button type="button" className="osb-ib" aria-label="Undo (Ctrl Z)" disabled={!hist.undo} onClick={legacy.undo}><Icon name="undo" /></button></Tip>
+            <Tip label="New character" keys="N"><button type="button" className="osb-ib" aria-label="New character (N)" onClick={() => actions.showNew()}><Icon name="new" /></button></Tip>
             <Tip label="Open a character" keys="Ctrl O"><button type="button" className="osb-ib" aria-label="Open (Ctrl O)" onClick={() => actions.showOpen()}><Icon name="open" /></button></Tip>
           </>
         ) : (
           <>
+            <Tip label="New character: a starter, the base or your own 3D model" keys="N">
+              <Button variant="ghost" aria-label="New character (N)" onClick={() => actions.showNew()}><Icon name="new" size={16} />New</Button>
+            </Tip>
             <Tip label="Open a character, wearables or sheet settings" keys="Ctrl O">
               <Button variant="outline" aria-label="Open (Ctrl O)" onClick={() => actions.showOpen()}><Icon name="open" size={16} />Open</Button>
             </Tip>

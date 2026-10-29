@@ -2,24 +2,10 @@
 // Copyright (C) 2025 NAVER Corp.
 // Apache License, Version 2.0
 //
-// The sections of the Create mode that are still the page's own DOM: Characters (presets, colour looks, preset
-// text), Face (the face shapes) and Hair (the styles and their sliders). Body and Skin and eyes are React
-// (src/shell/sections), and the random draws below serve both.
+// The editor of the look that the Create mode's sections use (src/shell/sections), and the random draws of the
+// body, the face, the hair and the colours.
 
 import type { App, Look } from './app.ts';
-import { chip, foldGroup, searchField, sectionHead, segmented, slider, textButton, toggle, type Slider } from './controls.ts';
-import { copyText, download, h, iconButton, slug } from './dom.ts';
-import { icon } from './icons.ts';
-import { toast } from './toast.ts';
-
-const HAIR_FAMILIES: [string, string][] = [['short', 'Short'], ['medium', 'Medium'], ['long', 'Long'], ['tied', 'Tied']];
-const HAIR_SLIDERS = [
-  { key: 'length', label: 'Length', ends: ['Shorter', 'Longer'] },
-  { key: 'curl', label: 'Curl', ends: ['Straight', 'Curly'] },
-  { key: 'volume', label: 'Volume', ends: ['Flat', 'Full'] },
-  { key: 'density', label: 'Density', ends: ['Thin', 'Thick'] },
-  { key: 'fade', label: 'Fade height', ends: ['Low', 'High'] },
-];
 
 export interface Editor {
   app: App;
@@ -36,7 +22,6 @@ export interface Editor {
   faceSpread: number;
 }
 
-const rgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
 const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
 const rnd = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
@@ -49,7 +34,7 @@ export function randomPhenotype(app: App) {
   set('age', rnd(0.45, 0.96));
   set('muscle', rnd(0.2, 0.8)); set('weight', rnd(0.2, 0.8));
   set('height', rnd(0.2, 0.8)); set('proportions', rnd(0.3, 0.7));
-  // one main ethnicity, sometimes mixed with a second one
+  // one main source shape, sometimes mixed with a second one
   const races = ['african', 'asian', 'caucasian'].filter((k) => k in ph), main = pick(races);
   for (const k of races) set(k, k === main ? 1 : Math.random() < 0.3 ? rnd(0.2, 0.8) : 0);
   return ph;
@@ -64,186 +49,6 @@ export function randomHair(app: App, n: Look) {
   n.hair = { color: pick(app.palettes.hair)[1], style: spec.name, part: Math.random() < 0.5 ? 'left' : 'right' };
 }
 
-// ------------------------------------------------------------------ the sections
-export function characterSections(ed: Editor) {
-  const app = ed.app;
-  const syncs: ((L: Look) => void)[] = [];
-
-  // ---------------------------------------------------------------- Characters
-  const chars = h('section');
-  {
-    const head = sectionHead('Characters', textButton('Reset all', () => { ed.commit('Reset all', app.baseline()); ed.origin = 'Baseline'; }, 'undoSmall', 'tb-quiet'));
-    const cards = h('div.cards.osb-cards');
-    const cardEls = app.characters.map((c) => {
-      const sk = app.skinBase(c.skin.tone, c.skin.undertone);
-      const spec = app.hairSpecs().find((s) => s.name === c.hair.style);
-      const b = h('button.card', { type: 'button', 'aria-pressed': 'false', dataset: { name: c.name } },
-        h('span.avatar', { style: { '--a': rgb(sk), '--b': c.hair.color, '--c': c.eyes.color }, 'aria-hidden': 'true' }),
-        h('span.card-text', {}, h('span.card-name', { text: c.name }),
-          h('span.card-meta', { text: spec?.label || '' })));
-      b.addEventListener('click', () => { ed.commit(c.name, JSON.parse(JSON.stringify(c))); ed.origin = c.name; });
-      cards.append(b);
-      return b;
-    });
-    const looks = h('div.chips.osb-chips');
-    const lookEls = app.looks.map((l) => {
-      const b = chip(l.name, () => {
-        const L = app.look();
-        ed.commit('Look: ' + l.name, Object.assign({}, l, { phenotype: L.phenotype, face: L.face, hair: Object.assign({}, L.hair, { color: l.hair.color }) }));
-        ed.origin = l.name;
-      }, `linear-gradient(135deg, ${rgb(app.skinBase(l.skin.tone, l.skin.undertone))} 50%, ${l.hair.color} 50%)`);
-      b.dataset.name = l.name;
-      looks.append(b);
-      return b;
-    });
-    // the preset text
-    const box = h('textarea.preset-text.osb-textarea', { rows: '7', spellcheck: 'false', 'aria-label': 'Preset JSON', hidden: true }) as HTMLTextAreaElement;
-    const msg = h('p.inline-msg', { role: 'status' });
-    const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true }) as HTMLInputElement;
-    const loadText = (t: string, quiet = false) => {
-      try {
-        const look = app.normaliseLook(JSON.parse(t));
-        ed.commit('Load preset', look); ed.origin = look.name;
-        box.hidden = true; msg.textContent = ''; toast(`Loaded "${look.name}"`);
-        return true;
-      } catch (e) {
-        if (!quiet) { msg.textContent = 'This text is not a preset. A preset is JSON with skin, hair, eyes and phenotype fields.'; msg.dataset.kind = 'error'; }
-        return false;
-      }
-    };
-    box.addEventListener('input', () => { if (box.value.trim()) loadText(box.value, true); });
-    file.addEventListener('change', async () => { const f = file.files && file.files[0]; if (f) loadText(await f.text()); file.value = ''; });
-    const tools = h('div.btn-row.osb-row', {},
-      textButton('Copy', async () => {
-        const text = JSON.stringify(app.look(), null, 2);
-        if (await copyText(text)) { box.hidden = true; toast('Preset copied'); }
-        else { box.hidden = false; box.value = text; box.focus(); box.select(); msg.textContent = 'Select the text above and copy it.'; msg.dataset.kind = ''; }
-      }, 'copy'),
-      textButton('Paste', () => { box.hidden = false; box.value = ''; box.focus(); msg.textContent = 'Paste a preset into the box. It loads as soon as it reads as a preset.'; msg.dataset.kind = ''; }, 'paste'),
-      // a hosted page (the artifact build) cannot start a download; Copy covers it there
-      (window as any).MODEL_PARTS ? null : textButton('Download', () => { const L = app.look(); download(`anny-${slug(L.name)}.json`, new Blob([JSON.stringify(L, null, 2)], { type: 'application/json' })); }, 'download'),
-      textButton('Open file', () => file.click(), 'upload'));
-    chars.append(head.el,
-      h('p.sec-lead.osb-note', { text: 'A character sets the body, the face, the hair and the colours. A look changes the colours only.' }),
-      cards, h('h3.sub.osb-eyebrow', { text: 'Colour looks' }), looks,
-      h('h3.sub.osb-eyebrow', { text: 'Preset' }), h('p.note.osb-note', { text: 'A preset is a short JSON text that holds this look and every slider value.' }), tools, box, msg, file);
-    syncs.push((L) => {
-      cardEls.forEach((b) => { const c = app.characters.find((x) => x.name === b.dataset.name); b.setAttribute('aria-pressed', String(!!c && L.name === c.name && app.sameCharacter(c, L))); });
-      lookEls.forEach((b) => { const l = app.looks.find((x) => x.name === b.dataset.name); b.setAttribute('aria-pressed', String(!!l && L.name === l.name && app.sameLook(l, L))); });
-    });
-  }
-
-  // ---------------------------------------------------------------- Face
-  const face = h('section');
-  {
-    const head = sectionHead('Face',
-      iconButton('dice', 'Random face', { tip: 'down', on: () => randomFaceInto(app, ed) }),
-      textButton('Reset', () => ed.edit('Reset face', (n) => { n.face = {}; }), 'undoSmall', 'tb-quiet'));
-    const spread = slider({ id: 'ed-face-spread', label: 'Random variation', min: 0.25, max: 1.5, step: 0.05, def: 1, readout: (v) => `× ${v.toFixed(2)}`,
-      onInput: (v) => { ed.faceSpread = v; } });
-    spread.el.classList.add('sl-compact');
-    const empty = h('p.note.empty', { text: 'No face shape matches.', hidden: true });
-    const groups: { g: string; fold: ReturnType<typeof foldGroup>; rows: { s: any; sl: Slider }[] }[] = [];
-    const search = searchField('Search 103 face shapes', (q) => {
-      let any = false;
-      for (const G of groups) {
-        let n = 0;
-        for (const r of G.rows) {
-          const hit = !q || r.s.label.toLowerCase().includes(q) || r.s.name.includes(q) || G.g.includes(q);
-          r.sl.el.hidden = !hit; if (hit) n++;
-        }
-        G.fold.el.hidden = n === 0;
-        if (q) G.fold.el.open = n > 0;
-        any = any || n > 0;
-      }
-      empty.hidden = any;
-    });
-    const wrap = h('div.folds.osb-folds');
-    for (const g of app.faceGroups()) {
-      const reset = h('button.fold-reset', { type: 'button', 'aria-label': 'Reset the ' + app.faceGroupTitle(g).toLowerCase(), 'data-tip': 'Reset group', 'data-tip-pos': 'left' }, icon('undoSmall', 14));
-      const fold = foldGroup(app.faceGroupTitle(g), [reset]);
-      const rows = app.faceSliders().filter((s) => s.group === g).map((s) => {
-        const sl = slider({ id: 'ed-f-' + s.name, label: s.label, title: s.name, min: s.range[0], max: s.range[1], def: 0, ends: s.ends,
-          onStart: () => ed.begin('Face: ' + s.label), onEnd: () => ed.end(),
-          onInput: (v) => ed.queue((n) => { n.face = { ...(n.face || {}), [s.name]: v }; if (v === 0) delete n.face[s.name]; }) });
-        fold.body.append(sl.el);
-        return { s, sl };
-      });
-      reset.addEventListener('click', () => ed.edit('Reset ' + app.faceGroupTitle(g).toLowerCase(), (n) => { for (const r of rows) delete n.face[r.s.name]; }));
-      groups.push({ g, fold, rows });
-      wrap.append(fold.el);
-    }
-    face.append(head.el, h('p.sec-lead.osb-note', { text: 'Named shapes of the head and the face, which scale with the size of the head. Random face draws from Anny\'s distribution, calibrated against measured faces, for the current body.' }),
-      spread.el, search.el, wrap, empty);
-    syncs.push((L) => {
-      let total = 0;
-      for (const G of groups) {
-        let n = 0;
-        for (const r of G.rows) { const v = L.face?.[r.s.name] ?? 0; r.sl.set(v); if (v !== 0) n++; }
-        G.fold.count.textContent = n ? `${n} changed` : '';
-        G.fold.el.toggleAttribute('data-changed', n > 0);
-        total += n;
-      }
-      head.note.textContent = total ? `${total} changed` : '';
-      spread.el.hidden = !app.facePrior();
-    });
-  }
-
-  // ---------------------------------------------------------------- Hair
-  const hair = h('section');
-  {
-    const show = toggle('Show', (on) => app.setHairVisible(on), 'Show or hide the hair  ·  Shift+H');
-    const phys = toggle('Physics', (on) => app.setHairPhysics(on), 'The hair follows the motion of the head');
-    const head = sectionHead('Hair');
-    let family = '';
-    const grid = h('div.style-grid.osb-style-grid', { role: 'group', 'aria-label': 'Hair styles' });
-    const styleEls = app.hairSpecs().map((s) => {
-      const b = h('button.style-card', { type: 'button', 'aria-pressed': 'false', dataset: { style: s.name, family: s.family } }, h('span', { text: s.label }));
-      b.addEventListener('click', () => ed.edit('Hair: ' + s.label, (n) => { n.hair = { color: n.hair.color, style: s.name, part: n.hair.part }; }));
-      grid.append(b);
-      return b;
-    });
-    const fam = segmented('Hair length', HAIR_FAMILIES.map(([v, l]) => ({ value: v, label: l })), (v) => { family = v; paintFamily(); }, 'seg-fill');
-    const paintFamily = () => { fam.set(family); styleEls.forEach((b) => { b.hidden = b.dataset.family !== family; }); };
-    const params = h('div.sliders.osb-sliders');
-    const hs = HAIR_SLIDERS.map((p) => {
-      const sl = slider({ id: 'ed-h-' + p.key, label: p.label, min: 0, max: 1, def: 0, ends: p.ends, digits: p.key === 'fade' ? 0 : 2, step: p.key === 'fade' ? 1 : 0.01,
-        readout: p.key === 'fade' ? (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}°` : undefined,
-        onStart: () => ed.begin('Hair ' + p.label.toLowerCase()), onEnd: () => ed.end(),
-        onInput: (v) => ed.queue((n) => { (n.hair as any)[p.key] = v; }) });
-      params.append(sl.el);
-      return { p, sl };
-    });
-    const part = segmented('Part', [{ value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }], (v) => ed.edit('Hair part', (n) => { n.hair.part = v; }));
-    const partRow = h('div.row', {}, h('span.row-label', { text: 'Part' }), part.el);
-    const colour = swatches(app, 'hair', 'Hair colour', (hex) => ed.edit('Hair colour', (n) => { n.hair.color = hex; }));
-    hair.append(head.el, h('div.switch-row', {}, show.el, phys.el), fam.el, grid, h('h3.sub.osb-eyebrow', { text: 'Shape' }), params, partRow, h('h3.sub.osb-eyebrow', {}, 'Colour ', colour.name), colour.el);
-    let lastStyle = '';
-    syncs.push((L) => {
-      const spec = app.hairSpecs().find((s) => s.name === L.hair.style);
-      if (!spec) return;
-      head.note.textContent = spec.label;
-      if (spec.name !== lastStyle) { lastStyle = spec.name; family = spec.family; paintFamily(); }
-      styleEls.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.style === spec.name)));
-      const d = app.hairDefaults(spec.name) || {};
-      for (const { p, sl } of hs) {
-        const range = p.key === 'fade' ? app.fadeRange : spec.controls[p.key];
-        const on = p.key === 'fade' ? !!spec.render.fade : range[1] > range[0];
-        sl.el.hidden = !on;
-        if (!on) continue;
-        sl.setRange(range[0], range[1], p.key === 'fade' ? 0 : d[p.key]);
-        sl.set((L.hair as any)[p.key] ?? 0);
-      }
-      partRow.hidden = !spec.mirror;
-      part.set(L.hair.part || 'left');
-      colour.sync(L.hair.color);
-      show.set(app.hairVisible()); phys.set(app.hairPhysics());
-    });
-  }
-
-  return { chars, face, hair, sync: (L: Look) => { for (const s of syncs) s(L); } };
-}
-
 export function randomBodyInto(app: App, ed: Editor, L: Look) {
   const next = JSON.parse(JSON.stringify(L));
   next.phenotype = randomPhenotype(app);
@@ -255,28 +60,4 @@ export function randomFaceInto(app: App, ed: Editor) {
   if (!app.facePrior()) return;
   const L = app.look();
   ed.edit('Random face', (n) => { n.face = app.sampleFace(L.phenotype, ed.faceSpread); });
-}
-
-// colour swatches with a custom colour picker
-function swatches(app: App, list: 'hair' | 'eyes', label: string, onPick: (hex: string) => void) {
-  const el = h('div.swatches.osb-swatch-row', { role: 'group', 'aria-label': label });
-  const name = h('span.sub-val.osb-eyebrow-val');
-  const btns = app.palettes[list].map(([nm, hex]) => {
-    const b = h('button.sw.osb-sw', { type: 'button', 'aria-label': nm, 'data-tip': nm, 'data-tip-pos': 'up', 'aria-pressed': 'false', style: { '--sw': hex }, dataset: { hex } });
-    b.addEventListener('click', () => onPick(hex));
-    el.append(b);
-    return b;
-  });
-  const inp = h('input', { type: 'color', 'aria-label': 'Custom ' + label.toLowerCase() }) as HTMLInputElement;
-  inp.addEventListener('input', () => onPick(inp.value.toLowerCase()));
-  el.append(h('label.sw.sw-custom.osb-sw.osb-sw--custom.osb-sw-input', { 'data-tip': 'Custom colour', 'data-tip-pos': 'up' }, icon('eyedropper', 14), inp));
-  return {
-    el, name,
-    sync(hex: string) {
-      btns.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.hex === hex)));
-      if (document.activeElement !== inp) inp.value = hex;
-      const m = app.palettes[list].find((p) => p[1] === hex);
-      name.textContent = m ? m[0] : 'Custom ' + hex;
-    },
-  };
 }

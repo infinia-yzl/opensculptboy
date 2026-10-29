@@ -21,7 +21,7 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 
 | Field | Holds |
 |---|---|
-| `schema` | 1 for the fields above, 2 with `detail`, 3 with `material`, 4 with the wardrobe fields. A card is written with the lowest schema that holds its fields, so that older cards stay byte for byte the same. |
+| `schema` | 1 for the fields above, 2 with `detail`, 3 with `material`, 4 with the wardrobe fields, 5 with `look`. A card is written with the lowest schema that holds its fields, so that older cards stay byte for byte the same. |
 | `name` | the character's name |
 | `rig` | `anny` (104 bones), or `anny-mouth` with a jaw bone and a tongue chain ([Mouth](mouth.md)) |
 | `topology` | `anny`, or `sculpt` and `sculpt-quads` ([Sculpt topology](sculpt-topology.md)) |
@@ -36,6 +36,7 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`, with optional `description`, `tags`, `source` and per-piece `overrides`, `hides` and `springs`) and the one worn ([Wearables](wearables.md)) |
 | `wearables` | loose pieces: `{"id", "file", "enabled"}`, each file a wearable package |
 | `wearable_overrides` | single pieces switched on or off: `{"<outfit>/<piece>": {"enabled": false}}` |
+| `look` | what the web viewer shows beyond the model's parameters ([`look`](#look)) |
 
 ## `detail`
 
@@ -88,3 +89,24 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `tiers` | per rendering-budget tier, the normal maps baked for that tier's mesh | [Budget tiers](budget-tiers.md) |
 
 A card without `material` gets the exporters' own plain skin. A section that holds only `eyes`, `reference_eyes`, `lashes`, `teeth`, `mouth`, `hair` or `brows` keeps that plain skin and changes those parts alone. `fit --textures` and `opensculptboy bake` write the section of a fitted character, and `--material skin.json` lays further values over it.
+
+## `look`
+
+The `look` block (schema 5) holds what the [web viewer](viewer.md) shows of the character beyond the model's parameters, so that one card carries everything the page shows. The page's **Save card** writes it, and the page reads it when it opens the card. The exporters keep it in the card of their scene extras and do not use it yet.
+
+```json
+"look": {
+  "skin": {"tone": 0.35, "undertone": 0, "stone": "carrara", "polish": 0.45},
+  "hair": {"style": "curly_top_taper", "color": "#dcd7cf", "length": 0.8, "curl": 0.6, "part": "left"},
+  "eyes": {"color": "#875f3d"}
+}
+```
+
+| Key | Holds |
+|---|---|
+| `skin.tone`, `skin.undertone` | the skin's tone (0 fair to 1 deep) and undertone (-1 cool to 1 warm) |
+| `skin.stone`, `skin.polish` | for a statue: a stone of the viewer's library (`carrara`, `travertine`, `bardiglio`, `basalt`, `bronze`, `verdigris`) or a colour of its own (`"#rrggbb"`), and its polish (0 rough to 1 polished) |
+| `hair` | the viewer's hairstyle (`style`), its `color` and the style's `length`, `curl`, `volume`, `density`, `fade` (degrees) and `part` (`left` or `right`) |
+| `eyes.color` | the iris colour |
+
+Colours are sRGB hex strings. `opensculptboy.character.check_look` checks the block when a card is read. A card without a `look` block opens in the viewer with the viewer's colours and skin.

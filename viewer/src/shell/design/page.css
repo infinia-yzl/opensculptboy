@@ -458,3 +458,76 @@ body[data-width="phone"] .osb-formats dd { margin-bottom: 8px; }
 .osb-custom-row { gap: var(--space-2); }
 .osb-custom-row .osb-sw { width: 28px; height: 28px; flex: none; }
 body[data-width="phone"] .osb-custom-row .osb-sw { width: 36px; height: 36px; }
+
+/* ---------------------------------------------------------------- step 3: the New screen, the Character panel, the
+   progress card, the stone library and the Settings panel */
+.new-screen.osb-dialog { position: fixed; inset: 0; width: auto; max-width: none; height: auto; max-height: none; translate: none; margin: 0; border: 0; border-radius: 0;
+  display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-10) var(--space-12) var(--space-8); box-sizing: border-box; overflow: auto; z-index: 91; animation: none; }
+.new-screen .osb-dialog-x { position: absolute; top: var(--space-8); right: var(--space-10); }
+.new-head { display: grid; gap: var(--space-2); padding-right: 64px; }
+.new-grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: var(--space-4); flex: 1; min-height: 0; }
+.new-card { display: grid; gap: var(--space-4); grid-template-rows: auto 1fr auto; align-content: start; position: relative; }
+.new-statues { border-color: var(--accent-line); grid-template-rows: auto 1fr auto auto; }
+.new-card-head { justify-content: space-between; }
+.new-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); align-content: start; }
+.new-slot { display: grid; gap: 4px; padding: var(--space-2); text-align: center; font-size: 13px; }
+.new-slot-pic { height: clamp(96px, 20vh, 200px); display: grid; place-items: center; color: color-mix(in srgb, #000 55%, transparent); border-radius: var(--radius-s); }
+.new-slot-name { font-weight: 600; color: var(--text); }
+.new-slot-stone { font-size: 12px; }
+.new-desc { min-height: 40px; margin: 0; }
+.new-start { justify-self: stretch; }
+.new-planned { position: absolute; top: var(--space-5); left: 50%; translate: -50% 0; }
+.new-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); align-content: start; }
+.new-tile { height: clamp(96px, 20vh, 200px); border-radius: var(--radius-s); border: 1px solid var(--line); display: grid; justify-items: center; align-content: center; gap: var(--space-3); color: var(--text); cursor: pointer; }
+.new-tile:hover { border-color: var(--accent-line); }
+.new-tile-label { font: 700 12px/16px var(--font-display); letter-spacing: 0.16em; text-transform: uppercase; }
+.new-drop { display: grid; place-items: center; align-content: center; gap: var(--space-3); padding: var(--space-6); text-align: center; position: relative; min-height: 200px; }
+.new-drop .osb-ico { color: var(--text-muted); }
+.new-exts { position: absolute; left: var(--space-3); bottom: var(--space-3); }
+.new-foot { justify-content: center; gap: var(--space-2); }
+.new-foot .osb-sep { height: 16px; }
+body[data-width="phone"] .new-screen.osb-dialog { padding: var(--space-6) var(--space-4); }
+body[data-width="phone"] .new-grid, body[data-width="medium"] .new-grid { grid-template-columns: 1fr; flex: none; }
+body[data-width="phone"] .new-slot-pic, body[data-width="phone"] .new-tile { height: 96px; }
+body[data-width="phone"] .new-planned { position: static; translate: none; justify-self: start; }
+
+.char-panel { position: fixed; z-index: 12; right: var(--space-2); top: calc(var(--top-h) + var(--space-2)); max-height: calc(100vh - var(--top-h) - 96px); overflow: auto; box-sizing: border-box; }
+body.tool-open .char-panel { right: calc(var(--space-2) + var(--insp-w) + var(--space-2)); }
+.char-head { justify-content: space-between; gap: var(--space-2); }
+.char-head .osb-title { flex: 1; }
+.char-legend { display: flex; align-items: center; gap: 8px; margin: 0; }
+.char-legend .osb-src--page { margin-left: 8px; }
+.char-link { justify-self: start; font-size: 13px; }
+body[data-width="phone"] .char-panel { left: var(--space-2); right: var(--space-2); width: auto; top: calc(var(--top-h) + var(--space-2)); z-index: 25; }
+body.tool-open .welcome, body.char-open .welcome { display: none; }
+
+.progress-card { position: fixed; z-index: 70; top: calc(var(--top-h) + var(--space-4)); left: calc(var(--inset-l) + (100vw - var(--inset-l) - var(--inset-r)) / 2); translate: -50% 0;
+  width: 320px; max-width: calc(100vw - 32px); box-sizing: border-box; padding: var(--space-4) var(--space-5); border-radius: var(--radius-l); display: grid; gap: var(--space-3); box-shadow: var(--shadow-pop); }
+.progress-card .osb-heading { margin: 0; font-size: 14px; }
+
+.osb-swatch-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.osb-swatch-line > [role="radiogroup"] { display: contents; }
+.osb-override { padding: var(--space-2) var(--space-3); border-left: 2px solid var(--accent); background: var(--accent-soft); margin: 0; }
+.cs-planned { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
+.cs-planned .osb-tag { color: var(--text-muted); }
+.cs-planned small { font-size: 10.5px; margin-left: 4px; color: var(--text-faint); }
+.cs-picker.osb-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow: auto; }
+.cs-picker-body { display: grid; gap: var(--space-3); }
+.osb-fold-actions { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
+.osb-row-labelled { display: flex; align-items: center; gap: var(--space-3); min-height: var(--row-h); }
+.osb-row-labelled .row-label { flex: none; min-width: 64px; font-size: 13px; color: var(--text-muted); }
+
+/* the Settings panel's AI providers */
+.ai-panel { display: grid; gap: var(--space-3); }
+.ai-add { display: grid; gap: var(--space-2); }
+.ai-add[hidden] { display: none; }
+.ai-key { width: 100%; box-sizing: border-box; font-family: var(--font-mono); }
+.ai-list { display: grid; gap: var(--space-1); }
+.ai-row { display: flex; align-items: center; gap: 6px; min-height: var(--row-h); border-top: 1px solid var(--line); }
+.ai-what { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.ai-name { font-size: 13px; font-weight: 600; }
+.ai-cmd { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.ai-code { padding: 6px 8px; border-radius: var(--radius-s); background: var(--raised); font: 12px/1.4 var(--font-mono); overflow-wrap: break-word; user-select: all; }
+.ai-word { white-space: nowrap; }
+.ai-status:empty { display: none; }
+.ai-bad, .ai-danger { color: var(--danger, #b3402e); }

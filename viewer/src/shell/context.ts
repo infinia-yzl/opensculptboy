@@ -8,13 +8,20 @@ import { createContext, useContext } from 'react';
 import type { App } from '../ui/app.ts';
 import type { Editor } from '../ui/character_ui.ts';
 import type { Opener } from './open.ts';
+import { actions } from './state.ts';
+import type { SheetController } from '../sheet/controller.ts';
+import type { Starter } from '../starters.ts';
 
 export interface Legacy {
-  // the existing sections by id: characters, face, hair, wear, expression, pose, sheet, rig, scene
+  // the tool panels that are still the page's own DOM: rig and scene
   sections: Record<string, HTMLElement>;
-  // the Sheet mode's layout view of the page, and the refresh of its section when it shows
-  sheetView: HTMLElement;
-  sheetRefresh(): void;
+  // the Sheet mode: its settings, its build and its layout view (sheet/controller.ts)
+  sheet: SheetController;
+  // Save card (the card with the page's edits, as .json or as a .zip with its files), the New screen's starters
+  saveCard(): Promise<void>;
+  startStarter(id: string, kind: 'light' | 'finished'): Promise<void>;
+  startBase(): void;
+  starters: Starter[];
   undo(): void;
   redo(): void;
   random: { character(): void; body(): void; face(): void; hair(): void; colours(): void };
@@ -22,7 +29,6 @@ export interface Legacy {
   saveImage(): void;
   poseCard(): void;
   silhouette(): void;
-  downloadLook(): void;
   toggleStats(): void;
   showHelp(): void;
   fullscreen(): void;
@@ -50,5 +56,5 @@ export function useShell(): ShellDeps {
   return c;
 }
 
-// the slot of the View menu's Settings item: a later settings panel registers here (open() shows it)
-export const settingsSlot: { open: (() => void) | null; label: string } = { open: null, label: 'Settings' };
+// the View menu's Settings item: it opens the Settings panel on the right (the AI providers)
+export const settingsSlot: { open: (() => void) | null; label: string } = { open: () => actions.toggleTool('settings'), label: 'Settings' };

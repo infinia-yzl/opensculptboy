@@ -10,7 +10,8 @@ import type * as THREE from 'three';
 export interface Look {
   format: string;
   name: string;
-  skin: { tone: number; undertone: number };
+  // stone: a stone of the library (src/stones.ts) or a colour of its own, with its polish (0 to 1), for a statue
+  skin: { tone: number; undertone: number; stone?: string; polish?: number };
   hair: { color: string; style: string; length?: number; curl?: number; volume?: number; density?: number; fade?: number; part?: string };
   eyes: { color: string };
   phenotype: Record<string, number>;
@@ -124,7 +125,7 @@ export interface App {
   // the framings ('body', 'upper', 'face') at the view's yaw, and the state that the navigation shares with main.ts
   flyTo(name: string): void;
   currentFrame(): string;
-  view: { yaw: number; freeW: number; userMoved: boolean };
+  view: { yaw: number; freeW: number; freeH: number; shiftY: number; userMoved: boolean };
   tweenTo(target: THREE.Vector3, position: THREE.Vector3, ms?: number): void;
   tweening(): boolean;
   resetAccum(): void;

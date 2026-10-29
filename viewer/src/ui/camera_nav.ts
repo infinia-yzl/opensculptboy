@@ -26,6 +26,8 @@ export interface CameraNav {
   angle(name: string): void;
   reset(): void;
   setInsets(left: number, right: number): void;
+  // the top bar and the view bar over the canvas: the framings fill the height between them
+  setVInsets(top: number, bottom: number): void;
   rail: HTMLElement;
   onView: () => void;
 }
@@ -223,6 +225,13 @@ export function cameraNav(app: App): CameraNav {
       N.onView();
     },
     reset() { V.yaw = ANGLES.three; V.userMoved = false; app.flyTo('body'); N.onView(); },
+    setVInsets(top, bottom) {
+      const freeH = Math.max(200, innerHeight - top - bottom), shiftY = app.shot ? 0 : (top - bottom) / 2;
+      // the bars change their height by a few pixels with the layout (a wrapped view bar): the framing keeps its place
+      if (V.freeH && Math.abs(freeH - V.freeH) < 16 && Math.abs(shiftY - V.shiftY) < 16) return;
+      V.freeH = freeH; V.shiftY = shiftY;
+      if (!V.userMoved && !app.tweening()) app.flyTo(app.currentFrame());
+    },
     setInsets(left, right) {
       insetL = left; insetR = right;
       V.freeW = Math.max(200, innerWidth - left - right);

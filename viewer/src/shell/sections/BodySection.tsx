@@ -3,10 +3,8 @@
 //
 // Create's Body section in React: Anny's phenotype sliders, as the design's Create screen lays them out: Form,
 // Muscle, Weight, Height and Proportions first, and the other sliders behind the More shape fold, with the bar of
-// the shares of the three that mix (their words stay as the page had them until the owner picks new ones). Each
-// slider edits the look at most once a frame (Editor.queue) and Undo takes a whole drag as one step. The stature in
-// the heading and the share bar paint themselves from the bus. The slider and this section are the pattern for the
-// sections that move to React next.
+// the shares of the three source shapes that mix. Each slider edits the look at most once a frame (Editor.queue) and
+// Undo takes a whole drag as one step. The stature in the heading and the share bar paint themselves from the bus.
 
 import { useRef } from 'react';
 import { useShell } from '../context.ts';
@@ -59,8 +57,8 @@ export function BodySection({ shown }: { shown: boolean }) {
             <div className="osb-fold-body">
               {more.length ? <div className="osb-sliders">{more.map(slider)}</div> : null}
               {races.length ? (<>
-                <h4 className="osb-eyebrow osb-frieze">Ethnicity</h4>
-                <p className="osb-note">The three values mix by their shares, shown in the bar.</p>
+                <h4 className="osb-eyebrow osb-frieze">Source shapes</h4>
+                <p className="osb-note">Three source shapes of the MakeHuman data, mixed by their shares in the bar. Each brings its own proportions of the head and the body.</p>
                 <div ref={bar} className="share-bar" aria-hidden="true">
                   {races.map((s) => <span key={s.name} style={{ background: RACE_COLOURS[s.name] || '#999' }}><b>{s.label}</b></span>)}
                 </div>

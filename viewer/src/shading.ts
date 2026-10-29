@@ -52,6 +52,9 @@ uniform sampler2D uShadowRaw; uniform sampler2DShadow uShadowCmp; uniform sample
 uniform mat3 uShadowRot;
 uniform sampler2DShadow uBodyShadowCmp; uniform mat4 uBodyShadowMat; uniform vec4 uBodyShadowP; uniform sampler2D uBodyShadowRaw;
 uniform float uHairShadowK; uniform float uMannequin;
+// a stone of the library (src/stones.ts): base colour (linear) and on (w), vein colour and amount, and the roughness,
+// the metal share and the light let through around the shadow edge
+uniform vec4 uStone; uniform vec4 uStoneVein; uniform vec4 uStoneMat;
 uniform mat4 uHeadInv; uniform mat3 uHeadRot;
 #include <cube_uv_reflection_fragment>
 #include <packing>
@@ -80,6 +83,21 @@ vec3 envSpecular(vec3 N, vec3 V, float rough, float f0) {
   vec3 pre = textureCubeUV(uEnv, R, rough).rgb;
   vec2 ab = envBRDF(rough, max(dot(N,V),1e-4));
   return pre * (f0*ab.x + ab.y);
+}
+// the light on a stone surface of albedo alb: a diffuse lobe that wraps a little past the shadow edge (the glow of
+// marble), the rim and the environment, and one specular lobe tinted by the albedo for the metals
+vec3 stoneLight(vec3 alb, vec3 N, vec3 V, vec3 L, vec3 Lr, float vis, float ao, float rimOcc) {
+  float rough = uStoneMat.x, metal = uStoneMat.y, wrap = uStoneMat.z;
+  float ndl = dot(N, L), lam = max(ndl, 0.0), wl = max((ndl + wrap) / (1.0 + wrap), 0.0);
+  vec3 E = uKeyColor * (lam * vis + max(wl - lam, 0.0) * 0.55 * sqrt(max(vis, 0.0)))
+         + uRimColor * max(dot(N, Lr), 0.0) * 0.5 * ao * rimOcc + shIrr(N) * uEnvDiff * pow(ao, 0.8);
+  float f0 = mix(0.04, 0.9, metal);
+  vec3 tint = mix(vec3(1.0), alb / max(max(alb.r, alb.g), max(alb.b, 1e-3)), metal);
+  vec3 c = alb * (1.0 - 0.85 * metal) * E;
+  c += PI * uKeyColor * specSphere(N, V, L, rough, f0, uKeyTan) * vis * tint;
+  c += PI * uRimColor * specSphere(N, V, Lr, rough, f0, 0.05) * ao * rimOcc * tint * 0.5;
+  c += envSpecular(N, V, rough, f0) * uEnvSpec * ao * tint * mix(1.0, 2.5, metal);
+  return min(c, vec3(64.0));
 }
 // reflections that head back into the skull are blocked by the head itself (sphere approximation).
 // headOutRest works in the rest pose; the skinned surfaces carry it through their own bones (vHOut), and the parts
@@ -401,6 +419,17 @@ float veins(vec3 p, vec3 ax) {
   float fade = smoothstep(-0.15, 0.25, gnoise(p * 16.0 + vec3(1.7, 5.3, 2.9)));
   return line * fade;
 }
+// the albedo of the stone at a point of the rest pose: soft clouds, veins along warped lines of noise, a fine grain
+vec3 stoneAlbedo(vec3 p) {
+  float cloud = gnoise(p * 3.1 + 0.7) * 0.6 + gnoise(p * 8.3 + 2.1) * 0.4;
+  vec3 q = p + 0.07 * vec3(gnoise(p * 5.0 + 1.0), gnoise(p * 5.0 + 4.0), gnoise(p * 5.0 + 9.0));
+  float n = gnoise(q * 6.0) + 0.5 * gnoise(q * 15.0 + 3.0) + 0.25 * gnoise(q * 37.0 + 5.0);
+  float vein = 1.0 - smoothstep(0.0, 0.05, abs(n));
+  float fine = 1.0 - smoothstep(0.0, 0.025, abs(gnoise(q * 29.0 + 11.0)));
+  vec3 a = uStone.rgb * (1.0 + 0.07 * cloud);
+  a = mix(a, uStoneVein.rgb, clamp(vein * 0.75 + fine * 0.3, 0.0, 1.0) * uStoneVein.w);
+  return a * (0.985 + 0.03 * vn3(p * 700.0));
+}
 // creases over the finger joints: several fine lines on the back of each joint, one or two deep lines on the palm side
 vec3 knuckles(vec3 p, vec3 N, inout float cavK) {
   vec3 dn = vec3(0.0);
@@ -542,6 +571,17 @@ void main() {
   }
 #endif
 
+  // ---------------- a stone of the library: the stone's own albedo and light, on the smooth surface (a card's normal
+  // map keeps its carved detail)
+  if (uStone.w > 0.5) {
+    vec3 Nst = N;
+#ifdef CARD_SKIN
+    Nst = Nd;
+#endif
+    outColor = vec4(stoneLight(stoneAlbedo(vObj), Nst, V, L, Lr, vis, ao * hocc, rimOcc), 1.0);
+    outSSS = vec4(0.0);
+    return;
+  }
   // ---------------- diffuse light that enters the skin
 #ifdef SSS_SCREEN
   // the screen-space pass spreads this light, so the normals only get a light softening here
@@ -669,6 +709,11 @@ void main() {
   vec3 Nw = uEyeRot * Nl;
   vec2 sh = keyShadow(vWPos, Nw, 0.6);
   float vis = sh.x * sh.y;
+  // a statue's eyes: the stone, blank
+  if (uStone.w > 0.5) {
+    gl_FragColor = vec4(stoneLight(uStone.rgb, Nw, Vw, normalize(uKeyDir), normalize(uRimDir), vis, ao, 1.0), 1.0);
+    return;
+  }
   if (uMannequin > 0.5) {
     vec3 Lw = normalize(uKeyDir);
     vec3 c = vec3(0.46, 0.45, 0.43) * (uKeyColor * max(dot(Nw, Lw), 0.0) * vis + shIrr(Nw) * uEnvDiff * ao);
@@ -737,6 +782,10 @@ void main() {
   vec3 L = normalize(uKeyDir), Lr = normalize(uRimDir);
   vec2 sh = keyShadow(vWPos, Nw, 0.6);
   float vis = sh.x * sh.y;
+  if (uStone.w > 0.5) {
+    gl_FragColor = vec4(stoneLight(uStone.rgb, Nw, Vw, L, Lr, vis, ao, 1.0), 1.0);
+    return;
+  }
   if (uMannequin > 0.5) {
     vec3 c = vec3(0.46, 0.45, 0.43) * (uKeyColor * max(dot(Nw, L), 0.0) * vis + shIrr(Nw) * uEnvDiff * ao);
     gl_FragColor = vec4(min(c, vec3(64.0)), 1.0);

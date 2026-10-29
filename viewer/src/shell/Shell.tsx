@@ -2,7 +2,8 @@
 // Apache License, Version 2.0
 //
 // The interface of the page in React (shadcn/ui on Radix, styled by the OpenSculptBoy Design System): the top bar,
-// the rail or the phone bar, the mode's panel, the tool panel, the view bar, the welcome card and the Open dialog.
+// the rail or the phone bar, the mode's panel, the tool panel, the Character panel, the view bar, the welcome card,
+// the progress card, the Open dialog and the New screen.
 // It mounts beside the canvas in #ui-root; the 3D view stays the renderer of main.ts with its own frame loop, and
 // the interface reaches it through the App of ui/app.ts and the bus of state.ts.
 
@@ -14,7 +15,9 @@ import { startTheme } from './theme.ts';
 import { actions, ui } from './state.ts';
 import { TopBar } from './components/TopBar.tsx';
 import { ModePanel, PhoneBar, Rail, ToolPanel } from './components/Panels.tsx';
-import { OpenDialog, ViewBar, Welcome } from './components/Frame.tsx';
+import { OpenDialog, ProgressCard, ViewBar, Welcome } from './components/Frame.tsx';
+import { NewScreen } from './components/NewScreen.tsx';
+import { CharacterPanel } from './components/CharacterPanel.tsx';
 import { TooltipProvider } from './components/ui/tooltip.tsx';
 
 function Shell() {
@@ -25,9 +28,12 @@ function Shell() {
       {width === 'medium' ? <Rail /> : null}
       <ModePanel />
       <ToolPanel />
+      <CharacterPanel />
       <ViewBar />
       <Welcome />
+      <ProgressCard />
       <OpenDialog />
+      <NewScreen />
       {width === 'phone' ? <PhoneBar /> : null}
     </TooltipProvider>
   );

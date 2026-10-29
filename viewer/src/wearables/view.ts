@@ -31,7 +31,7 @@ export interface WardrobeHost {
     subdivision: { ops: SparseRows[] }; geometry: THREE_NS.BufferGeometry };   // the body's subdivision, coarse to fine
   // the card's look (card/look.ts): its local changes, detail layer, maps, eyes and parts; placed once the card's
   // sliders shape the body; unloaded with the card
-  loadCard(card: any, files: FileSet, folder: string): Promise<{ notes: string[]; failures: number }>;
+  loadCard(card: any, files: FileSet, folder: string, step?: (id: string) => void): Promise<{ notes: string[]; failures: number }>;
   placeCard(): void;
   unloadCard(): void;
   applyCard(card: any): void;                            // the card's sliders and face into the look
@@ -57,6 +57,8 @@ function soon(f: () => void) {
 export class Wardrobe {
   host: WardrobeHost;
   card: any = null; cardName = ''; files: FileSet | null = null;
+  // the card as its file holds it, and its path among the files (Save card writes it with the page's edits)
+  source: any = null; cardPath = '';
   packages = new Map<string, Wearable>();    // by reference
   outfit: string | null = null; show: string[] = []; hide: string[] = []; keepSkin = false;
   pieces: DressedPiece[] = []; worn: WornRef[] = [];
@@ -83,7 +85,9 @@ export class Wardrobe {
 
   // ---------------------------------------------------------------- loading
   // a card and its packages from the picked files; packages without a card become loose pieces
-  async load(picked: PickedFile[]): Promise<{ pieces: number; notes: string[] }> {
+  // step names the stage reached, for the progress of the Open path: read, body, maps, parts, dress
+  async load(picked: PickedFile[], step: (id: string) => void = () => {}): Promise<{ pieces: number; notes: string[] }> {
+    step('read');
     const files = new FileSet(picked), notes: string[] = [];
     let failures = 0;
     const fail = (note: string, err?: unknown) => { notes.push(note); failures++; console.error(`Wearables: ${note}`, ...(err instanceof Error ? [err] : [])); };
@@ -104,6 +108,7 @@ export class Wardrobe {
       card = { name: 'wearables', wearables: packs.map((p) => ({ id: p.split('/').pop()!.replace('.wearable.json', ''), file: p, enabled: true })) };
       cardPath = '';
     }
+    const source = JSON.parse(JSON.stringify(card));
     const folder = dirname(cardPath), packages = new Map<string, Wearable>(), byFile = new Map<File, Wearable>();
     const entries = [...(card.outfits || []).flatMap((o: any) => (o.pieces || []).map((p: any) => ({ ref: `${o.id}/${p.piece}`, file: p.file }))),
       ...(card.wearables || []).map((w: any) => ({ ref: w.id || String(w.file).split('/').pop()!.split('.')[0], file: w.file }))];
@@ -140,9 +145,10 @@ export class Wardrobe {
     this.cancel();
     this.clearMeshes();
     // the card's look: its local changes and detail layer shape the body before the dress sees it
-    const look = await this.host.loadCard(card, files, folder);
+    const look = await this.host.loadCard(card, files, folder, step);
+    step('dress');
     notes.push(...look.notes); failures += look.failures;
-    this.card = card; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes; this.failures = failures;
+    this.card = card; this.source = cardPath ? source : null; this.cardPath = cardPath; this.cardName = card.name || 'character'; this.files = files; this.packages = packages; this.notes = notes; this.failures = failures;
     this.outfit = cardOutfit(card);   // a card that names no outfit wears none, as in an export
     this.show = []; this.hide = []; this.cache = new DressCache(); this.worn = []; this.pieces = [];
     if (card.phenotype || card.face_shapes) this.host.applyCard(card);
@@ -159,7 +165,7 @@ export class Wardrobe {
     this.cancel();
     this.clearMeshes();
     // the dress cache holds the packages (their garments and texture bytes) by reference
-    this.card = null; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
+    this.card = null; this.source = null; this.cardPath = ''; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
     this.host.unloadCard();
     this.restoreBody();
     this.host.changed(); this.notify();

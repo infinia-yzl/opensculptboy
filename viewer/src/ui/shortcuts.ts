@@ -24,11 +24,10 @@ export const MODES: ModeDef[] = [
 // the sections of each mode; Create's are its sub-tabs, each with its key (Skin and eyes takes K, since E is Export)
 export const SECTIONS: Record<ModeId, SectionDef[]> = {
   create: [
-    { id: 'characters', label: 'Characters', short: 'Library', icon: 'characters' },
     { id: 'body', label: 'Body', key: 'b', icon: 'body' },
     { id: 'face', label: 'Face', key: 'f', icon: 'face' },
-    { id: 'hair', label: 'Hair', key: 'h', icon: 'hair' },
     { id: 'skin', label: 'Skin and eyes', short: 'Skin', key: 'k', icon: 'skin' },
+    { id: 'hair', label: 'Hair', key: 'h', icon: 'hair' },
   ],
   dress: [{ id: 'wear', label: 'Wearables', icon: 'wear' }],
   express: [{ id: 'expression', label: 'Expression', icon: 'expression' }],
@@ -59,7 +58,9 @@ export const SHORTCUTS: [string, [string, string][]][] = [
     ['Esc', 'Close the panel or the dialog'],
   ]],
   ['Files', [
-    ['Ctrl O', 'Open a character card, its folder, wearables or sheet settings'],
+    ['N', 'New character: a starter, the base or your own 3D model'],
+    ['Ctrl O', 'Open a character card, its folder or .zip, an OpenSculptBoy GLB or VRM file, wearables or sheet settings'],
+    ['Ctrl S', 'Save the card'],
     ['Drop', 'Drop files anywhere on the page to open them'],
   ]],
   ['Camera', [

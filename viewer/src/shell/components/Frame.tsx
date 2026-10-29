@@ -64,23 +64,25 @@ export function ViewBar() {
 }
 
 export function Welcome() {
+  const { legacy } = useShell();
   const shown = useUI((s) => s.welcome), width = useUI((s) => s.width);
   if (!shown) return null;
+  const name = legacy.identity().name, starter = legacy.starters.some((s) => s.name === name);
   const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   return (
     <section className="osb-glass osb-mended welcome" aria-labelledby="welcome-title" data-width={width}>
       <Tip label="Close" keys="Esc" side="left">
         <button type="button" className="osb-ib welcome-x" aria-label="Close the welcome" onClick={() => actions.dismissWelcome()}><Icon name="close" size={16} /></button>
       </Tip>
-      <h2 className="osb-title welcome-title" id="welcome-title">Meet the studio</h2>
-      <p className="osb-note">Shape a character here, then dress, pose and export it. Your files stay in this browser.</p>
+      <h2 className="osb-title welcome-title" id="welcome-title">{starter ? `Meet the ${name}` : 'Meet the studio'}</h2>
+      <p className="osb-note">{starter ? 'A statue to start from. Shape it, dress it, pose it and export it. Your files stay in this browser.' : 'Shape a character here, then dress, pose and export it. Your files stay in this browser.'}</p>
       <p className="osb-note welcome-keys">
         {touch
           ? <><b>Drag</b> to turn · <b>pinch</b> to zoom · <b>two fingers</b> to move</>
           : <><b>Drag</b> to turn · <b>scroll</b> to zoom · <b>?</b> for the keys</>}
       </p>
       <div className="osb-row">
-        <Button onClick={() => actions.showOpen()}><Icon name="open" size={16} />Open a character</Button>
+        <Button onClick={() => { actions.dismissWelcome(); actions.showNew(); }}><Icon name="new" size={16} />New character</Button>
         <Button variant="ghost" onClick={() => actions.dismissWelcome()}>Got it</Button>
       </div>
     </section>
@@ -102,6 +104,7 @@ export function OpenDialog() {
             <h3 className="osb-heading">{error.title}</h3>
             <p>{error.body}</p>
             <div className="osb-row">
+              {error.action ? <Button onClick={error.action.run}>{error.action.label}</Button> : null}
               {error.fit ? <a className="osb-btn" href={FIT_DOCS} target="_blank" rel="noopener noreferrer"><Icon name="link" size={16} />How to fit a 3D model</a> : null}
               <Button variant="ghost" onClick={() => O.pickFiles()}>Choose other files</Button>
             </div>
@@ -110,10 +113,10 @@ export function OpenDialog() {
         <div className="osb-drop" data-over={dragging ? '' : undefined}>
           <p className="osb-drop-say"><Icon name="open" size={16} />Drop to open the files</p>
           <dl className="osb-formats">
-            <dt>Character card</dt><dd><code>.json</code> with its files, or their folder</dd>
+            <dt>Character card</dt><dd><code>.json</code> with its files, their folder, or their <code>.zip</code></dd>
+            <dt>OpenSculptBoy model</dt><dd><code>.glb</code> or <code>.vrm</code>: the card it holds</dd>
             <dt>Wearables</dt><dd><code>.wearable.json</code> packages with their files</dd>
             <dt>Sheet settings</dt><dd>a <code>.json</code> file of the Sheet mode</dd>
-            <dt>Page character</dt><dd>a <code>.json</code> file from Export</dd>
             <dt>Picture</dt><dd><code>.png</code> or <code>.jpg</code>, to pose the figure as it stands</dd>
           </dl>
           <div className="osb-row">
@@ -125,5 +128,23 @@ export function OpenDialog() {
         <p className="osb-note open-status" role="status">{busy ? busy + '…' : ''}</p>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// the progress card of a long step (a card's open): its steps, done, now or to do, and a bar
+export function ProgressCard() {
+  const p = useUI((s) => s.progress);
+  if (!p) return null;
+  const done = p.steps.filter(([, st]) => st === 'done').length;
+  return (
+    <section className="osb-glass osb-progress progress-card" role="status" aria-live="polite" aria-labelledby="progress-title">
+      <h2 className="osb-heading" id="progress-title">{p.title}</h2>
+      <div className="osb-bar" style={{ ['--p' as any]: Math.max(0.04, (done + 0.5) / p.steps.length) }}><span /></div>
+      <ol className="osb-steps">
+        {p.steps.map(([label, st], i) => (
+          <li key={label} data-state={st}><span className="osb-num">{String(i + 1).padStart(2, '0')}</span><span>{label}</span><span className="osb-mark">{st === 'done' ? 'Done' : st === 'now' ? 'Now' : ''}</span></li>
+        ))}
+      </ol>
+    </section>
   );
 }

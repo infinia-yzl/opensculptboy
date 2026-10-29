@@ -1,7 +1,7 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-The AI providers of the viewer (viewer/src/ai/, the temporary panel viewer/src/ui/ai_ui.ts,
+The AI providers of the viewer (viewer/src/ai/, the Settings panel viewer/src/shell/sections/SettingsSection.tsx,
 docs/viewer.md "AI providers"). In node: the key vault's cryptography and records with a fake
 passkey, the idle lock, the page checks and each provider's requests and errors with a fake
 fetch (viewer/test/ai_vault.mjs). In the built page, in Chromium through Playwright with
@@ -134,13 +134,11 @@ STORAGE = """() => JSON.stringify(Object.assign({}, localStorage))
 class TestAiPage(unittest.TestCase):
     def open_panel(self, tab):
         tab.wait_for_function("() => window.__ready === true", timeout=300000)
-        # the page reopens the section it showed last, so a click on its tab would close it
+        # View > Settings shows the AI providers on the right
         tab.wait_for_timeout(300)
-        if not tab.locator("#sec-scene").is_visible():
-            tab.click("#tab-scene")
-        summary = tab.locator(".ai-panel summary")
-        summary.scroll_into_view_if_needed()
-        summary.click()
+        tab.locator("[aria-label='View menu']").click()
+        tab.locator("[data-slot='settings']").click()
+        tab.locator(".ai-panel").wait_for()
 
     def status(self, tab, text):
         """waits for the panel's status line to hold text, and returns the line"""

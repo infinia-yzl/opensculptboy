@@ -3,7 +3,7 @@
 //
 // The key vault (docs/viewer.md, "AI providers"): API keys of AI providers, each encrypted with AES-GCM under one data
 // key, which a passkey's PRF output unlocks. The vault has no interface of its own and no framework, so any interface
-// can drive it: today's temporary panel (ui/ai_ui.ts) and the redesigned one.
+// can drive it: the Settings panel of the interface (shell/sections/SettingsSection.tsx) and any later one.
 //
 // While the vault is locked, the page holds no key at all: the store has ciphertexts only. Unlock asks the passkey for
 // its PRF output, derives the key-wrapping key, unwraps the data key as a non-extractable CryptoKey and forgets the

@@ -2,12 +2,9 @@
 // Copyright (C) 2025 NAVER Corp.
 // Apache License, Version 2.0
 //
-// The sections of the Stage segment: Pose (the clips with a timeline, the poses, the soft tissue) and Scene (the
-// lights, their rotation, the exposure, the quality of the picture, the frame rate limit, the display toggles and, for
-// now, the AI providers of ai_ui.ts).
-// The Rig section (rig_ui.ts) sits between Pose and Scene.
+// The tool panels of the View menu that are still the page's own DOM: Scene (the lights, their rotation, the
+// exposure, the quality of the picture, the frame rate limit and the display toggles) and Rig (rig_ui.ts).
 
-import { aiPanel } from './ai_ui.ts';
 import type { App } from './app.ts';
 import { chip, foldGroup, searchField, sectionHead, segmented, slider, textButton, toggle } from './controls.ts';
 import { download, h, saveUi, slug, uiState } from './dom.ts';
@@ -22,129 +19,6 @@ const QUALITY: Record<string, string> = {
 
 export function stageSections(app: App) {
   const syncs: (() => void)[] = [];
-  const frames: (() => void)[] = [];
-
-  // ---------------------------------------------------------------- Pose
-  const pose = h('section');
-  {
-    const head = sectionHead('Pose');
-    const clips = app.clips();
-    const loops = clips.filter((c) => c.kind === 'loop');
-    const anim = h('div.chips', { role: 'group', 'aria-label': 'Animations' });
-    const chips = new Map<string, HTMLButtonElement>();
-    const choose = (name: string) => {
-      const m = app.motion();
-      const c = clips.find((x) => x.name === name)!;
-      if (c.kind === 'loop' && m.cur && m.cur.name === name) app.togglePlay(); else app.setMotion(name);
-    };
-    for (const c of loops) { const b = chip(c.label, () => choose(c.name)); b.dataset.motion = c.name; anim.append(b); chips.set(c.name, b); }
-    const play = h('button.play', { type: 'button', 'aria-label': 'Play', 'data-tip': 'Play or pause  ·  Space', 'data-tip-pos': 'up' }, icon('play', 18));
-    play.addEventListener('click', () => app.togglePlay());
-    let scrubbing = false;
-    const scrub = h('input.scrub', { type: 'range', min: '0', max: '1', step: '0.001', value: '0', 'aria-label': 'Animation time' }) as HTMLInputElement;
-    scrub.addEventListener('input', () => {
-      scrubbing = true;
-      const m = app.motion(); if (!m.cur || m.cur.kind !== 'loop') return;
-      if (m.playing) app.togglePlay();
-      app.seek(parseFloat(scrub.value) * m.cur.duration);
-    });
-    scrub.addEventListener('change', () => { scrubbing = false; });
-    const time = h('span.scrub-time');
-    const speed = segmented('Speed', [{ value: '0.25', label: '¼×' }, { value: '0.5', label: '½×' }, { value: '1', label: '1×' }], (v) => app.setSpeed(parseFloat(v)));
-    const timeline = h('div.timeline', {}, play, scrub, time);
-    // the poses: groups that fold, a search over their names
-    const folds = new Map<string, ReturnType<typeof foldGroup>>();
-    const wrap = h('div.folds');
-    for (const c of clips) {
-      if (c.kind !== 'pose') continue;
-      let f = folds.get(c.group!);
-      if (!f) { f = foldGroup(c.group!); f.body.classList.add('chips'); folds.set(c.group!, f); wrap.append(f.el); }
-      const b = chip(c.label, () => choose(c.name)); b.dataset.motion = c.name; f.body.append(b); chips.set(c.name, b);
-      f.count.textContent = String(f.body.children.length);
-    }
-    const empty = h('p.note.empty', { text: 'No pose matches.', hidden: true });
-    const search = searchField('Search 50 poses', (q) => {
-      let any = false;
-      for (const [g, f] of folds) {
-        let n = 0;
-        for (const b of Array.from(f.body.children) as HTMLElement[]) { const hit = !q || b.textContent!.toLowerCase().includes(q) || g.toLowerCase().includes(q); b.hidden = !hit; if (hit) n++; }
-        f.el.hidden = n === 0; if (q) f.el.open = n > 0; any = any || n > 0;
-      }
-      empty.hidden = any;
-    });
-    const credit = h('p.note.credit');
-    // from a picture: MediaPipe reads the figure's pose, and the pose card and the silhouette take the pose shown
-    const file = h('input', { type: 'file', accept: 'image/*', hidden: true }) as HTMLInputElement;
-    const pictureMsg = h('p.inline-msg', { role: 'status' });
-    const say = (text: string, kind = '') => { pictureMsg.textContent = text; pictureMsg.dataset.kind = kind; };
-    const choosePicture = textButton('Choose a picture', () => file.click(), 'upload');
-    file.addEventListener('change', async () => {
-      const f = file.files && file.files[0]; file.value = '';
-      if (!f) return;
-      choosePicture.disabled = true;
-      say('Reading the pose. The first picture loads MediaPipe, about 20 MB.');
-      try {
-        const r = await app.poseFromPicture(f);
-        showHead();
-        say(r.hands === 2 ? 'Posed from the picture, with both hands.' : r.hands === 1 ? 'Posed from the picture, with one hand. The other hand keeps its rest pose.' : 'Posed from the picture. No hands were clear enough, so they keep their rest pose.');
-      } catch (e) {
-        say(e instanceof Error && e.message.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : 'The picture could not be read. MediaPipe loads from the internet the first time.', 'error');
-      } finally { choosePicture.disabled = false; }
-    });
-    // the head's correction: a picture made by an AI model, or a stylised face, can leave the head's turn unclear
-    const headVals = { turn: 0, up: 0, tilt: 0 };
-    const headSlider = (key: 'turn' | 'up' | 'tilt', label: string, min: number, max: number, ends: string[]) => slider({
-      id: 'picture-head-' + key, label: label + ' (°)', min, max, step: 1, def: 0, digits: 0, ends,
-      onInput: (v) => { headVals[key] = v; app.setPictureHead({ ...headVals }); },
-    });
-    const headSliders = [headSlider('turn', 'Head turn', -60, 60, ['Left', 'Right']),
-      headSlider('up', 'Head up', -40, 60, ['Down', 'Up']), headSlider('tilt', 'Head tilt', -40, 40, ['Left', 'Right'])];
-    const headBox = h('div.picture-head', { hidden: true },
-      h('p.note', { text: 'When the picture leaves the head unclear, as a drawn or stylised face can, turn the head here. Left and right are the figure\'s own.' }),
-      ...headSliders.map((sl) => sl.el));
-    const showHead = () => {
-      const v = app.pictureHead();
-      headBox.hidden = !v;
-      if (v) { Object.assign(headVals, v); headSliders[0].set(v.turn); headSliders[1].set(v.up); headSliders[2].set(v.tilt); }
-    };
-    const name = () => slug(app.look().name || 'character');
-    // a hosted page (the artifact build) cannot start a download
-    const saves = (window as any).MODEL_PARTS ? null : h('div.btn-row', {},
-      textButton('Pose card', () => download(`${name()}-pose.json`, new Blob([JSON.stringify(app.poseCard(), null, 2) + '\n'], { type: 'application/json' })), 'download'),
-      textButton('Silhouette', () => download(`${name()}-silhouette.svg`, new Blob([app.poseSilhouette()], { type: 'image/svg+xml' })), 'download'));
-    const tissue = toggle('Soft tissue', (on) => app.setCorrectives(on), 'Corrective shapes keep the volume of the joints');
-    const tissueNote = h('p.note', { text: 'Corrective shapes from a soft-tissue simulation keep the volume of the shoulders, elbows, hips and knees as they bend. Switch them off to compare with plain skinning.' });
-    pose.append(head.el, h('h3.sub', { text: 'Animations' }), anim, timeline, h('div.row', {}, h('span.row-label', { text: 'Speed' }), speed.el),
-      h('p.note', { text: 'The view sharpens while the figure holds still. Pause an animation to see any moment at full quality.' }),
-      h('h3.sub', { text: 'Poses' }), search.el, wrap, empty, credit,
-      h('h3.sub', { text: 'From a picture' }),
-      h('p.note', { text: 'Pose the figure as the figure in a picture: the body, the head and the fingers. The picture stays in this browser.' }),
-      h('div.btn-row', {}, choosePicture), pictureMsg, file, headBox,
-      ...(saves ? [h('p.note', { text: 'Save the pose shown as a character card for opensculptboy export, or as a silhouette from this view.' }), saves] : []),
-      h('h3.sub', { text: 'Soft tissue' }), tissue.el, tissueNote);
-    let openFor = '';
-    syncs.push(() => {
-      const m = app.motion(); if (!m.cur) return;
-      for (const [n, b] of chips) b.setAttribute('aria-pressed', String(n === m.cur.name));
-      const loop = m.cur.kind === 'loop';
-      timeline.toggleAttribute('data-off', !loop);
-      play.disabled = !loop; scrub.disabled = !loop;
-      play.replaceChildren(icon(loop && m.playing ? 'pause' : 'play', 18));
-      play.setAttribute('aria-label', loop && m.playing ? 'Pause' : 'Play');
-      speed.set(String(m.speed));
-      head.note.textContent = m.cur.label + (loop && !m.playing ? ' · paused' : '');
-      if (!loop && m.cur.group && openFor !== m.cur.name) { openFor = m.cur.name; const f = folds.get(m.cur.group); if (f) f.el.open = true; }
-      credit.textContent = m.cur.credit ? `Pose by ${m.cur.credit}, from the MakeHuman community (CC0).` : '';
-      const cr = app.correctives();
-      tissue.el.hidden = tissueNote.hidden = !cr.ready; tissue.set(cr.on);
-    });
-    frames.push(() => {
-      const m = app.motion(); if (!m.cur || m.cur.kind !== 'loop') { time.textContent = ''; return; }
-      const d = m.cur.duration, t = ((m.t % d) + d) % d;
-      if (!scrubbing) scrub.value = String(t / d);
-      time.textContent = `${t.toFixed(1)} / ${d.toFixed(1)} s`;
-    });
-  }
 
   // ---------------------------------------------------------------- Scene
   const scene = h('section');
@@ -178,8 +52,7 @@ export function stageSections(app: App) {
       h('h3.sub', { text: 'Quality' }), qual.el, qNote,
       h('h3.sub', { text: 'Frame rate limit' }), fps.el,
       h('p.note', { text: 'A lower limit saves energy while the figure, the hair or the camera moves. A still picture refines and then stops drawing at any limit.' }),
-      h('h3.sub', { text: 'Display' }), h('div.switches', {}, hairT.el, physT.el, turnT.el),
-      h('div.folds', {}, aiPanel()));
+      h('h3.sub', { text: 'Display' }), h('div.switches', {}, hairT.el, physT.el, turnT.el));
     const sync = () => {
       lightEls.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.preset === app.preset())));
       head.note.textContent = app.presets[app.preset()]?.label || '';
@@ -200,5 +73,5 @@ export function stageSections(app: App) {
   const rig = rigSection(app);
   syncs.push(rig.sync);
 
-  return { pose, rig: rig.el, scene, sync: () => { for (const s of syncs) s(); }, frame: () => { for (const f of frames) f(); } };
+  return { rig: rig.el, scene, sync: () => { for (const s of syncs) s(); } };
 }

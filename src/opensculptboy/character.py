@@ -9,12 +9,13 @@ from typing import Any
 
 import torch
 
-# Schema 2 adds the optional ``detail`` field, schema 3 the optional ``material`` field and
+# Schema 2 adds the optional ``detail`` field, schema 3 the optional ``material`` field,
 # schema 4 the wardrobe fields (``wearables``, ``outfits``, ``active_outfit`` and
-# ``wearable_overrides``). A card is written with the lowest schema that holds its fields, so
-# that a card without them stays byte for byte what earlier versions wrote and read.
-SCHEMA_VERSION = 4
-SCHEMA_VERSIONS = (1, 2, 3, 4)
+# ``wearable_overrides``) and schema 5 the ``look`` field of the web viewer. A card is written
+# with the lowest schema that holds its fields, so that a card without them stays byte for byte
+# what earlier versions wrote and read.
+SCHEMA_VERSION = 5
+SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
 WARDROBE_FIELDS = ("wearables", "outfits", "active_outfit", "wearable_overrides")
 
 
@@ -58,6 +59,13 @@ class Character:
     [{"piece", "file", "enabled"}]}``), ``active_outfit`` names the outfit worn and
     ``wearable_overrides`` switches single pieces (``{"<outfit>/<piece>": {"enabled":
     false}}``).
+
+    ``look`` (schema 5) holds what the web viewer shows of the character beyond the model's
+    parameters: ``"skin"`` (``tone`` 0 to 1, ``undertone`` -1 to 1, and for a statue ``stone``,
+    a stone of the viewer's library or a colour ``"#rrggbb"``, with its ``polish`` 0 to 1),
+    ``"hair"`` (the viewer's hair ``style``, its ``color`` and the style's ``length``, ``curl``,
+    ``volume``, ``density``, ``fade`` and ``part``) and ``"eyes"`` (``color``). Colours are sRGB
+    hex strings. The exporters keep the block and do not use it yet; see :func:`check_look`.
     """
 
     name: str = "character"
@@ -75,6 +83,7 @@ class Character:
     outfits: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     active_outfit: str = ""
     wearable_overrides: dict[str, Any] = dataclasses.field(default_factory=dict)
+    look: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def skin_material(self):
         """The :class:`~opensculptboy.material.SkinMaterial` of ``material``, or None (also
@@ -268,6 +277,10 @@ class Character:
         for name in WARDROBE_FIELDS:
             if not getattr(self, name):
                 del data[name]
+        if self.look:
+            schema = 5
+        else:
+            del data["look"]
         return {"schema": schema, **data}
 
     @classmethod
@@ -289,6 +302,8 @@ class Character:
         wardrobe = sorted(set(data) & set(WARDROBE_FIELDS))
         if schema in (1, 2, 3) and wardrobe:
             raise ValueError(f"The fields {wardrobe} need character schema 4.")
+        if schema in (1, 2, 3, 4) and "look" in data:
+            raise ValueError("The look field needs character schema 5.")
         fields = {f.name for f in dataclasses.fields(cls)}
         unknown = sorted(set(data) - fields - {"schema"})
         if unknown:
@@ -305,6 +320,7 @@ class Character:
             from opensculptboy.wearables.wardrobe import check_wardrobe
 
             check_wardrobe(character)
+        check_look(character.look)
         return character
 
     def check_detail(self) -> None:
@@ -337,3 +353,81 @@ class Character:
                 raise ValueError(
                     "detail offsets must be the path of a .safetensors file."
                 )
+
+
+LOOK_KEYS = {
+    "skin": {"tone", "undertone", "stone", "polish"},
+    "hair": {"style", "color", "length", "curl", "volume", "density", "fade", "part"},
+    "eyes": {"color"},
+}
+# the stones of the web viewer's library (viewer/src/stones.ts)
+STONES = ("carrara", "travertine", "bardiglio", "basalt", "bronze", "verdigris")
+
+
+def _hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 7
+        and value[0] == "#"
+        and all(c in "0123456789abcdefABCDEF" for c in value[1:])
+    )
+
+
+def check_look(look: Any) -> None:
+    """Raise ValueError for a ``look`` field that the web viewer cannot read: a JSON object
+    of the sections ``skin``, ``hair`` and ``eyes`` with their known keys, numbers within their
+    ranges, sRGB hex colours, a stone of the library or a colour, and a part of ``left`` or
+    ``right``. An empty ``look`` is no look."""
+    if not look:
+        return
+    if not isinstance(look, dict):
+        raise ValueError("The look field must be a JSON object.")
+    unknown = sorted(set(look) - set(LOOK_KEYS))
+    if unknown:
+        raise ValueError(
+            f"Unknown look sections {unknown}; the sections are {sorted(LOOK_KEYS)}."
+        )
+    ranges = {
+        "tone": (0, 1),
+        "undertone": (-1, 1),
+        "polish": (0, 1),
+        "length": (0, 1),
+        "curl": (0, 1),
+        "volume": (0, 1),
+        "density": (0, 1),
+        "fade": (-90, 90),
+    }
+    for section, values in look.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"look.{section} must be a JSON object.")
+        extra = sorted(set(values) - LOOK_KEYS[section])
+        if extra:
+            raise ValueError(
+                f"Unknown keys {extra} in look.{section}; the keys are "
+                f"{sorted(LOOK_KEYS[section])}."
+            )
+        for key, value in values.items():
+            where = f"look.{section}.{key}"
+            if key in ranges:
+                lo, hi = ranges[key]
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not lo <= value <= hi
+                ):
+                    raise ValueError(f"{where} must be a number from {lo} to {hi}.")
+            elif key == "color":
+                if not _hex(value):
+                    raise ValueError(f"{where} must be an sRGB colour such as #6b4a30.")
+            elif key == "stone":
+                if value not in STONES and not _hex(value):
+                    raise ValueError(
+                        f"{where} must be one of {', '.join(STONES)} or a colour "
+                        "such as #e9e5de."
+                    )
+            elif key == "style":
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"{where} must be the name of a hair style.")
+            elif key == "part":
+                if value not in ("left", "right"):
+                    raise ValueError(f"{where} must be left or right.")

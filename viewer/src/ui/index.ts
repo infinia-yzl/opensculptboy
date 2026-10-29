@@ -12,14 +12,16 @@
 
 import type { App, Hooks } from './app.ts';
 import { cameraNav, type CameraNav } from './camera_nav.ts';
-import { characterSections, randomBodyInto, randomColours, randomFaceInto, randomHair, randomPhenotype, type Editor } from './character_ui.ts';
+import { randomBodyInto, randomColours, randomFaceInto, randomHair, randomPhenotype, type Editor } from './character_ui.ts';
 import { download, h, iconButton, slug, typing } from './dom.ts';
 import { lookHistory } from './history.ts';
 import { helpSheet, MODES, SECTIONS, shortcutKeys, TOOLS } from './shortcuts.ts';
-import { sheetSection } from './sheet_ui.ts';
+import { sheetController } from '../sheet/controller.ts';
 import { stageSections } from './stage_ui.ts';
-import { expressionSection } from './expression_ui.ts';
-import { wearablesSection, type WearablesUI } from './wearables_ui.ts';
+import { wearLoader } from '../shell/sections/DressSection.tsx';
+import { cardOf, writeZip } from '../card/file.ts';
+import { STARTERS, starterById, finishedUrl } from '../starters.ts';
+import { stoneOf } from '../stones.ts';
 import { makeStats, type Stats } from './stats.ts';
 import { toast } from './toast.ts';
 import { actions, bus, ui, widthOf } from '../shell/state.ts';
@@ -65,19 +67,67 @@ export function initUI(app: App): UI {
 
   // ---------------------------------------------------------------- the sections that the frame hosts
   const layoutSoon = () => requestAnimationFrame(layout);
-  const cs = characterSections(ed);
   const ss = stageSections(app);
-  const sheet = sheetSection(app, layoutSoon);
-  const xs = expressionSection();
-  let wear: WearablesUI;
+  const sheet = sheetController(app, layoutSoon);
   const opener = makeOpener({
-    loadCard: (picked) => wear.load(picked),
+    loadCard: wearLoader(app),
     applyLook: (json) => { const look = app.normaliseLook(json); ed.commit('Open ' + look.name, look); ed.origin = look.name; return look.name; },
     setSheet: (json) => { (window as any).sheet.set(json); },
     posePicture: async (file) => { await app.poseFromPicture(file); },
   });
-  wear = wearablesSection(app, opener);
   ui.set({ hasClips: app.clips().length > 0 });
+
+  // ---------------------------------------------------------------- the character as one file
+  // Save card: the open card with the page's edits (its look block, schema 5), as .json, or with its files as a .zip
+  const saveCard = async () => {
+    const w = app.wardrobe(), L = app.look();
+    const base = w?.loaded ? w.source : null;
+    const card = cardOf(L, base);
+    const name = slug(L.name || card.name || 'character');
+    const files = w?.loaded && w.source ? w.files : null;
+    if (!files || !files.byPath.size) {
+      download(`${name}.json`, new Blob([JSON.stringify(card, null, 2) + '\n'], { type: 'application/json' }));
+      toast('Saved the card');
+      return;
+    }
+    // the card's own files beside it, at their paths relative to the card
+    const folder = w!.cardPath.includes('/') ? w!.cardPath.slice(0, w!.cardPath.lastIndexOf('/')) : '';
+    const entries: { path: string; data: Uint8Array }[] = [{ path: 'character.json', data: new TextEncoder().encode(JSON.stringify(card, null, 2) + '\n') }];
+    for (const [path, file] of files.byPath as Map<string, File>) {
+      if (path === w!.cardPath) continue;
+      const rel = folder && path.startsWith(folder + '/') ? path.slice(folder.length + 1) : path;
+      entries.push({ path: rel, data: new Uint8Array(await file.arrayBuffer()) });
+    }
+    download(`${name}.zip`, new Blob([writeZip(entries) as BlobPart], { type: 'application/zip' }));
+    toast(`Saved the card with ${entries.length - 1} files`);
+  };
+  // a starter of the New screen: the light kind from the page, the finished kind from beside the page when it is there
+  const startStarter = async (id: string, kind: 'light' | 'finished') => {
+    const s = starterById(id);
+    if (!s) return;
+    if (kind === 'finished') {
+      try {
+        const r = await fetch(finishedUrl(s));
+        if (!r.ok) throw new Error(String(r.status));
+        const f = new File([await r.arrayBuffer()], s.id + '.zip');
+        if (await opener.open([{ path: f.name, file: f }])) { if (app.clips().some((c) => c.name === s.pose)) app.setMotion(s.pose); return; }
+        return;
+      } catch (e) {
+        toast(`The finished ${s.name} comes with the statue cards. The light ${s.name} is shown.`);
+      }
+    }
+    app.wardrobe()?.unload();
+    ed.commit(s.name, JSON.parse(JSON.stringify(s.light))); ed.origin = s.name;
+    if (app.clips().some((c) => c.name === s.pose)) app.setMotion(s.pose);
+    actions.hideNew();
+    if (ui.get().welcome) actions.dismissWelcome();
+  };
+  const startBase = () => {
+    app.wardrobe()?.unload();
+    ed.commit('Start from the base', app.baseline()); ed.origin = 'Baseline';
+    if (app.clips().some((c) => c.name === 'a_pose')) app.setMotion('a_pose');
+    actions.hideNew();
+  };
 
   // ---------------------------------------------------------------- the page's actions
   // a hosted page (the artifact build, with its data in parts) cannot start a download, so it shows the picture to
@@ -172,16 +222,18 @@ export function initUI(app: App): UI {
     let name = L.name;
     const named = app.characters.concat(app.looks).some((c) => c.name === ed.origin);
     if (L.name === 'Custom' && named && ed.origin !== 'Baseline') name = ed.origin + ' · edited';
-    let kind = '';
+    let kind = STARTERS.some((x) => x.name === ed.origin) ? 'Light starter' : '';
     if (w?.loaded) { name = w.cardName; kind = (w as any).card?.detail || (w as any).card?.material ? 'Fitted card' : 'Your card'; }
-    return { name, kind, a: rgb(app.skinBase(L.skin.tone, L.skin.undertone)), b: L.hair.color };
+    const st = stoneOf(L.skin);
+    return { name, kind, a: st ? st.base : rgb(app.skinBase(L.skin.tone, L.skin.undertone)), b: L.hair.color };
   };
   app.wardrobe()?.listeners.push(() => bus.emit('wardrobe'));
 
   // ---------------------------------------------------------------- the frame (React)
   const legacy: Legacy = {
-    sections: { characters: cs.chars, face: cs.face, hair: cs.hair, wear: wear.el, expression: xs.el, pose: ss.pose, sheet: sheet.el, rig: ss.rig, scene: ss.scene },
-    sheetView: sheet.view, sheetRefresh: () => sheet.refresh(),
+    sections: { rig: ss.rig, scene: ss.scene },
+    sheet,
+    saveCard, startStarter, startBase, starters: STARTERS,
     undo, redo,
     random: {
       character: randomAll,
@@ -198,7 +250,6 @@ export function initUI(app: App): UI {
     saveImage,
     poseCard: () => download(`${fileName()}-pose.json`, new Blob([JSON.stringify(app.poseCard(), null, 2) + '\n'], { type: 'application/json' })),
     silhouette: () => download(`${fileName()}-silhouette.svg`, new Blob([app.poseSilhouette()], { type: 'image/svg+xml' })),
-    downloadLook: () => { const L = app.look(); download(`opensculptboy-${slug(L.name)}.json`, new Blob([JSON.stringify(L, null, 2)], { type: 'application/json' })); },
     toggleStats: () => stats.toggle(), showHelp: () => help.showModal(), fullscreen,
     frame: (v) => nav.frame(v), angle: (v) => nav.angle(v), turntable: () => app.setTurntable(!app.turntable()), resetView: () => nav.reset(),
     ring, heightRail: nav.rail, identity, opener, hosted,
@@ -219,9 +270,14 @@ export function initUI(app: App): UI {
     sheet.setOpen(s.mode === 'sheet' && s.open);
     const phone = s.width === 'phone';
     B.classList.toggle('sheet-open', phone && (s.open || !!s.tool));
-    if (phone || app.shot) { nav.setInsets(0, 0); B.classList.remove('vb-compact'); return; }
+    if (app.shot) { nav.setInsets(0, 0); B.classList.remove('vb-compact'); return; }
+    // the bars over the canvas: the framings fill the height between the top bar and the view bar (or the phone bar)
+    const bar = (sel: string) => { const el = document.querySelector(sel) as HTMLElement | null; const r = el && el.offsetParent ? el.getBoundingClientRect() : null; return r && r.height ? r : null; };
+    const topR = bar('.osb-top'), lows = ['.viewbar', '.phone-bar'].map(bar).filter(Boolean) as DOMRect[];
+    nav.setVInsets(topR ? topR.bottom + 8 : 0, lows.length ? innerHeight - Math.min(...lows.map((r) => r.top)) + 8 : 0);
+    if (phone) { nav.setInsets(0, 0); B.classList.remove('vb-compact'); return; }
     const r = (sel: string) => { const el = document.querySelector(sel) as HTMLElement | null; return el && !el.hidden ? el.getBoundingClientRect() : null; };
-    const lr = [r('#insp-left'), r('.mode-rail')].filter(Boolean) as DOMRect[], rr = [r('#insp-right')].filter(Boolean) as DOMRect[];
+    const lr = [r('#insp-left'), r('.mode-rail')].filter(Boolean) as DOMRect[], rr = [r('#insp-right'), r('.char-panel')].filter(Boolean) as DOMRect[];
     const l = lr.length ? Math.max(...lr.map((x) => x.right)) : 0, rt = rr.length ? innerWidth - Math.min(...rr.map((x) => x.left)) : 0;
     nav.setInsets(l, rt);
     B.classList.toggle('vb-compact', innerWidth - l - rt < 640);
@@ -243,6 +299,7 @@ export function initUI(app: App): UI {
       return;
     }
     if (mod && !e.altKey && !e.shiftKey && (e.key === 'o' || e.key === 'O' || e.code === 'KeyO')) { e.preventDefault(); actions.showOpen(); return; }
+    if (mod && !e.altKey && !e.shiftKey && (e.key === 's' || e.key === 'S' || e.code === 'KeyS')) { e.preventDefault(); if (!hosted) saveCard(); return; }
     if (typing(e)) {
       // Esc leaves a text field, so the shortcuts work again (a slider's value box and a search field put back their
       // text first)
@@ -282,6 +339,7 @@ export function initUI(app: App): UI {
     for (const m of MODES) act[m.key] = () => actions.toggleMode(m.id);
     for (const s of SECTIONS.create) if (s.key) act[s.key] = () => actions.toggleSection('create', s.id);
     for (const t of TOOLS) act[t.key!] = () => actions.toggleTool(t.id as any);
+    act.n = () => { if (ui.get().newDialog) actions.hideNew(); else actions.showNew(); };
     const t = e.target as HTMLElement;
     const keys = shortcutKeys(e);
     // a focused button keeps Space and Enter; the arrows stay with the camera only outside the controls that use them
@@ -300,20 +358,19 @@ export function initUI(app: App): UI {
   layout();
   const syncLook = () => {
     const L = app.look();
-    cs.sync(L);
     if (L.name !== 'Custom') ed.origin = L.name;
     bus.emit('look');
   };
-  syncLook(); ss.sync(); xs.sync(); paintView(); paintRing();
+  syncLook(); ss.sync(); paintView(); paintRing();
   let tFrame = 0;
   const hooks: Hooks = {
     look: syncLook,
     motion: () => { ss.sync(); if (app.rigView() === 'off') boneTip.hidden = true; bus.emit('motion'); },
-    hair: () => { cs.sync(app.look()); ss.sync(); bus.emit('hair'); },
-    face: () => { xs.sync(); bus.emit('face'); },
+    hair: () => { ss.sync(); bus.emit('hair'); },
+    face: () => { bus.emit('face'); },
     frame(now, dt, drew, jsMs) {
       stats.frame(now, dt, drew, jsMs);
-      if (now - tFrame > 100) { tFrame = now; ss.frame(); paintRing(); paintView(); }
+      if (now - tFrame > 100) { tFrame = now; paintRing(); paintView(); bus.emit('tick'); }
     },
     passBegin: () => stats.passBegin(),
     passEnd: () => stats.passEnd(),

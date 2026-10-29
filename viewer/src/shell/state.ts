@@ -11,9 +11,11 @@ import { MODES, SECTIONS, TOOLS, type ModeId } from '../ui/shortcuts.ts';
 import { saveUi, uiState } from '../ui/dom.ts';
 
 export type Theme = 'light' | 'dark' | 'system';
-export type ToolId = 'rig' | 'scene';
+export type ToolId = 'rig' | 'scene' | 'settings';
 
-export interface OpenError { title: string; body: string; fit?: boolean }
+export interface OpenError { title: string; body: string; fit?: boolean; action?: { label: string; run: () => void } }
+// the progress card of a long step (a card's open): its title and its steps, each done, now or to do
+export interface Progress { title: string; steps: [string, 'done' | 'now' | 'todo'][] }
 
 export interface UIState {
   mode: ModeId;
@@ -28,6 +30,9 @@ export interface UIState {
   openDialog: boolean;
   openBusy: string;
   openError: OpenError | null;
+  newDialog: boolean;                  // the New character screen
+  character: boolean;                  // the Character panel: what the character holds
+  progress: Progress | null;
   stats: boolean;
   history: { undo: string | null; redo: string | null };
   view: { frame: string; angle: string; turntable: boolean };
@@ -91,6 +96,7 @@ export const ui = createStore<UIState>({
   snap: 'half',
   welcome: !uiState().welcomed,
   openDialog: false, openBusy: '', openError: null,
+  newDialog: false, character: !!saved.character, progress: null,
   stats: false,
   history: { undo: null, redo: null },
   view: { frame: '', angle: '', turntable: false },
@@ -101,7 +107,7 @@ export const ui = createStore<UIState>({
 // the choices that a later visit starts from
 ui.subscribe(() => {
   const s = ui.get();
-  const want = { mode: s.mode, open: s.open, sub: s.sub, theme: s.theme };
+  const want = { mode: s.mode, open: s.open, sub: s.sub, theme: s.theme, character: s.character };
   if (!same(uiState().shell, want)) saveUi({ shell: want });
 });
 
@@ -134,8 +140,11 @@ export const actions = {
   closeTool() { ui.set({ tool: null }); },
   setTheme(theme: Theme) { ui.set({ theme }); },
   dismissWelcome() { ui.set({ welcome: false }); saveUi({ welcomed: 1 }); },
-  showOpen(error: OpenError | null = null) { ui.set({ openDialog: true, openError: error }); },
+  showOpen(error: OpenError | null = null) { ui.set({ openDialog: true, openError: error, newDialog: false }); },
   hideOpen() { ui.set({ openDialog: false, openError: null, openBusy: '' }); },
+  showNew() { ui.set({ newDialog: true, openDialog: false }); },
+  hideNew() { ui.set({ newDialog: false }); },
+  toggleCharacter() { ui.set({ character: !ui.get().character }); },
 };
 
 export const toolOf = (id: string) => TOOLS.find((t) => t.id === id);

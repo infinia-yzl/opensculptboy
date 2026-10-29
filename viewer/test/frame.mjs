@@ -3,7 +3,7 @@
 //
 // The interface's state without a browser (run by test/test_viewer_frame.py):
 //   node viewer/test/frame.mjs
-// It checks the actions of src/shell/state.ts that the keys, the mode buttons and the View menu call: a mode's key
+// It checks the actions of src/shell/state.ts that the keys, the mode buttons, the View menu and the New screen call: a mode's key
 // opens its mode or closes its panel, a section's key opens it in its mode or closes it, a tool opens on the right and
 // takes the place of the mode's panel below the wide layout, the store tells its listeners only of real changes, and
 // the widths of the layouts. A failed check throws, so node exits with an error.
@@ -17,7 +17,7 @@ ui.set({ width: 'wide', mode: 'create', open: true, tool: null });
 const s = () => ui.get();
 assert.equal(MODES.length, 6);
 assert.deepEqual(MODES.map((m) => m.label), ['Create', 'Dress', 'Express', 'Pose', 'Sheet', 'Export']);
-assert.deepEqual(SECTIONS.create.map((x) => x.id), ['characters', 'body', 'face', 'hair', 'skin']);
+assert.deepEqual(SECTIONS.create.map((x) => x.id), ['body', 'face', 'skin', 'hair']);
 // a mode's key: the mode opens, or its panel closes when it shows
 actions.toggleMode('dress');
 assert.deepEqual([s().mode, s().open], ['dress', true]);
@@ -57,6 +57,23 @@ actions.showOpen({ title: 'T', body: 'B' });
 assert.deepEqual([s().openDialog, s().openError.title], [true, 'T']);
 actions.hideOpen();
 assert.deepEqual([s().openDialog, s().openError], [false, null]);
+// the New screen, the Character panel and the progress card; Open takes the New screen's place
+actions.showNew();
+assert.equal(s().newDialog, true);
+actions.showOpen();
+assert.deepEqual([s().newDialog, s().openDialog], [false, true]);
+actions.hideOpen();
+const char = s().character;
+actions.toggleCharacter();
+assert.equal(s().character, !char);
+actions.toggleCharacter();
+ui.set({ progress: { title: 'Opening x', steps: [['Reading the files', 'done'], ['Dressing', 'now']] } });
+assert.equal(s().progress.steps[1][1], 'now');
+ui.set({ progress: null });
+// Settings is a tool panel of its own
+actions.toggleTool('settings');
+assert.equal(s().tool, 'settings');
+actions.closeTool();
 // the theme and the widths of the layouts
 actions.setTheme('dark');
 assert.equal(s().theme, 'dark');
