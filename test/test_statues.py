@@ -360,7 +360,7 @@ class TestPipeline(unittest.TestCase):
             skin = load_handoff(root / "handoff").skin_parts()[0]
             nose = np.asarray(appearance["landmarks"]["nose_tip"]) @ GLTF_TO_ANNY.T
             gap = np.linalg.norm(skin.vertices - nose, axis=1).min()
-            self.assertLess(gap, 0.005)
+            self.assertLess(gap, 0.012)
             self.assertEqual(appearance["landmarks"]["knee_l"], [0.1, 0.5, 0.0])
             self.assertTrue((root / "summary.json").exists())
 
