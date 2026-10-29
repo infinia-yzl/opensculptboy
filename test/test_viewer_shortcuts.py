@@ -17,6 +17,7 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 from test.markers import local_only
@@ -61,7 +62,10 @@ PANELS = {
     "l": ("right", None, "scene"),
 }
 # the id of each panel key in PANEL_KEYS: a mode, a section of Create or a tool
-PANEL_IDS = {k: (sec if mode is None or k in "bfhk" else mode) for k, (_, mode, sec) in PANELS.items()}
+PANEL_IDS = {
+    k: (sec if mode is None or k in "bfhk" else mode)
+    for k, (_, mode, sec) in PANELS.items()
+}
 # the sections that show, the dialogs, the focus and what the view shortcuts change
 STATE = """() => {
   const vis = (side) => {
@@ -339,23 +343,32 @@ class TestShortcutsPage(unittest.TestCase):
                     if state()[s0]:
                         press("Escape")
                 before = state()
-                tab.evaluate(
+                handled = not tab.evaluate(
                     "(ev) => document.body.dispatchEvent(new KeyboardEvent('keydown',"
                     " { ...ev, bubbles: true, cancelable: true }))",
                     ev,
                 )
-                # the interface shows the panel once the page has drawn the key's change (at most a frame or two)
-                try:
-                    tab.wait_for_function(
-                        "([side, sec]) => { const p = document.getElementById('insp-' + side);"
-                        " const s = p && !p.hidden ? p.querySelector('.sec:not([hidden])') : null;"
-                        " return !!s && s.id === 'sec-' + sec; }",
-                        arg=[side, sec],
-                        timeout=5000,
+                # the interface shows the panel at once; the states seen over at most 5 s name what happened when it
+                # does not
+                seen, t0 = [], time.time()
+                while time.time() - t0 < 5:
+                    now = state()
+                    seen.append(
+                        (
+                            round(time.time() - t0, 2),
+                            now["left"],
+                            now["right"],
+                            now["mode"],
+                        )
                     )
-                except Exception:
-                    pass
-                self.assertEqual(state()[side], sec, (ev, before, state()))
+                    if now[side] == sec:
+                        break
+                    tab.wait_for_timeout(100)
+                self.assertEqual(
+                    seen[-1][1 if side == "left" else 2],
+                    sec,
+                    (ev, handled, before, seen),
+                )
             browser.close()
         print(
             "\n"
