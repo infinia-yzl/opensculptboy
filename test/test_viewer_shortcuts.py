@@ -338,13 +338,14 @@ class TestShortcutsPage(unittest.TestCase):
                 for s0 in ("left", "right"):
                     if state()[s0]:
                         press("Escape")
+                before = state()
                 tab.evaluate(
                     "(ev) => document.body.dispatchEvent(new KeyboardEvent('keydown',"
                     " { ...ev, bubbles: true, cancelable: true }))",
                     ev,
                 )
                 tab.wait_for_timeout(60)
-                self.assertEqual(state()[side], sec, ev)
+                self.assertEqual(state()[side], sec, (ev, before, state()))
             browser.close()
         print(
             "\n"
