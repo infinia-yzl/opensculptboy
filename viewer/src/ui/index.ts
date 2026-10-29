@@ -16,7 +16,7 @@ import { $, download, h, iconButton, saveUi, slug, typing, uiState } from './dom
 import { lookHistory } from './history.ts';
 import { icon } from './icons.ts';
 import { isPhone, makeSegment, WIDE, type Segment } from './segments.ts';
-import { helpSheet } from './shortcuts.ts';
+import { helpSheet, PANEL_KEYS, shortcutKeys } from './shortcuts.ts';
 import { sheetSection } from './sheet_ui.ts';
 import { stageSections } from './stage_ui.ts';
 import { expressionSection } from './expression_ui.ts';
@@ -116,19 +116,19 @@ export function initUI(app: App): UI {
     document.body.classList.toggle('vb-fold', free < 560);
   };
   const left: Segment = makeSegment('left', 'Character', [
-    { id: 'characters', label: 'Characters', icon: 'characters', key: 'c', el: cs.chars },
-    { id: 'body', label: 'Body', icon: 'body', key: 'b', el: cs.body },
-    { id: 'face', label: 'Face', icon: 'face', key: 'f', el: cs.face },
-    { id: 'hair', label: 'Hair', icon: 'hair', key: 'h', el: cs.hair },
-    { id: 'skin', label: 'Skin & eyes', icon: 'skin', key: 'e', el: cs.skin },
-    { id: 'wear', label: 'Wearables', icon: 'wear', key: 'w', el: wearablesSection(app) },
+    { id: 'characters', label: 'Characters', icon: 'characters', key: PANEL_KEYS.characters, el: cs.chars },
+    { id: 'body', label: 'Body', icon: 'body', key: PANEL_KEYS.body, el: cs.body },
+    { id: 'face', label: 'Face', icon: 'face', key: PANEL_KEYS.face, el: cs.face },
+    { id: 'hair', label: 'Hair', icon: 'hair', key: PANEL_KEYS.hair, el: cs.hair },
+    { id: 'skin', label: 'Skin & eyes', icon: 'skin', key: PANEL_KEYS.skin, el: cs.skin },
+    { id: 'wear', label: 'Wearables', icon: 'wear', key: PANEL_KEYS.wear, el: wearablesSection(app) },
   ], layout);
   const right: Segment = makeSegment('right', 'Stage', [
-    { id: 'pose', label: 'Pose', icon: 'pose', key: 'p', el: ss.pose },
-    { id: 'expression', label: 'Expression', icon: 'expression', key: 'x', el: xs.el },
-    { id: 'rig', label: 'Rig', icon: 'bones', key: 'r', el: ss.rig },
-    { id: 'scene', label: 'Scene', icon: 'scene', key: 'l', el: ss.scene },
-    { id: 'sheet', label: 'Sheet', icon: 'sheet', key: 's', el: sheet.el, onShow: () => sheet.refresh() },
+    { id: 'pose', label: 'Pose', icon: 'pose', key: PANEL_KEYS.pose, el: ss.pose },
+    { id: 'expression', label: 'Expression', icon: 'expression', key: PANEL_KEYS.expression, el: xs.el },
+    { id: 'rig', label: 'Rig', icon: 'bones', key: PANEL_KEYS.rig, el: ss.rig },
+    { id: 'scene', label: 'Scene', icon: 'scene', key: PANEL_KEYS.scene, el: ss.scene },
+    { id: 'sheet', label: 'Sheet', icon: 'sheet', key: PANEL_KEYS.sheet, el: sheet.el, onShow: () => sheet.refresh() },
   ], layout);
   if (!app.clips().length) { right.sections[0].el.remove(); (right.rail.querySelector('#tab-pose') as HTMLElement).hidden = true; }
 
@@ -287,22 +287,25 @@ export function initUI(app: App): UI {
       if (e.key === 'y' || e.shiftKey) redo(); else undo();
       return;
     }
-    if (typing(e) || mod) return;
+    if (typing(e)) {
+      // Esc leaves a text field, so the shortcuts work again (a slider's value box and a search field put back their
+      // text first)
+      if (e.key === 'Escape' && !mod) (e.target as HTMLElement).blur();
+      return;
+    }
+    if (mod) return;
     if (help.open || document.querySelector('dialog[open]')) return;
     if (e.altKey) {
       const m = /^Digit([1-4])$/.exec(e.code);
       if (m) { const names = Object.keys(app.presets); const n = names[+m[1] - 1]; if (n) { e.preventDefault(); app.applyPreset(n); } }
       return;
     }
-    const k = e.key;
     const act: Record<string, () => void> = {
       ArrowLeft: () => nav.orbit(-8), ArrowRight: () => nav.orbit(8),
       ArrowUp: () => e.shiftKey ? nav.tilt(5) : nav.move(0.05), ArrowDown: () => e.shiftKey ? nav.tilt(-5) : nav.move(-0.05),
       '+': () => nav.zoom(0.88), '=': () => nav.zoom(0.88), '-': () => nav.zoom(1.14), '_': () => nav.zoom(1.14),
       '0': () => nav.reset(), '1': () => nav.frame('body'), '2': () => nav.frame('upper'), '3': () => nav.frame('face'),
       '4': () => nav.angle('front'), '5': () => nav.angle('three'), '6': () => nav.angle('side'), '7': () => nav.angle('back'),
-      c: () => left.toggle('characters'), b: () => left.toggle('body'), f: () => left.toggle('face'), h: () => left.toggle('hair'), e: () => left.toggle('skin'),
-      p: () => right.toggle('pose'), x: () => right.toggle('expression'), r: () => right.toggle('rig'), l: () => right.toggle('scene'), s: () => right.toggle('sheet'),
       H: () => app.setHairVisible(!app.hairVisible()), t: () => app.setTurntable(!app.turntable()),
       B: () => app.setRigView(app.rigView() === 'skeleton' ? 'off' : 'skeleton'),
       W: () => app.setRigView(app.rigView() === 'weights' ? 'off' : 'weights'),
@@ -317,13 +320,18 @@ export function initUI(app: App): UI {
         else if (stats.isOpen()) stats.close();
       },
     };
+    // each section's key (its letter in the rail's tip) opens it, and closes it when it shows
+    for (const seg of [left, right]) for (const s of seg.sections) if (!(seg === right && s.id === 'pose' && !app.clips().length)) act[s.key] = () => seg.toggle(s.id);
+    const t = e.target as HTMLElement;
+    const keys = shortcutKeys(e);
     // a focused button keeps Space and Enter; the arrows stay with the camera only outside the controls that use them
-    if (k === ' ' && (e.target as HTMLElement).closest('button, summary')) return;
-    if (k.startsWith('Arrow') && (e.target as HTMLElement).closest('input, .seg, .rail-list, .menu')) return;
-    const fn = act[k] ?? (k.length === 1 ? act[k.toLowerCase()] : undefined);
-    if (!fn) return;
+    if (keys[0] === ' ' && t.closest('button, summary')) return;
+    if (keys[0]?.startsWith('Arrow') && t.closest('input, .seg, .rail-list, .menu')) return;
+    // Shift with a panel's letter opens it as the letter alone does, where Shift gives the letter no meaning of its own
+    const k = keys.find((x) => act[x]) ?? keys.map((x) => x.length === 1 ? x.toLowerCase() : x).find((x) => act[x]);
+    if (!k) return;
     e.preventDefault();
-    fn();
+    act[k]();
   });
 
   // ---------------------------------------------------------------- the start state

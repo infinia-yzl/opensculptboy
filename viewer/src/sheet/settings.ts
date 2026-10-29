@@ -14,7 +14,13 @@ export const SETTINGS_FORMAT = 'opensculptboy/sheet-settings@1';
 export interface PoseSlot { pose: string; label?: string; q?: number[] }
 
 export type ViewName = 'front' | 'three' | 'side' | 'back';
-export type Background = 'paper' | 'dark' | 'transparent';
+// grey (the default): a warm mid-dark grey that the figures stand out from; paper: light, for print; dark: near black;
+// transparent: no ground, with the paper's text colours
+export type Background = 'grey' | 'paper' | 'dark' | 'transparent';
+export const BACKGROUNDS: Background[] = ['grey', 'paper', 'dark', 'transparent'];
+// studio: the sheet's own studio lights with an exposure metered on the figure; page: the page's lighting preset and
+// exposure
+export type Lights = 'studio' | 'page';
 
 export interface TurnaroundPanel { on: boolean; style: string | null; pose: PoseSlot; views: ViewName[] }
 // framing: 'face' frames each cell from below the chin to above the head, 'shoulders' takes the head and shoulders
@@ -31,8 +37,9 @@ export interface SheetSettings {
   name: string;
   title: string;
   panels: { turnaround: TurnaroundPanel; expressions: ExpressionsPanel; poses: PosesPanel; info: InfoPanel };
-  // scale: the size of every picture against the print size (1); samples: the accumulated samples of each picture
-  render: { scale: number; samples: number };
+  // scale: the size of every picture against the print size (1); samples: the accumulated samples of each picture;
+  // lights: the lights of the pictures; exposure: stops over the metered exposure of the studio lights
+  render: { scale: number; samples: number; lights: Lights; exposure: number };
 }
 
 export const PANEL_ORDER = ['info', 'turnaround', 'expressions', 'poses'] as const;
@@ -68,14 +75,14 @@ export const RENDER_PRESETS: Record<string, { scale: number; samples: number }> 
 
 export function defaultSettings(): SheetSettings {
   return {
-    format: SETTINGS_FORMAT, style: 'textured', background: 'paper', name: '', title: '',
+    format: SETTINGS_FORMAT, style: 'textured', background: 'grey', name: '', title: '',
     panels: {
       turnaround: { on: true, style: null, pose: { pose: TURNAROUND_POSE }, views: [...VIEW_ORDER] },
       expressions: { on: true, style: null, pose: { pose: TURNAROUND_POSE }, view: 'front', framing: 'face', items: [...DEFAULT_EXPRESSIONS] },
       poses: { on: true, style: null, view: 'three', slots: DEFAULT_POSES.map((pose) => ({ pose })) },
       info: { on: true },
     },
-    render: { ...RENDER_PRESETS.print },
+    render: { ...RENDER_PRESETS.print, lights: 'studio', exposure: 0 },
   };
 }
 
@@ -112,7 +119,7 @@ export function normaliseSettings(input: any, styles: string[] = ['textured']): 
   return {
     format: SETTINGS_FORMAT,
     style: style(s.style) || d.style,
-    background: (['paper', 'dark', 'transparent'] as const).includes(s.background) ? s.background : d.background,
+    background: BACKGROUNDS.includes(s.background) ? s.background : d.background,
     name: str(s.name, ''),
     title: str(s.title, ''),
     panels: {
@@ -122,7 +129,8 @@ export function normaliseSettings(input: any, styles: string[] = ['textured']): 
       poses: { on: bool(P.on, true), style: style(P.style), view: view(P.view, 'three'), slots },
       info: { on: bool(I.on, true) },
     },
-    render: { scale: num(R.scale, d.render.scale, 0.1, 2), samples: Math.round(num(R.samples, d.render.samples, 1, 128)) },
+    render: { scale: num(R.scale, d.render.scale, 0.1, 2), samples: Math.round(num(R.samples, d.render.samples, 1, 128)),
+      lights: R.lights === 'page' ? 'page' : 'studio', exposure: Math.round(num(R.exposure, 0, -3, 3) * 100) / 100 },
   };
 }
 

@@ -65,7 +65,7 @@ export function typing(e: Event) {
   if (tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable) return true;
   if (tag === 'INPUT') {
     const type = (t as HTMLInputElement).type;
-    return !['range', 'checkbox', 'radio', 'button', 'color'].includes(type);
+    return !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'color', 'file'].includes(type);
   }
   return false;
 }

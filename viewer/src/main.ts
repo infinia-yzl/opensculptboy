@@ -148,8 +148,10 @@ scene.add(bgMesh);
 // ------------------------------------------------------------------ lighting presets
 // az: degrees from the face direction (+z) toward the model's left (+x); el: degrees up.
 const PRESETS = {
+  // Studio's exposure keeps the lit skin of the default character below the shoulder of the AgX curve (the 95th
+  // percentile of the figure's display luminance near 0.74, as the sheet's meter asks); at 0.88 it sat at 0.84, flat
   studio: {
-    label: 'Studio', exposure: 0.88,
+    label: 'Studio', exposure: 0.45,
     sky: [0.022, 0.022, 0.025], horizon: [0.014, 0.013, 0.013], ground: [0.006, 0.0055, 0.005],
     boxes: [
       { az: 78, el: 5, w: 30, h: 40, c: [0.12, 0.123, 0.135] },
@@ -700,13 +702,25 @@ const opaque = []; const hairObjs = [];
 let shadowsDirty = true;
 let currentPreset = 'studio';
 function applyPreset(name) {
-  const p = rotatedPreset(PRESETS[name]); currentPreset = name;
-  const env = buildEnvironment(p);
-  if (U.uEnv.value) U.uEnv.value.dispose();
+  currentPreset = name;
+  applyLights(rotatedPreset(PRESETS[name]));
+  renderer.toneMappingExposure = (qs.get('exp') ? parseFloat(qs.get('exp')) : PRESETS[name].exposure) * Math.pow(2, LIGHT.ev);
+}
+// the lights of a preset: the environment and its key-only copy (built once per preset and rotation), the key and the
+// rim light, and the background's colours. The last two environments stay, so the sheet's lights and the page's take
+// turns without a new build.
+const ENV_CACHE: { id: string; env: any; envk: any }[] = [];
+function applyLights(p) {
+  const id = JSON.stringify([p.sky, p.horizon, p.ground, p.boxes, p.key]);
+  let E = ENV_CACHE.find((e) => e.id === id);
+  if (!E) {
+    E = { id, env: buildEnvironment(p), envk: buildEnvironment(p, true) };
+    ENV_CACHE.push(E);
+    if (ENV_CACHE.length > 2) { const old = ENV_CACHE.shift()!; old.env.pmrem.dispose(); old.envk.pmrem.dispose(); }
+  }
+  const env = E.env;
   U.uEnv.value = env.pmrem;
-  const envk = buildEnvironment(p, true);
-  if (U.uEnvKey.value) U.uEnvKey.value.dispose();
-  U.uEnvKey.value = envk.pmrem;
+  U.uEnvKey.value = E.envk.pmrem;
   env.sh.forEach((v, i) => U.uSH.value[i].copy(v));
   U.uKeyDir.value.copy(dirAE(p.key.az, p.key.el));
   U.uKeyColor.value.set(...p.key.c);
@@ -714,7 +728,6 @@ function applyPreset(name) {
   U.uRimDir.value.copy(dirAE(p.rim.az, p.rim.el));
   U.uRimColor.value.set(...p.rim.c);
   BG.uBgA.value.set(...p.bg[0]); BG.uBgB.value.set(...p.bg[1]);
-  renderer.toneMappingExposure = (qs.get('exp') ? parseFloat(qs.get('exp')) : p.exposure) * Math.pow(2, LIGHT.ev);
   updateShadowCamera();
   shadowsDirty = true; resetAccum();
 }
@@ -2556,7 +2569,8 @@ function renderShadows() {
 
 // ------------------------------------------------------------------ progressive accumulation
 let accCount = 0;
-let MAX_ACC = SHOT ? parseInt(qs.get('acc') || '16') : (isSmall ? 20 : 40);
+// ?acc=N sets the count of samples (the page tests keep it small)
+let MAX_ACC = qs.get('acc') ? Math.max(1, parseInt(qs.get('acc')) || 1) : SHOT ? 16 : (isSmall ? 20 : 40);
 const rtOpts = { type: THREE.HalfFloatType, depthBuffer: true, generateMipmaps: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter };
 let sceneRT, sssRT, accRT = [];
 function allocRTs() {
@@ -3021,7 +3035,29 @@ function stature() {
 // scene, the page's own view shows its last picture, dimmed, and each picture draws the share of the hair strands that
 // the page's view draws for a head of its size.
 const SHEET_FOV = 8;
-const SHEET: any = { hold: false, saved: null, T: null, disp: null, cam: new THREE.PerspectiveCamera(SHEET_FOV, 1, 1, 30) };
+const SHEET: any = { hold: false, saved: null, T: null, disp: null, cam: new THREE.PerspectiveCamera(SHEET_FOV, 1, 1, 30), exposure: 1, lights: 'page', meter: null };
+// the sheet's studio lights, the same for every character and every view: a soft key from the front on the figure's
+// right and above, a large dim fill on its left, two strips behind for the rims on both edges, and a rim light from
+// behind on its left that separates the figure from the page. The exposure comes from a meter
+// reading of the figure (sheetMeter).
+const SHEET_LIGHTS = {
+  label: 'Sheet studio', exposure: 1,
+  sky: [0.026, 0.026, 0.028], horizon: [0.018, 0.0175, 0.017], ground: [0.008, 0.0075, 0.007],
+  boxes: [
+    { az: 62, el: 10, w: 36, h: 44, c: [0.20, 0.20, 0.21] },
+    { az: 150, el: 28, w: 12, h: 42, c: [0.90, 0.91, 0.97] },
+    { az: -150, el: 28, w: 12, h: 42, c: [0.80, 0.81, 0.86] },
+    { az: 0, el: 72, w: 30, h: 30, c: [0.05, 0.05, 0.052] },
+  ],
+  key: { az: -42, el: 34, size: 10, c: [3.4, 3.3, 3.15] },
+  rim: { az: 150, el: 30, c: [4.0, 4.05, 4.25] },
+  bg: [[0.050, 0.052, 0.058], [0.005, 0.0053, 0.0062]],
+};
+// the meter's targets on the figure's covered pixels, in display values (sRGB, Rec. 709 luminance): at most 0.2 % of
+// them with a channel at 250 of 255 or more, the 95th percentile of the luminance at most 0.76 (below the shoulder of
+// the AgX curve, where the page's display pass tops out near 0.86 and pale skin and cloth turn flat), and the median
+// at most 0.58, so the highlights keep their shapes and the midtones sit in the middle of the scale
+const SHEET_METER = { clip: 0.002, p95: 0.74, median: 0.58, min: 0.1, max: 3 };
 function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
   const nb = MOTION.nb;
   let c = MOTION.byName[name];
@@ -3051,6 +3087,7 @@ function sheetHold(on: boolean) {
   }
   const s = SHEET.saved;
   SHEET.hold = false; SHEET.still = null;
+  sheetLights('page');
   RIG.holder.rotation.y = s.turn; if (STOOL) STOOL.rotation.y = s.turn;
   if (s.motion && MOTION.byName[s.motion]) setMotion(s.motion, { instant: true, t: s.t, remember: false });
   MOTION.playing = s.playing;
@@ -3187,10 +3224,14 @@ async function sheetRender(view: any, samples: number, tick: (px: number) => Pro
     sheetPass(T, sheetCamera(view), w, h, s);
     await tick(w * h);
   }
-  T = SHEET.T;
+  return sheetReadout(w, h, SHEET.lights === 'page' ? renderer.toneMappingExposure : SHEET.exposure);
+}
+// the accumulated picture through the display pass at an exposure, as an ImageData with the rows from the top
+async function sheetReadout(w: number, h: number, exposure: number) {
+  const T = SHEET.T;
   const d = sheetDisplay();
   // the last pass wrote T.acc[0] (each pass swaps the pair)
-  d.uniforms.tAcc.value = T.acc[0].texture; d.uniforms.uUvScale.value.set(w / T.W, h / T.H); d.uniforms.uExposure.value = renderer.toneMappingExposure;
+  d.uniforms.tAcc.value = T.acc[0].texture; d.uniforms.uUvScale.value.set(w / T.W, h / T.H); d.uniforms.uExposure.value = exposure;
   quadMesh.material = d;
   setRegion(T.out, w, h);
   renderer.setRenderTarget(T.out); renderer.render(quadScene, quadCam); renderer.setRenderTarget(null);
@@ -3202,12 +3243,59 @@ async function sheetRender(view: any, samples: number, tick: (px: number) => Pro
   for (let j = 0; j < h; j++) img.data.set(px.subarray((h - 1 - j) * row, (h - j) * row), j * row);
   return img;
 }
+// the sheet's lights: 'studio' (SHEET_LIGHTS, with a metered exposure) or 'page' (the page's preset, its rotation and
+// its exposure)
+function sheetLights(mode: 'studio' | 'page') {
+  if (mode === SHEET.lights) return;
+  SHEET.lights = mode;
+  if (mode === 'studio') applyLights(SHEET_LIGHTS); else applyLights(rotatedPreset(PRESETS[currentPreset]));
+}
+// the display values of the covered pixels of a picture: the share with a channel at 250 or more, and the percentiles
+// of the luminance (Rec. 709 weights on the sRGB values)
+function sheetPictureStats(img: ImageData) {
+  const d = img.data, L: number[] = [];
+  let clip = 0;
+  for (let p = 0; p < d.length; p += 4) {
+    if (d[p + 3] < 250) continue;
+    if (Math.max(d[p], d[p + 1], d[p + 2]) >= 250) clip++;
+    L.push((0.2126 * d[p] + 0.7152 * d[p + 1] + 0.0722 * d[p + 2]) / 255);
+  }
+  if (!L.length) return null;
+  L.sort((a, b) => a - b);
+  const q = (f: number) => L[Math.min(L.length - 1, Math.floor(f * L.length))];
+  return { pixels: L.length, clipped: clip / L.length, p5: q(0.05), median: q(0.5), p95: q(0.95), p99: q(0.99) };
+}
+// meter the figure for the studio lights: render the view (a full figure) once, then find the largest exposure that
+// keeps the highlights within SHEET_METER and the median at or below its target, by bisection on the display pass alone
+async function sheetMeter(view: any, stops: number, tick: (px: number) => Promise<void>) {
+  const w = Math.max(1, Math.round(view.width)), h = Math.max(1, Math.round(view.height));
+  sheetTargets(w, h);
+  sheetTurnIfNeeded(view.turn);
+  for (let s = 0; s < 2; s++) { sheetPass(SHEET.T, sheetCamera(view), w, h, s); await tick(w * h); }
+  const M = SHEET_METER, at = async (ev: number) => sheetPictureStats(await sheetReadout(w, h, 2 ** ev));
+  const fit = async (ok: (st: any) => boolean) => {
+    let lo = Math.log2(M.min), hi = Math.log2(M.max);
+    const top = await at(hi);
+    if (!top || ok(top)) return hi;
+    for (let i = 0; i < 9; i++) { const mid = (lo + hi) / 2, st = await at(mid); if (st && ok(st)) lo = mid; else hi = mid; }
+    return lo;
+  };
+  const evHigh = await fit((st) => st.clipped <= M.clip && st.p95 <= M.p95);
+  const evMid = await fit((st) => st.median <= M.median);
+  const ev = Math.min(evHigh, evMid) + stops;
+  SHEET.exposure = 2 ** ev;
+  SHEET.meter = { exposure: +SHEET.exposure.toFixed(4), limit: evHigh <= evMid ? 'highlights' : 'midtones', ...sheetPictureStats(await sheetReadout(w, h, SHEET.exposure)) };
+  return SHEET.meter;
+}
 function sheetTurnIfNeeded(deg: number) { if (Math.abs(RIG.holder.rotation.y - deg * DEG) > 1e-6) sheetTurn(deg); }
 const SHEET_HOST = {
   hold: (on: boolean) => sheetHold(on),
   showPose: (slot: any) => sheetShowPose(slot),
   turn: (deg: number) => sheetTurn(deg),
   render: (view: any, samples: number, tick: any) => sheetRender(view, samples, tick),
+  lights: (mode: 'studio' | 'page') => sheetLights(mode),
+  meter: (view: any, stops: number, tick: any) => sheetMeter(view, stops, tick),
+  lighting: () => ({ lights: SHEET.lights, exposure: SHEET.lights === 'page' ? renderer.toneMappingExposure : SHEET.exposure, meter: SHEET.meter }),
   figure: () => {
     const v = (p: any) => [p.x, p.y, p.z];
     const joints: Record<string, number[]> = {};
@@ -3413,6 +3501,9 @@ window.setFpsCap = (cap) => { setFpsCap(cap); return FPS.cap; };
 window.__CORR = CORR;
 window.__U = U;
 window.setLook = (look) => syncBody(() => { applyLook(look, false); return true; });
+// what the keyboard shortcuts change, for the page tests (test_viewer_shortcuts)
+window.viewState = () => ({ turntable: !!controls.autoRotate, hair: hairWanted, rig: rigView(), preset: currentPreset, presets: Object.keys(PRESETS), playing: MOTION.playing,
+  clip: MOTION.cur ? MOTION.cur.name : null, camera: camera.position.toArray(), target: controls.target.toArray(), tweening: !!tween });
 window.setMotion = (name, t = 0, paused = true) => { MOTION.playing = !paused; return setMotion(name, { instant: true, t, remember: false }); };
 window.__MOTION = MOTION; window.__RIG = RIG;
 // the camera and the navigation state, for tests of the interface

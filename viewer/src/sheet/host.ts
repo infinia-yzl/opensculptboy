@@ -8,6 +8,10 @@
 
 import type { PoseSlot } from './settings.ts';
 
+// a meter reading: the exposure chosen, the limit that set it, and the display values of the figure's covered pixels at
+// that exposure (the share with a channel at 250 of 255 or more, and percentiles of the luminance)
+export interface MeterReading { exposure: number; limit: 'highlights' | 'midtones'; pixels: number; clipped: number; p5: number; median: number; p95: number; p99: number }
+
 // a camera frame of the sheet (layout.ts Frame) with the figure's turn about the vertical axis, in degrees: a positive
 // turn swings its front toward its own left, so a turn of -45 shows its left side as a three-quarter view does
 export interface SheetView { turn: number; cx: number; cy: number; halfH: number; width: number; height: number }
@@ -33,6 +37,11 @@ export interface SheetHost {
   // one picture with a transparent background: `samples` accumulated passes; tick(pixels) runs after each pass and
   // waits for the next frame when the frame has drawn enough
   render(view: SheetView, samples: number, tick: (pixels: number) => Promise<void>): Promise<ImageData>;
+  // the lights of the pictures that follow: the sheet's studio lights or the page's preset (settings.ts Lights)
+  lights(mode: 'studio' | 'page'): void;
+  // meter a full-figure view for the studio lights: the exposure of the pictures that follow, times 2^stops, and what
+  // the meter read
+  meter(view: SheetView, stops: number, tick: (pixels: number) => Promise<void>): Promise<MeterReading>;
   figure(): FigureInfo;
   // the rotations of a pose of the library, or of the pose shown (name ''), as quaternions per bone
   poseQuaternions(name: string): number[] | null;

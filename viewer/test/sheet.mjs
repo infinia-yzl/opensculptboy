@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   defaultSettings, DEFAULT_EXPRESSIONS, DEFAULT_POSES, normaliseSettings, shownPanels, settingsKey, TURNAROUND_POSE, VIEW_ORDER,
 } from '../src/sheet/settings.ts';
+import { COLOURS } from '../src/sheet/compose.ts';
 import { coverage, faceFrame, figureFrames, headFrame, maskBox, pageLayout, rows } from '../src/sheet/layout.ts';
 
 const out = {};
@@ -26,6 +27,12 @@ const out = {};
   assert.equal(normaliseSettings({ panels: { expressions: { framing: 'feet' } } }).panels.expressions.framing, 'face');
   assert.deepEqual(d.panels.poses.slots.map((s) => s.pose), DEFAULT_POSES);
   assert.deepEqual(shownPanels(d), ['info', 'turnaround', 'expressions', 'poses']);
+  // the grey ground and the studio lights by default; the other backgrounds and the page's lights stay as choices
+  assert.equal(d.background, 'grey');
+  assert.deepEqual([d.render.lights, d.render.exposure], ['studio', 0]);
+  for (const bg of ['paper', 'dark', 'transparent']) assert.equal(normaliseSettings({ background: bg }).background, bg);
+  assert.equal(normaliseSettings({ render: { lights: 'page', exposure: -0.333 } }).render.lights, 'page');
+  assert.equal(normaliseSettings({ render: { lights: 'page', exposure: -0.333 } }).render.exposure, -0.33);
   // an empty object, and no object, give the defaults; the settings survive JSON and a second normalisation
   assert.deepEqual(normaliseSettings({}), d);
   assert.deepEqual(normaliseSettings(null), d);
@@ -40,11 +47,11 @@ const out = {};
       poses: { slots: ['ready', { pose: 'x', q: [1, 2, 3] }, { pose: 'own', label: 'From a picture', q }, {}, ...Array(12).fill('crouch')] },
       info: { on: 'yes' },
     },
-    render: { scale: 9, samples: 0.2 },
+    render: { scale: 9, samples: 0.2, lights: 'sun', exposure: 7 },
     extra: true,
   });
   assert.equal(odd.style, 'textured');
-  assert.equal(odd.background, 'paper');
+  assert.equal(odd.background, 'grey');
   assert.equal(odd.name, '');
   assert.equal(odd.title, 'Keeper of the lantern');
   assert.deepEqual(odd.panels.turnaround.views, ['front', 'back']);
@@ -59,12 +66,29 @@ const out = {};
   assert.equal(odd.panels.poses.slots[2].q.length, 8);
   assert.equal(odd.panels.poses.slots[2].q[0], 0.12346);
   assert.equal(odd.panels.info.on, true);
-  assert.deepEqual(odd.render, { scale: 2, samples: 1 });
+  assert.deepEqual(odd.render, { scale: 2, samples: 1, lights: 'studio', exposure: 3 });
   assert.equal('extra' in odd, false);
   assert.equal(settingsKey(normaliseSettings(odd)), settingsKey(odd));
   // a panel without data stays out
   assert.deepEqual(shownPanels(normaliseSettings({ panels: { turnaround: { views: [] }, poses: { slots: [] } } })), ['info', 'expressions']);
   out.settings = { defaults: d, odd };
+}
+
+// ---------------------------------------------------------------- the colours of each background
+{
+  // the contrast ratio of two colours (WCAG 2): the name and the title at least 7, the labels 4.5, the faint texts 3
+  const lum = (hex) => {
+    const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  const ratio = (a, b) => { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  out.contrast = {};
+  for (const [bg, c] of Object.entries(COLOURS)) {
+    const ground = c.bg || COLOURS.paper.bg;
+    const r = { ink: ratio(c.ink, ground), muted: ratio(c.muted, ground), faint: ratio(c.faint, ground), line: ratio(c.line, ground) };
+    out.contrast[bg] = Object.fromEntries(Object.entries(r).map(([k, v]) => [k, +v.toFixed(2)]));
+    assert.ok(r.ink >= 7 && r.muted >= 4.5 && r.faint >= 3 && r.line >= 1.25, bg + ' ' + JSON.stringify(r));
+  }
 }
 
 // ---------------------------------------------------------------- probe boxes and coverage

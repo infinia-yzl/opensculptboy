@@ -7,7 +7,8 @@ row, the head-and-shoulders frame, the page), and a sheet of the default charact
 built page through window.sheet.build, in Chromium with SwiftShader through Playwright (local
 only): the PNG's size, every panel's pictures with something in them and a transparent
 background, one height for the turnaround's views, one cell size for the expressions, and
-cells that differ once a face driver (viewer/src/face/api.ts) draws the expressions.
+cells that differ once a face driver (viewer/src/face/api.ts) draws the expressions, the grey
+background, and the studio lights' metered exposure with no clipped highlights on the figure.
 """
 
 import base64
@@ -123,9 +124,21 @@ class TestSheetPage(unittest.TestCase):
         ).convert("RGBA")
         self.assertEqual(img.size, (front["w"], front["h"]))
         self.assertEqual(img.getpixel((0, 0))[3], 0)
-        # the composed page: the paper background in a corner, and the figure in the turnaround's place
+        # the composed page: the grey background in a corner, and the figure in the turnaround's place
         page = Image.open(io.BytesIO(png)).convert("RGB")
-        self.assertEqual(page.getpixel((2, 2)), (0xF1, 0xEE, 0xE8))
+        self.assertEqual(page.getpixel((2, 2)), (0x3B, 0x39, 0x36))
+        # the studio lights with a metered exposure: the highlights of the figure keep their shapes
+        self.assertEqual(rep["lights"], "studio")
+        meter = rep["meter"]
+        print(f"meter {meter}")
+        self.assertGreater(meter["exposure"], 0.1)
+        self.assertLessEqual(meter["clipped"], 0.002)
+        self.assertLessEqual(meter["p95"], 0.75)
+        self.assertLessEqual(meter["median"], 0.59)
+        self.assertGreater(meter["median"], 0.3)
+        rgba = np.asarray(img).reshape(-1, 4)
+        figure = rgba[rgba[:, 3] >= 250, :3]
+        self.assertLess(float((figure.max(axis=1) >= 250).mean()), 0.01)
         r = panels["turnaround"]["rect"]
         crop = page.crop(
             (int(r["x"]), int(r["y"]), int(r["x"] + r["w"]), int(r["y"] + r["h"]))

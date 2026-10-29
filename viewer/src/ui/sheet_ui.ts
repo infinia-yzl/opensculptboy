@@ -9,7 +9,7 @@
 // window.sheet gives scripts the same build: window.sheet.build(settings) resolves to the PNG bytes of the page.
 
 import type { App } from './app.ts';
-import { chip, foldGroup, searchField, sectionHead, segmented, textButton, toggle } from './controls.ts';
+import { chip, foldGroup, searchField, sectionHead, segmented, slider, textButton, toggle } from './controls.ts';
 import { download, h, iconButton, saveUi, slug, uiState } from './dom.ts';
 import { icon } from './icons.ts';
 import { toast } from './toast.ts';
@@ -45,6 +45,9 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
   const hosted = !!(window as any).MODEL_PARTS;
   const normalise = (s: any) => normaliseSettings(s, styleIds());
   let S: SheetSettings = normalise(uiState().sheet || defaultSettings());
+  // a background that the user never picked follows the default (remembered settings from before the grey default
+  // carry the paper)
+  if (!uiState().sheetBackgroundPicked) S.background = defaultSettings().background;
   let result: SheetResult | null = null, resultKey = '';
   let ctl: { cancelled: boolean } | null = null;
   let lastPng: Uint8Array | null = null, lastReport: any = null;
@@ -124,9 +127,16 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
   stopB.hidden = true;
   const head = sectionHead('Sheet', stopB);
   const styleSeg = segmented('Style', STYLES.map((s) => ({ value: s.id, label: s.label, tip: s.tip })), (v) => { S.style = v; changed(); }, 'seg-fill');
-  const bgSeg = segmented('Background', [{ value: 'paper', label: 'Paper' }, { value: 'dark', label: 'Dark' }, { value: 'transparent', label: 'Transparent' }], (v) => { S.background = v as any; changed(); }, 'seg-fill');
+  const bgSeg = segmented('Background', [{ value: 'grey', label: 'Grey', tip: 'A warm mid-dark grey: the figures stand out from it' }, { value: 'paper', label: 'Paper', tip: 'Light paper, for print' },
+    { value: 'dark', label: 'Dark' }, { value: 'transparent', label: 'Transparent', tip: 'No ground, with dark text' }],
+  (v) => { S.background = v as any; saveUi({ sheetBackgroundPicked: true }); changed(); }, 'seg-fill');
+  const lightSeg = segmented('Lights', [{ value: 'studio', label: 'Studio', tip: 'Studio lights: a key, a fill and rims, with the exposure metered on the figure' },
+    { value: 'page', label: 'The page\'s', tip: 'The lighting preset and the exposure of the Scene section' }],
+  (v) => { S.render.lights = v as any; changed(); }, 'seg-fill');
+  const expS = slider({ id: 'cs-exp', label: 'Exposure (stops)', min: -1.5, max: 1.5, step: 0.05, def: 0, ends: ['Darker', 'Brighter'],
+    title: 'Stops over the exposure that the meter sets for the studio lights', onInput: (v) => { S.render.exposure = Math.round(v * 100) / 100; keep(); }, onEnd: () => changed() });
   const qualSeg = segmented('Quality', [{ value: 'print', label: 'Print', tip: 'Pictures at print size, 24 samples each' }, { value: 'draft', label: 'Draft', tip: 'Half the size and 8 samples: a quick look' }],
-    (v) => { S.render = { ...RENDER_PRESETS[v] }; changed(); }, 'seg-fill');
+    (v) => { S.render = { ...S.render, ...RENDER_PRESETS[v] }; changed(); }, 'seg-fill');
   const panelsBox = h('div.folds.cs-panels');
   const buildB = textButton('Build sheet', () => { run(S).catch(() => {}); }, 'sheet', 'cs-primary');
   const downB = textButton('Download PNG', () => { downloadPng(); }, 'download');
@@ -138,6 +148,7 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
     h('div.btn-row', {}, buildB, downB), bar, status,
     h('h3.sub', { text: 'Style' }), styleSeg.el,
     h('h3.sub', { text: 'Background' }), bgSeg.el,
+    h('h3.sub', { text: 'Lights' }), lightSeg.el, expS.el,
     h('h3.sub', { text: 'Quality' }), qualSeg.el,
     h('h3.sub', { text: 'Panels' }), panelsBox, showB);
   document.body.append(picker);
@@ -177,7 +188,8 @@ export function sheetSection(app: App, relayout: () => void): SheetUI {
   };
   const paint = () => {
     const P = S.panels;
-    styleSeg.set(S.style); bgSeg.set(S.background);
+    styleSeg.set(S.style); bgSeg.set(S.background); lightSeg.set(S.render.lights);
+    expS.set(S.render.exposure); expS.el.hidden = S.render.lights !== 'studio';
     qualSeg.set(S.render.scale === RENDER_PRESETS.draft.scale && S.render.samples === RENDER_PRESETS.draft.samples ? 'draft' : S.render.scale === 1 && S.render.samples === 24 ? 'print' : '');
     // the turnaround: its pose and its views
     const views = h('div.chips', { role: 'group', 'aria-label': 'Views' });
