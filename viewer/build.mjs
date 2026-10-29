@@ -186,7 +186,17 @@ async function mediapipeData() {
     if (sha256(bytes) !== pin.sha256) throw new Error(`MediaPipe model ${name} has SHA-256 ${sha256(bytes)}, pinned ${pin.sha256}`);
     files.push([name, bytes]);
   }
-  const gz = zlib.gzipSync(packFiles(files), { level: 9 });
+  const packed = packFiles(files);
+  // the block of the page built before, kept as it is when it holds the same files: gzip's bytes can differ between
+  // node versions, and the committed page must come out the same on every machine
+  if (fs.existsSync(out)) {
+    const m = fs.readFileSync(out, 'utf8').match(MP_BLOCK);
+    if (m) {
+      const before = Buffer.from(m[1], 'base64');
+      if (zlib.gunzipSync(before).equals(packed)) { console.log('mediapipe data reused from', out); return before; }
+    }
+  }
+  const gz = zlib.gzipSync(packed, { level: 9 });
   console.log('mediapipe', files.map(([n, b]) => n + ' ' + (b.length / 1e6).toFixed(1) + ' MB').join(', ') + ', gzip', (gz.length / 1e6).toFixed(1), 'MB');
   return gz;
 }
