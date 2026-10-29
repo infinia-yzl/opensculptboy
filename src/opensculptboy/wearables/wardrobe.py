@@ -13,7 +13,7 @@ loose piece; a bare id also names the piece of that id in the worn outfit.
 :func:`worn_pieces` resolves the choices in this order: the worn outfit's pieces as the card
 enables them, the enabled loose pieces, the card's overrides, then the ``hide`` and ``show``
 lists of the export. A piece shown from another outfit, and a loose piece, replace the pieces
-of the same slot that come from elsewhere (slot replacement; ``accessory`` pieces never
+of the same slot that come from elsewhere (slot replacement; ``accessory`` and ``prop`` pieces never
 replace). Last, the ``hides`` rules of the shown pieces hide the named groups of other shown
 pieces; hiding the piece that hides them restores them. A piece whose every group they hide
 does not show (underwear under trousers that hide it whole).
@@ -271,7 +271,7 @@ def worn_pieces(
     ]
     for ref in replacers:
         slot = load(ref).slot
-        if slot == "accessory":
+        if slot in ("accessory", "prop"):
             continue
         source = entries[refs.index(ref)][2]
         for other, _, owner, _, _ in entries:

@@ -297,7 +297,8 @@ class Mask:
     (a strut, a stump or the plinth: taken out), ``"break"`` (the face of a break where a
     part was lost: taken out, so that anny keeps its own shape there), ``"drapery"`` (kept as
     clothing, out of the fit) or ``"hair"`` (kept as a sculpted mass of its own, out of the
-    fit).
+    fit). ``prop`` names the piece of the statue that the region belongs to, which the
+    conversion writes to ``props.glb`` for the finished starters.
     """
 
     kind: str
@@ -312,6 +313,9 @@ class Mask:
     end: tuple | None = None
     outside: bool = False
     name: str | None = None
+    # the prop that the region's triangles make for the web viewer ("Sword", "Head of
+    # Goliath"): masks with one prop name make one piece (props.glb); None: no prop
+    prop: str | None = None
 
     ROLES = ("support", "break", "drapery", "hair")
 

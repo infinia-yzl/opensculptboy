@@ -21,7 +21,8 @@
         0.46,
         0.2,
         0.64
-      ]
+      ],
+      "prop": "Head of Goliath"
     },
     {
       "kind": "box",
@@ -36,7 +37,8 @@
         0.17,
         0.05,
         0.64
-      ]
+      ],
+      "prop": "Head of Goliath"
     },
     {
       "kind": "box",
@@ -51,7 +53,8 @@
         0.29,
         0.045,
         0.24
-      ]
+      ],
+      "prop": "Head of Goliath"
     },
     {
       "kind": "box",
@@ -66,7 +69,8 @@
         0.22,
         0.15,
         0.6
-      ]
+      ],
+      "prop": "Base"
     },
     {
       "kind": "box",
@@ -81,7 +85,8 @@
         0.088,
         0.59,
         0.195
-      ]
+      ],
+      "prop": "Head of Goliath"
     },
     {
       "kind": "capsule",
@@ -97,7 +102,8 @@
         0.4,
         0.12
       ],
-      "radius": 0.03
+      "radius": 0.03,
+      "prop": "Sword"
     },
     {
       "kind": "capsule",
@@ -113,7 +119,8 @@
         0.18,
         0.11
       ],
-      "radius": 0.025
+      "radius": 0.025,
+      "prop": "Sword"
     },
     {
       "kind": "half",
@@ -124,7 +131,8 @@
         1.645,
         0.0
       ],
-      "normal": "+y"
+      "normal": "+y",
+      "prop": "Hat"
     },
     {
       "kind": "box",
@@ -139,7 +147,8 @@
         0.6,
         0.045,
         0.24
-      ]
+      ],
+      "prop": "Hat"
     },
     {
       "kind": "cylinder",
@@ -156,7 +165,8 @@
         0.05
       ],
       "radius": 0.11,
-      "outside": true
+      "outside": true,
+      "prop": "Hat"
     },
     {
       "kind": "box",
@@ -171,7 +181,8 @@
         0.082,
         0.195,
         0.21
-      ]
+      ],
+      "prop": "Locks"
     },
     {
       "kind": "box",
@@ -186,7 +197,8 @@
         0.105,
         0.195,
         0.21
-      ]
+      ],
+      "prop": "Locks"
     },
     {
       "kind": "box",
@@ -201,7 +213,8 @@
         0.33,
         0.195,
         0.115
-      ]
+      ],
+      "prop": "Locks"
     }
   ],
   "lost": [],

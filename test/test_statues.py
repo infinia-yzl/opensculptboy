@@ -256,6 +256,14 @@ class TestLostParts(unittest.TestCase):
             )
 
 
+def trimesh_box(extents, centre):
+    import trimesh
+
+    box = trimesh.creation.box(extents=extents)
+    box.apply_translation(centre)
+    return box
+
+
 def _grid(n=11, size=0.1):
     """A flat square patch of n by n vertices in the plane z = 0."""
     x, y = np.meshgrid(np.linspace(0, size, n), np.linspace(0, size, n))
@@ -731,6 +739,73 @@ class TestStarter(unittest.TestCase):
             self.assertEqual(reference["credit"], "A museum: cast 1")
             self.assertEqual(len(written["detail"]["levels"]), 2)
             self.assertTrue(out.with_suffix(".png").exists())
+            light = json.loads(out.with_suffix(".light.json").read_text("utf-8"))
+            self.assertNotIn("levels", light.get("detail", {}))
+            self.assertEqual(light["detail"]["fit"]["reference"]["licence"], "PDM-1.0")
+            self.assertEqual(light["look"]["skin"]["stone"], "carrara")
+
+    def test_props_become_rigid_packages(self):
+        from opensculptboy.character import Character
+        from opensculptboy.fit.register import _card_rest
+        from opensculptboy.statues.handoff import _write_props
+        from opensculptboy.statues.pipeline import StatueConfig
+        from opensculptboy.statues.starter import prop_packages, starter_card
+        from opensculptboy.wearables.format import read_wearable
+
+        model = _model()
+        V, _ = _card_rest(model, Character())
+        config = StatueConfig.from_dict(
+            {
+                "format": "opensculptboy.statue/1",
+                "name": "kouros",
+                "scan": "kouros.stl",
+                "licence": "PDM-1.0",
+            }
+        )
+        # a staff beside the right hand and a slab under the feet, in the handoff's frame
+        labels = list(model.bone_labels)
+        hand = V[
+            (model.vertex_bone_indices.numpy() == labels.index("wrist.R")).any(1)
+        ].mean(0)
+        staff = trimesh_box((0.03, 0.03, 0.4), hand + [0.0, 0.0, -0.1])
+        slab = trimesh_box((0.6, 0.5, 0.05), [0.0, 0.0, V[:, 2].min() - 0.03])
+        pieces = [staff, slab]
+        A = np.concatenate([p.vertices for p in pieces])
+        F = np.concatenate([pieces[0].faces, pieces[1].faces + len(staff.vertices)])
+        prop = np.r_[np.zeros(len(staff.faces), int), np.ones(len(slab.faces), int)]
+        card = {
+            "schema": 4,
+            "name": "kouros",
+            "rig": "anny",
+            "topology": "anny",
+            "detail": {
+                "levels": [],
+                "fit": {
+                    "placement": {
+                        "rotation": np.eye(3).tolist(),
+                        "translation": [0, 0, 0],
+                    }
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "kouros"
+            (root / "handoff").mkdir(parents=True)
+            (root / "card").mkdir()
+            _write_props(root / "handoff" / "props.glb", A, F, prop, ["Staff", "Base"])
+            made = prop_packages(
+                root,
+                starter_card(card, config),
+                config,
+                pathlib.Path(tmp) / "out",
+                log=lambda m: None,
+            )
+            self.assertEqual([e["label"] for e in made], ["Staff", "Base"])
+            self.assertEqual(made[1]["bone"], "root")
+            self.assertIn(".R", made[0]["bone"])
+            for e in made:
+                wearable = read_wearable(pathlib.Path(tmp) / "out" / e["file"])
+                self.assertEqual(wearable.slot, "prop")
 
 
 if __name__ == "__main__":

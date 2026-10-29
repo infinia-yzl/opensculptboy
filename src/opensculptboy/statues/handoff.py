@@ -48,6 +48,8 @@ DEBRIS_SHARE = 0.02
 # triangles of the plinth: all corners within this share of the height over the plinth's top
 PLINTH_MARGIN = 0.002
 REMOVED_ROLES = ("plinth", "support", "break", "debris")
+# the prop that the plinth makes
+PLINTH_PROP = "Base"
 
 
 @dataclasses.dataclass
@@ -243,10 +245,16 @@ def scan_to_handoff(
     def to_anny(points):
         return scale * (np.asarray(points, dtype=np.float64) @ rotation.T + shift)
 
+    prop = np.full(len(F), -1, np.int64)
+    prop_names: list[str] = []
     for entry in masks or ():
         mask = _mask_in_anny(entry, to_anny, scale)
         chosen = select_triangles(A, F, mask)
         role[chosen] = names.index(mask.role)
+        if mask.prop:
+            if mask.prop not in prop_names:
+                prop_names.append(mask.prop)
+            prop[chosen] = prop_names.index(mask.prop)
 
     skin = role == 0
     if skin.any() and debris_share > 0:
@@ -287,6 +295,24 @@ def scan_to_handoff(
     write_handoff(out, skin_vertices, skin_triangles, marks, name="statue", parts=parts)
 
     _write_removed(out / "removed.glb", A, F, role, names)
+    # the props: the plinth as the base, and the masks' named pieces
+    base = role == names.index("plinth")
+    if base.any() and PLINTH_PROP not in prop_names:
+        prop_names.append(PLINTH_PROP)
+    if base.any():
+        prop[base & (prop < 0)] = prop_names.index(PLINTH_PROP)
+    _write_props(out / "props.glb", A, F, prop, prop_names)
+    if prop_names:
+        props = []
+        for k, name in enumerate(prop_names):
+            rows = prop == k
+            if rows.any():
+                props.append(
+                    {"name": name, "role": names[int(np.bincount(role[rows]).argmax())]}
+                )
+        (out / "props.json").write_text(
+            json.dumps({"props": props}, indent=2) + "\n", encoding="utf-8"
+        )
     counts = {
         n: int((role == k).sum()) for k, n in enumerate(names) if (role == k).any()
     }
@@ -331,6 +357,24 @@ def scan_to_handoff(
         triangles=counts,
         landmarks=marks,
     )
+
+
+def _write_props(path, vertices, triangles, prop, names) -> None:
+    """The props as one node per name in glTF's frame (no file when there are none)."""
+    import trimesh
+
+    scene = trimesh.Scene()
+    for k, name in enumerate(names):
+        if not (prop == k).any():
+            continue
+        v, t = _compact(vertices, triangles[prop == k])
+        scene.add_geometry(
+            trimesh.Trimesh(_anny_to_gltf(v), t, process=False),
+            node_name=name,
+            geom_name=name,
+        )
+    if scene.geometry:
+        scene.export(str(path))
 
 
 def _write_removed(path, vertices, triangles, role, names) -> None:

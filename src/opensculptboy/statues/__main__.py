@@ -113,6 +113,13 @@ def starter(argv) -> int:
     )
     parser.add_argument("--thumbnail", help="a PNG for the thumbnail (default: drawn)")
     parser.add_argument(
+        "--props",
+        help="the handoff folder with props.glb (default: the run's handoff)",
+    )
+    parser.add_argument(
+        "--no-props", action="store_true", help="leave the props out of the zip"
+    )
+    parser.add_argument(
         "--variant", help="the variant of the run (<run>/<name>.<variant>)"
     )
     args = parser.parse_args(argv)
@@ -131,6 +138,9 @@ def starter(argv) -> int:
         levels,
         args.piece,
         args.thumbnail,
+        props=args.props,
+        with_props=not args.no_props,
+        log=lambda m: print(m, file=sys.stderr),
     )
     print(json.dumps(result, indent=2))
     return 0
