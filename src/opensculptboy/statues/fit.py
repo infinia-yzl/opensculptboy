@@ -220,12 +220,17 @@ def fit_statue(
     statue = appearance.get("statue") or {}
     lost = list(statue.get("lost") or [])
     covered = list(statue.get("covered") or [])
+    covered_levels = list(statue.get("covered_levels") or [])
     options = options or FitOptions()
     model = fit_model(options.topology)
     if lost or covered:
         no_data = lost_mask(model, lost)
         no_data[np.asarray(covered, np.int64)] = True
         options = dataclasses.replace(options, no_data=no_data, fill_no_data=True)
+    if covered_levels:
+        levels = np.zeros(model.template_vertices.shape[-2], bool)
+        levels[np.asarray(covered_levels, np.int64)] = True
+        options = dataclasses.replace(options, no_data_levels=levels, fill_no_data=True)
     if options.relax_dents == 0:
         # a dense fit of a coarse scan dents single vertices (a pit on a forehead)
         options = dataclasses.replace(options, relax_dents=PIT_EXCESS)
@@ -456,6 +461,7 @@ def covered_skin(folder, result, model=None) -> int:
     # left a foot on a removed head pointing elsewhere, all of it without data
     fitted0 = np.asarray(result.meshes[0][0], np.float64)
     marked = np.zeros(len(V), bool)
+    marked_levels = np.zeros(len(V), bool)
     if covers:
         regions = statue_regions(model)
         excluded = excluded_vertices(model)[: len(V)]
@@ -477,15 +483,19 @@ def covered_skin(folder, result, model=None) -> int:
             head = np.isin(
                 regions[rows], [STATUE_REGIONS.index(r) for r in COVER_REGIONS[role]]
             )
-            marked[rows] |= head & (
+            target = marked_levels if role == "removed" else marked
+            target[rows] |= head & (
                 ((d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN))
                 | (on_cut & (d_cover < COVER_CUT))
             )
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
-    appearance.setdefault("statue", {})["covered"] = np.nonzero(marked)[0].tolist()
+    statue = appearance.setdefault("statue", {})
+    statue["covered"] = np.nonzero(marked)[0].tolist()
+    # by removed pieces: no data on the detail levels alone, so that the leg still poses
+    statue["covered_levels"] = np.nonzero(marked_levels & ~marked)[0].tolist()
     path.write_text(json.dumps(appearance, indent=2) + "\n", encoding="utf-8")
-    return int(marked.sum())
+    return int((marked | marked_levels).sum())
 
 
 # a hat or a piece of hair seats its open border on the fitted skin within this distance

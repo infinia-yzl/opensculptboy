@@ -470,7 +470,8 @@ class TestPrune(unittest.TestCase):
             result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
             count = covered_skin(folder, result, model)
             appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
-            covered = np.asarray(appearance["statue"]["covered"])
+            covered = np.asarray(appearance["statue"]["covered_levels"])
+            self.assertEqual(appearance["statue"]["covered"], [])
             self.assertGreater(count, 20)
             self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.08)
 

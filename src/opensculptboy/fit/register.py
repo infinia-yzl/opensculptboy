@@ -316,6 +316,10 @@ class FitOptions:
     # offsets around them on every level, so that a skull under a hat or a foot on a removed
     # piece shrinks or swells with the skin around it, smoothly (False: the stiffness alone)
     fill_no_data: bool = False
+    # vertices (V,) bool that take no data on the detail levels alone: the parameter stage
+    # still poses the body by them (a foot by a removed piece, whose leg the scan still
+    # shows)
+    no_data_levels: np.ndarray | None = None
     # a solid figure (FitOptions.close_openings): the eyeballs' vertices within this angle
     # (degrees) of the forward direction take the carved eye, and the linings of the sockets
     # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
@@ -3019,8 +3023,8 @@ def fit_levels(
         if ear_stiffness != 1.0:
             scale = 1.0 + (ear_stiffness - 1.0) * stiff
         data = mask.astype(np.float64)
-        if options.no_data is not None:
-            lost = np.asarray(topology.apply(np.asarray(options.no_data, np.float64)))
+        if _level_no_data(options) is not None:
+            lost = np.asarray(topology.apply(_level_no_data(options)))
             data *= 1.0 - np.clip(lost, 0.0, 1.0)
         if options.lip_margin_weight != 1.0:
             data *= 1.0 - (1.0 - options.lip_margin_weight) * np.clip(
@@ -3409,10 +3413,10 @@ def fit_levels(
                 rotation,
                 translation,
             )
-        if options.fill_no_data and options.no_data is not None:
+        if options.fill_no_data and _level_no_data(options) is not None:
             from opensculptboy.fit.lips import harmonic_fill
 
-            lost = np.asarray(topology.apply(np.asarray(options.no_data, np.float64)))
+            lost = np.asarray(topology.apply(_level_no_data(options)))
             free = (lost > 0.5) & np.asarray(mask, bool)
             if free.any():
                 offsets[subdiv] = harmonic_fill(
@@ -3467,11 +3471,8 @@ def fit_levels(
         if options.unfold_rounds > 0:
             every = np.ones(len(fitted), bool)
             on = np.asarray(mask, bool) & ~(np.asarray(topology.apply(cavity0)) > 0.5)
-            if options.no_data is not None:
-                on &= ~(
-                    np.asarray(topology.apply(np.asarray(options.no_data, np.float64)))
-                    > 0.5
-                )
+            if _level_no_data(options) is not None:
+                on &= ~(np.asarray(topology.apply(_level_no_data(options))) > 0.5)
             fitted_new, count = unfold(
                 fitted,
                 topology.triangles,
@@ -3650,6 +3651,18 @@ def unfold(
             V[back] = reference.closest(V[back])[0]
         moved |= bad
     return V, int(moved.sum())
+
+
+def _level_no_data(options):
+    """The level-0 vertices (V,) float that take no data on the detail levels: no_data and
+    no_data_levels together, or None."""
+    masks = [m for m in (options.no_data, options.no_data_levels) if m is not None]
+    if not masks:
+        return None
+    out = np.zeros(len(masks[0]), bool)
+    for m in masks:
+        out |= np.asarray(m, bool)
+    return out.astype(np.float64)
 
 
 def _outward(reference) -> float:
