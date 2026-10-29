@@ -26,6 +26,7 @@ import { actions, bus, ui, widthOf } from '../shell/state.ts';
 import { makeOpener } from '../shell/open.ts';
 import { mountShell } from '../shell/Shell.tsx';
 import type { Legacy } from '../shell/context.ts';
+import { flushSync } from 'react-dom';
 
 export interface UI { hooks: Hooks; nav: CameraNav; stats: Stats }
 
@@ -290,7 +291,8 @@ export function initUI(app: App): UI {
     const k = keys.find((x) => act[x]) ?? keys.map((x) => x.length === 1 ? x.toLowerCase() : x).find((x) => act[x]);
     if (!k) return;
     e.preventDefault();
-    act[k]();
+    // the interface shows a key's panel before the next frame
+    flushSync(() => act[k]());
   });
 
   // ---------------------------------------------------------------- the start state
