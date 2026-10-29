@@ -37,6 +37,8 @@ AXES = {
 }
 # the share of the height at each end in which guess_up compares the footprints
 END_BAND = 0.06
+# guess_up takes the scan's nearest axis when the principal axis lies within this angle
+SNAP_DEGREES = 12.0
 # the band of the nose in which guess_front looks for it: shares of the height below the
 # highest point (the crown), and the reach (share of the height) of the head around the crown
 FACE_BAND = (0.075, 0.105)
@@ -109,8 +111,9 @@ def guess_up(vertices: np.ndarray) -> tuple[np.ndarray, float]:
     """
     The up direction of a standing statue and a confidence from 0 to 1: the longest principal
     axis of its vertices, pointing away from the end with the wider footprint (the plinth and
-    the feet stand wider than the head). The confidence is the share by which the footprints
-    of both ends differ.
+    the feet stand wider than the head), and the scan's own axis instead when it lies within
+    :data:`SNAP_DEGREES` of one. The confidence is the share by which the footprints of both
+    ends differ.
     """
     V = np.asarray(vertices, dtype=np.float64)
     centred = V - V.mean(0)
@@ -124,6 +127,11 @@ def guess_up(vertices: np.ndarray) -> tuple[np.ndarray, float]:
     high = _footprint(centred[height > hi - band] @ basis.T)
     up = axis if low >= high else -axis
     confidence = abs(low - high) / max(low, high, 1e-12)
+    # scans are saved upright along one of their axes; the principal axis of a figure in
+    # contrapposto leans a few degrees off it
+    nearest = np.eye(3)[np.argmax(np.abs(up))] * np.sign(up[np.argmax(np.abs(up))])
+    if np.degrees(np.arccos(np.clip(up @ nearest, -1.0, 1.0))) < SNAP_DEGREES:
+        up = nearest
     return up, float(confidence)
 
 
