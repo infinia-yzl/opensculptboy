@@ -118,6 +118,29 @@ function frameCamera(name) {
   const d = frameDistance(f);
   placeCamera(f.yaw, f.pitch, d, f.target[0], f.target[1] + frameLift(d), f.target[2]);
 }
+// the framing's camera moved so that the figure stands in the free band between the top bar and the view bar: the
+// full figure in the middle of the band (the camera backs off when the figure is too tall for it), and for the closer
+// framings the top of the head below the top bar. The figure's posed extent (FIG) decides, so a pose with a raised arm or a
+// crouch frames as it stands.
+const _fitCam = new THREE.PerspectiveCamera(24, 1, 0.02, 20);
+function fitFrame(name: string, t1: any, p1: any) {
+  if (SHOT || !VIEW.freeH || !RIG.ready || !FIG.joints.length) return;
+  const top0 = (innerHeight - VIEW.freeH) / 2 + VIEW.shiftY, bot0 = top0 + VIEW.freeH, margin = 12;
+  _fitCam.aspect = camera.aspect; _fitCam.filmOffset = camera.filmOffset; _fitCam.filmGauge = camera.filmGauge; _fitCam.updateProjectionMatrix();
+  const at = (x: number, y: number, z: number) => { const v = new THREE.Vector3(x, y, z).project(_fitCam); return (1 - v.y) / 2 * innerHeight; };
+  for (let k = 0; k < 4; k++) {
+    _fitCam.position.copy(p1); _fitCam.lookAt(t1); _fitCam.updateMatrixWorld();
+    const top = at(FIG.head.x, FIG.top, FIG.head.z), low = name === 'body' ? at(FIG.head.x, FIG.lo.y, FIG.head.z) : null;
+    // a figure taller than the band: the camera backs off
+    if (low !== null && low - top > bot0 - top0 - 2 * margin) { p1.sub(t1).multiplyScalar((low - top) / (bot0 - top0 - 2 * margin) * 1.02).add(t1); continue; }
+    // pixels to move the picture down: the full figure stands in the middle of the band, a closer framing keeps the
+    // head below the top bar
+    let dpx = low !== null ? (top0 + bot0) / 2 - (top + low) / 2 : top < top0 + margin ? top0 + margin - top : 0;
+    if (Math.abs(dpx) < 0.5) break;
+    const w = dpx / (innerHeight / 2) * Math.tan(12 * DEG) * p1.distanceTo(t1);
+    t1.y += w; p1.y += w;   // the camera and its target rise, so the picture moves down
+  }
+}
 // smooth move between framings
 let tween = null;
 // the damping of the controls carries a drag on for a few frames; a camera move clears it, so it lands where it aims
@@ -132,6 +155,7 @@ function flyTo(name) {
   if (name === 'face' && RIG.ready) t1.applyMatrix4(_headFull);
   t1.y += frameLift(d);
   const p1 = new THREE.Vector3(t1.x + d * Math.sin(y) * Math.cos(p), t1.y + d * Math.sin(p), t1.z + d * Math.cos(y) * Math.cos(p));
+  fitFrame(name, t1, p1);
   tween = { t0: performance.now(), dur: 900, fromT: controls.target.clone(), fromP: camera.position.clone(), toT: t1, toP: p1 };
 }
 frameCamera('body');
@@ -2588,7 +2612,11 @@ async function init() {
   UI = initUI(APP);
   Object.assign(HOOKS, UI.hooks);
   // the first view fits the free space beside the inspectors
-  if (!SHOT && MOTION.cur) { const f = bodyFrameFor(MOTION.cur), d = frameDistance(f); placeCamera(VIEW.yaw, f.pitch, d, f.target[0], f.target[1] + frameLift(d), f.target[2]); }
+  if (!SHOT && MOTION.cur) {
+    flyTo('body');
+    controls.target.copy(tween.toT); camera.position.copy(tween.toP); tween = null;
+    camera.lookAt(controls.target); controls.update();
+  }
   document.body.classList.add('ready');
   (window as any).__ready = true;
   if (!SHOT) animate();

@@ -85,7 +85,9 @@ export function initUI(app: App): UI {
     const card = cardOf(L, base);
     const name = slug(L.name || card.name || 'character');
     const files = w?.loaded && w.source ? w.files : null;
-    if (!files || !files.byPath.size) {
+    // a card opened without files of its own saves as .json
+    const others = files ? [...files.byPath.keys()].filter((p) => p !== w!.cardPath) : [];
+    if (!files || !others.length) {
       download(`${name}.json`, new Blob([JSON.stringify(card, null, 2) + '\n'], { type: 'application/json' }));
       toast('Saved the card');
       return;
@@ -267,12 +269,13 @@ export function initUI(app: App): UI {
     const s = ui.get(), B = document.body;
     B.dataset.width = s.width; B.dataset.mode = s.mode;
     B.classList.toggle('panel-open', s.open); B.classList.toggle('tool-open', !!s.tool);
+    B.classList.toggle('char-open', s.character);
     sheet.setOpen(s.mode === 'sheet' && s.open);
     const phone = s.width === 'phone';
     B.classList.toggle('sheet-open', phone && (s.open || !!s.tool));
     if (app.shot) { nav.setInsets(0, 0); B.classList.remove('vb-compact'); return; }
     // the bars over the canvas: the framings fill the height between the top bar and the view bar (or the phone bar)
-    const bar = (sel: string) => { const el = document.querySelector(sel) as HTMLElement | null; const r = el && el.offsetParent ? el.getBoundingClientRect() : null; return r && r.height ? r : null; };
+    const bar = (sel: string) => { const el = document.querySelector(sel) as HTMLElement | null; const r = el ? el.getBoundingClientRect() : null; return r && r.height ? r : null; };
     const topR = bar('.osb-top'), lows = ['.viewbar', '.phone-bar'].map(bar).filter(Boolean) as DOMRect[];
     nav.setVInsets(topR ? topR.bottom + 8 : 0, lows.length ? innerHeight - Math.min(...lows.map((r) => r.top)) + 8 : 0);
     if (phone) { nav.setInsets(0, 0); B.classList.remove('vb-compact'); return; }
