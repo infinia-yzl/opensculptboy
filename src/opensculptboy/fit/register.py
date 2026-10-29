@@ -303,6 +303,11 @@ class FitOptions:
     # reverse error (p95), and the band's move shows no crease
     lid_follow_inside: tuple = (False, False, True)
     lid_clearance_inward: tuple = (True, True, False)
+    # the vertices of the fit model's level-0 mesh, as a (V,) bool mask, that take no data:
+    # the parts that the reference lacks, such as a statue's lost hand. They keep anny's
+    # shape and follow the fitted skin around them through the stiffness (None: all of the
+    # skin takes data)
+    no_data: np.ndarray | None = None
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -2421,6 +2426,8 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
         model, rotation0, translation0, height0, options.shared_targets
     )
     excluded = excluded_vertices(model)
+    if options.no_data is not None:
+        excluded = excluded | np.asarray(options.no_data, bool)
     fit_rows = np.nonzero(~excluded)[0]
     triangles = model.faces.cpu().numpy()
     rng = np.random.default_rng(options.seed)
@@ -2924,6 +2931,9 @@ def fit_levels(
         if ear_stiffness != 1.0:
             scale = 1.0 + (ear_stiffness - 1.0) * stiff
         data = mask.astype(np.float64)
+        if options.no_data is not None:
+            lost = np.asarray(topology.apply(np.asarray(options.no_data, np.float64)))
+            data *= 1.0 - np.clip(lost, 0.0, 1.0)
         if options.lip_margin_weight != 1.0:
             data *= 1.0 - (1.0 - options.lip_margin_weight) * np.clip(
                 np.asarray(topology.apply(margin)), 0.0, 1.0

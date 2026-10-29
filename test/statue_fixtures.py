@@ -6,7 +6,7 @@ A synthetic statue scan for the tests of ``opensculptboy.statues``.
 :func:`synthetic_statue` stands anny in the library's contrapposto (``weight_shift``) with a
 heroic build, and gives it what a scan of a marble statue has: a plinth under the feet, a tree
 stump fused to the right leg (the leg's skin inside the stump is gone, as a scan sees only the
-outside), a lost left hand, and optionally a chipped nose, a sculpted surface (a smooth offset
+outside), a lost left hand, and optionally a broken nose (its tip cut flat), a sculpted surface (a smooth offset
 field on level 1 of the detail layer) and a mass of short curls over the scalp. The scan is in
 millimetres with +Y up and +X to the front, as many museum files are, and can be remeshed to
 another topology with a little noise.
@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 HEROIC = {
-    "gender": 1.0,
+    "gender": 0.0,
     "age": 0.5,
     "muscle": 0.85,
     "weight": 0.5,
@@ -158,8 +158,13 @@ def synthetic_statue(
         ]
     points = cranio.weights_matrix.detach().double().numpy() @ placed
     named = dict(zip(cranio.labels, points))
+    sv = V.copy()
     if chip_nose:
-        kept &= np.linalg.norm(centroid - named["prn"], axis=1) > 0.008
+        # a broken nose: the tip cut flat 6 mm behind its point, as a break face
+        tip = named["prn"]
+        near = np.linalg.norm(sv - tip, axis=1) < 0.014
+        front = sv[:, 1] < tip[1] + 0.006
+        sv[near & front, 1] = tip[1] + 0.006
     landmarks = {}
     joints = out["bone_poses"][0, :, :3, 3].double().numpy() - [
         0.0,
@@ -173,7 +178,7 @@ def synthetic_statue(
         elif label in named:
             landmarks[name] = named[label]
 
-    sv, st = V, T[kept]
+    st = T[kept]
     pieces = [(sv, st)]
     pieces.append(_cylinder((cx, cy), radius, height))
     pieces.append(_box(PLINTH, top=0.0))

@@ -199,6 +199,52 @@ class TestScanToHandoff(unittest.TestCase):
         self.assertGreater(result.triangles["hair"], 0)
 
 
+class TestLostParts(unittest.TestCase):
+    def test_lost_mask(self):
+        from opensculptboy.fit.metrics import REGIONS, anny_regions
+        from opensculptboy.statues import lost_mask
+
+        model = _model()
+        rest = model.template_vertices.detach().double().numpy()
+        hand = lost_mask(model, ["hand.l"])
+        self.assertGreater(hand.sum(), 100)
+        # the figure's left is +X; the hand is the base mesh's left hand
+        self.assertTrue((rest[hand, 0] > 0).all())
+        regions = anny_regions(model)
+        self.assertGreater((regions[hand] == REGIONS.index("hands")).mean(), 0.9)
+        forearm = lost_mask(model, ["forearm.l"])
+        self.assertTrue((forearm | ~hand).all())  # the forearm's chain holds the hand
+        nose = lost_mask(model, ["nose"])
+        self.assertTrue(0 < nose.sum() < 400)
+        with self.assertRaises(ValueError):
+            lost_mask(model, ["tail.l"])
+
+    def test_fit_statue_leaves_lost_parts_without_data(self):
+        from unittest import mock
+
+        from opensculptboy.statues import fit_statue
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            scan_to_handoff(
+                (statue["vertices"], statue["triangles"]),
+                pathlib.Path(tmp) / "h",
+                lost=["hand.l"],
+            )
+            appearance = json.loads(
+                (pathlib.Path(tmp) / "h" / "appearance.json").read_text("utf-8")
+            )
+            self.assertEqual(appearance["statue"]["lost"], ["hand.l"])
+            with mock.patch("opensculptboy.fit.register.fit_reference") as fit:
+                fit_statue(pathlib.Path(tmp) / "h", detail=0)
+            options = fit.call_args.kwargs["options"]
+            self.assertGreater(np.asarray(options.no_data).sum(), 100)
+        with self.assertRaises(ValueError):
+            scan_to_handoff(
+                (statue["vertices"], statue["triangles"]), tmp, lost=["wing.l"]
+            )
+
+
 class TestRegionDistances(unittest.TestCase):
     def test_regions_and_zero_distance(self):
         model = _model()

@@ -1,7 +1,7 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-A statue scan as an appearance handoff folder for ``opensculptboy fit`` (docs/statues.md).
+A statue scan as an appearance handoff folder for ``opensculptboy fit`` (docs/reference-fit.md, "Statue scans").
 
 :func:`scan_to_handoff` reads a scan, turns it upright and to face +Z in glTF's frame, cuts
 the plinth off, scales the figure to a stature inside anny's range, takes the masked pieces
@@ -165,6 +165,7 @@ def scan_to_handoff(
     licence: str | None = None,
     credit: str | None = None,
     title: str | None = None,
+    lost=(),
 ) -> StatueHandoff:
     """
     Write an appearance handoff folder from a statue scan (see the module documentation).
@@ -185,9 +186,18 @@ def scan_to_handoff(
         debris_share: loose pieces of the skin under this share of its area are taken out.
         source, licence, credit, title: the scan's page, licence, credit line and name,
             kept in appearance.json and later in the card.
+        lost: the parts the statue lost (``"hand.l"``, ``"forearm.r"``, ``"nose"``; see
+            :data:`opensculptboy.statues.fit.LOST_PARTS`), which
+            :func:`~opensculptboy.statues.fit.fit_statue` leaves without data.
     """
     from opensculptboy.fit.handoff import write_handoff
+    from opensculptboy.statues.fit import LOST_PARTS
 
+    lost = [str(n).strip().lower() for n in lost or ()]
+    for n in lost:
+        part, _, side = n.partition(".")
+        if n != "nose" and (part not in LOST_PARTS or side not in ("l", "r")):
+            raise ValueError(f"Unknown lost part {n!r}.")
     if isinstance(scan, (str, pathlib.Path)):
         scan_path = pathlib.Path(scan)
         V, F = load_scan(scan_path)
@@ -290,6 +300,7 @@ def scan_to_handoff(
         "up_confidence": round(up_confidence, 4),
         "front_score": round(front_score, 4),
         "plinth": top is not None,
+        "lost": lost,
         "triangles": counts,
         "removed": "removed.glb",
     }

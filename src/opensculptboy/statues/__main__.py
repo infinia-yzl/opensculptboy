@@ -44,6 +44,12 @@ def main(argv=None) -> int:
     parser.add_argument("--licence", help="the scan's licence (an SPDX name)")
     parser.add_argument("--credit", help="the credit line")
     parser.add_argument("--title", help="the statue's name")
+    parser.add_argument(
+        "--lost",
+        default="",
+        help="the parts the statue lost, by commas: hand.l, forearm.r, arm.l, foot.r, "
+        "lower_leg.l, leg.r, nose",
+    )
     args = parser.parse_args(argv)
 
     from opensculptboy.fit.handoff import GLTF_TO_ANNY
@@ -73,6 +79,7 @@ def main(argv=None) -> int:
         licence=args.licence,
         credit=args.credit,
         title=args.title,
+        lost=[n for n in args.lost.split(",") if n.strip()],
     )
     print(
         json.dumps(
