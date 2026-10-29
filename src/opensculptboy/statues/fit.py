@@ -222,8 +222,10 @@ def fit_statue(
 
 # the scan's triangles further than this (metres) from a first fit are not the figure's skin
 PRUNE_DISTANCE = 0.025
-# the regions of the first fit whose far triangles are hair (kept as a piece) and not props
-HAIR_REGIONS = ("face", "jaw", "ears", "scalp", "neck")
+# the regions of the first fit whose far triangles are hair (kept as a piece) and not props,
+# and those that keep all of their skin
+HAIR_REGIONS = ("scalp", "neck")
+KEEP_REGIONS = ("face", "jaw", "ears")
 
 
 def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> dict:
@@ -249,15 +251,18 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
     skin = handoff.skin_parts()[0]
     V, T = result.meshes[0]
     excluded = excluded_vertices(model)
-    kept = T[~excluded[T].any(1)]
     S, ST = skin.vertices, skin.triangles
     centres = S[ST].mean(1)
-    _, _, d = closest_triangles(centres, V, kept)
+    # against the whole fitted surface: a statue's carved eyes lie on anny's eyeballs
+    _, _, d = closest_triangles(centres, V, T)
     far = d > distance
     regions = anny_regions(model)
     rows = np.nonzero(~excluded)[0]
     _, nearest = cKDTree(V[rows]).query(centres)
-    head = np.isin(regions[rows[nearest]], [REGIONS.index(r) for r in HAIR_REGIONS])
+    region = regions[rows[nearest]]
+    # the face keeps its skin: a first fit may sit off it, and nothing grows off a face
+    far &= ~np.isin(region, [REGIONS.index(r) for r in KEEP_REGIONS])
+    head = np.isin(region, [REGIONS.index(r) for r in HAIR_REGIONS])
     # the skin left must hold together: loose bits of it go with the far triangles
     near = ~far
     pieces = components(ST[near], len(S))

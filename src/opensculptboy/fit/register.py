@@ -3433,6 +3433,8 @@ def fit_levels(
     )
 
 
+# FitOptions.close_openings takes a lining vertex's hit only within this distance (metres)
+CLOSE_REACH = 0.02
 # the mouth's lining that FitOptions.close_openings moves: its rows within this distance
 # (metres) of the skin, the inner side of the lips
 MOUTH_FRONT = 0.008
@@ -3517,7 +3519,10 @@ def _close_openings(
                 r = ray[k]
                 if depth[k] > 0 and depth[k] < best[r]:
                     best[r], target[r] = depth[k], hits[k]
-        ok = best < 3.0 * options.close_openings
+        # a hit far from the lining is the far side of a lid or a hole of the scan
+        ok = np.isfinite(best) & (
+            np.linalg.norm(target - fitted[rows], axis=1) < CLOSE_REACH
+        )
         fitted[rows[ok]] = target[ok]
         moved.append(rows[ok])
     for eye, centre in eye_rows:
