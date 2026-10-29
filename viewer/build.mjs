@@ -197,11 +197,26 @@ const queryWorker = await esbuild.build({
   bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
   legalComments: 'none',
 });
+// MediaPipe's task code sends usage records (task, platform, timings) to Google every minute
+// (odml.pa.googleapis.com/v1/log). The page keeps everything on the computer, so the build cuts that one call out of
+// the bundle, and the policy would block it anyway. The build stops when the pattern is gone (a new MediaPipe).
+const TELEMETRY = 'this.m.send({url:"https://odml.pa.googleapis.com/v1/log"';
+const noTelemetry = {
+  name: 'no-mediapipe-telemetry',
+  setup(b) {
+    b.onLoad({ filter: /tasks-vision[\\/]vision_bundle\.mjs$/ }, (args) => {
+      const code = fs.readFileSync(args.path, 'utf8');
+      if (code.split(TELEMETRY).length !== 2) throw new Error('MediaPipe\'s usage logging call was not found in ' + args.path);
+      return { contents: code.replace(TELEMETRY, '((o, done) => done())({url:"about:blank"'), loader: 'js' };
+    });
+  },
+};
 // the script: the TypeScript with three.js in one bundle
 const bundle = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'main.ts')],
   bundle: true, format: 'esm', minify: true, write: false, target: 'es2022',
   alias: { 'three/addons': 'three/examples/jsm' },
+  plugins: [noTelemetry],
   define: { __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text), __QUERY_WORKER__: JSON.stringify(queryWorker.outputFiles[0].text), __MEDIAPIPE_SRI__: JSON.stringify(mpSri) },
   legalComments: 'none',
 });

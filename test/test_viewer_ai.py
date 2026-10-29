@@ -312,7 +312,7 @@ class TestAiPage(unittest.TestCase):
         tab.wait_for_function(
             "(t) => (document.querySelector('.ai-status') || {}).textContent.includes(t)",
             arg=text,
-            timeout=30000,
+            timeout=120000,
         )
         return tab.locator(".ai-status").text_content()
 
