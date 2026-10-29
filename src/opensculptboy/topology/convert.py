@@ -279,28 +279,16 @@ def convert_eye_poses(
     """
     Write the eye poses file ``source`` (:class:`~opensculptboy.eyes.poses.EyePoses`, whose
     offsets hold the rows of level 0 of the card's mesh) as a file of ``topology`` at
-    ``target``: each pose's offsets carried as a field of level 0 and each detail level's
-    corrections as a field of that level (``correspondence``, a function of the level to its
-    :class:`LevelCorrespondence`; None keeps them, for the same mesh). The lashes' offsets
-    hold the rows of the card's lashes and stay as they are.
+    ``target``: each pose's offsets carried as a field of level 0 (``correspondence``, the
+    :class:`LevelCorrespondence` of level 0; None keeps them, for the same mesh). The lashes'
+    offsets hold the rows of the card's lashes and stay as they are.
     """
     from opensculptboy.eyes.poses import EyePoses
     from opensculptboy.topology.sculpt import is_sculpt
 
     poses = EyePoses.load(source)
     if correspondence is not None:
-        to_sculpt = is_sculpt(topology)
-        poses.offsets = _carry(correspondence(0), poses.offsets, to_sculpt)
-        levels = {}
-        for subdiv, (rows, values) in poses.levels.items():
-            c = correspondence(subdiv)
-            count = len(c.anny_to_sculpt) if to_sculpt else len(c.sculpt_to_anny)
-            full = np.zeros((len(values), count, 3))
-            full[:, rows] = values
-            moved = _carry(c, full, to_sculpt)
-            kept = np.flatnonzero(np.abs(moved).max(axis=(0, 2)) > 0.0)
-            levels[subdiv] = (kept, moved[:, kept])
-        poses.levels = levels
+        poses.offsets = _carry(correspondence, poses.offsets, is_sculpt(topology))
     poses.save(target)
     return pathlib.Path(target)
 
@@ -464,10 +452,11 @@ def convert_card(
         path = path if path.is_absolute() else source_dir / path
         out_name = f"{stem}.{kind}.safetensors"
         with use_sculpt_data(data):
-            c = None if same else correspondence
             if kind == "eye_poses":
+                c = None if same else correspondence(0)
                 convert_eye_poses(path, target_dir / out_name, topology, c)
             else:
+                c = None if same else correspondence
                 convert_mouth_poses(path, target_dir / out_name, topology, c)
         material[section] = dict(material[section], poses=out_name)
         summary[kind] = out_name

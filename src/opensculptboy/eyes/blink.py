@@ -257,55 +257,6 @@ def steady_folds(rest, triangles, offsets, rows) -> np.ndarray:
     return out
 
 
-def local_turns(rest, offsets, triangles, rows) -> np.ndarray:
-    """The turn (len(rows), 3, 3) of the skin around each of ``rows`` from ``rest`` (N, 3) to
-    ``rest + offsets``: the rotation that best carries the edges to its neighbours over
-    (the Kabsch fit of its one ring of ``triangles``)."""
-    x0 = np.asarray(rest, dtype=np.float64)
-    d = np.asarray(offsets, dtype=np.float64)
-    t = np.asarray(triangles, dtype=np.int64)
-    rows = np.asarray(rows, dtype=np.int64)
-    a = np.concatenate([t[:, 0], t[:, 1], t[:, 2], t[:, 1], t[:, 2], t[:, 0]])
-    b = np.concatenate([t[:, 1], t[:, 2], t[:, 0], t[:, 0], t[:, 1], t[:, 2]])
-    local = np.full(len(x0), -1)
-    local[rows] = np.arange(len(rows))
-    keep = local[a] >= 0
-    a, b = a[keep], b[keep]
-    P = x0[b] - x0[a]
-    Q = P + d[b] - d[a]
-    H = np.zeros((len(rows), 3, 3))
-    np.add.at(H, local[a], Q[:, :, None] * P[:, None, :])
-    U, _, Vt = np.linalg.svd(H)
-    sign = np.sign(np.linalg.det(U @ Vt))
-    U[:, :, 2] *= np.where(sign == 0, 1.0, sign)[:, None]
-    return U @ Vt
-
-
-def turn_relief(
-    rest, offsets, relief, triangles, tolerance: float = 1e-9
-) -> np.ndarray:
-    """
-    A pose's offsets (N, 3) of a detail level, carried from level 0 by its subdivision, with
-    the level's ``relief`` (N, 3: its detail offsets that the pose does not carry) turned
-    with the skin around each moving row (:func:`local_turns` of the level's smooth surface,
-    ``rest`` less ``relief``). The detail offsets lie in the rest frame: on a lid that turns
-    about the eye they would keep their rest direction, and the relief of the lid's rim and
-    of its crease would show as lumps and a fold on the closed lid.
-    """
-    out = np.array(offsets, dtype=np.float64, copy=True)
-    relief = np.asarray(relief, dtype=np.float64)
-    rows = np.flatnonzero(
-        (np.linalg.norm(out, axis=1) > tolerance)
-        & (np.linalg.norm(relief, axis=1) > 0.0)
-    )
-    if len(rows) == 0:
-        return out
-    smooth = np.asarray(rest, dtype=np.float64) - relief
-    turns = local_turns(smooth, out, triangles, rows)
-    out[rows] += np.einsum("nij,nj->ni", turns, relief[rows]) - relief[rows]
-    return out
-
-
 # --------------------------------------------------------------------- the eye's frame
 def cylinder(frame, points: np.ndarray):
     """Points in the eye's frame about its horizontal axis (eyeball radii): the place along
@@ -507,14 +458,14 @@ def _segment_hits(p, q, a, b, c, eps: float = 1e-3) -> np.ndarray:
 
 def lid_lumps(lids: EyeLids, positions: np.ndarray, rest: np.ndarray) -> float:
     """
-    How far (mm) the skin of the upper lid rises or sinks against the skin around it,
-    beyond what it does at rest, at its worst away from the corners of the eye
-    (:data:`CORNER_MARGIN`): for each row of the lid's outward skin, its distance from the
-    eye's centre less the Gaussian mean (:data:`LUMP_SIGMA`, over the rows near it at rest)
-    of the distances of the rows around it. A lid that turns about the eye keeps every
-    distance from the eye's centre, and a lid that stretches smoothly keeps the differences
-    over a millimetre, so a closed lid measures the height of the lumps and folds that the
-    closing gives it.
+    How far (mm) the skin of the upper lid rises or sinks against the skin around it, at its
+    worst away from the corners of the eye (:data:`CORNER_MARGIN`): for each row of the
+    lid's outward skin, its distance from the eye's centre less the Gaussian mean
+    (:data:`LUMP_SIGMA`, over the rows near it at ``rest``) of the distances of the rows
+    around it. A lid that turns about the eye keeps every distance from the eye's centre, so
+    a closed lid measures what it has of its rest's relief and of the lumps and folds that
+    the closing gives it; compare it with the lid at rest, or with the closed lid of a
+    smooth level.
     """
     from scipy.spatial import cKDTree
 
@@ -531,9 +482,7 @@ def lid_lumps(lids: EyeLids, positions: np.ndarray, rest: np.ndarray) -> float:
     lo = max(ends[0][0], ends[1][0]) + CORNER_MARGIN / R
     hi = min(ends[0][1], ends[1][1]) - CORNER_MARGIN / R
     p0 = x0[rows]
-    change = np.linalg.norm(x[rows] - lids.frame.centre, axis=1) - np.linalg.norm(
-        p0 - lids.frame.centre, axis=1
-    )
+    r = np.linalg.norm(x[rows] - lids.frame.centre, axis=1)
     s, _, _ = cylinder(lids.frame, p0)
     worst = 0.0
     for i, near in enumerate(cKDTree(p0).query_ball_point(p0, 3.0 * LUMP_SIGMA)):
@@ -541,7 +490,7 @@ def lid_lumps(lids: EyeLids, positions: np.ndarray, rest: np.ndarray) -> float:
             continue
         near = np.asarray(near)
         w = np.exp(-0.5 * (np.linalg.norm(p0[near] - p0[i], axis=1) / LUMP_SIGMA) ** 2)
-        worst = max(worst, abs(change[i] - (w * change[near]).sum() / w.sum()))
+        worst = max(worst, abs(r[i] - (w * r[near]).sum() / w.sum()))
     return worst * 1000.0
 
 
