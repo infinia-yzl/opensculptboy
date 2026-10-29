@@ -1,9 +1,14 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-``python -m opensculptboy.statues SCAN --out FOLDER``: a statue scan as an appearance handoff
-folder (see :mod:`opensculptboy.statues.handoff`). It prints one JSON result: the frame it
-found, the triangles per role and the landmarks in the handoff's frame.
+The statue commands, each printing one JSON result:
+
+- ``python -m opensculptboy.statues run CONFIG... --scans DIR --out DIR``: the pipeline of
+  :mod:`opensculptboy.statues.pipeline` for each statue config (``--steps convert,preview``
+  for a first look, the default runs every step).
+- ``python -m opensculptboy.statues convert SCAN --out FOLDER``: a statue scan as an
+  appearance handoff folder (see :mod:`opensculptboy.statues.handoff`), with the frame it
+  found, the triangles per role and the landmarks in the handoff's frame.
 """
 
 from __future__ import annotations
@@ -12,10 +17,59 @@ import argparse
 import json
 import sys
 
+from opensculptboy.statues.pipeline import STEPS
+
 
 def main(argv=None) -> int:
+    words = sys.argv[1:] if argv is None else list(argv)
+    if words[:1] == ["run"]:
+        return run(words[1:])
+    if words[:1] == ["convert"]:
+        words = words[1:]
+    return convert(words)
+
+
+def run(argv) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m opensculptboy.statues",
+        prog="python -m opensculptboy.statues run",
+        description="Run the statue pipeline (convert, preview, fit, measure) for each "
+        "statue config (opensculptboy.statue/1).",
+    )
+    parser.add_argument("configs", nargs="+", help="statue config files (JSON)")
+    parser.add_argument("--out", required=True, help="the folder of the results")
+    parser.add_argument(
+        "--scans", help="the folder of the scans (default: the config's)"
+    )
+    parser.add_argument(
+        "--steps",
+        default=",".join(STEPS),
+        help=f"the steps to run, by commas (default {','.join(STEPS)})",
+    )
+    parser.add_argument("--detail", type=int, choices=(0, 1, 2), help="override detail")
+    parser.add_argument(
+        "--verbose", action="store_true", help="the fit's progress lines"
+    )
+    args = parser.parse_args(argv)
+    import dataclasses
+
+    from opensculptboy.statues.pipeline import StatueConfig, run_statue
+
+    results = []
+    for path in args.configs:
+        config = StatueConfig.load(path)
+        if args.detail is not None:
+            config = dataclasses.replace(config, detail=args.detail)
+        steps = [s for s in args.steps.split(",") if s]
+        results.append(
+            run_statue(config, args.out, args.scans, steps, verbose=args.verbose)
+        )
+    print(json.dumps(results, indent=2, default=float))
+    return 0
+
+
+def convert(argv) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m opensculptboy.statues convert",
         description="Write an appearance handoff folder from a statue scan: upright, "
         "facing +Z, the plinth cut off, scaled to a stature and the masked pieces taken out.",
     )

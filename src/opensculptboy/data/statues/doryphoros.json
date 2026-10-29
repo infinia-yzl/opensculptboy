@@ -1,0 +1,13 @@
+{
+  "format": "opensculptboy.statue/1",
+  "name": "doryphoros",
+  "title": "Doryphoros (the spear bearer)",
+  "scan": "q237hx73t_smk-doryphoros.stl",
+  "source": "https://open.smk.dk/artwork/image/KAS11",
+  "licence": "PDM-1.0",
+  "credit": "SMK, National Gallery of Denmark: cast KAS11 of the Doryphoros of Polykleitos",
+  "stature": 1.8,
+  "masks": [],
+  "lost": [],
+  "landmarks": {}
+}

@@ -1,0 +1,13 @@
+{
+  "format": "opensculptboy.statue/1",
+  "name": "david_goliath",
+  "title": "David with the head of Goliath",
+  "scan": "mk61rn229_smk17-kas2036-david-with-head-of-goliath-reprocess.stl",
+  "source": "https://open.smk.dk/artwork/image/KAS2036",
+  "licence": "PDM-1.0",
+  "credit": "SMK, National Gallery of Denmark: cast KAS2036, David with the head of Goliath",
+  "stature": 1.8,
+  "masks": [],
+  "lost": [],
+  "landmarks": {}
+}

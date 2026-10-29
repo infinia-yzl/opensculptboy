@@ -9,6 +9,8 @@ Statue starters: classical statues fitted from public-domain scans (docs/referen
   handoff folder that ``opensculptboy fit`` takes.
 - :mod:`opensculptboy.statues.fit`: :func:`fit_statue`, the reference fit with the statue's
   lost parts (a hand, the nose) left without data, so that anny keeps its own shape there.
+- :mod:`opensculptboy.statues.pipeline`: :func:`run_statue`, the same steps for every statue
+  (convert, preview, fit, measure), driven by a config file (:class:`StatueConfig`).
 - :mod:`opensculptboy.statues.compare`: the distances between a fitted card and its scan, per
   region of the figure.
 
@@ -19,13 +21,23 @@ Example::
     scan_to_handoff("statue.stl", "handoff/", stature=1.8, licence="CC0-1.0", lost=["hand.l"])
     fit_statue("handoff/", detail=2).write("statue.json")
 
-``python -m opensculptboy.statues SCAN --out FOLDER`` runs the conversion from the command line.
+``python -m opensculptboy.statues run doryphoros.json antinous.json --scans scans/ --out out/``
+runs the pipeline for two statues with one command.
 """
 
 from __future__ import annotations
 
 from opensculptboy.statues.fit import fit_statue, lost_mask
 from opensculptboy.statues.handoff import StatueHandoff, scan_to_handoff
+from opensculptboy.statues.pipeline import StatueConfig, run_statue
 from opensculptboy.statues.scan import Mask
 
-__all__ = ["Mask", "StatueHandoff", "fit_statue", "lost_mask", "scan_to_handoff"]
+__all__ = [
+    "Mask",
+    "StatueConfig",
+    "StatueHandoff",
+    "fit_statue",
+    "lost_mask",
+    "run_statue",
+    "scan_to_handoff",
+]
