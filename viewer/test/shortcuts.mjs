@@ -4,10 +4,10 @@
 // The keyboard shortcuts without a browser (run by test/test_viewer_shortcuts.py):
 //   node viewer/test/shortcuts.mjs
 // It checks the keys that a keydown event means on other keyboards (Caps Lock, Shift, a keyboard in another script,
-// an input method, the digit row of an AZERTY keyboard) and that the help lists every section's key, and prints a JSON
+// an input method, the digit row of an AZERTY keyboard) and that the help lists every key that opens a panel, and prints a JSON
 // summary. A failed check throws, so node exits with an error.
 import assert from 'node:assert/strict';
-import { PANEL_KEYS, SHORTCUTS, shortcutKeys } from '../src/ui/shortcuts.ts';
+import { MODES, PANEL_KEYS, SECTIONS, SHORTCUTS, TOOLS, shortcutKeys } from '../src/ui/shortcuts.ts';
 
 const cases = [
   [{ key: 'w', code: 'KeyW' }, ['w']],
@@ -28,10 +28,14 @@ const cases = [
 ];
 for (const [e, want] of cases) assert.deepEqual(shortcutKeys(e), want, JSON.stringify(e));
 
-// the help's Panels rows name every section's key, upper case, in the order of the segments
-const panels = SHORTCUTS.find(([t]) => t === 'Panels')[1];
-const listed = panels.slice(0, 2).flatMap(([k]) => k.split(' ')).map((x) => x.toLowerCase());
+// the help's Modes rows name every panel key, upper case: the six modes, Create's sections, then the View menu's tools
+const rows = SHORTCUTS.find(([t]) => t === 'Modes')[1];
+const listed = rows.slice(0, 3).flatMap(([k]) => k.split(' ')).map((x) => x.toLowerCase());
+const want = [...MODES.map((m) => m.key), ...SECTIONS.create.filter((s) => s.key).map((s) => s.key), ...TOOLS.map((t) => t.key)];
+assert.deepEqual(listed, want);
 assert.deepEqual(listed, Object.values(PANEL_KEYS));
 assert.equal(new Set(Object.values(PANEL_KEYS)).size, Object.keys(PANEL_KEYS).length);
+// no panel key takes a key of the view (the framings, the angles, the turntable, the reset)
+for (const k of '01234567t') assert.ok(!Object.values(PANEL_KEYS).includes(k), k);
 
 console.log(JSON.stringify({ ok: true, cases: cases.length, panels: PANEL_KEYS }));

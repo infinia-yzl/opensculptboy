@@ -97,6 +97,8 @@ export interface App {
   setLightRotation(deg: number, rebuild: boolean): void;
   exposureEV(): number;
   setExposureEV(ev: number): void;
+  // the backdrop of the interface's theme: the preset's dark studio, or the light theme's marble stage
+  setStage(stage: 'dark' | 'light'): void;
   quality(): string;
   setQuality(q: string): void;
   turntable(): boolean;

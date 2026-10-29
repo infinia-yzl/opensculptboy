@@ -72,12 +72,12 @@ export function Welcome() {
       <Tip label="Close" keys="Esc" side="left">
         <button type="button" className="osb-ib welcome-x" aria-label="Close the welcome" onClick={() => actions.dismissWelcome()}><Icon name="close" size={16} /></button>
       </Tip>
-      <h2 className="osb-title welcome-title" id="welcome-title">Welcome to OpenSculptBoy</h2>
-      <p className="osb-note">Make a humanoid 3D character, then dress it, give it expressions, pose it and export it. Everything stays in this browser.</p>
+      <h2 className="osb-title welcome-title" id="welcome-title">Meet the studio</h2>
+      <p className="osb-note">Shape a character here, then dress, pose and export it. Your files stay in this browser.</p>
       <p className="osb-note welcome-keys">
         {touch
           ? <><b>Drag</b> to turn · <b>pinch</b> to zoom · <b>two fingers</b> to move</>
-          : <><b>Drag</b> to turn · <b>right-drag</b> to move · <b>scroll</b> to zoom · <b>?</b> for the keys</>}
+          : <><b>Drag</b> to turn · <b>scroll</b> to zoom · <b>?</b> for the keys</>}
       </p>
       <div className="osb-row">
         <Button onClick={() => actions.showOpen()}><Icon name="open" size={16} />Open a character</Button>

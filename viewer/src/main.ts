@@ -705,7 +705,36 @@ function applyPreset(name) {
   currentPreset = name;
   applyLights(rotatedPreset(PRESETS[name]));
   renderer.toneMappingExposure = (qs.get('exp') ? parseFloat(qs.get('exp')) : PRESETS[name].exposure) * Math.pow(2, LIGHT.ev);
+  applyStage();
 }
+// the backdrop of the interface's theme (src/shell/theme.ts): the preset's dark studio, or for the light theme the
+// design system's white marble stage (its ground at the centre and its stage edge outside), as display colours that
+// the display pass gives back: the inverse of its AgX curve, sRGB transfer and contrast for each channel, divided by
+// the exposure. Only the two colours of the backdrop change; the still pictures of the tests (?shot) keep the preset's.
+let STAGE: 'dark' | 'light' = 'dark';
+const STAGE_LIGHT = ['#f2f0eb', '#d9d4cb'];
+function displayOf(x: number) {
+  const t = Math.min(1, Math.max(0, (Math.log2(Math.max(x, 1e-10)) + 12.47393) / (4.026069 + 12.47393)));
+  const t2 = t * t, t4 = t2 * t2;
+  const lin = Math.max(0, 15.5 * t4 * t2 - 40.14 * t4 * t + 31.96 * t4 - 6.868 * t2 * t + 0.4298 * t2 + 0.1191 * t - 0.00232) ** 2.2;
+  const enc = lin > 0.0031308 ? 1.055 * lin ** (1 / 2.4) - 0.055 : lin * 12.92;
+  return Math.min(1, Math.max(0, (enc - 0.5) * dispMat.uniforms.uContrast.value + 0.5));
+}
+function displayInverse(y: number) {
+  let lo = 1e-6, hi = 64;
+  for (let i = 0; i < 60; i++) { const m = Math.sqrt(lo * hi); if (displayOf(m) < y) lo = m; else hi = m; }
+  return lo;
+}
+function applyStage() {
+  const p = PRESETS[currentPreset];
+  if (STAGE === 'light' && !SHOT) {
+    const e = renderer.toneMappingExposure || 1;
+    const lin = (hex: string) => hexToRgb(hex).map((c) => displayInverse(c) / e);
+    BG.uBgA.value.set(...lin(STAGE_LIGHT[0])); BG.uBgB.value.set(...lin(STAGE_LIGHT[1]));
+  } else { BG.uBgA.value.set(...p.bg[0]); BG.uBgB.value.set(...p.bg[1]); }
+  resetAccum();
+}
+function setStage(stage: 'dark' | 'light') { if (stage === STAGE) return; STAGE = stage; applyStage(); }
 // the lights of a preset: the environment and its key-only copy (built once per preset and rotation), the key and the
 // rim light, and the background's colours. The last two environments stay, so the sheet's lights and the page's take
 // turns without a new build.
@@ -2943,7 +2972,7 @@ function rotatedPreset(p: any) {
 function applyExposure() {
   const p = PRESETS[currentPreset];
   renderer.toneMappingExposure = (qs.get('exp') ? parseFloat(qs.get('exp')) : p.exposure) * Math.pow(2, LIGHT.ev);
-  resetAccum();
+  applyStage();
 }
 function setLightRotation(deg: number, rebuild: boolean) {
   LIGHT.rot = deg;
@@ -3372,6 +3401,7 @@ const APP: any = {
   setLightRotation,
   exposureEV: () => LIGHT.ev,
   setExposureEV: (ev: number) => { LIGHT.ev = ev; applyExposure(); },
+  setStage,
   quality: () => QUALITY,
   setQuality,
   turntable: () => !!controls.autoRotate,

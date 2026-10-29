@@ -204,6 +204,9 @@ export function initUI(app: App): UI {
   };
   document.body.append(sheet.view, nav.rail, stats.el, help, shotDlg, boneTip);
   mountShell({ app, ed, legacy });
+  // the 3D view's backdrop follows the theme: the dark studio, or the light theme's marble stage
+  const stage = () => app.setStage(ui.get().dark ? 'dark' : 'light');
+  ui.subscribe(stage); stage();
 
   // ---------------------------------------------------------------- the layout
   // the free space of the 3D view lies between the mode's panel (or the rail) on the left and the tool panel on the

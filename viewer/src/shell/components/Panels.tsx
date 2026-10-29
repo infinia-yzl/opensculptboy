@@ -20,11 +20,6 @@ import { Icon } from './ui/icon.tsx';
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs.tsx';
 import { Tip } from './ui/tooltip.tsx';
 
-// the lead line of each mode under its heading
-const NOTES: Record<ModeId, string> = {
-  create: 'Body, face, hair, skin and eyes', dress: 'Outfits and pieces', express: 'Expressions and visemes',
-  pose: 'Poses, animations and pictures', sheet: 'A character sheet to share or print', export: 'Files to save',
-};
 
 function Foot({ mode, sub }: { mode: ModeId; sub: string }) {
   const { app, legacy } = useShell();
@@ -81,7 +76,7 @@ export function ModePanel() {
       {width === 'phone' ? <SheetHandle /> : null}
       <header className="osb-panel-head">
         <h2 className="osb-title" id="mode-title">{M.label}</h2>
-        <span className="osb-panel-note">{NOTES[mode]}</span>
+        <span className="osb-panel-note" />
         <Tip label="Close the panel" keys="Esc" side="right">
           <button type="button" className="osb-ib insp-x" aria-label="Close the panel (Esc)" onClick={() => actions.closePanel()}><Icon name="close" size={16} /></button>
         </Tip>

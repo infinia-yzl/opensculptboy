@@ -115,12 +115,12 @@ export function TopBar() {
             </Tip>
           </>
         )}
-        <ViewMenu />
         {phone ? null : (
           <Tip label="Help and keys" keys="?">
             <button type="button" className="osb-ib" aria-label="Help and keys (?)" onClick={legacy.showHelp}><Icon name="help" /></button>
           </Tip>
         )}
+        <ViewMenu />
       </div>
     </header>
   );

@@ -1,8 +1,9 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// Create's Body section in React: Anny's phenotype sliders, the shape sliders first and the three Ethnicity sliders
-// behind a fold (the heading keeps today's word until the owner picks new words), with the bar of their shares. Each
+// Create's Body section in React: Anny's phenotype sliders, as the design's Create screen lays them out: Form,
+// Muscle, Weight, Height and Proportions first, and the other sliders behind the More shape fold, with the bar of
+// the shares of the three that mix (their words stay as the page had them until the owner picks new ones). Each
 // slider edits the look at most once a frame (Editor.queue) and Undo takes a whole drag as one step. The stature in
 // the heading and the share bar paint themselves from the bus. The slider and this section are the pattern for the
 // sections that move to React next.
@@ -18,7 +19,9 @@ const RACE_COLOURS: Record<string, string> = { african: '#b8845a', asian: '#d9b7
 export function BodySection({ shown }: { shown: boolean }) {
   const { app, ed } = useShell();
   const all = app.bodySliders();
-  const main = all.filter((s) => !s.race), races = all.filter((s) => s.race);
+  const main = all.filter((s) => !s.race && s.name !== 'gender'), more = all.filter((s) => !s.race && s.name === 'gender'), races = all.filter((s) => s.race);
+  // the ends that say more than the slider's name (Compact and Elongated for Form); none that describe people
+  const ends = (s: (typeof all)[number]) => (s.name === 'gender' || (s.ends || []).some((e) => /^(Min|Max) /.test(e)) ? undefined : s.ends);
   const stature = useRef<HTMLSpanElement>(null), bar = useRef<HTMLDivElement>(null), count = useRef<HTMLSpanElement>(null), fold = useRef<HTMLDetailsElement>(null);
   useBus('look', () => {
     const L = app.look();
@@ -28,12 +31,12 @@ export function BodySection({ shown }: { shown: boolean }) {
       const seg = bar.current!.children[i] as HTMLElement, p = app.raceShare(L.phenotype, s.name);
       seg.style.flexGrow = String(Math.max(p, 0.0001)); seg.title = `${s.label} ${Math.round(p * 100)} %`;
     });
-    const changed = races.filter((s) => Math.abs((L.phenotype[s.name] ?? 0.5) - 0.5) > 1e-6).length;
-    if (count.current) count.current.textContent = changed ? `${changed} of ${races.length} changed` : String(races.length);
+    const folded = [...more, ...races], changed = folded.filter((s) => Math.abs((L.phenotype[s.name] ?? 0.5) - 0.5) > 1e-6).length;
+    if (count.current) count.current.textContent = changed ? `${changed} of ${folded.length} changed` : String(folded.length);
     fold.current?.toggleAttribute('data-changed', changed > 0);
   });
   const slider = (s: (typeof all)[number]) => (
-    <Slider key={s.name} id={'ed-b-' + s.name} label={s.label} min={0} max={1} def={0.5} ends={s.ends}
+    <Slider key={s.name} id={'ed-b-' + s.name} label={s.label} min={0} max={1} def={0.5} ends={ends(s)}
       readout={s.race ? (v) => `${Math.round(100 * app.raceShare({ ...app.look().phenotype, [s.name]: v }, s.name))} %` : undefined}
       get={() => app.look().phenotype[s.name] ?? 0.5}
       onStart={() => ed.begin(s.label)} onEnd={() => ed.end()}
@@ -45,20 +48,24 @@ export function BodySection({ shown }: { shown: boolean }) {
         <h3 className="osb-eyebrow">Shape <span ref={stature} className="osb-eyebrow-val" /></h3>
         <div className="osb-sliders">{main.map(slider)}</div>
       </div>
-      {races.length ? (
+      {races.length || more.length ? (
         <div className="osb-folds">
           <details ref={fold} className="osb-fold">
             <summary>
               <span className="osb-i"><Icon name="chevron" size={14} /></span>
-              <span className="osb-fold-title">Ethnicity</span>
+              <span className="osb-fold-title">More shape</span>
               <span ref={count} className="osb-fold-n" />
             </summary>
             <div className="osb-fold-body">
-              <p className="osb-note">The three values mix by their shares, shown in the bar.</p>
-              <div ref={bar} className="share-bar" aria-hidden="true">
-                {races.map((s) => <span key={s.name} style={{ background: RACE_COLOURS[s.name] || '#999' }}><b>{s.label}</b></span>)}
-              </div>
-              <div className="osb-sliders">{races.map(slider)}</div>
+              {more.length ? <div className="osb-sliders">{more.map(slider)}</div> : null}
+              {races.length ? (<>
+                <h4 className="osb-eyebrow osb-frieze">Ethnicity</h4>
+                <p className="osb-note">The three values mix by their shares, shown in the bar.</p>
+                <div ref={bar} className="share-bar" aria-hidden="true">
+                  {races.map((s) => <span key={s.name} style={{ background: RACE_COLOURS[s.name] || '#999' }}><b>{s.label}</b></span>)}
+                </div>
+                <div className="osb-sliders">{races.map(slider)}</div>
+              </>) : null}
             </div>
           </details>
         </div>

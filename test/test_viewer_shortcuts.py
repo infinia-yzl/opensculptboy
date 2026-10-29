@@ -1,15 +1,15 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-The keyboard shortcuts of the viewer page (viewer/src/ui/index.ts, the help's list in
-viewer/src/ui/shortcuts.ts). In node: the keys that a keydown event means on other keyboards
-(Caps Lock, a keyboard in another script, an input method, AZERTY's digit row) and the help's
-list against the sections' keys. In the built page, in Chromium with SwiftShader through
-Playwright (local only): the steps a person takes (a click on the figure, W for the Wearables
-section, a card opened through Open folder, a slider, a switch, a segmented button, a fold, the
-help closed by its button, a name typed into the Sheet section and left with Esc), then every
-shortcut of the help with its effect, the shortcuts kept off while a text field has the focus,
-and the panel keys of other keyboards as synthetic events.
+The keyboard shortcuts of the viewer page (viewer/src/ui/index.ts, the table and the help's
+list in viewer/src/ui/shortcuts.ts). In node: the keys that a keydown event means on other
+keyboards (Caps Lock, a keyboard in another script, an input method, AZERTY's digit row) and the
+help's list against the keys of the modes, of Create's sections and of the View menu's tools. In
+the built page, in Chromium with SwiftShader through Playwright (local only): the steps a person
+takes (a click on the figure, D for the Dress mode, a card opened through Open folder, a slider, a
+switch, a segmented button, a fold, the help closed by its button, a name typed into the Sheet
+section and left with Esc), then every shortcut of the help with its effect, the shortcuts kept
+off while a text field has the focus, and the panel keys of other keyboards as synthetic events.
 """
 
 import json
@@ -44,20 +44,24 @@ def playwright_available():
 
 SCRIPT = REPO / "viewer" / "test" / "shortcuts.mjs"
 ARGS = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
-# the section of each panel key, and its side (viewer/src/ui/shortcuts.ts PANEL_KEYS)
+# what each panel key opens (viewer/src/ui/shortcuts.ts PANEL_KEYS): its panel (the mode's on the
+# left, the View menu's tools on the right), its mode, and its section (None: the mode's last one)
 PANELS = {
-    "c": ("left", "characters"),
-    "b": ("left", "body"),
-    "f": ("left", "face"),
-    "h": ("left", "hair"),
-    "e": ("left", "skin"),
-    "w": ("left", "wear"),
-    "p": ("right", "pose"),
-    "x": ("right", "expression"),
-    "r": ("right", "rig"),
-    "l": ("right", "scene"),
-    "s": ("right", "sheet"),
+    "c": ("left", "create", None),
+    "d": ("left", "dress", "wear"),
+    "x": ("left", "express", "expression"),
+    "p": ("left", "pose", "pose"),
+    "s": ("left", "sheet", "sheet"),
+    "e": ("left", "export", "export"),
+    "b": ("left", "create", "body"),
+    "f": ("left", "create", "face"),
+    "h": ("left", "create", "hair"),
+    "k": ("left", "create", "skin"),
+    "r": ("right", None, "rig"),
+    "l": ("right", None, "scene"),
 }
+# the id of each panel key in PANEL_KEYS: a mode, a section of Create or a tool
+PANEL_IDS = {k: (sec if mode is None or k in "bfhk" else mode) for k, (_, mode, sec) in PANELS.items()}
 # the sections that show, the dialogs, the focus and what the view shortcuts change
 STATE = """() => {
   const vis = (side) => {
@@ -68,7 +72,8 @@ STATE = """() => {
   };
   const a = document.activeElement;
   const focus = a ? a.tagName.toLowerCase() + (a.type ? '[' + a.type + ']' : '') : null;
-  return Object.assign({ left: vis('left'), right: vis('right'),
+  const lp = document.getElementById('insp-left');
+  return Object.assign({ left: vis('left'), right: vis('right'), mode: lp ? lp.dataset.mode : null,
     help: !!document.querySelector('dialog.help[open]'),
     stats: !document.getElementById('stats').hidden, focus,
     look: JSON.stringify(window.__look().phenotype) }, window.viewState());
@@ -88,7 +93,7 @@ class TestShortcutKeys(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(
             {k: v for k, v in out["panels"].items()},
-            {sec: key for key, (_, sec) in PANELS.items()},
+            {sec: key for key, sec in PANEL_IDS.items()},
         )
 
 
@@ -138,18 +143,25 @@ class TestShortcutsPage(unittest.TestCase):
                 tab.wait_for_timeout(60)
                 return state()
 
+            def shows(key, st):
+                """the panel of the key shows: its section, or for a mode any of its sections"""
+                side, mode, sec = PANELS[key]
+                if sec is None:
+                    return st["mode"] == mode and st[side] is not None
+                return st[side] == sec and (mode is None or st["mode"] == mode)
+
             def panel_works(key, step):
-                """the panel key opens its section, or closes it when it shows"""
-                side, sec = PANELS[key]
+                """the panel key opens its panel, or closes it when it shows"""
+                side = PANELS[key][0]
                 before = state()
                 after = press(key)
-                ok = after[side] == sec if before[side] != sec else after[side] is None
+                ok = after[side] is None if shows(key, before) else shows(key, after)
                 log.append((step, key, before["focus"], ok))
                 self.assertTrue(ok, (step, key, before, after))
 
             # ---------------------------------------------------------------- a person's steps
             tab.mouse.click(500, 350)
-            panel_works("w", "a click on the figure")
+            panel_works("d", "a click on the figure")
             self.assertEqual(state()["left"], "wear")
             # Open folder: the button opens the folder chooser, and the focus stays on the button
             with tab.expect_file_chooser() as fc:
@@ -164,20 +176,22 @@ class TestShortcutsPage(unittest.TestCase):
             )
             panel_works("x", "the card opened through Open folder")
             panel_works("s", "the card opened through Open folder")
-            # a slider of the Body section
+            # a slider of the Body section: the Create mode, then its Body tab
+            if state()["mode"] != "create" or state()["left"] is None:
+                tab.click("#tab-create")
             tab.click("#tab-body")
             tab.locator("#sec-body input[type=range]").first.click()
             panel_works("x", "a click on a slider")
             # a switch and a segmented button of the Sheet section
-            if state()["right"] != "sheet":
+            if state()["left"] != "sheet":
                 tab.click("#tab-sheet")
             tab.locator("#sec-sheet .seg button", has_text="Paper").first.click()
-            panel_works("w", "a click on a segmented button")
-            if state()["right"] != "sheet":
+            panel_works("d", "a click on a segmented button")
+            if state()["left"] != "sheet":
                 tab.click("#tab-sheet")
             tab.locator("#sec-sheet button.switch").first.click()
             panel_works("e", "a click on a switch")
-            if state()["right"] != "sheet":
+            if state()["left"] != "sheet":
                 tab.click("#tab-sheet")
             tab.locator("#sec-sheet summary").first.click()
             panel_works("c", "a click on a fold")
@@ -188,7 +202,7 @@ class TestShortcutsPage(unittest.TestCase):
             self.assertFalse(state()["help"])
             panel_works("x", "the help closed by its button")
             # a text field keeps every key while it has the focus, and Esc leaves it
-            if state()["right"] != "sheet":
+            if state()["left"] != "sheet":
                 tab.click("#tab-sheet")
             field = tab.locator("#sec-sheet input.cs-input").first
             field.click()
@@ -208,16 +222,15 @@ class TestShortcutsPage(unittest.TestCase):
             for key in PANELS:
                 panel_works(key, "the panel keys")
             for key in PANELS:
-                side, sec = PANELS[key]
-                if state()[side] == sec:
-                    panel_works(key, "the panel keys close their section")
+                if shows(key, state()):
+                    panel_works(key, "the panel keys close their panel")
             self.assertTrue(press("`")["stats"])
             self.assertFalse(press("`")["stats"])
             self.assertTrue(press("?")["help"])
             self.assertFalse(press("Escape")["help"])
             # Esc closes the panels
             press("x")
-            press("w")
+            press("r")
             s = press("Escape")
             s = press("Escape")
             self.assertEqual((s["left"], s["right"]), (None, None))
@@ -320,7 +333,7 @@ class TestShortcutsPage(unittest.TestCase):
             for ev, side, sec in (
                 ({"key": "X", "code": "KeyX"}, "right", "expression"),
                 ({"key": "ы", "code": "KeyS"}, "right", "sheet"),
-                ({"key": "Process", "code": "KeyW", "keyCode": 229}, "left", "wear"),
+                ({"key": "Process", "code": "KeyD", "keyCode": 229}, "left", "wear"),
             ):
                 for s0 in ("left", "right"):
                     if state()[s0]:
