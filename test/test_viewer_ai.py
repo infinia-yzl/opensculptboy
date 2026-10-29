@@ -104,16 +104,26 @@ def add_authenticator(tab, prf=True):
 DUMP = """async () => {
   const names = (await indexedDB.databases()).map((d) => d.name);
   if (!names.includes('opensculptboy-ai')) return null;
-  const db = await new Promise((ok, bad) => { const r = indexedDB.open('opensculptboy-ai'); r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error); });
+  const db = await new Promise((ok, bad) => {
+    const r = indexedDB.open('opensculptboy-ai');
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => bad(r.error);
+  });
   const out = {};
   for (const t of db.objectStoreNames) {
-    out[t] = await new Promise((ok) => { const g = db.transaction(t).objectStore(t).getAll(); g.onsuccess = () => ok(g.result); });
+    out[t] = await new Promise((ok) => {
+      const g = db.transaction(t).objectStore(t).getAll();
+      g.onsuccess = () => ok(g.result);
+    });
   }
   db.close();
-  const text = (v) => v instanceof Uint8Array ? String.fromCharCode(...v) : v && typeof v === 'object' ? Object.values(v).map(text).join('|') : String(v);
-  return { counts: Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.length])), text: text(out) };
+  const text = (v) => v instanceof Uint8Array ? String.fromCharCode(...v)
+    : v && typeof v === 'object' ? Object.values(v).map(text).join('|') : String(v);
+  const counts = Object.fromEntries(Object.entries(out).map(([k, v]) => [k, v.length]));
+  return { counts, text: text(out) };
 }"""
-STORAGE = "() => JSON.stringify(Object.assign({}, localStorage)) + JSON.stringify(Object.assign({}, sessionStorage)) + location.href + document.cookie"
+STORAGE = """() => JSON.stringify(Object.assign({}, localStorage))
+  + JSON.stringify(Object.assign({}, sessionStorage)) + location.href + document.cookie"""
 
 
 @local_only("Playwright with the built viewer page")
@@ -146,19 +156,35 @@ class TestAiPage(unittest.TestCase):
             r = route.request
             seen.append((r.url, r.headers))
             if r.method == "OPTIONS":
-                return route.fulfill(status=204, headers={"access-control-allow-origin": "*", "access-control-allow-headers": "*"})
+                return route.fulfill(
+                    status=204,
+                    headers={
+                        "access-control-allow-origin": "*",
+                        "access-control-allow-headers": "*",
+                    },
+                )
             ok = (
                 r.headers.get("x-api-key") == KEY_A
                 and r.headers.get("anthropic-dangerous-direct-browser-access") == "true"
             )
-            body = {"data": [{"id": "claude-haiku-5-5"}]} if ok else {"error": {"message": "invalid x-api-key"}}
-            route.fulfill(status=200 if ok else 401, json=body, headers={"access-control-allow-origin": "*"})
+            body = (
+                {"data": [{"id": "claude-haiku-5-5"}]}
+                if ok
+                else {"error": {"message": "invalid x-api-key"}}
+            )
+            route.fulfill(
+                status=200 if ok else 401,
+                json=body,
+                headers={"access-control-allow-origin": "*"},
+            )
 
         def openai(route):
             r = route.request
             seen.append((r.url, r.headers))
             body = {"error": {"message": "Incorrect API key provided: " + KEY_O}}
-            route.fulfill(status=401, json=body, headers={"access-control-allow-origin": "*"})
+            route.fulfill(
+                status=401, json=body, headers={"access-control-allow-origin": "*"}
+            )
 
         with sync_playwright() as p, served(PAGE.parent) as port:
             kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
@@ -178,7 +204,9 @@ class TestAiPage(unittest.TestCase):
             # set up the passkey: the vault opens
             panel.locator("button", has_text="Set up passkey").click()
             self.status(tab, "Passkey ready")
-            creds = cdp.send("WebAuthn.getCredentials", {"authenticatorId": aid})["credentials"]
+            creds = cdp.send("WebAuthn.getCredentials", {"authenticatorId": aid})[
+                "credentials"
+            ]
             self.assertEqual(len(creds), 1)
             self.assertEqual(creds[0]["rpId"], "localhost")
             # a key: saved, emptied from the field, checked against the mocked model list
@@ -196,7 +224,9 @@ class TestAiPage(unittest.TestCase):
             # lock: no check, no field; unlock with the passkey, and check again
             panel.locator("button", has_text="Lock").click()
             tab.wait_for_function("() => document.querySelector('.ai-add').hidden")
-            self.assertEqual(panel.locator(".ai-row button", has_text="Check").count(), 0)
+            self.assertEqual(
+                panel.locator(".ai-row button", has_text="Check").count(), 0
+            )
             panel.locator("button", has_text="Unlock").click()
             self.status(tab, "Unlocked")
             panel.locator(".ai-row button", has_text="Check").click()
@@ -207,7 +237,9 @@ class TestAiPage(unittest.TestCase):
             panel.locator("button", has_text="Save key").click()
             line = self.status(tab, "refused the key")
             self.assertNotIn(KEY_O[8:24], line)
-            self.assertIn("refused", panel.locator(".ai-row[data-provider=openai]").text_content())
+            self.assertIn(
+                "refused", panel.locator(".ai-row[data-provider=openai]").text_content()
+            )
             # the keys went to their own provider only, and nothing else left the page
             for url, headers in seen:
                 blob = url + json.dumps(headers)
@@ -217,13 +249,17 @@ class TestAiPage(unittest.TestCase):
                     self.assertIn("api.openai.com", url)
                     self.assertNotIn(KEY_A, blob)
             # forget one key, then everything
-            panel.locator(".ai-row[data-provider=openai] button", has_text="Forget").click()
+            panel.locator(
+                ".ai-row[data-provider=openai] button", has_text="Forget"
+            ).click()
             self.status(tab, "OpenAI key forgotten")
             self.assertEqual(tab.evaluate(DUMP)["counts"], {"keys": 1, "passkeys": 1})
             panel.locator("button", has_text="Forget all").click()
             self.status(tab, "Everything forgotten")
             self.assertEqual(tab.evaluate(DUMP)["counts"], {"keys": 0, "passkeys": 0})
-            self.assertEqual(panel.locator("button", has_text="Set up passkey").count(), 1)
+            self.assertEqual(
+                panel.locator("button", has_text="Set up passkey").count(), 1
+            )
             self.assertFalse(errors, errors)
 
             # an authenticator without PRF: a clear message, and no record

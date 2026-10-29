@@ -156,6 +156,7 @@ uv run --with playwright python -m anny.viewer.benchmark   # uploads, draws and 
 uv run python -m unittest test.test_viewer_expressions     # the page's faces against Anny: actions, the jaw's turn, the sparse subdivision (node)
 uv run python -m unittest test.test_viewer_sheet   # the character sheet: settings and layout in node, a sheet of the default character in the built page (local only)
 uv run python -m unittest test.test_viewer_shortcuts   # the keyboard shortcuts: keys of other keyboards in node, every shortcut of the help after a person's steps in the built page (local only)
+uv run python -m unittest test.test_viewer_ai   # the AI providers: the key vault, the passkey and the adapters in node, a passkey with PRF in the built page served at localhost (local only)
 ```
 
 ## Architecture
@@ -234,7 +235,7 @@ The pose, corrective and hair authoring code (`*/authoring/`) and the viewer wor
 
 ### Web Viewer
 
-`viewer/` is a node project (TypeScript, three.js, esbuild) that builds the single-file page `viewer/dist/anny_viewer.html` ([docs/viewer.md](docs/viewer.md)). `src/anny_shape.ts` and `src/subdivision.ts` repeat Anny's maths, checked by `test/test_viewer_parity.py`; `src/face/` plays Anny's facial actions, `jawOpen` as the `anny-mouth` rig's jaw turn and a card's own mouth poses and eye targets behind the interface of `src/face/api.ts` (on the GPU in `face/morph.ts`), checked by `test_viewer_expressions`; `src/main.ts` holds the renderer, `src/ui/` the interface and `src/hair/` the hair, checked by `test_hair_parity`, `test_hair_page` and `test_hair_dynamics`. The page keeps one `<canvas>` (the screenshot tools select it), so the interface draws its graphs in SVG, and `?shot` hides the interface. `test/vrm_page/` is the three-vrm test page; nothing in `src/` imports its devDependencies. `python -m anny.viewer.benchmark` and the Performance card measure a moving frame.
+`viewer/` is a node project (TypeScript, three.js, esbuild) that builds the single-file page `viewer/dist/anny_viewer.html` ([docs/viewer.md](docs/viewer.md)). `src/anny_shape.ts` and `src/subdivision.ts` repeat Anny's maths, checked by `test/test_viewer_parity.py`; `src/face/` plays Anny's facial actions, `jawOpen` as the `anny-mouth` rig's jaw turn and a card's own mouth poses and eye targets behind the interface of `src/face/api.ts` (on the GPU in `face/morph.ts`), checked by `test_viewer_expressions`; `src/main.ts` holds the renderer, `src/ui/` the interface and `src/hair/` the hair, checked by `test_hair_parity`, `test_hair_page` and `test_hair_dynamics`. The page keeps one `<canvas>` (the screenshot tools select it), so the interface draws its graphs in SVG, and `?shot` hides the interface. `src/ai/` holds the AI providers (an API key vault under a passkey's PRF output, and the Anthropic, OpenAI and OpenRouter adapters) without a framework, with a temporary panel in the Scene section (`src/ui/ai_ui.ts`); it needs the page at `http://localhost` or `https://`, and never puts a key in the card, the exports, web storage, the URL or a log ([docs/viewer.md](docs/viewer.md#ai-providers)). `test/vrm_page/` is the three-vrm test page; nothing in `src/` imports its devDependencies. `python -m anny.viewer.benchmark` and the Performance card measure a moving frame.
 
 ### Dependencies
 
