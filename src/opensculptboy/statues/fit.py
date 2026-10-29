@@ -121,26 +121,29 @@ def library_start(model, reference, names=None, samples: int = 6000, seed: int =
     import torch
     from scipy.spatial import cKDTree
 
+    from opensculptboy.statues.scan import surface_points
+
     rng = np.random.default_rng(seed)
     R = reference.vertices
-    target = R[rng.choice(len(R), min(samples, len(R)), replace=False)]
+    # points spread by area: a scan packs its vertices where it has detail (the curls)
+    target = surface_points(R, reference.triangles, samples, seed)[-samples:]
     target_tree = cKDTree(target)
     height = float(np.ptp(R[:, 2]))
+    faces = model.faces.cpu().numpy()
+
+    def centre(P):
+        # the mean of the trunk's band, which arms, props and leftovers of supports move least
+        z = (P[:, 2] - P[:, 2].min()) / max(np.ptp(P[:, 2]), 1e-9)
+        band = P[(z > 0.5) & (z < 0.75)]
+        return (band if len(band) else P)[:, :2].mean(0)
 
     def placed(V):
         # on the floor, centred over the reference and scaled to its height, so that the
         # score compares the poses alone
-        V = V[rng.choice(len(V), min(samples, len(V)), replace=False)]
-        V = V - [*V[:, :2].mean(0), V[:, 2].min()]
+        V = surface_points(V, faces, samples, seed)[-samples:]
+        V = V - [*centre(V), V[:, 2].min()]
         V = V * (height / max(np.ptp(V[:, 2]), 1e-9))
-        return V + [*target[:, :2].mean(0), R[:, 2].min()]
-
-    def score(V):
-        # the mean of the nearest 90 % of the distances both ways: a hat or a stump left in
-        # the scan weighs little
-        a = np.sort(cKDTree(V).query(target)[0])
-        b = np.sort(target_tree.query(V)[0])
-        return float(a[: int(0.9 * len(a))].mean() + b[: int(0.9 * len(b))].mean())
+        return V + [*centre(target), R[:, 2].min()]
 
     library = anny.poses.library()
     names = list(names or library.names("pose"))
