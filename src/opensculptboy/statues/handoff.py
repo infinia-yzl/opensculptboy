@@ -267,7 +267,14 @@ def scan_to_handoff(
             marks[name] = (
                 to_anny(p) if landmark_frame == "scan" else _gltf_to_anny(p)
             )[0]
-    if not any(k.lower() in ("crown", "head_top", "vertex") for k in marks):
+    # the crown: the skin's highest point, when it is the figure's (a masked hat or bun over
+    # the head leaves the skin's highest point on the cut)
+    covered = (A[F[role != 0]][:, :, 2].max() if (role != 0).any() else -np.inf) > (
+        skin_vertices[:, 2].max() + 0.01
+    )
+    if not covered and not any(
+        k.lower() in ("crown", "head_top", "vertex") for k in marks
+    ):
         marks["crown"] = skin_vertices[np.argmax(skin_vertices[:, 2])]
 
     parts = []

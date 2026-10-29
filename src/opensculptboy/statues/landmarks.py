@@ -76,10 +76,15 @@ def _unproject(pixel, frame):
     return (pixel[0] - ox) / s, (oy - pixel[1]) / s
 
 
-def detect_landmarks(vertices, triangles, pictures: dict | None = None) -> dict:
+def detect_landmarks(
+    vertices, triangles, pictures: dict | None = None, face: bool = False
+) -> dict:
     """
     The landmarks (name -> point in Anny's frame) of a figure standing upright and facing -Y,
-    found on its front and side pictures. ``pictures``, when given, receives the two PIL
+    found on its front and side pictures: the joints, and with ``face`` the points of the
+    face too. MediaPipe's body model places the face's points loosely, and on a bowed head
+    under a cut hat it put them 5 cm too high, which turned the fitted head back; the fit
+    finds the face better from the scan alone. ``pictures``, when given, receives the two PIL
     pictures with the found points drawn on them, by view.
     """
     from PIL import ImageDraw
@@ -125,7 +130,7 @@ def detect_landmarks(vertices, triangles, pictures: dict | None = None) -> dict:
             side[left], side[right] = side[right], side[left]
     out = {}
     for name, key in NAMES.items():
-        if name not in front:
+        if name not in front or (name in FACE and not face):
             continue
         x, z = front[name]
         if name in FACE or name not in side:
