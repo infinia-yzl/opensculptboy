@@ -377,6 +377,8 @@ COVER_REGIONS = {
 # the skin, and the skin is further than COVER_SKIN
 COVER_MARGIN = 0.002
 COVER_SKIN = 0.004
+# or when its nearest skin lies along a cut of the scan and a piece lies within this distance
+COVER_CUT = 0.02
 
 
 def parametric_vertices(result, model) -> np.ndarray:
@@ -455,21 +457,26 @@ def covered_skin(folder, result, model=None) -> int:
         regions = statue_regions(model)
         excluded = excluded_vertices(model)[: len(V)]
         rows = np.nonzero(~excluded)[0]
+        # the skin along its cuts: a vertex that the first fit laid on a cut beside a piece
+        # is covered too (a foot flattened on the cut of the head it stood on)
+        cut = open_border(skin.vertices, skin.triangles)
         skins = {}
         nearest = {}
         for role, pv, pt in covers:
             X = (fitted0 if role == "removed" else V)[rows]
             if role not in skins:
-                skins[role] = closest_triangles(X, skin.vertices, skin.triangles)[2]
+                tri, _, d_skin = closest_triangles(X, skin.vertices, skin.triangles)
+                skins[role] = (d_skin, cut[skin.triangles[tri]].all(1))
             _, _, d = closest_triangles(X, pv, pt)
             nearest[role] = np.minimum(nearest.get(role, np.inf), d)
         for role, d_cover in nearest.items():
-            d_skin = skins[role]
+            d_skin, on_cut = skins[role]
             head = np.isin(
                 regions[rows], [STATUE_REGIONS.index(r) for r in COVER_REGIONS[role]]
             )
-            marked[rows] |= (
-                head & (d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN)
+            marked[rows] |= head & (
+                ((d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN))
+                | (on_cut & (d_cover < COVER_CUT))
             )
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
@@ -480,11 +487,14 @@ def covered_skin(folder, result, model=None) -> int:
 
 # a hat or a piece of hair seats its open border on the fitted skin within this distance
 # (metres), sunk this far into it, and the move fades out over SEAT_BLEND from the border
+# (by role: SEAT_BY_ROLE)
 SEAT_REACH = 0.02
 SEAT_SINK = 0.0005
 SEAT_BLEND = 0.025
 # by role, the reach and the blend (metres): a hat's brim was cut a slab above the brow
-SEAT_BY_ROLE = {"clothing": (0.05, 0.04), "hair": (0.03, 0.03)}
+SEAT_BY_ROLE = {"clothing": (0.025, 0.03), "hair": (0.015, 0.02)}
+# the border's sawtooth and the moves are averaged along the border within this distance
+SEAT_SMOOTH = 0.006
 
 
 def seat_piece(
@@ -495,14 +505,17 @@ def seat_piece(
     reach: float = SEAT_REACH,
     sink: float = SEAT_SINK,
     blend: float = SEAT_BLEND,
+    smooth: float = SEAT_SMOOTH,
 ) -> tuple[np.ndarray, int]:
     """
     The vertices (V, 3) of a piece cut from a statue (a hat, locks of hair) seated on the
     fitted skin, and the number of border vertices that moved. The piece was cut where it
     met the scan's skin, and the fitted skin under it keeps anny's shape there, so a gap
-    showed between them. Each vertex of the piece's open border within ``reach`` of the skin
-    moves onto it, ``sink`` inside; the moves are averaged along the border over 5 mm and fade
-    out smoothly within ``blend`` of the border, so that the piece keeps its carving.
+    showed between them. The piece's open border is first smoothed along itself (the mask
+    cut whole triangles out and left a sawtooth); each border vertex then moves onto the
+    skin, ``sink`` inside, by a share that falls from 1 at the skin to 0 at ``reach``; the
+    moves are averaged along the border within ``smooth`` and fade out smoothly within
+    ``blend`` of the border, so that the piece keeps its carving.
     """
     from scipy.spatial import cKDTree
 
@@ -515,20 +528,25 @@ def seat_piece(
     border = np.nonzero(open_border(V, T, rings=0, reach=0.0))[0]
     if len(border) == 0:
         return V, 0
-    tri, bary, d = closest_triangles(V[border], SV, ST)
+    tree = cKDTree(V[border])
+    groups = tree.query_ball_point(V[border], smooth)
+    # the sawtooth of the cut, smoothed along the border
+    B = V[border].copy()
+    for _ in range(3):
+        B = np.array([B[g].mean(0) for g in groups])
+    tri, bary, d = closest_triangles(B, SV, ST)
     corners = SV[ST[tri]]
     on = np.einsum("nk, nkd -> nd", bary, corners)
     normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
     normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
-    move = on - sink * normal - V[border]
-    move[d > reach] = 0.0
-    tree = cKDTree(V[border])
-    groups = tree.query_ball_point(V[border], 0.005)
-    move = np.array([move[g].mean(0) for g in groups])
+    share = np.clip((reach - d) / (0.5 * reach), 0.0, 1.0)
+    move = B - V[border] + share[:, None] * (on - sink * normal - B)
+    for _ in range(2):
+        move = np.array([move[g].mean(0) for g in groups])
     r, k = tree.query(V, distance_upper_bound=blend)
     near = np.isfinite(r)
     t = np.zeros(len(V))
     t[near] = 1.0 - r[near] / blend
     w = t * t * (3.0 - 2.0 * t)
     V[near] += w[near, None] * move[k[near]]
-    return V, int((np.abs(move).max(1) > 0).sum())
+    return V, int((share > 0).sum())
