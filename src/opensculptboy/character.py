@@ -378,10 +378,10 @@ def check_look(look: Any) -> None:
     of the sections ``skin``, ``hair`` and ``eyes`` with their known keys, numbers within their
     ranges, sRGB hex colours, a stone of the library or a colour, and a part of ``left`` or
     ``right``. An empty ``look`` is no look."""
-    if not look:
-        return
     if not isinstance(look, dict):
         raise ValueError("The look field must be a JSON object.")
+    if not look:
+        return
     unknown = sorted(set(look) - set(LOOK_KEYS))
     if unknown:
         raise ValueError(

@@ -59,6 +59,7 @@ export function NewScreen() {
           <article className="osb-card new-card new-statues" aria-labelledby="new-s">
             <div className="osb-row new-card-head">
               <h2 className="osb-title" id="new-s">Statue</h2>
+              {anyFinished ? null : <span className="osb-tag new-planned">Finished: planned</span>}
               <div className="osb-seg" role="radiogroup" aria-label="Kind">
                 <Tip label="Finished: the sculpted statue with its own hair and drapery" side="top">
                   <button type="button" role="radio" aria-checked={kind === 'finished'} aria-pressed={kind === 'finished'} onClick={() => setKind('finished')}>Finished</button>
@@ -83,7 +84,6 @@ export function NewScreen() {
             </div>
             <p className="osb-note new-desc">{S?.description}.{kind === 'finished' && !finished[S?.id || ''] ? ' The finished statues come with the statue cards; until then this starts the light version.' : ''}</p>
             <Button ref={start} size="lg" className="new-start" onClick={() => S && legacy.startStarter(S.id, kind === 'finished' && finished[S.id] ? 'finished' : 'light')}>Start with the {S?.name}</Button>
-            {anyFinished ? null : <span className="osb-tag new-planned">Finished statues: planned</span>}
           </article>
           <article className="osb-card new-card" aria-labelledby="new-l">
             <h2 className="osb-title" id="new-l">Libraries</h2>
