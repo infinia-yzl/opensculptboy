@@ -140,65 +140,76 @@
         0.045,
         0.24
       ]
+    },
+    {
+      "kind": "cylinder",
+      "role": "drapery",
+      "name": "brim of the hat, around the head",
+      "start": [
+        -0.02,
+        1.6,
+        0.05
+      ],
+      "end": [
+        -0.02,
+        1.645,
+        0.05
+      ],
+      "radius": 0.11,
+      "outside": true
+    },
+    {
+      "kind": "box",
+      "role": "hair",
+      "name": "locks, the figure's right",
+      "centre": [
+        -0.129,
+        1.547,
+        0.025
+      ],
+      "size": [
+        0.082,
+        0.195,
+        0.21
+      ]
+    },
+    {
+      "kind": "box",
+      "role": "hair",
+      "name": "locks, the figure's left",
+      "centre": [
+        0.107,
+        1.547,
+        0.025
+      ],
+      "size": [
+        0.105,
+        0.195,
+        0.21
+      ]
+    },
+    {
+      "kind": "box",
+      "role": "hair",
+      "name": "locks, behind",
+      "centre": [
+        -0.005,
+        1.547,
+        -0.062
+      ],
+      "size": [
+        0.33,
+        0.195,
+        0.115
+      ]
     }
   ],
   "lost": [],
-  "landmarks": {
-    "shoulder_r": [
-      -0.17,
-      1.4,
-      0.0
-    ],
-    "elbow_r": [
-      -0.3,
-      1.13,
-      -0.02
-    ],
-    "wrist_r": [
-      -0.27,
-      0.95,
-      0.08
-    ],
-    "shoulder_l": [
-      0.17,
-      1.4,
-      0.0
-    ],
-    "elbow_l": [
-      0.32,
-      1.19,
-      -0.1
-    ],
-    "wrist_l": [
-      0.21,
-      1.07,
-      -0.02
-    ],
-    "knee_r": [
-      -0.07,
-      0.47,
-      0.05
-    ],
-    "ankle_r": [
-      -0.08,
-      0.08,
-      0.03
-    ],
-    "knee_l": [
-      0.1,
-      0.5,
-      0.18
-    ],
-    "ankle_l": [
-      0.2,
-      0.27,
-      -0.04
-    ]
-  },
+  "landmarks": {},
   "front": [
     -0.054,
     -0.9985,
     0.0
   ],
-  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet's wing and the sword's blade are supports; the hat is drapery."
+  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece; the joints come from MediaPipe on pictures of the scan."
 }

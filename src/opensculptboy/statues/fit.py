@@ -218,3 +218,106 @@ def fit_statue(
         options=options,
         model=model,
     )
+
+
+# the scan's triangles further than this (metres) from a first fit are not the figure's skin
+PRUNE_DISTANCE = 0.025
+# the regions of the first fit whose far triangles are hair (kept as a piece) and not props
+HAIR_REGIONS = ("face", "jaw", "ears", "scalp", "neck")
+
+
+def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> dict:
+    """
+    Take out of a statue handoff the skin that a first fit (``result``, its level 0) does not
+    reach: the triangles of the scan further than ``distance`` from the fitted skin, which are
+    props, leftovers of supports and locks of hair standing off the head. Those nearest the
+    head and the neck become a part of the role ``hair`` (``hair_cut``), the others go to
+    ``removed.glb`` as ``support_cut``. Returns the triangle counts.
+    """
+    import trimesh
+    from scipy.spatial import cKDTree
+
+    from anny.hair import closest_triangles
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY, load_handoff
+    from opensculptboy.fit.metrics import REGIONS, anny_regions
+    from opensculptboy.fit.register import excluded_vertices, fit_model
+    from opensculptboy.statues.scan import components
+
+    folder = pathlib.Path(folder)
+    model = model or fit_model()
+    handoff = load_handoff(folder)
+    skin = handoff.skin_parts()[0]
+    V, T = result.meshes[0]
+    excluded = excluded_vertices(model)
+    kept = T[~excluded[T].any(1)]
+    S, ST = skin.vertices, skin.triangles
+    centres = S[ST].mean(1)
+    _, _, d = closest_triangles(centres, V, kept)
+    far = d > distance
+    regions = anny_regions(model)
+    rows = np.nonzero(~excluded)[0]
+    _, nearest = cKDTree(V[rows]).query(centres)
+    head = np.isin(regions[rows[nearest]], [REGIONS.index(r) for r in HAIR_REGIONS])
+    # the skin left must hold together: loose bits of it go with the far triangles
+    near = ~far
+    pieces = components(ST[near], len(S))
+    p = S[ST[near]]
+    area = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    sizes = np.bincount(pieces, area)
+    loose = np.zeros(len(ST), bool)
+    loose[np.nonzero(near)[0][sizes[pieces] < 0.01 * sizes.sum()]] = True
+    far |= loose
+    groups = {
+        "statue": ST[~far],
+        "hair_cut": ST[far & head],
+        "support_cut": ST[far & ~head],
+    }
+
+    def mesh(triangles):
+        used = np.unique(triangles)
+        remap = np.full(len(S), -1)
+        remap[used] = np.arange(len(used))
+        return trimesh.Trimesh(S[used] @ GLTF_TO_ANNY, remap[triangles], process=False)
+
+    scene = trimesh.Scene()
+    for part in handoff.parts:
+        if part.is_skin:
+            continue
+        scene.add_geometry(
+            trimesh.Trimesh(
+                part.vertices @ GLTF_TO_ANNY, part.triangles, process=False
+            ),
+            node_name=part.name,
+            geom_name=part.name,
+        )
+    for name in ("statue", "hair_cut"):
+        if len(groups[name]):
+            scene.add_geometry(mesh(groups[name]), node_name=name, geom_name=name)
+    scene.export(str(folder / "replica.glb"))
+    removed_path = folder / "removed.glb"
+    removed = (
+        trimesh.load(str(removed_path), force="scene")
+        if removed_path.exists()
+        else trimesh.Scene()
+    )
+    if len(groups["support_cut"]):
+        removed.add_geometry(
+            mesh(groups["support_cut"]),
+            node_name="support_cut",
+            geom_name="support_cut",
+        )
+        removed.export(str(removed_path))
+    appearance_path = folder / "appearance.json"
+    appearance = json.loads(appearance_path.read_text(encoding="utf-8"))
+    names = {e.get("name") for e in appearance.get("parts", [])}
+    if len(groups["hair_cut"]) and "hair_cut" not in names:
+        appearance["parts"].append({"name": "hair_cut", "role": "hair"})
+    counts = {k: int(len(v)) for k, v in groups.items()}
+    appearance.setdefault("statue", {})["pruned"] = {
+        "distance": distance,
+        "triangles": counts,
+    }
+    appearance_path.write_text(
+        json.dumps(appearance, indent=2) + "\n", encoding="utf-8"
+    )
+    return counts

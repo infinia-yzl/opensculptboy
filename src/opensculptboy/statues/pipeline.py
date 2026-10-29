@@ -76,6 +76,7 @@ class StatueConfig:
     landmarks: dict = dataclasses.field(default_factory=dict)
     auto_landmarks: bool = True
     solid: bool = True
+    prune: float | bool = 0.025
     pose: str | None = "auto"
     detail: int = 2
     notes: str | None = None
@@ -319,18 +320,31 @@ def preview(config: StatueConfig, folder, out, size=(720, 1080)):
 
 
 def fit(config: StatueConfig, folder, card, verbose: bool = False):
-    """Step 3: the fit of the handoff folder, written to the card ``card``."""
+    """Step 4: the fit of the handoff folder, written to the card ``card``. With ``prune``
+    (a distance in metres), a first fit to level 0 takes out the scan's pieces further than
+    that from it (:func:`~opensculptboy.statues.fit.prune_far`: props and leftovers of
+    supports, and locks of hair as a hair piece) before the fit itself."""
     from opensculptboy.fit.register import FitOptions
     from opensculptboy.statues.fit import fit_statue
 
-    result = fit_statue(
-        folder,
-        detail=config.detail,
-        name=config.name,
-        options=FitOptions(verbose=verbose),
-        start_pose=config.pose,
-        solid=config.solid,
-    )
+    def run(detail):
+        return fit_statue(
+            folder,
+            detail=detail,
+            name=config.name,
+            options=FitOptions(verbose=verbose),
+            start_pose=config.pose,
+            solid=config.solid,
+        )
+
+    pruned = None
+    if config.prune:
+        # a first fit to level 0 tells the figure from what is left of props and supports
+        from opensculptboy.statues.fit import prune_far
+
+        pruned = prune_far(folder, run(0), distance=float(config.prune))
+    result = run(config.detail)
+    result.pruned = pruned
     card = pathlib.Path(card)
     card.parent.mkdir(parents=True, exist_ok=True)
     result.write(card)
@@ -450,6 +464,7 @@ def run_statue(
             summary["preview"] = preview(config, folder, root / "preview")
         elif step == "fit":
             result = fit(config, folder, root / "card" / f"{config.name}.json", verbose)
+            summary["pruned"] = getattr(result, "pruned", None)
         elif step == "measure":
             if result is None:
                 raise ValueError("The measure step needs the fit step in the same run.")
