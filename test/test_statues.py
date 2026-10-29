@@ -384,6 +384,41 @@ class TestDetectedLandmarks(unittest.TestCase):
                 self.assertLess(gap, 0.06)
 
 
+class TestPrune(unittest.TestCase):
+    def test_far_pieces_leave_the_skin(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import prune_far
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        # a prop 10 cm in front of the shins and a bun 6 cm over the crown
+        prop = trimesh.creation.box(extents=(0.05, 0.05, 0.3))
+        prop.apply_translation((0.0, -0.2, 0.3))
+        bun = trimesh.creation.icosphere(subdivisions=2, radius=0.03)
+        bun.apply_translation((0.0, 0.04, V[:, 2].max() + 0.06))
+        pieces = [(V, T), (prop.vertices, prop.faces), (bun.vertices, bun.faces)]
+        offsets = np.cumsum([0] + [len(p[0]) for p in pieces])
+        S = np.concatenate([np.asarray(p[0]) for p in pieces])
+        F = np.concatenate(
+            [np.asarray(p[1]) + offsets[k] for k, p in enumerate(pieces)]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = write_handoff(pathlib.Path(tmp) / "h", S, F, name="statue")
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            counts = prune_far(folder, result, model)
+            self.assertEqual(counts["support_cut"], len(prop.faces))
+            self.assertEqual(counts["hair_cut"], len(bun.faces))
+            self.assertEqual(counts["statue"], len(T))
+            handoff = load_handoff(folder)
+            self.assertEqual(sorted(p.role for p in handoff.parts), ["hair", "skin"])
+            self.assertTrue((pathlib.Path(folder) / "removed.glb").exists())
+
+
 class TestRegionDistances(unittest.TestCase):
     def test_regions_and_zero_distance(self):
         model = _model()
