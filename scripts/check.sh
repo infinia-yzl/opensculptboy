@@ -33,10 +33,10 @@ lint() {
 viewer() {
   step "viewer: type-check and rebuild the page from the committed model data"
   (cd viewer && npm ci --no-audit --no-fund && npx tsc --noEmit && npx tsc --noEmit -p test/vrm_page && node build.mjs --reuse-data)
-  step "viewer: the committed page matches viewer/src and shell.html"
-  if ! git diff --quiet -- viewer/dist/anny_viewer.html; then
+  step "viewer: the committed page and its files (viewer/dist) match viewer/src and shell.html"
+  if ! git diff --quiet -- viewer/dist || [ -n "$(git ls-files --others --exclude-standard viewer/dist)" ]; then
     echo "viewer/dist/anny_viewer.html is stale: commit the rebuilt page (cd viewer && node build.mjs --reuse-data)." >&2
-    git diff --stat -- viewer/dist/anny_viewer.html >&2
+    git diff --stat -- viewer/dist >&2; git ls-files --others --exclude-standard viewer/dist >&2
     return 1
   fi
 }

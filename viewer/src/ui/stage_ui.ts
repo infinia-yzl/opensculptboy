@@ -88,7 +88,8 @@ export function stageSections(app: App) {
         showHead();
         say(r.hands === 2 ? 'Posed from the picture, with both hands.' : r.hands === 1 ? 'Posed from the picture, with one hand. The other hand keeps its rest pose.' : 'Posed from the picture. No hands were clear enough, so they keep their rest pose.');
       } catch (e) {
-        say(e instanceof Error && e.message.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : 'The picture could not be read' + (e instanceof Error && e.message ? ': ' + e.message : '.'), 'error');
+        const m = e instanceof Error ? e.message : '';
+        say(m.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : m.startsWith('From a picture') ? m : 'The picture could not be read' + (m ? ': ' + m : '.'), 'error');
       } finally { choosePicture.disabled = false; }
     });
     // the head's correction: a picture made by an AI model, or a stylised face, can leave the head's turn unclear

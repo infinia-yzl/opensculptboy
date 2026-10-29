@@ -1,57 +1,44 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// MediaPipe's WebAssembly and models inside the page (build.mjs writes them): one gzip container in base64, in a
-// script element of type application/octet-stream that the browser never runs, or in data files next to a page in
-// parts (window.MEDIAPIPE_PARTS). The page reads them the first time a picture comes in and gives MediaPipe blob URLs,
-// so no MediaPipe code or model ever comes from another host.
+// MediaPipe's WebAssembly and models as files beside the page (mediapipe/, written by build.mjs, which pins each
+// file by SHA-256 and gives the page the hashes as __MEDIAPIPE_SRI__). The page fetches each file from its own origin
+// with its hash as the request's integrity, so the browser refuses any other bytes; the loader script runs from a
+// script element with the same integrity, which the page's Content Security Policy allows by that hash, or else from
+// a blob URL of the checked bytes. A page opened as a file cannot fetch them, so From a picture needs the page served.
 
-import { gunzipSync } from 'fflate';
+declare const __MEDIAPIPE_SRI__: Record<string, string>;
 
 export interface MediapipeAssets { loader: string; wasm: string; models: { pose: Uint8Array; hand: Uint8Array } }
 
-async function base64(): Promise<string> {
-  const el = document.getElementById('mediapipe-data');
-  if (el && el.textContent) return el.textContent;
-  const parts: string[] | undefined = (window as any).MEDIAPIPE_PARTS;
-  if (!parts) throw new Error('This page has no MediaPipe data, so From a picture is not available.');
-  const texts = await Promise.all(parts.map(async (url) => {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(`the data file ${url} did not load (${r.status})`);
-    return r.text();
-  }));
-  return texts.join('');
-}
+export const NEEDS_SERVER = 'From a picture needs the page served on this computer: run python serve_viewer.py --open in the page\'s folder.';
 
-async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
-  if (typeof DecompressionStream === 'undefined') return gunzipSync(bytes);
-  const s = new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return new Uint8Array(await new Response(s).arrayBuffer());
+const sri = (name: string) => {
+  const s = typeof __MEDIAPIPE_SRI__ !== 'undefined' ? __MEDIAPIPE_SRI__[name] : undefined;
+  if (!s) throw new Error('This page has no MediaPipe files, so From a picture is not available.');
+  return s;
+};
+const url = (name: string) => new URL('mediapipe/' + name, location.href).href;
+
+async function checked(name: string): Promise<Uint8Array> {
+  let r: Response;
+  try { r = await fetch(url(name), { integrity: sri(name), cache: 'no-store', credentials: 'omit' }); } catch (e) {
+    throw new Error('MediaPipe\'s file ' + name + ' did not load, or its bytes do not match the page\'s pinned hash.');
+  }
+  if (!r.ok) throw new Error('MediaPipe\'s file ' + name + ' did not load (' + r.status + ').');
+  return new Uint8Array(await r.arrayBuffer());
 }
 
 let assets: Promise<MediapipeAssets> | null = null;
 export function mediapipeAssets(): Promise<MediapipeAssets> {
   if (!assets) {
     assets = (async () => {
-      const bin = atob(await base64());
-      const raw = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) raw[i] = bin.charCodeAt(i);
-      const blob = await gunzip(raw);
-      const dv = new DataView(blob.buffer, blob.byteOffset, blob.byteLength);
-      if (String.fromCharCode(...blob.subarray(0, 4)) !== 'MPA1') throw new Error('The MediaPipe data of this page is damaged.');
-      const hlen = dv.getUint32(4, true);
-      const header = JSON.parse(new TextDecoder().decode(blob.subarray(8, 8 + hlen)));
-      const base = 8 + hlen + ((4 - (hlen % 4)) % 4);
-      const file = (name: string) => {
-        const f = header.files.find((x: any) => x.name === name);
-        if (!f) throw new Error('The MediaPipe data of this page lacks ' + name + '.');
-        return blob.slice(base + f.offset, base + f.offset + f.length);
-      };
-      const url = (name: string, type: string) => URL.createObjectURL(new Blob([file(name) as BlobPart], { type }));
+      if (location.protocol === 'file:') throw new Error(NEEDS_SERVER);
+      const [wasm, pose, hand] = await Promise.all(['vision_wasm_internal.wasm', 'pose_landmarker_full.task', 'hand_landmarker.task'].map(checked));
       return {
-        loader: url('vision_wasm_internal.js', 'text/javascript'),
-        wasm: url('vision_wasm_internal.wasm', 'application/wasm'),
-        models: { pose: file('pose_landmarker_full.task'), hand: file('hand_landmarker.task') },
+        loader: url('vision_wasm_internal.js'),
+        wasm: URL.createObjectURL(new Blob([wasm as BlobPart], { type: 'application/wasm' })),
+        models: { pose, hand },
       };
     })();
     assets.catch(() => { assets = null; });
@@ -59,13 +46,23 @@ export function mediapipeAssets(): Promise<MediapipeAssets> {
   return assets;
 }
 
-// runs MediaPipe's loader script (a blob URL of the page's own data), which sets self.ModuleFactory
-export function runLoader(src: string): Promise<void> {
-  return new Promise((ok, bad) => {
+function scriptFrom(src: string, integrity?: string): Promise<boolean> {
+  return new Promise((ok) => {
     const s = document.createElement('script');
+    if (integrity) s.integrity = integrity;
     s.src = src;
-    s.onload = () => { s.remove(); ok(); };
-    s.onerror = () => { s.remove(); bad(new Error('MediaPipe\'s loader did not run.')); };
+    s.onload = () => { s.remove(); ok(true); };
+    s.onerror = () => { s.remove(); ok(false); };
     document.head.append(s);
   });
+}
+
+// runs MediaPipe's loader script, which sets self.ModuleFactory: from its file with its integrity, or, in a browser
+// whose policy checks only inline scripts by hash, from a blob URL of the bytes that the browser checked on fetch
+let fallback: string | null = null;
+export async function runLoader(src: string): Promise<void> {
+  const name = 'vision_wasm_internal.js';
+  if (!fallback && await scriptFrom(src, sri(name))) return;
+  if (!fallback) fallback = URL.createObjectURL(new Blob([await checked(name) as BlobPart], { type: 'text/javascript' }));
+  if (!await scriptFrom(fallback)) throw new Error('MediaPipe\'s loader did not run.');
 }

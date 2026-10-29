@@ -8,9 +8,10 @@ Serve the viewer page on this computer, for the AI providers' passkeys (docs/vie
 
 Passkeys need the page at http://localhost. This server:
 
-- serves the page file alone, plus the data files of a page in parts (data/model-N.txt and
-  data/mediapipe-N.txt next to it), and answers every other path with 404, so no other file of
-  the folder shares the page's origin;
+- serves the page file alone, plus MediaPipe's files beside it (mediapipe/*.js, *.wasm and
+  *.task, which the page checks by their pinned SHA-256) and the data files of a page in parts
+  (data/model-N.txt), and answers every other path with 404, so no other file of the folder
+  shares the page's origin;
 - listens on the loopback addresses only, 127.0.0.1 and ::1 both, so no other program can take the
   page's address on the other one, and stops when either is taken;
 - uses one fixed port (``serve.json``, which the page reads too), because the page's stored keys
@@ -44,7 +45,12 @@ def port() -> int:
 
 
 PORT = port()
-DATA = re.compile(r"^data/(model|mediapipe)-\d+\.txt$")
+DATA = re.compile(r"^data/model-\d+\.txt$")
+MEDIAPIPE = {
+    ".js": "text/javascript; charset=utf-8",
+    ".wasm": "application/wasm",
+    ".task": "application/octet-stream",
+}
 HEADERS = {
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
@@ -64,6 +70,13 @@ def files_of(page: pathlib.Path) -> dict:
             rel = "data/" + f.name
             if f.is_file() and DATA.match(rel):
                 served["/" + rel] = (f, "text/plain; charset=utf-8")
+    # MediaPipe's files for From a picture (the page checks each by its pinned SHA-256)
+    mp = page.parent / "mediapipe"
+    if mp.is_dir():
+        for f in sorted(mp.iterdir()):
+            kind = MEDIAPIPE.get(f.suffix)
+            if f.is_file() and kind and re.fullmatch(r"[\w.-]+", f.name):
+                served["/mediapipe/" + f.name] = (f, kind)
     return served
 
 

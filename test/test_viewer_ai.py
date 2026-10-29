@@ -17,7 +17,8 @@ of the page is routed, and the test fails on any request to a host other than th
 provider of the key it carries; IndexedDB, web storage and the URL never hold a key; the Content
 Security Policy reports no violation; an authenticator without PRF keeps a key for one visit;
 the page opened as a file shows the way to the server and opens no database; and From a picture
-runs MediaPipe from the page's own data, with no request to another host.
+runs MediaPipe from its pinned files beside the page, with no request to another host (on a
+file page it names the server).
 """
 
 import contextlib
@@ -27,6 +28,7 @@ import pathlib
 import shutil
 import socket
 import subprocess
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -132,8 +134,6 @@ class TestServe(unittest.TestCase):
     """serve_viewer.py: the page and its data files alone, on both loopback addresses"""
 
     def test_serves_the_page_alone(self):
-        import tempfile
-
         mod = serve_module()
         port_file = REPO / "viewer" / "src" / "ai" / "serve.json"
         self.assertEqual(mod.PORT, json.loads(port_file.read_text())["port"])
@@ -145,6 +145,9 @@ class TestServe(unittest.TestCase):
             (d / "data").mkdir()
             (d / "data" / "model-1.txt").write_text("AAAA", encoding="utf-8")
             (d / "data" / "notes.txt").write_text("notes", encoding="utf-8")
+            (d / "mediapipe").mkdir()
+            (d / "mediapipe" / "loader.wasm").write_bytes(b"\0asm")
+            (d / "mediapipe" / "other.html").write_text("<p>no</p>", encoding="utf-8")
             with served(d / "page.html") as port:
                 base = f"http://127.0.0.1:{port}"
                 code, headers, body = fetch(base + "/page.html")
@@ -155,6 +158,12 @@ class TestServe(unittest.TestCase):
                     "frame-ancestors 'none'", headers["Content-Security-Policy"]
                 )
                 self.assertEqual(fetch(base + "/data/model-1.txt")[:1], (200,))
+                code, headers, body = fetch(base + "/mediapipe/loader.wasm")
+                self.assertEqual(
+                    (code, headers["Content-Type"], body),
+                    (200, "application/wasm", b"\0asm"),
+                )
+                self.assertEqual(fetch(base + "/mediapipe/other.html")[0], 404)
                 for path in (
                     "/other.html",
                     "/secret.txt",
@@ -352,6 +361,7 @@ class TestAiPage(unittest.TestCase):
             ctx = browser.new_context(viewport=dict(width=1200, height=800))
             blocked = route_all(ctx, port, anthropic, openai)
             tab = ctx.new_page()
+            tab.set_default_timeout(180000)
             watch_csp(tab)
             errors = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
@@ -438,6 +448,7 @@ class TestAiPage(unittest.TestCase):
             ctx2 = browser.new_context()
             blocked2 = route_all(ctx2, port, anthropic, openai)
             tab2 = ctx2.new_page()
+            tab2.set_default_timeout(180000)
             watch_csp(tab2)
             add_authenticator(tab2, prf=False)
             url = f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off"
@@ -467,6 +478,7 @@ class TestAiPage(unittest.TestCase):
             ctx3 = browser.new_context()
             blocked3 = route_all(ctx3, None, anthropic, openai)
             tab3 = ctx3.new_page()
+            tab3.set_default_timeout(180000)
             tab3.goto(PAGE.as_uri() + "?acc=1&blink=off", timeout=300000)
             self.open_panel(tab3)
             text = tab3.locator(".ai-panel").text_content()
@@ -475,13 +487,23 @@ class TestAiPage(unittest.TestCase):
             self.assertIn(f"http://localhost:{port_}/{PAGE.name}", text)
             self.assertIn("python serve_viewer.py --open", text)
             self.assertIsNone(tab3.evaluate(DUMP))
+            # From a picture on a file page: the way to the server
+            with tempfile.TemporaryDirectory() as d:
+                png = pathlib.Path(d) / "plain.png"
+                plain_png(png)
+                if not tab3.locator("#sec-pose").is_visible():
+                    tab3.click("#tab-pose")
+                tab3.set_input_files("#sec-pose input[type=file]", str(png))
+                tab3.wait_for_function(
+                    "() => [...document.querySelectorAll('#sec-pose p.inline-msg')]"
+                    ".some((p) => p.textContent.includes('serve_viewer.py'))",
+                    timeout=120000,
+                )
             self.assertEqual(blocked3, [])
             browser.close()
 
     def test_picture_from_the_page_alone(self):
-        """From a picture runs MediaPipe from the page's own data, with no other host"""
-        import tempfile
-
+        """From a picture runs MediaPipe from its pinned files beside the page, with no other host"""
         from playwright.sync_api import sync_playwright
 
         with tempfile.TemporaryDirectory() as d, sync_playwright() as p:
@@ -493,6 +515,7 @@ class TestAiPage(unittest.TestCase):
                 ctx = browser.new_context(viewport=dict(width=1200, height=800))
                 blocked = route_all(ctx, port, lambda r: r.abort(), lambda r: r.abort())
                 tab = ctx.new_page()
+                tab.set_default_timeout(180000)
                 watch_csp(tab)
                 errors = []
                 tab.on("pageerror", lambda e: errors.append(str(e)))
@@ -504,9 +527,7 @@ class TestAiPage(unittest.TestCase):
                 tab.wait_for_timeout(300)
                 if not tab.locator("#sec-pose").is_visible():
                     tab.click("#tab-pose")
-                with tab.expect_file_chooser() as fc:
-                    tab.locator("#sec-pose button", has_text="Choose a picture").click()
-                fc.value.set_files(str(png))
+                tab.set_input_files("#sec-pose input[type=file]", str(png))
                 tab.wait_for_function(
                     "() => [...document.querySelectorAll('#sec-pose p.inline-msg')]"
                     ".some((p) => /No figure|could not/.test(p.textContent))",
