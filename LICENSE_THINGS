@@ -37,6 +37,22 @@ Tools and libraries used at authoring time only (not part of the package)
 
   MediaPipe models (face landmarks, image segmenter), Apache License, Version 2.0.
 
+Libraries, fonts and icons bundled into the web viewer page (viewer/dist/anny_viewer.html)
+
+  three.js (https://threejs.org) and meshoptimizer (https://github.com/zeux/meshoptimizer), MIT licence.
+  React and React DOM (https://react.dev), MIT licence.
+  Radix UI primitives (https://www.radix-ui.com), MIT licence.
+  shadcn/ui (https://ui.shadcn.com), MIT licence: the components in viewer/src/shell/components/ui are
+  copied from it as source, as shadcn/ui intends, and changed to the OpenSculptBoy Design System.
+  clsx, tailwind-merge and class-variance-authority, MIT licence.
+  Tailwind CSS (https://tailwindcss.com), MIT licence. The page build compiles it; its output is part of
+  the page's styles.
+  Phosphor Icons, Light weight (https://phosphoricons.com, @phosphor-icons/core), MIT licence:
+  viewer/src/ui/icon_paths.ts.
+  Cinzel (Natanael Gama), Instrument Sans and Instrument Serif (The Instrument Sans and Instrument Serif
+  Project Authors), SIL Open Font License 1.1 (https://openfontlicense.org), from the Fontsource
+  packages; the page carries their Latin subsets.
+
 Tools used by the tests only (not part of the package)
 
   @pixiv/three-vrm (https://github.com/pixiv/three-vrm), MIT licence. A devDependency of

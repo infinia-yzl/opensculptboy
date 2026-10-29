@@ -990,7 +990,7 @@ body.shot #ui-root, body.shot .cs-view, body.shot .hrail, body.shot .stats, body
 .sec-head:has(> .sec-note:empty):not(:has(> .sec-actions > :not([hidden]))) { display: none; }
 /* Create's foot holds the random draws and the resets of its sections */
 #sec-characters > .sec-head, #sec-face > .sec-head, #sec-hair > .sec-head { display: none; }
-.mode-panel[data-mode="export"] { width: 400px; }
+.mode-panel[data-mode="export"] { width: 560px; }
 
 /* the rail of the modes at medium widths */
 .mode-rail { position: fixed; z-index: 12; left: var(--space-2); top: calc(var(--top-h) + var(--space-2)); }
@@ -1036,6 +1036,8 @@ body.tool-open .welcome { right: calc(var(--space-4) + var(--insp-w) + var(--spa
 .open-status:empty { display: none; }
 
 /* the help sheet and the saved picture (native dialogs) */
+/* Tailwind's reset takes the margins of every element, so the native dialogs centre themselves again */
+dialog.help { margin: auto; }
 .help {
   width: min(800px, calc(100vw - 32px)); max-height: calc(100vh - 64px); padding: 0; box-sizing: border-box; overflow: auto;
   color: var(--text); background: var(--panel); border: 1px solid var(--line-strong); border-radius: var(--radius-l); box-shadow: var(--shadow-dialog);
@@ -1177,6 +1179,9 @@ input[type="range"]:disabled { opacity: 0.4; cursor: default; }
 .wear-stats { margin-top: 6px; }
 
 /* ------------------------------------------------------------ the sheet's layout view and its section */
+/* the layout view takes the place of the 3D view: the canvas steps back behind the stage while the page shows */
+body:has(.cs-view:not([hidden])) { background: radial-gradient(ellipse at 50% 56%, var(--stage-centre) 0%, var(--stage-edge) 72%); }
+body:has(.cs-view:not([hidden])) #stage { visibility: hidden; }
 .cs-view {
   position: fixed; z-index: 11; top: calc(var(--top-h) + var(--space-2)); bottom: var(--space-2);
   left: calc(var(--inset-l) + var(--space-2)); right: calc(var(--inset-r) + var(--space-2));
@@ -1292,7 +1297,8 @@ body.failed #loadlabel { font: 14px/20px var(--font-sans); letter-spacing: 0; co
 #loadbar { height: 100%; width: 100%; background: var(--accent); transform-origin: 0 50%; transform: scaleX(0.02); transition: transform 0.35s ease; }
 
 /* ------------------------------------------------------------ Export */
-.osb-export-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.osb-export-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+body[data-width="phone"] .osb-export-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .osb-export-card { position: relative; padding: var(--space-4); gap: var(--space-2); box-shadow: none; }
 .osb-export-card:disabled { cursor: default; opacity: 0.72; }
 .osb-export-card:disabled:hover { background: var(--panel); border-color: var(--line); }
