@@ -134,7 +134,10 @@ STORAGE = """() => JSON.stringify(Object.assign({}, localStorage))
 class TestAiPage(unittest.TestCase):
     def open_panel(self, tab):
         tab.wait_for_function("() => window.__ready === true", timeout=300000)
-        tab.click("#tab-scene")
+        # the page reopens the section it showed last, so a click on its tab would close it
+        tab.wait_for_timeout(300)
+        if not tab.locator("#sec-scene").is_visible():
+            tab.click("#tab-scene")
         summary = tab.locator(".ai-panel summary")
         summary.scroll_into_view_if_needed()
         summary.click()
