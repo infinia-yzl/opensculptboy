@@ -47,6 +47,17 @@ def run(argv) -> int:
     )
     parser.add_argument("--detail", type=int, choices=(0, 1, 2), help="override detail")
     parser.add_argument(
+        "--fit",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="a FitOptions field over the config's (VALUE in JSON), for variants",
+    )
+    parser.add_argument(
+        "--variant",
+        help="a name for the variant: its results go to <out>/<name>.<variant>",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="the fit's progress lines"
     )
     args = parser.parse_args(argv)
@@ -59,12 +70,30 @@ def run(argv) -> int:
         config = StatueConfig.load(path)
         if args.detail is not None:
             config = dataclasses.replace(config, detail=args.detail)
+        if args.fit:
+            fit = dict(config.fit)
+            for item in args.fit:
+                key, _, value = item.partition("=")
+                fit[key.strip()] = json.loads(value)
+            config = StatueConfig.from_dict(
+                {**_as_dict(config), "fit": fit}, config.path
+            )
+        if args.variant:
+            config = dataclasses.replace(config, name=f"{config.name}.{args.variant}")
         steps = [s for s in args.steps.split(",") if s]
         results.append(
             run_statue(config, args.out, args.scans, steps, verbose=args.verbose)
         )
     print(json.dumps(results, indent=2, default=float))
     return 0
+
+
+def _as_dict(config) -> dict:
+    import dataclasses
+
+    data = {f.name: getattr(config, f.name) for f in dataclasses.fields(config)}
+    data.pop("path")
+    return data
 
 
 def convert(argv) -> int:

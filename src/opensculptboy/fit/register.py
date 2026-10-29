@@ -343,6 +343,9 @@ class FitOptions:
     # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
     # theirs); None: the rest pose
     initial_pose: np.ndarray | None = None
+    # bones whose turns stay at the start pose's in the parameter stage: the foot of a statue
+    # set on a removed piece, which no skin turns
+    held_bones: tuple = ()
     # a solid figure (a statue: carved eyes): after each level, the front half of each
     # eyeball takes the reference's surface inside the lids where it lies within this
     # distance (metres), and the rest of the eyeball shrinks by eyeball_shrink behind it
@@ -2595,6 +2598,10 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
         dict(params=[params.global_translation], lr=0.002),
     ]
     optimizer = torch.optim.Adam(groups)
+    labels_ = list(model.bone_labels)
+    held = [
+        k for k, i in enumerate(params.free) if labels_[i] in set(options.held_bones)
+    ]
     lo, hi = options.distance_limits
     fit_rows_t = torch.as_tensor(fit_rows)
     from scipy.spatial import cKDTree
@@ -2667,6 +2674,8 @@ def fit_parameters(model, reference: Reference, options: FitOptions):
                 mask = torch.ones(len(params.free), 1, dtype=params.rotvec.dtype)
                 mask[params.fingers] = 0.0
                 params.rotvec.grad = params.rotvec.grad * mask
+            if held:
+                params.rotvec.grad[held] = 0.0
             optimizer.step()
             params.project()
         _log(

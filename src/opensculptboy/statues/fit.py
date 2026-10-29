@@ -233,7 +233,12 @@ def fit_statue(
     if covered_levels:
         levels = np.zeros(model.template_vertices.shape[-2], bool)
         levels[np.asarray(covered_levels, np.int64)] = True
-        options = dataclasses.replace(options, no_data_levels=levels, fill_no_data=True)
+        options = dataclasses.replace(
+            options,
+            no_data_levels=levels,
+            fill_no_data=True,
+            held_bones=tuple(options.held_bones) + held_feet(model, levels),
+        )
     if options.relax_dents == 0:
         # a dense fit of a coarse scan dents single vertices (a pit on a forehead)
         options = dataclasses.replace(options, relax_dents=PIT_EXCESS)
@@ -413,6 +418,32 @@ def parametric_vertices(result, model) -> np.ndarray:
     )
 
 
+# a foot whose skin a removed piece covers for more than this share keeps the start pose's turn
+HELD_FOOT_SHARE = 0.4
+
+
+def held_feet(model, covered: np.ndarray, share: float = HELD_FOOT_SHARE) -> tuple:
+    """The bones of the feet (``foot`` and its toes, by side) whose skin ``covered`` (a mask of
+    the level-0 vertices) covers for more than ``share``: the parameter stage keeps their turns
+    at the start pose's, as no skin turns a foot that stood on a removed head."""
+    labels = list(model.bone_labels)
+    weights = model.vertex_bone_weights.detach().double().cpu().numpy()
+    indices = model.vertex_bone_indices.cpu().numpy()
+    out = []
+    for side in ("L", "R"):
+        bones = [
+            i
+            for i, b in enumerate(labels)
+            if b == f"foot.{side}" or (b.startswith("toe") and b.endswith(f".{side}"))
+        ]
+        if not bones:
+            continue
+        on = (np.isin(indices, bones) * weights).sum(1) > 0.5
+        if on.any() and covered[on].mean() > share:
+            out += [labels[i] for i in bones]
+    return tuple(out)
+
+
 def _removed_pieces(folder) -> list:
     """The pieces of a handoff's removed.glb as ("removed", vertices, triangles) in anny's
     frame."""
@@ -509,9 +540,9 @@ SEAT_REACH = 0.02
 SEAT_SINK = 0.0005
 SEAT_BLEND = 0.025
 # by role, the reach and the blend (metres): a hat's brim was cut a slab above the brow
-SEAT_BY_ROLE = {"clothing": (0.025, 0.03), "hair": (0.015, 0.02)}
+SEAT_BY_ROLE = {"clothing": (0.025, 0.03), "hair": (0.025, 0.025)}
 # the border's sawtooth and the moves are averaged along the border within this distance
-SEAT_SMOOTH = 0.006
+SEAT_SMOOTH = 0.01
 
 
 def seat_piece(
@@ -549,7 +580,7 @@ def seat_piece(
     groups = tree.query_ball_point(V[border], smooth)
     # the sawtooth of the cut, smoothed along the border
     B = V[border].copy()
-    for _ in range(3):
+    for _ in range(5):
         B = np.array([B[g].mean(0) for g in groups])
     tri, bary, d = closest_triangles(B, SV, ST)
     corners = SV[ST[tri]]

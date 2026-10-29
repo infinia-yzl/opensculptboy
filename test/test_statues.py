@@ -328,6 +328,15 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(ValueError):
             StatueConfig.from_dict({"format": "other/1", "name": "x", "scan": "x.stl"})
 
+    def test_fit_options_in_a_config(self):
+        from opensculptboy.statues.pipeline import StatueConfig
+
+        base = {"format": "opensculptboy.statue/1", "name": "s", "scan": "s.stl"}
+        config = StatueConfig.from_dict({**base, "fit": {"close_lid": 0.004}})
+        self.assertEqual(config.fit, {"close_lid": 0.004})
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({**base, "fit": {"no_such_option": 1}})
+
     def test_convert_and_preview_from_a_config(self):
         import trimesh
 
@@ -474,6 +483,27 @@ class TestPrune(unittest.TestCase):
             self.assertEqual(appearance["statue"]["covered"], [])
             self.assertGreater(count, 20)
             self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.08)
+
+    def test_a_covered_foot_keeps_the_start_pose(self):
+        from opensculptboy.statues.fit import held_feet
+
+        model = _model()
+        labels = list(model.bone_labels)
+        weights = model.vertex_bone_weights.detach().numpy()
+        indices = model.vertex_bone_indices.numpy()
+        left = [
+            i
+            for i, b in enumerate(labels)
+            if b == "foot.L" or (b.startswith("toe") and b.endswith(".L"))
+        ]
+        foot = (np.isin(indices, left) * weights).sum(1) > 0.5
+        covered = np.zeros(len(weights), bool)
+        self.assertEqual(held_feet(model, covered), ())
+        covered[foot] = True
+        held = held_feet(model, covered)
+        self.assertIn("foot.L", held)
+        self.assertNotIn("foot.R", held)
+        self.assertTrue(any(b.startswith("toe") for b in held))
 
     def test_skull_under_a_hat_takes_no_data(self):
         import types

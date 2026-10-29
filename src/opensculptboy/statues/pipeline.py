@@ -79,6 +79,8 @@ class StatueConfig:
     prune: float | bool = 0.025
     pose: str | None = "auto"
     detail: int = 2
+    # FitOptions fields that this statue's fit takes over the defaults (name -> value)
+    fit: dict = dataclasses.field(default_factory=dict)
     notes: str | None = None
     path: pathlib.Path | None = None  # the config file, for relative scan paths
 
@@ -100,6 +102,12 @@ class StatueConfig:
         config = cls(**data, path=None if path is None else pathlib.Path(path))
         if config.detail not in (0, 1, 2):
             raise ValueError(f"detail is 0, 1 or 2; got {config.detail!r}.")
+        from opensculptboy.fit.register import FitOptions
+
+        options = {f.name for f in dataclasses.fields(FitOptions)}
+        unknown = set(config.fit) - options
+        if unknown:
+            raise ValueError(f"Unknown fit options {sorted(unknown)}.")
         return config
 
     @classmethod
@@ -319,6 +327,11 @@ def preview(config: StatueConfig, folder, out, size=(720, 1080)):
     return pictures
 
 
+def _fit_options(fit: dict) -> dict:
+    """FitOptions fields from a config's ``fit`` (JSON lists become tuples)."""
+    return {k: tuple(v) if isinstance(v, list) else v for k, v in fit.items()}
+
+
 def fit(config: StatueConfig, folder, card, verbose: bool = False):
     """Step 4: the fit of the handoff folder, written to the card ``card``. With ``prune``
     (a distance in metres), a first fit to level 0 takes out the scan's pieces further than
@@ -332,7 +345,7 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False):
             folder,
             detail=detail,
             name=config.name,
-            options=FitOptions(verbose=verbose),
+            options=FitOptions(verbose=verbose, **_fit_options(config.fit)),
             start_pose=config.pose,
             solid=config.solid,
         )
