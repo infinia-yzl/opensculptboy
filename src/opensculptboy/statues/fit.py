@@ -41,27 +41,43 @@ SOLID_REACH = 0.015
 SOLID_LIP_SHIFT = 0.012
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
 BORDER_RINGS = 2
+# and the scan's vertices within this distance (metres) of them
+BORDER_REACH = 0.012
 
 
-def open_border(vertices: np.ndarray, triangles: np.ndarray, rings: int = BORDER_RINGS):
+def open_border(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    rings: int = BORDER_RINGS,
+    reach: float = BORDER_REACH,
+):
     """The vertices (V,) bool on the open borders of a mesh (the edges of one triangle, the
-    cuts where supports came off and the holes of a scan) and ``rings`` rings around them,
-    with the vertices at one position welded."""
+    cuts where supports and a hat came off and the holes of a scan), ``rings`` rings around
+    them and every vertex within ``reach`` (metres) of them, with the vertices at one
+    position welded: a dense scan has many rings within a millimetre."""
+    from scipy.spatial import cKDTree
+
     from opensculptboy.fit.register import welded_ids
 
+    V = np.asarray(vertices, dtype=np.float64)
     T = np.asarray(triangles)
-    ids = welded_ids(np.asarray(vertices, dtype=np.float64))
+    ids = welded_ids(V)
     W = ids[T]
     edges = np.sort(np.concatenate([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]]), 1)
     unique, counts = np.unique(edges, axis=0, return_counts=True)
     on = np.zeros(ids.max() + 1, bool)
     on[unique[counts == 1].ravel()] = True
+    edge = on[ids]
     for _ in range(rings):
         grown = on.copy()
         touched = on[W].any(1)
         grown[W[touched].ravel()] = True
         on = grown
-    return on[ids]
+    out = on[ids]
+    if reach > 0 and edge.any():
+        d, _ = cKDTree(V[edge]).query(V, distance_upper_bound=reach)
+        out |= np.isfinite(d)
+    return out
 
 
 def _subtree(model, first: str) -> np.ndarray:

@@ -287,9 +287,11 @@ class TestBorders(unittest.TestCase):
         from opensculptboy.statues.fit import open_border
 
         V, T = _grid()
-        edge = open_border(V, T, rings=0)
+        edge = open_border(V, T, rings=0, reach=0.0)
         self.assertEqual(edge.sum(), 40)  # the 4 * 10 vertices around the patch
-        self.assertEqual(open_border(V, T, rings=1).sum(), 40 + 32)
+        self.assertEqual(open_border(V, T, rings=1, reach=0.0).sum(), 40 + 32)
+        # the grid is 1 cm apart: 12 mm reach one ring in from the border
+        self.assertEqual(open_border(V, T, rings=0, reach=0.012).sum(), 40 + 32)
 
     def test_pairs_on_the_border_drop_out(self):
         from opensculptboy.fit.register import Target
@@ -297,7 +299,7 @@ class TestBorders(unittest.TestCase):
 
         V, T = _grid()
         reference = Reference.from_mesh(V, T, {"crown": [0.05, 0.05, 0.0]})
-        target = Target(reference, border=open_border(V, T, rings=0))
+        target = Target(reference, border=open_border(V, T, rings=0, reach=0.0))
         points = np.array([[0.05, 0.05, 0.003], [0.12, 0.05, 0.001], [0.12, 0.05, 0.0]])
         _, _, _, off = target.closest(points, edge=True)
         # above the middle: kept; past the border along the surface: dropped
