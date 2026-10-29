@@ -110,6 +110,10 @@ def region_distances(
     S = np.asarray(surface_vertices, dtype=np.float64)
     ST = np.asarray(surface_triangles, dtype=np.int64)
     measured = regions >= 0
+    used = np.unique(ST)
+    remap = np.full(len(S), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    S, ST = S[used], remap[ST]
     _, _, forward = closest_triangles(V[measured], S, ST)
     forward_all = np.full(len(V), np.nan)
     forward_all[measured] = forward

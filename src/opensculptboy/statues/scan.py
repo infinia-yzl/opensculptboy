@@ -226,8 +226,9 @@ def plinth_top(
 
 def _plinth_surface(V: np.ndarray, edges: np.ndarray, k: int, height: float) -> float:
     """The height of the plinth's top within the slabs around slab ``k``, where its
-    footprint fell: the highest of the points below slab ``k + 1`` that lie away from the
-    feet (the points of slabs ``k + 1`` and ``k + 2`` seen from above)."""
+    footprint fell: among the points below slab ``k + 1`` that lie away from the feet (the
+    points of slabs ``k + 1`` and ``k + 2`` seen from above), the highest height that many
+    of them share."""
     from scipy.spatial import cKDTree
 
     z = V[:, 2]
@@ -239,7 +240,13 @@ def _plinth_surface(V: np.ndarray, edges: np.ndarray, k: int, height: float) -> 
     plinth = low[distance > 0.03 * height]
     if len(plinth) == 0:
         return float(edges[k])
-    return float(np.percentile(plinth[:, 2], 99.5))
+    # the plinth's top is flat and holds many points at one height; a stump or a strut
+    # rising from it spreads few points over many heights
+    width = 0.001 * height
+    bins = np.floor((plinth[:, 2] - plinth[:, 2].min()) / width).astype(np.int64)
+    counts = np.bincount(bins)
+    dense = np.nonzero(counts >= 0.2 * counts.max())[0]
+    return float(plinth[:, 2].min() + (dense.max() + 1) * width)
 
 
 @dataclasses.dataclass
