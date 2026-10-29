@@ -238,6 +238,9 @@ class TestAiPage(unittest.TestCase):
             self.status(tab, "The key works")
             # a refused key: plain words, without the key
             panel.locator(".seg button", has_text="OpenAI").click()
+            self.assertEqual(
+                panel.locator(".seg button[aria-pressed=true]").text_content(), "OpenAI"
+            )
             panel.locator("input.ai-key").fill(KEY_O)
             panel.locator("button", has_text="Save key").click()
             line = self.status(tab, "refused the key")

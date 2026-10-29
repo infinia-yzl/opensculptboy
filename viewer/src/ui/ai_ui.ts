@@ -33,7 +33,7 @@ export function aiPanel(): HTMLElement {
 
   const vault = pageVault();
   let provider: ProviderId = 'anthropic';
-  const pick = segmented('Provider', (Object.keys(PROVIDERS) as ProviderId[]).map((id) => ({ value: id, label: PROVIDERS[id].label })), (v) => { provider = v as ProviderId; hint(); }, 'seg-fill');
+  const pick = segmented('Provider', (Object.keys(PROVIDERS) as ProviderId[]).map((id) => ({ value: id, label: PROVIDERS[id].label })), (v) => { provider = v as ProviderId; pick.set(v); hint(); }, 'seg-fill');
   pick.set(provider);
   // type password: the key shows as dots; spellcheck off, so no spelling service ever sees it
   const field = h('input.cs-input.ai-key', { type: 'password', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'off', 'aria-label': 'API key', placeholder: 'Paste the API key' }) as HTMLInputElement;
