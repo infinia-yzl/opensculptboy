@@ -34,6 +34,9 @@ LOST_PARTS = {
 }
 # the nose: the skin within this distance (metres) of the tip of anny's nose (pronasale)
 NOSE_RADIUS = 0.014
+# a solid statue: the eye and mouth linings within this distance (metres) of the scan close
+# the openings
+SOLID_REACH = 0.025
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
 BORDER_RINGS = 2
 
@@ -173,13 +176,17 @@ def fit_statue(
     name: str | None = None,
     options=None,
     start_pose: str | None = "auto",
+    solid: bool = True,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
     :func:`~opensculptboy.fit.register.fit_reference` with the parts that ``statue.lost`` of
     appearance.json names left without data, the pairs on the scan's open borders dropped,
     and the parameter stage started from ``start_pose``: a pose of anny's library by name,
-    ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. Returns
+    ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. A
+    ``solid`` statue has carved eyes and closed lips: the fit closes anny's eye and mouth
+    openings on the scan and hides the eyeballs behind them (``FitOptions.close_openings``).
+    Returns
     the :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -193,6 +200,8 @@ def fit_statue(
     model = fit_model(options.topology)
     if lost:
         options = dataclasses.replace(options, no_data=lost_mask(model, lost))
+    if solid and options.close_openings == 0:
+        options = dataclasses.replace(options, close_openings=SOLID_REACH)
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)
     if start_pose and options.initial_pose is None:

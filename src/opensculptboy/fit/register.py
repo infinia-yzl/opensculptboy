@@ -312,6 +312,12 @@ class FitOptions:
     # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
     # theirs); None: the rest pose
     initial_pose: np.ndarray | None = None
+    # a solid figure (a statue: carved eyes and closed lips): after each level, the linings
+    # of the eye sockets and the mouth within this distance (metres) of the reference move
+    # onto it and close the openings, and anny's eyeballs shrink by eyeball_shrink about
+    # their centres behind them (0: openings kept)
+    close_openings: float = 0.0
+    eyeball_shrink: float = 0.6
     # the measures of metrics.measure, before and after the projection, in FitResult.measures
     measure: bool = True
     seed: int = 0
@@ -3369,6 +3375,17 @@ def fit_levels(
                 rotation,
                 translation,
             )
+        if options.close_openings > 0:
+            fitted, offsets[subdiv] = _close_openings(
+                model,
+                topology,
+                fitted,
+                offsets[subdiv],
+                parametric,
+                reference,
+                options,
+                (w, i, transforms, rotation, translation),
+            )
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3414,6 +3431,62 @@ def fit_levels(
         measures=measures,
         meshes=meshes,
     )
+
+
+def cavity_vertices(model) -> np.ndarray:
+    """Mask (V,) of the linings of the eye sockets and of the mouth (EXCLUDED_LABELS)."""
+    from anny.faces.authoring.base_mesh import base_mesh
+    from opensculptboy.topology.lookup import base_mesh_rows
+
+    mesh = base_mesh()
+    out_base = np.zeros(len(mesh.V), bool)
+    for label in EXCLUDED_LABELS:
+        out_base[np.unique(mesh.quads[mesh.face_labels == label])] = True
+    return out_base[base_mesh_rows(model)]
+
+
+def _close_openings(
+    model, topology, fitted, offsets, parametric, reference, options, skin
+):
+    """FitOptions.close_openings on one level: the posed vertices and the offsets."""
+    from opensculptboy.export.vrm_tables import eyeball_vertices
+
+    w, i, transforms, rotation, translation = skin
+    fitted = fitted.copy()
+    lining = np.asarray(topology.apply(cavity_vertices(model).astype(np.float64))) > 0.5
+    rows = np.nonzero(lining)[0]
+    C, _, d, _, _ = reference.closest(fitted[rows])
+    near = d < options.close_openings
+    fitted[rows[near]] = C[near]
+    moved = [rows[near]]
+    try:
+        eyes = eyeball_vertices(model)
+    except ValueError:
+        eyes = {}
+    for side_rows in eyes.values():
+        base = np.zeros(model.template_vertices.shape[0])
+        base[side_rows] = 1.0
+        mark = np.asarray(topology.apply(base)) > 0.5
+        eye = np.nonzero(mark)[0]
+        if len(eye):
+            centre = fitted[eye].mean(0)
+            fitted[eye] = centre + options.eyeball_shrink * (fitted[eye] - centre)
+            moved.append(eye)
+    changed = np.unique(np.concatenate(moved)) if moved else np.zeros(0, np.int64)
+    offsets = offsets.copy()
+    if len(changed):
+        offsets[changed] = (
+            R_.unpose(
+                fitted[changed],
+                w[changed],
+                i[changed],
+                transforms,
+                rotation,
+                translation,
+            )
+            - parametric[changed]
+        )
+    return fitted, offsets
 
 
 def _lift(offsets: np.ndarray, coarse, fine) -> np.ndarray:

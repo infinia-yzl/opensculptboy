@@ -289,8 +289,11 @@ class Mask:
     A region of the scan in Anny's frame (metres) and what it holds. ``kind`` is ``"box"``
     (``centre``, ``size``), ``"sphere"`` (``centre``, ``radius``), ``"half"`` (``point``,
     ``normal``: the side the normal points to), ``"capsule"`` (``start``, ``end``, ``radius``:
-    the points within ``radius`` of the segment, for a spear, a sword or a slanted strut) or
-    ``"vertices"`` (``indices`` into the scan's welded vertices). ``role`` is ``"support"``
+    the points within ``radius`` of the segment, for a spear, a sword or a slanted strut),
+    ``"cylinder"`` (``start``, ``end``, ``radius``: the points between the planes through
+    both ends and within ``radius`` of the axis, or beyond it with ``outside``, for a round
+    base or a hat's brim around the head) or ``"vertices"`` (``indices`` into the scan's
+    welded vertices). ``role`` is ``"support"``
     (a strut, a stump or the plinth: taken out), ``"break"`` (the face of a break where a
     part was lost: taken out, so that anny keeps its own shape there), ``"drapery"`` (kept as
     clothing, out of the fit) or ``"hair"`` (kept as a sculpted mass of its own, out of the
@@ -307,6 +310,7 @@ class Mask:
     indices: tuple | None = None
     start: tuple | None = None
     end: tuple | None = None
+    outside: bool = False
     name: str | None = None
 
     ROLES = ("support", "break", "drapery", "hair")
@@ -338,6 +342,14 @@ class Mask:
             ab = b - a
             t = np.clip((P - a) @ ab / max(ab @ ab, 1e-18), 0.0, 1.0)
             return np.linalg.norm(P - (a + t[:, None] * ab), axis=1) <= self.radius
+        if self.kind == "cylinder":
+            a = np.asarray(self.start, dtype=np.float64)
+            b = np.asarray(self.end, dtype=np.float64)
+            ab = b - a
+            t = (P - a) @ ab / max(ab @ ab, 1e-18)
+            r = np.linalg.norm(P - (a + t[:, None] * ab), axis=1)
+            within = (t >= 0.0) & (t <= 1.0)
+            return within & ((r > self.radius) if self.outside else (r <= self.radius))
         if self.kind == "half":
             normal = axis_vector(self.normal)
             return (P - np.asarray(self.point)) @ normal >= 0.0

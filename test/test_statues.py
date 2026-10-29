@@ -31,6 +31,7 @@ from opensculptboy.statues.scan import (
     guess_up,
     plinth_top,
 )
+from test.markers import local_only
 from test.statue_fixtures import (
     PLINTH,
     _model,
@@ -348,7 +349,10 @@ class TestPipeline(unittest.TestCase):
                 },
             )
             summary = run_statue(
-                config, tmp / "out", scans=tmp, steps=("convert", "preview")
+                config,
+                tmp / "out",
+                scans=tmp,
+                steps=("convert", "landmarks", "preview"),
             )
             root = tmp / "out" / "synthetic"
             self.assertTrue(summary["frame"]["plinth"])
@@ -363,6 +367,21 @@ class TestPipeline(unittest.TestCase):
             self.assertLess(gap, 0.012)
             self.assertEqual(appearance["landmarks"]["knee_l"], [0.1, 0.5, 0.0])
             self.assertTrue((root / "summary.json").exists())
+
+
+@local_only("MediaPipe's pose model")
+class TestDetectedLandmarks(unittest.TestCase):
+    def test_joints_from_pictures(self):
+        from opensculptboy.statues.landmarks import detect_landmarks
+
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        found = detect_landmarks(V, T)
+        for name in ("knee_l", "knee_r", "elbow_l", "elbow_r", "ankle_l", "ankle_r"):
+            with self.subTest(name):
+                self.assertIn(name, found)
+                gap = np.linalg.norm(found[name] - statue["landmarks"][name])
+                self.assertLess(gap, 0.06)
 
 
 class TestRegionDistances(unittest.TestCase):

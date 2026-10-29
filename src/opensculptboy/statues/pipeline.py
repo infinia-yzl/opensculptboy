@@ -33,11 +33,14 @@ closest one, or null for the rest pose.
 :func:`run_statue` runs the steps in order, each writing into ``<out>/<name>/``:
 
 1. ``convert``: :func:`~opensculptboy.statues.scan_to_handoff` into ``handoff/``.
-2. ``preview``: front and side pictures of the converted figure, the removed pieces, the
+2. ``landmarks``: joint and face landmarks found on pictures of the scan
+   (:mod:`opensculptboy.statues.landmarks`, the ``pose`` extra), with the config's hints over
+   them (``"auto_landmarks": false`` keeps the hints alone).
+3. ``preview``: front and side pictures of the converted figure, the removed pieces, the
    masked parts and the landmarks over a 10 cm grid (``preview/``).
-3. ``fit``: :func:`~opensculptboy.statues.fit_statue` to the config's detail level, the card
+4. ``fit``: :func:`~opensculptboy.statues.fit_statue` to the config's detail level, the card
    in ``card/<name>.json``.
-4. ``measure``: the distances per region of the figure between each level and the scan
+5. ``measure``: the distances per region of the figure between each level and the scan
    (``measures.json``), and the meshes for review in glTF's frame (``meshes/*.ply``).
 """
 
@@ -51,7 +54,7 @@ import time
 import numpy as np
 
 FORMAT = "opensculptboy.statue/1"
-STEPS = ("convert", "preview", "fit", "measure")
+STEPS = ("convert", "landmarks", "preview", "fit", "measure")
 
 
 @dataclasses.dataclass
@@ -71,6 +74,8 @@ class StatueConfig:
     masks: list = dataclasses.field(default_factory=list)
     lost: list = dataclasses.field(default_factory=list)
     landmarks: dict = dataclasses.field(default_factory=dict)
+    auto_landmarks: bool = True
+    solid: bool = True
     pose: str | None = "auto"
     detail: int = 2
     notes: str | None = None
@@ -168,21 +173,51 @@ def convert(config: StatueConfig, folder, scans=None):
         title=config.title or config.name,
         lost=config.lost,
     )
-    if config.landmarks:
-        from opensculptboy.fit.handoff import load_handoff
-
-        skin = load_handoff(folder).skin_parts()[0]
-        hints = {k: _anny([v])[0] for k, v in config.landmarks.items()}
-        marks = snap_landmarks(hints, skin.vertices, skin.triangles)
-        appearance_path = pathlib.Path(folder) / "appearance.json"
-        appearance = json.loads(appearance_path.read_text(encoding="utf-8"))
-        appearance["landmarks"].update(
-            {k: [float(x) for x in _gltf([v])[0]] for k, v in marks.items()}
-        )
-        appearance_path.write_text(
-            json.dumps(appearance, indent=2) + "\n", encoding="utf-8"
-        )
     return result
+
+
+def landmarks(config: StatueConfig, folder, out=None) -> dict:
+    """
+    Step 2: the landmarks of the converted figure, written into the handoff's appearance.json:
+    those that :func:`~opensculptboy.statues.landmarks.detect_landmarks` finds on pictures of
+    the scan when ``auto_landmarks`` is on, with the config's hints over them; the points of
+    the face snap onto the scan. ``out`` receives the pictures with the found points. Returns
+    the landmarks by name with where each came from.
+    """
+    from opensculptboy.fit.handoff import load_handoff
+
+    folder = pathlib.Path(folder)
+    skin = load_handoff(folder).skin_parts()[0]
+    found, sources = {}, {}
+    if config.auto_landmarks:
+        from opensculptboy.statues.landmarks import detect_landmarks
+
+        pictures = {}
+        try:
+            found = detect_landmarks(skin.vertices, skin.triangles, pictures)
+        except (ValueError, ImportError) as error:
+            sources["error"] = str(error)
+        if out is not None:
+            out = pathlib.Path(out)
+            out.mkdir(parents=True, exist_ok=True)
+            for label, image in pictures.items():
+                image.save(out / f"landmarks_{label}.png")
+        sources.update({k: "detected" for k in found})
+    hints = {k: _anny([v])[0] for k, v in (config.landmarks or {}).items()}
+    sources.update({k: "hint" for k in hints})
+    marks = snap_landmarks({**found, **hints}, skin.vertices, skin.triangles)
+    appearance_path = folder / "appearance.json"
+    appearance = json.loads(appearance_path.read_text(encoding="utf-8"))
+    appearance["landmarks"].update(
+        {k: [float(x) for x in _gltf([v])[0]] for k, v in marks.items()}
+    )
+    appearance_path.write_text(
+        json.dumps(appearance, indent=2) + "\n", encoding="utf-8"
+    )
+    return {
+        k: {"point": [float(x) for x in _gltf([marks[k]])[0]], "source": sources[k]}
+        for k in marks
+    } | ({"error": sources["error"]} if "error" in sources else {})
 
 
 def _grid_lines(image, view, points, size, margin, step=0.1):
@@ -202,11 +237,13 @@ def _grid_lines(image, view, points, size, margin, step=0.1):
     font = _font(max(10, size[0] // 40))
     xy, _ = view.project(points)
     lo, hi = xy.min(0), xy.max(0)
+    digits = 1 if step >= 0.1 else 2
+    label_every = 1 if step >= 0.1 else 2
     for v in np.arange(np.floor(lo[1] / step) * step, hi[1] + step, step):
         y = -v * s + oy
         strong = abs(v / step - round(v / step * 0.5) * 2) < 1e-6
         paint.line([(0, y), (size[0], y)], fill=(40, 90, 160, 110 if strong else 50))
-        paint.text((2, y - 12), f"y {v:.1f}", (40, 90, 160), font)
+        paint.text((2, y - 12), f"y {v:.{digits}f}", (40, 90, 160), font)
     for u in np.arange(np.floor(lo[0] / step) * step, hi[0] + step, step):
         x = u * s + ox
         paint.line([(x, 0), (x, size[1])], fill=(160, 70, 40, 60))
@@ -288,6 +325,7 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False):
         name=config.name,
         options=FitOptions(verbose=verbose),
         start_pose=config.pose,
+        solid=config.solid,
     )
     card = pathlib.Path(card)
     card.parent.mkdir(parents=True, exist_ok=True)
@@ -402,6 +440,8 @@ def run_statue(
                 "triangles": converted.triangles,
                 "scale": converted.scale,
             }
+        elif step == "landmarks":
+            summary["landmarks"] = landmarks(config, folder, root / "preview")
         elif step == "preview":
             summary["preview"] = preview(config, folder, root / "preview")
         elif step == "fit":
