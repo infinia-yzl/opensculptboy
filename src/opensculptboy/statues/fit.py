@@ -363,9 +363,13 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
     return counts
 
 
-# the regions whose skin a statue's hat or fused locks may cover: the face and the ears keep
-# their data, so that the cheeks meet the locks where the scan joins them
-COVER_REGIONS = ("scalp", "neck")
+# the regions whose skin a statue's hat may cover, and those that fused locks may cover: the
+# face and the ears beside the locks keep their data, so that the cheeks meet the locks where
+# the scan joins them
+COVER_REGIONS = {
+    "clothing": ("scalp", "ears", "neck", "face"),
+    "hair": ("scalp", "neck"),
+}
 # a vertex is covered when a hair or drapery piece lies this much (metres) nearer to it than
 # the skin, and the skin is further than COVER_SKIN
 COVER_MARGIN = 0.002
@@ -419,15 +423,20 @@ def covered_skin(folder, result, model=None) -> int:
     marked = np.zeros(len(V), bool)
     if covers:
         regions = statue_regions(model)
-        head = np.isin(regions, [STATUE_REGIONS.index(r) for r in COVER_REGIONS])
-        head[excluded_vertices(model)] = False
-        rows = np.nonzero(head[: len(V)])[0]
+        excluded = excluded_vertices(model)[: len(V)]
+        rows = np.nonzero(~excluded)[0]
         _, _, d_skin = closest_triangles(V[rows], skin.vertices, skin.triangles)
-        d_cover = np.full(len(rows), np.inf)
+        nearest = {}
         for part in covers:
             _, _, d = closest_triangles(V[rows], part.vertices, part.triangles)
-            d_cover = np.minimum(d_cover, d)
-        marked[rows] = (d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN)
+            nearest[part.role] = np.minimum(nearest.get(part.role, np.inf), d)
+        for role, d_cover in nearest.items():
+            head = np.isin(
+                regions[rows], [STATUE_REGIONS.index(r) for r in COVER_REGIONS[role]]
+            )
+            marked[rows] |= (
+                head & (d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN)
+            )
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
     appearance.setdefault("statue", {})["covered"] = np.nonzero(marked)[0].tolist()
