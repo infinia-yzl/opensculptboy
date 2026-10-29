@@ -438,6 +438,23 @@ class TestRegionDistances(unittest.TestCase):
         self.assertGreater(cut["regions"]["hands"]["far"], 0.3)
         self.assertLess(cut["regions"]["torso"]["far"], 0.01)
 
+    def test_under_cover(self):
+        import trimesh
+
+        from opensculptboy.statues.compare import under_cover
+
+        hat = trimesh.creation.icosphere(4, radius=0.1)
+        rng = np.random.default_rng(0)
+        d = rng.normal(size=(200, 3))
+        d /= np.linalg.norm(d, axis=1)[:, None]
+        skull = np.r_[d[:150] * 0.09, d[150:] * 0.11]
+        regions = np.full(200, STATUE_REGIONS.index("scalp"))
+        regions[:10] = STATUE_REGIONS.index("face")
+        result = under_cover(skull, regions, ("scalp",), hat.vertices, hat.faces)
+        self.assertEqual(result["vertices"], 190)
+        self.assertAlmostEqual(result["outside"], 50 / 190, places=3)
+        self.assertAlmostEqual(result["below"]["median"], 10.0, delta=0.2)
+
 
 class TestSolid(unittest.TestCase):
     def test_meeting_line(self):

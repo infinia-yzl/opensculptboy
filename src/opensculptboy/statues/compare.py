@@ -159,3 +159,35 @@ def region_distances(
             forward_all[regions == k], reverse[reverse_regions == k]
         )
     return out
+
+
+def under_cover(
+    vertices: np.ndarray,
+    regions: np.ndarray,
+    names,
+    cover_vertices: np.ndarray,
+    cover_triangles: np.ndarray,
+    through: float = 0.002,
+) -> dict:
+    """
+    How the fitted vertices of the regions ``names`` sit under a cover (the whole statue: its
+    skin with its hair and drapery pieces): the share of them more than ``through`` (metres)
+    outside it, by the cover's normal at the closest point, and the distance (mm) below it.
+    Where a hat and fused locks cover the skull, the fit has no data and fills the skull with
+    anny's own shape: that fill must stay under the hat and the locks.
+    """
+    import trimesh
+
+    keep = np.isin(regions, [STATUE_REGIONS.index(n) for n in names])
+    if not keep.any():
+        return {"vertices": 0, "outside": None, "below": None}
+    cover = trimesh.Trimesh(cover_vertices, cover_triangles, process=False)
+    points = np.asarray(vertices, np.float64)[keep]
+    closest, distance, face = trimesh.proximity.closest_point(cover, points)
+    side = ((points - closest) * cover.face_normals[face]).sum(1)
+    out = side > through
+    return {
+        "vertices": int(keep.sum()),
+        "outside": round(float(out.mean()), 4),
+        "below": _stats(distance[~out]),
+    }

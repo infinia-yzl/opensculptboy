@@ -364,6 +364,7 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         carry_regions,
         region_distances,
         statue_regions,
+        under_cover,
     )
 
     out = pathlib.Path(out)
@@ -409,6 +410,18 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         },
         "stages": {},
     }
+    # the whole statue over the skull: the skin with its hair and drapery pieces
+    covers = [
+        p for p in handoff.parts if not p.is_skin and p.role in ("hair", "clothing")
+    ]
+    cover = None
+    if covers:
+        pieces = [skin] + covers
+        base = np.cumsum([0] + [len(p.vertices) for p in pieces[:-1]])
+        cover = (
+            np.concatenate([p.vertices for p in pieces]),
+            np.concatenate([p.triangles + b for p, b in zip(pieces, base)]),
+        )
     for name, (V, T) in stages.items():
         level = 0 if name == "parametric" else int(name[len("level") :])
         regions = (
@@ -419,6 +432,10 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         report["stages"][name] = region_distances(
             V, T, regions, skin.vertices, skin.triangles
         )
+        if cover is not None:
+            report["stages"][name]["under_cover"] = under_cover(
+                V, regions, ("scalp",), *cover
+            )
         save(f"fitted_{name}", V, T)
     (out / "measures.json").write_text(
         json.dumps(report, indent=1, default=float) + "\n", encoding="utf-8"
