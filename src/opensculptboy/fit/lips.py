@@ -385,9 +385,9 @@ def meeting_line(
     lower = lower[np.argsort(lower[:, 0])]
     x0 = max(upper[0, 0], lower[0, 0])
     x1 = min(upper[-1, 0], lower[-1, 0])
-    xs = np.arange(x0, x1 + 0.5 * step, step)
-    if len(xs) < 3:
+    if x1 - x0 < 2 * step:
         return None
+    xs = np.linspace(x0, x1, int(np.ceil((x1 - x0) / step)) + 1)
     a = np.stack([np.interp(xs, upper[:, 0], upper[:, k]) for k in range(3)], 1)
     b = np.stack([np.interp(xs, lower[:, 0], lower[:, k]) for k in range(3)], 1)
     line = 0.5 * (a + b)

@@ -134,9 +134,12 @@ def detect_landmarks(
             continue
         x, z = front[name]
         if name in FACE or name not in side:
-            # depth from the surface: the front-most point of the figure under the pixel
-            near = np.linalg.norm(V[:, [0, 2]] - [x, z], axis=1) < 0.01
-            if not near.any():
+            # depth from the surface under the pixel: the front-most point of the face, the
+            # middle of a limb; a joint that the side picture hides (the far leg) or that
+            # MediaPipe put beside the limb takes the nearest vertices within 5 cm
+            gap = np.linalg.norm(V[:, [0, 2]] - [x, z], axis=1)
+            near = gap < max(0.01, float(np.partition(gap, 29)[29]))
+            if gap.min() > 0.05:
                 continue
             y = V[near, 1].min() if name in FACE else V[near, 1].mean()
         else:

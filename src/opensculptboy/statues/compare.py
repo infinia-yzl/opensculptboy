@@ -176,15 +176,18 @@ def under_cover(
     Where a hat and fused locks cover the skull, the fit has no data and fills the skull with
     anny's own shape: that fill must stay under the hat and the locks.
     """
-    import trimesh
+    from anny.hair import closest_triangles
 
     keep = np.isin(regions, [STATUE_REGIONS.index(n) for n in names])
     if not keep.any():
         return {"vertices": 0, "outside": None, "below": None}
-    cover = trimesh.Trimesh(cover_vertices, cover_triangles, process=False)
+    V = np.asarray(cover_vertices, np.float64)
+    T = np.asarray(cover_triangles)
     points = np.asarray(vertices, np.float64)[keep]
-    closest, distance, face = trimesh.proximity.closest_point(cover, points)
-    side = ((points - closest) * cover.face_normals[face]).sum(1)
+    face, bary, distance = closest_triangles(points, V, T)
+    closest = np.einsum("nk, nkd -> nd", bary, V[T[face]])
+    a, b, c = (V[T[face, k]] for k in range(3))
+    side = ((points - closest) * np.cross(b - a, c - a)).sum(1)
     out = side > through
     return {
         "vertices": int(keep.sum()),
