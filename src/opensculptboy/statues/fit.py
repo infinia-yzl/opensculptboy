@@ -110,9 +110,10 @@ def lost_mask(model, names, rest_vertices: np.ndarray | None = None) -> np.ndarr
 def library_start(model, reference, names=None, samples: int = 6000, seed: int = 0):
     """
     The pose of anny's library (:mod:`anny.poses`) that comes closest to the reference, as
-    the parameter stage's start: each pose on a body of the reference's height, standing on
-    the floor and centred over the reference, scored by the mean distance both ways between
-    its vertices and points of the reference (a chamfer distance, in metres). Returns the
+    the parameter stage's start: each pose on anny's default body, standing on the floor,
+    centred over the reference and scaled to its height, scored by the mean of the nearest
+    90 % of the distances both ways between its vertices and points of the reference (a
+    trimmed chamfer distance, in metres). Returns the
     name, the (B, 3, 3) rotations and the scores by name. The reference stands upright in
     Anny's frame and faces -Y, as :func:`~opensculptboy.statues.scan_to_handoff` writes it.
     """
@@ -124,46 +125,36 @@ def library_start(model, reference, names=None, samples: int = 6000, seed: int =
     R = reference.vertices
     target = R[rng.choice(len(R), min(samples, len(R)), replace=False)]
     target_tree = cKDTree(target)
-    best_height, gap = 0.5, None
-    with torch.no_grad():
-        for h in np.linspace(0.0, 1.0, 11):
-            rest = model(phenotype_kwargs={"height": float(h)})["rest_vertices"][0]
-            g = abs(float(np.ptp(rest[:, 2].numpy())) - float(np.ptp(R[:, 2])))
-            if gap is None or g < gap:
-                best_height, gap = float(h), g
-    phenotype = {"height": best_height}
+    height = float(np.ptp(R[:, 2]))
+
+    def placed(V):
+        # on the floor, centred over the reference and scaled to its height, so that the
+        # score compares the poses alone
+        V = V[rng.choice(len(V), min(samples, len(V)), replace=False)]
+        V = V - [*V[:, :2].mean(0), V[:, 2].min()]
+        V = V * (height / max(np.ptp(V[:, 2]), 1e-9))
+        return V + [*target[:, :2].mean(0), R[:, 2].min()]
+
+    def score(V):
+        # the mean of the nearest 90 % of the distances both ways: a hat or a stump left in
+        # the scan weighs little
+        a = np.sort(cKDTree(V).query(target)[0])
+        b = np.sort(target_tree.query(V)[0])
+        return float(a[: int(0.9 * len(a))].mean() + b[: int(0.9 * len(b))].mean())
+
     library = anny.poses.library()
     names = list(names or library.names("pose"))
     scores, poses = {}, {}
+    with torch.no_grad():
+        V = model()["vertices"][0].double().numpy()
+    scores["rest"] = score(placed(V))
+    poses["rest"] = np.eye(3)[None].repeat(len(model.bone_labels), 0)
     for name in names:
-        posed = anny.poses.pose_parameters(model, name, phenotype_kwargs=phenotype)
+        posed = anny.poses.pose_parameters(model, name)
         V = posed["vertices"][0].double().numpy()
-        if V.ndim == 3:
-            V = V[0]
-        V = V[rng.choice(len(V), min(samples, len(V)), replace=False)]
-        V = V + [
-            *(target[:, :2].mean(0) - V[:, :2].mean(0)),
-            R[:, 2].min() - V[:, 2].min(),
-        ]
-        forward = cKDTree(V).query(target)[0].mean()
-        backward = target_tree.query(V)[0].mean()
-        scores[name] = float(forward + backward)
+        scores[name] = score(placed(V))
         poses[name] = posed["pose_parameters"][0, :, :3, :3].double().numpy()
     best = min(scores, key=scores.get)
-    rest = np.eye(3)[None].repeat(len(model.bone_labels), 0)
-    if "rest" not in scores:
-        with torch.no_grad():
-            V = model(phenotype_kwargs=phenotype)["vertices"][0].double().numpy()
-        V = V[rng.choice(len(V), min(samples, len(V)), replace=False)]
-        V = V + [
-            *(target[:, :2].mean(0) - V[:, :2].mean(0)),
-            R[:, 2].min() - V[:, 2].min(),
-        ]
-        scores["rest"] = float(
-            cKDTree(V).query(target)[0].mean() + target_tree.query(V)[0].mean()
-        )
-        poses["rest"] = rest
-        best = min(scores, key=scores.get)
     return best, poses[best], scores
 
 
