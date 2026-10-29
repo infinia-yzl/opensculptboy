@@ -3433,6 +3433,11 @@ def fit_levels(
     )
 
 
+# the mouth's lining that FitOptions.close_openings moves: its rows within this distance
+# (metres) of the skin, the inner side of the lips
+MOUTH_FRONT = 0.008
+
+
 def cavity_vertices(model) -> np.ndarray:
     """Mask (V,) of the linings of the eye sockets and of the mouth (EXCLUDED_LABELS)."""
     from anny.faces.authoring.base_mesh import base_mesh
@@ -3448,30 +3453,76 @@ def cavity_vertices(model) -> np.ndarray:
 def _close_openings(
     model, topology, fitted, offsets, parametric, reference, options, skin
 ):
-    """FitOptions.close_openings on one level: the posed vertices and the offsets."""
+    """
+    FitOptions.close_openings on one level: the posed vertices and the offsets. Each opening
+    (an eye, the mouth) closes along its own forward direction (from the eyeball's centre, or
+    the mouth's lining, to the opening): every lining vertex within ``close_openings`` of the
+    opening moves onto the first point of the reference in front of it, as a ray from behind
+    the lining finds it, so that the lining takes the reference's own surface there (a carved
+    eyeball, closed lips) without folding. The eyeballs shrink behind it.
+    """
+    import trimesh
+
     from opensculptboy.export.vrm_tables import eyeball_vertices
 
     w, i, transforms, rotation, translation = skin
     fitted = fitted.copy()
-    lining = np.asarray(topology.apply(cavity_vertices(model).astype(np.float64))) > 0.5
-    rows = np.nonzero(lining)[0]
-    C, _, d, _, _ = reference.closest(fitted[rows])
-    near = d < options.close_openings
-    fitted[rows[near]] = C[near]
-    moved = [rows[near]]
+    base_lining = cavity_vertices(model).astype(np.float64)
+    lining = np.asarray(topology.apply(base_lining)) > 0.5
+    n0 = model.template_vertices.shape[0]
     try:
         eyes = eyeball_vertices(model)
     except ValueError:
         eyes = {}
+    groups, moved = [], []
+    eye_rows = []
     for side_rows in eyes.values():
-        base = np.zeros(model.template_vertices.shape[0])
+        base = np.zeros(n0)
         base[side_rows] = 1.0
-        mark = np.asarray(topology.apply(base)) > 0.5
-        eye = np.nonzero(mark)[0]
-        if len(eye):
-            centre = fitted[eye].mean(0)
-            fitted[eye] = centre + options.eyeball_shrink * (fitted[eye] - centre)
-            moved.append(eye)
+        eye = np.nonzero(np.asarray(topology.apply(base)) > 0.5)[0]
+        if not len(eye):
+            continue
+        centre = fitted[eye].mean(0)
+        near = np.nonzero(lining & (np.linalg.norm(fitted - centre, axis=1) < 0.03))[0]
+        if len(near):
+            forward = fitted[near].mean(0) - centre
+            groups.append((near, forward))
+        eye_rows.append((eye, centre))
+    taken = np.zeros(len(fitted), bool)
+    for rows, _ in groups:
+        taken[rows] = True
+    mouth = np.nonzero(lining & ~taken)[0]
+    if len(mouth):
+        # the mouth's lining near its opening: the rows nearest the skin around the lips
+        from scipy.spatial import cKDTree
+
+        outside = np.nonzero(~lining)[0]
+        d, _ = cKDTree(fitted[outside]).query(fitted[mouth])
+        front = mouth[d < MOUTH_FRONT]
+        if len(front):
+            forward = fitted[front].mean(0) - fitted[mouth].mean(0)
+            groups.append((front, forward))
+    surface = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
+    for rows, forward in groups:
+        forward = forward / max(np.linalg.norm(forward), 1e-12)
+        origins = fitted[rows] - options.close_openings * forward
+        hits, ray, _ = surface.ray.intersects_location(
+            origins, np.repeat(forward[None], len(rows), 0), multiple_hits=True
+        )
+        best = np.full(len(rows), np.inf)
+        target = fitted[rows].copy()
+        if len(ray):
+            depth = (hits - origins[ray]) @ forward
+            for k in np.argsort(depth):
+                r = ray[k]
+                if depth[k] > 0 and depth[k] < best[r]:
+                    best[r], target[r] = depth[k], hits[k]
+        ok = best < 3.0 * options.close_openings
+        fitted[rows[ok]] = target[ok]
+        moved.append(rows[ok])
+    for eye, centre in eye_rows:
+        fitted[eye] = centre + options.eyeball_shrink * (fitted[eye] - centre)
+        moved.append(eye)
     changed = np.unique(np.concatenate(moved)) if moved else np.zeros(0, np.int64)
     offsets = offsets.copy()
     if len(changed):
