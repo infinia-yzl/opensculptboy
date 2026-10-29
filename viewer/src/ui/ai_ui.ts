@@ -22,7 +22,8 @@ export function aiPanel(): HTMLElement {
   if (!support.ok) {
     body.append(h('p.note', { text: support.message }));
     if (support.command) {
-      const code = h('code.ai-code', { text: support.command });
+      // each word of the command on one line: the lines break at spaces only, never after a hyphen of an option
+      const code = h('code.ai-code', {}, ...support.command.split(' ').flatMap((w, i) => [i ? ' ' : '', h('span.ai-word', { text: w })]));
       body.append(h('div.ai-cmd', {}, code, textButton('Copy', async () => say((await copyText(support.command!)) ? 'Copied.' : 'Select the command and copy it.'))));
     }
     if (support.url && support.code !== 'file-page') body.append(h('a.note', { href: support.url, text: support.url }));
