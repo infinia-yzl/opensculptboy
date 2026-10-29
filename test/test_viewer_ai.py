@@ -200,7 +200,10 @@ class TestAiPage(unittest.TestCase):
             tab.goto(f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off")
             self.open_panel(tab)
             panel = tab.locator(".ai-panel")
-            self.assertIsNone(tab.evaluate(DUMP))  # no database before setup
+            # no record before setup (the panel may have opened the empty database)
+            panel.locator("button", has_text="Set up passkey").wait_for()
+            first = tab.evaluate(DUMP)
+            self.assertIn(first and first["counts"], (None, {"keys": 0, "passkeys": 0}))
             # set up the passkey: the vault opens
             panel.locator("button", has_text="Set up passkey").click()
             self.status(tab, "Passkey ready")
