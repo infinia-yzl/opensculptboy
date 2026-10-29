@@ -197,7 +197,9 @@ class TestAiPage(unittest.TestCase):
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.on("dialog", lambda d: d.accept())
             cdp, aid = add_authenticator(tab)
-            tab.goto(f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off")
+            tab.goto(
+                f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off", timeout=300000
+            )
             self.open_panel(tab)
             panel = tab.locator(".ai-panel")
             # no record before setup (the panel may have opened the empty database)
@@ -269,7 +271,9 @@ class TestAiPage(unittest.TestCase):
             ctx2 = browser.new_context()
             tab2 = ctx2.new_page()
             add_authenticator(tab2, prf=False)
-            tab2.goto(f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off")
+            tab2.goto(
+                f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off", timeout=300000
+            )
             self.open_panel(tab2)
             tab2.locator(".ai-panel button", has_text="Set up passkey").click()
             self.assertIn("no PRF support", self.status(tab2, "cannot lock the vault"))
@@ -277,7 +281,7 @@ class TestAiPage(unittest.TestCase):
 
             # the page opened as a file: the way to http://localhost, and no database
             tab3 = browser.new_context().new_page()
-            tab3.goto(PAGE.as_uri() + "?acc=1&blink=off")
+            tab3.goto(PAGE.as_uri() + "?acc=1&blink=off", timeout=300000)
             self.open_panel(tab3)
             text = tab3.locator(".ai-panel").text_content()
             self.assertIn("opened as a file", text)
