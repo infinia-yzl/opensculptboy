@@ -2,7 +2,8 @@
 // Apache License, Version 2.0
 //
 // The New character screen (N, or New in the top bar), as the design's New screen lays it out: the statue starters
-// in two kinds (Finished: a fitted card with its sculpted detail, from beside the page; Light: the page's sliders and
+// in two kinds (Finished: a fitted card with its sculpted detail, from beside the page, the first choice when it is
+// there; Light: the page's sliders and
 // library parts, a few kilobytes), the libraries (skin, eyes, hair and wear) with Start from the base, and your own
 // 3D model, which the Open path reads when OpenSculptBoy wrote it and else explains the fit. Under them: Open a card,
 // Continue with the character shown, and Random.
@@ -12,15 +13,16 @@ import { useShell } from '../context.ts';
 import { useUI } from '../hooks.ts';
 import { actions } from '../state.ts';
 import { FIT_DOCS } from '../open.ts';
-import { finishedUrl } from '../../starters.ts';
+import { finishedPicture, finishedUrl } from '../../starters.ts';
+import { STARTER_THUMBS } from '../../starter_thumbs.ts';
 import { STONES, stoneSwatch } from '../../stones.ts';
 import { Button } from './ui/button.tsx';
 import { Icon } from './ui/icon.tsx';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog.tsx';
 import { Tip } from './ui/tooltip.tsx';
 
-// the picture of each starter's pose in its slot
-const POSE_ICON: Record<string, string> = { weight_shift: 'statue', mh_pointing: 'pose', mh_thinking: 'silhouette', ready: 'throw', mh_step: 'walk', mh_at_ease: 'taichi' };
+// the picture of each starter in its slot: its rendered thumbnail (starter_thumbs.ts), else an icon of its pose
+const POSE_ICON: Record<string, string> = { spear_bearer: 'statue', orator: 'pose', muse: 'silhouette', athlete: 'throw', huntress: 'walk', guardian: 'taichi' };
 
 export function NewScreen() {
   const { legacy } = useShell();
@@ -38,7 +40,13 @@ export function NewScreen() {
     let live = true;
     Promise.all(legacy.starters.map(async (s) => {
       try { const r = await fetch(finishedUrl(s), { method: 'HEAD' }); return [s.id, r.ok] as const; } catch (e) { return [s.id, false] as const; }
-    })).then((rs) => { if (live) setFinished(Object.fromEntries(rs)); });
+    })).then((rs) => {
+      if (!live) return;
+      const there = Object.fromEntries(rs);
+      setFinished(there);
+      // a finished statue beside the page is the first choice
+      if (there[pick]) setKind('finished');
+    });
     return () => { live = false; };
   }, [open, legacy]);
   const S = legacy.starters.find((s) => s.id === pick) || legacy.starters[0];
@@ -72,10 +80,14 @@ export function NewScreen() {
             <div className="new-slots" role="radiogroup" aria-label="Statues">
               {legacy.starters.map((s) => {
                 const st = STONES.find((x) => x.id === s.light.skin.stone) || STONES[0];
+                // the finished kind shows the picture that came with its .zip
+                const pic = kind === 'finished' && finished[s.id] ? finishedPicture(s) : STARTER_THUMBS[s.id];
                 return (
                   <button key={s.id} type="button" role="radio" className="osb-slot new-slot" aria-checked={s.id === pick} aria-pressed={s.id === pick} data-starter={s.id}
                     onClick={() => setPick(s.id)} onDoubleClick={() => legacy.startStarter(s.id, kind)}>
-                    <span className="osb-slot-pic new-slot-pic" style={{ background: stoneSwatch(st) }}><Icon name={POSE_ICON[s.pose] || 'statue'} size={72} /></span>
+                    <span className="osb-slot-pic new-slot-pic" style={pic ? undefined : { background: stoneSwatch(st) }}>
+                      {pic ? <img src={pic} alt="" /> : <Icon name={POSE_ICON[s.id] || 'statue'} size={72} />}
+                    </span>
                     <span className="new-slot-name">{s.name}</span>
                     <span className="osb-note new-slot-stone">{st.label}</span>
                   </button>

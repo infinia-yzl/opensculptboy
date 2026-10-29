@@ -291,6 +291,8 @@ varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying 
 // the hair over the skin (anny.hair.styles.density_volume, on anny's default head): occlusion, the density near the
 // scalp, and the cover of the scalp by strands long enough to shade it (fades and short cuts); both tint the scalp
 uniform highp sampler3D uHairOcc; uniform vec3 uHairOccLo; uniform vec3 uHairOccSize; uniform float uHairOn; uniform mat4 uHeadInv;
+// a statue's hair: the skin under the hair style rises to the outside of the style's volume, a sculpted mass in stone
+uniform float uStoneHair; varying float vHairMass;
 #ifdef CARD_SKIN
 // a character card's baked skin: the UV of anny's atlas (glTF convention) with the head tile's island in z (the
 // card's maps replace the baked colour and the pores, whose attributes stay out of the shader)
@@ -326,6 +328,24 @@ void main() {
     // the tint needs roots under it: hair that lies on the neck or the chest leaves the skin as it is
     vA.w = hv.z * max(0.75, smoothstep(0.08, 0.45, hv.y));
   }
+  // a statue's hair: where the style's hair lies outward of the skin (its occlusion), the skin rises along its normal
+  // to the outside of the hair's volume, so the hair is carved in the stone as one mass
+  vHairMass = 0.0;
+  if (uStoneHair > 0.5) {
+    vec3 hq0 = (uHeadInv * vec4(wp.xyz, 1.0)).xyz;
+    vec3 nh = normalize(mat3(uHeadInv) * vN);
+    float occ0 = textureLod(uHairOcc, (hq0 + nh * 0.002 - uHairOccLo) / uHairOccSize, 0.0).r;
+    if (occ0 < 0.93) {
+      float off = 0.0;
+      for (int i = 1; i <= 16; i++) {
+        float d = float(i) * 0.004;
+        if (textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r < 0.93) off = d;
+      }
+      float w = smoothstep(0.93, 0.7, occ0);
+      wp.xyz += vN * (off * 0.85 + 0.002) * w;
+      vWPos = wp.xyz; vHairMass = w;
+    }
+  }
   // contact shade from the wearables that are on (one slot each)
   vec4 wz = mix(vec4(1.0), attrW, uWearOn);
   vA.x *= wz.x * wz.y * wz.z * wz.w;
@@ -351,6 +371,7 @@ uniform float uTrans; uniform float uFuzz; uniform float uUnd;
 uniform vec3 uSkinTint; uniform vec3 uScalpCol; uniform vec3 uScalp0; uniform float uMelanin;
 uniform vec4 uKnA[28]; uniform vec4 uKnB[28];
 uniform vec4 uEyeL; uniform vec4 uEyeR;
+varying float vHairMass;
 varying vec3 vWPos; varying vec3 vN; varying vec3 vNs; varying vec3 vAlb; varying vec3 vObj; varying vec4 vA; varying vec4 vB; varying vec4 vC; varying vec4 vD; varying vec3 vAx;
 varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying vec3 vHOut;
 #ifdef CARD_SKIN
@@ -579,7 +600,17 @@ void main() {
 #ifdef CARD_SKIN
     Nst = Nd;
 #endif
-    outColor = vec4(stoneLight(stoneAlbedo(vObj), Nst, V, L, Lr, vis, ao * hocc, rimOcc), 1.0);
+    vec3 alb = stoneAlbedo(vObj);
+    // the carved locks of a statue's hair: rounded ridges of noise with darker grooves between them
+    float hm = clamp(vHairMass, 0.0, 1.0);
+    if (hm > 0.01) {
+      vec3 q = vObj * 70.0, e = vec3(0.05, 0.0, 0.0);
+      float c = gnoise(q) + 0.5 * gnoise(q * 2.1 + 3.7);
+      vec3 g = vec3(gnoise(q + e.xyy) - gnoise(q - e.xyy), gnoise(q + e.yxy) - gnoise(q - e.yxy), gnoise(q + e.yyx) - gnoise(q - e.yyx)) / 0.1;
+      Nst = normalize(Nst - (g - Nst * dot(g, Nst)) * 0.22 * hm);
+      alb *= mix(1.0, 0.86 + 0.14 * smoothstep(-0.4, 0.3, c), hm);
+    }
+    outColor = vec4(stoneLight(alb, Nst, V, L, Lr, vis, ao * hocc, rimOcc), 1.0);
     outSSS = vec4(0.0);
     return;
   }

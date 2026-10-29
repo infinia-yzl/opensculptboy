@@ -154,7 +154,25 @@ class TestFramePage(unittest.TestCase):
             )
             self.assertEqual(first["look"]["name"], "Spear Bearer")
             self.assertEqual(first["look"]["skin"]["stone"], "carrara")
-            self.assertEqual(first["clip"], "weight_shift")
+            self.assertEqual(first["clip"], "starter:spear_bearer")
+            # the light card of a statue's fit gives the starter its sliders, its face and its pose (a card's pose is
+            # each bone's turn in anny's frame, and the card of the pose shown gives it back)
+            turn = [0.0, 0.0, 0.258819, 0.965926]
+            fitted = tab.evaluate(
+                "(q) => { window.showStarter('spear_bearer', { name: 'Fitted', phenotype: { muscle: 0.3 },"
+                " face_shapes: { 'nose-hump': 0.5 }, pose: { bones: { 'upperarm01.L': q } } });"
+                " return { look: window.__look(), clip: window.viewState().clip, card: window.poseCard() }; }",
+                turn,
+            )
+            self.assertEqual(fitted["clip"], "card:Fitted")
+            self.assertEqual(fitted["look"]["name"], "Fitted")
+            self.assertEqual(fitted["look"]["skin"]["stone"], "carrara")
+            self.assertAlmostEqual(fitted["look"]["phenotype"]["muscle"], 0.3)
+            self.assertEqual(fitted["look"]["face"], {"nose-hump": 0.5})
+            self.assertEqual(sorted(fitted["card"]["pose"]["bones"]), ["upperarm01.L"])
+            for a, b in zip(fitted["card"]["pose"]["bones"]["upperarm01.L"], turn):
+                self.assertAlmostEqual(a, b, delta=2e-4)
+            tab.evaluate("() => window.showStarter('spear_bearer')")
             self.assertIn("Meet the Spear Bearer", tab.locator(".welcome").inner_text())
             # the figure stands between the top bar and the view bar at every framing and angle
             bars = tab.evaluate(

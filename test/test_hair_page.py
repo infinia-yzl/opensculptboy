@@ -87,7 +87,7 @@ class TestHairPage(unittest.TestCase):
             tab.on("console", shader_errors)
             tab.goto(PAGE.resolve().as_uri() + "?shot=1&acc=1")
             tab.wait_for_function(
-                "window.__READY && window.__BODY.ready", timeout=900000
+                "() => window.__READY && window.__BODY.ready", timeout=900000
             )
             if not tab.evaluate("() => typeof window.hairRest === 'function'"):
                 browser.close()

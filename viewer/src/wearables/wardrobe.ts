@@ -59,7 +59,8 @@ export function wornPieces(card: any, info: (ref: string) => PieceInfo, choices:
   const replacers = entries.filter((e) => shown[e.ref] && (e.outfit === null || e.outfit !== active)).map((e) => e.ref);
   for (const ref of replacers) {
     const slot = info(ref).slot;
-    if (slot === 'accessory') continue;
+    // accessories and a statue's props (its base, a stump, what it holds) sit beside the others of their slot
+    if (slot === 'accessory' || slot === 'prop') continue;
     const source = entries[refs.indexOf(ref)].outfit;
     for (const o of entries)
       if (o.ref !== ref && shown[o.ref] && o.outfit !== source && info(o.ref).slot === slot && !replacers.includes(o.ref)) shown[o.ref] = false;

@@ -28,7 +28,7 @@ import { Hair } from './hair/gpu.ts';
 import { COLLIDERS, fitColliders } from './hair/colliders.ts';
 import { STRAND_VS } from './hair/glsl.ts';
 import { initUI } from './ui/index.ts';
-import { Retargeter, adjustHead, cardBones, quaternions, type M3, type RestBody, type V3 } from './pose_from_image.ts';
+import { Retargeter, adjustHead, cardBones, quaternions, rotation, type M3, type RestBody, type V3 } from './pose_from_image.ts';
 import { detect as detectPicture } from './picture.ts';
 import { gunzipSync } from 'fflate';
 import { silhouetteSvg } from './flat.ts';
@@ -40,7 +40,7 @@ import { FACE_GLSL, FaceMorph, faceUniforms } from './face/morph.ts';
 import { QueryPool, setQueryPool } from './wearables/pool.ts';
 import { stoneOf, stoneRoughness } from './stones.ts';
 import { withLookBlock } from './card/file.ts';
-import { DEFAULT_STARTER, STARTERS } from './starters.ts';
+import { DEFAULT_STARTER, STARTERS, lightLook } from './starters.ts';
 
 const qs = new URLSearchParams(location.search);
 const DEG = Math.PI / 180;
@@ -325,7 +325,7 @@ const U = {
   // the head's pose: from world space back to the rest pose of the head, and the head's rotation
   uHeadInv: { value: new THREE.Matrix4() }, uHeadRot: { value: new THREE.Matrix3() },
   // the density volume of the hair (anny.hair.styles.density_volume): occlusion and scalp tint of the skin under it
-  uHairOcc: { value: null }, uHairOccLo: { value: new THREE.Vector3() }, uHairOccSize: { value: new THREE.Vector3(1, 1, 1) }, uHairOn: { value: 0 },
+  uHairOcc: { value: null }, uHairOccLo: { value: new THREE.Vector3() }, uHairOccSize: { value: new THREE.Vector3(1, 1, 1) }, uHairOn: { value: 0 }, uStoneHair: { value: 0 },
 };
 Object.assign(U, BG);
 const FLOAT_RT = renderer.extensions.has('EXT_color_buffer_float');
@@ -1197,6 +1197,9 @@ function initWardrobe() {
       // the card's look block (schema 5) sets the skin, the hair and the eyes; a card without one shows skin
       const L = Object.assign({}, currentLook, { name: card.name || currentLook.name, phenotype, face: Object.assign({}, card.face_shapes || {}) });
       syncBody(() => applyLook(withLookBlock(L, card.look), false));
+      // a card with a still pose stands in it
+      const pose = cardPose(card);
+      if (pose) setMotion(pose, { instant: true });
     },
     changed: () => { shadowsDirty = true; resetAccum(); },
   });
@@ -2310,9 +2313,13 @@ let currentLook: any = JSON.parse(JSON.stringify(BASELINE_LOOK));
 let hairWanted = true;
 // a card's look (card/look.ts) hides the page's hair, and the brows and lashes that its maps and parts replace
 let CARD_PARTS: { hair: boolean; brows: boolean; lashes: boolean } | null = null;
-function hairShown() { return hairWanted && (!CARD_PARTS || CARD_PARTS.hair); }
+// a statue (a stone of the library) shows its hair as a mass carved in the stone (the skin shader's uStoneHair), and
+// the page's strands leave the picture
+function hairShown() { return hairWanted && (!CARD_PARTS || CARD_PARTS.hair) && U.uStone.value.w < 0.5; }
 function updateHairVisibility() {
-  const hairOn = hairWanted && (!CARD_PARTS || CARD_PARTS.hair);
+  const stone = U.uStone.value.w > 0.5;
+  const hairOn = hairWanted && (!CARD_PARTS || CARD_PARTS.hair) && !stone;
+  U.uStoneHair.value = stone && !!U.uHairOcc.value && hairWanted && (!CARD_PARTS || CARD_PARTS.hair) && currentLook.hair.style !== 'bald' && !!HAIR ? 1 : 0;
   const carved = U.uStone.value.w > 0.5;   // a statue's brows and lashes are carved: the page's leave it
   LOOK_PARTS.hairMeshes.forEach((m: any, i: number) => { m.visible = !WEIGHTS.on && (i === 0 ? hairOn : !carved && (i === 1 ? !CARD_PARTS || CARD_PARTS.brows : !CARD_PARTS || CARD_PARTS.lashes)); });
   U.uHairOn.value = hairOn && HAIR ? 1 : 0;
@@ -2601,7 +2608,10 @@ async function init() {
   if (MOTION.cur) {
     const rm = SHOT ? null : loadRememberedMotion();
     if (rm) { MOTION.playing = rm.playing !== false; MOTION.speed = rm.speed || 1; }
-    const first = starter && MOTION.byName[starter.pose] ? starter.pose : 'a_pose';
+    const first = starter ? starterPose(starter.id, starter.name, starter.pose) : 'a_pose';
+    // a starter's pose of the last visit is built again
+    const rs = rm && typeof rm.name === 'string' && rm.name.startsWith('starter:') ? STARTERS.find((x) => 'starter:' + x.id === rm.name) : null;
+    if (rs) starterPose(rs.id, rs.name, rs.pose);
     setMotion(rm && MOTION.byName[rm.name] ? rm.name : first, { instant: true, remember: false });
     if (!SHOT) { const f = bodyFrameFor(MOTION.cur); placeCamera(f.yaw, f.pitch, frameDistance(f), ...f.target); MOTION.lastFramed = MOTION.cur; }
   }
@@ -2621,6 +2631,7 @@ async function init() {
   document.body.classList.add('ready');
   (window as any).__ready = true;
   if (!SHOT) animate();
+  if (starter) UI.firstStarter(starter.id);
 }
 function nextFrame() { return new Promise<void>(r => requestAnimationFrame(() => r())); }
 
@@ -3152,6 +3163,49 @@ function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
   c.label = label;
   for (let i = 0; i < nb * 4; i++) MOTION.Q[c.start * nb * 4 + i] = Math.round(Math.max(-1, Math.min(1, q[i] ?? (i % 4 === 3 ? 1 : 0))) * 32767);
 }
+// the pose of a starter (src/starters.ts): a pose of the library with some bones turned about the world's axes
+// (degrees about x, the figure's left, y, up, and z, forward, in that order), each turn taken in the pose as the
+// turns before it left it, so a turn of the upper arm carries the forearm and the hand; written as a pose clip
+// 'starter:<id>' of the page's motion
+function starterPose(id: string, label: string, def: { base: string; turns?: [string, number[]][] }): string {
+  const base = MOTION.byName[def.base] || MOTION.byName.a_pose;
+  if (!base || !RIG.ready || !MOTION.nb) return def.base;
+  const nb = MOTION.nb, q = new Float32Array(nb * 4), root = [0, 0, 0], P = RIG.parents;
+  sampleClip(base, 0, q, root);
+  const names: string[] = RIG.bones.map((b: any) => b.name);
+  const local = (i: number) => new THREE.Quaternion(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]);
+  const world = (i: number): any => (P[i] < 0 ? local(i) : world(P[i]).multiply(local(i)));
+  for (const [bone, deg] of def.turns || []) {
+    const i = names.indexOf(bone);
+    if (i < 0 || i >= nb) continue;
+    const T = new THREE.Quaternion().setFromEuler(new THREE.Euler(deg[0] * DEG, (deg[1] || 0) * DEG, (deg[2] || 0) * DEG, 'XYZ'));
+    const Wp = P[i] < 0 ? new THREE.Quaternion() : world(P[i]);
+    const l = Wp.clone().invert().multiply(T).multiply(Wp).multiply(local(i)).normalize();
+    q[i * 4] = l.x; q[i * 4 + 1] = l.y; q[i * 4 + 2] = l.z; q[i * 4 + 3] = l.w;
+  }
+  const name = 'starter:' + id;
+  writePoseFrame(name, label, q);
+  return name;
+}
+// the still pose of a character card (opensculptboy.Character.pose: each bone's turn relative to its parent as a
+// quaternion in anny's frame, the inverse of cardBones), as a pose clip 'card:<name>' of the page's motion; null for a
+// card without one. Bones that the page's rig lacks are left out.
+function cardPose(card: any): string | null {
+  const bones = card?.pose?.bones;
+  if (!bones || typeof bones !== 'object' || !Object.keys(bones).length || !RIG.ready || !MOTION.nb) return null;
+  const nb = MOTION.nb, q = new Float32Array(nb * 4), names: string[] = RIG.bones.map((b: any) => b.name);
+  for (let i = 0; i < nb; i++) q[i * 4 + 3] = 1;
+  for (const [bone, v] of Object.entries<any>(bones)) {
+    const i = names.indexOf(bone);
+    if (i < 0 || i >= nb || !Array.isArray(v) || v.length !== 4 || !v.every(Number.isFinite)) continue;
+    const n = Math.hypot(v[0], v[1], v[2], v[3]);
+    if (!n) continue;
+    q.set(quaternions([rotation(v.map((x: number) => x / n))], ANNY_TO_PAGE), i * 4);
+  }
+  const name = 'card:' + (card.name || 'character');
+  writePoseFrame(name, card.name ? `${card.name}'s pose` : "The card's pose", q);
+  return name;
+}
 function sheetHold(on: boolean) {
   if (on === SHEET.hold || !RIG.ready) return;
   if (on) {
@@ -3440,6 +3494,8 @@ const APP: any = {
   setSpeed: (s: number) => { MOTION.speed = s; rememberMotion(); HOOKS.motion(); },
   seek: (t: number) => { MOTION.t = t; evalMotion(); },
   poseFromPicture: (file: Blob) => poseFromPicture(file),
+  starterPose: (id: string, label: string, def: any) => starterPose(id, label, def),
+  cardPose: (card: any) => cardPose(card),
   pictureHead: () => (PICTURE.W ? { ...PICTURE.head } : null),
   setPictureHead,
   poseCard,
@@ -3596,6 +3652,17 @@ window.__BODY = BODY;
 // anny's sliders from a test: returns the times of the update (ms)
 window.setSliders = (v) => syncBody(() => { applyLook(Object.assign({}, currentLook, { phenotype: Object.assign({}, currentLook.phenotype, v) }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming }; });
 window.__look = () => currentLook;
+// a starter of the New screen in its light kind and its pose (src/starters.ts), for the thumbnails' script
+// (viewer/starter_thumbnails.py) and the page tests; card: the starter's light card (starters.ts lightCardUrl), if any
+window.showStarter = (id: string, card: any = null) => syncBody(() => {
+  const st = STARTERS.find((x) => x.id === id);
+  if (!st) return false;
+  applyLook(normaliseLook(lightLook(st, card)), false);
+  setMotion(cardPose(card) || starterPose(st.id, st.name, st.pose), { instant: true, remember: false });
+  return true;
+});
+// the character card of the figure as it stands (Pose's card), for the page tests of the card poses
+window.poseCard = () => poseCard();
 // the figure on the screen, for the page tests of the framing: the top of its head and its lowest point (CSS pixels)
 window.figureOnScreen = () => {
   camera.updateMatrixWorld(); camera.updateProjectionMatrix();

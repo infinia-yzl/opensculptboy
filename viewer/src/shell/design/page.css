@@ -539,3 +539,4 @@ body[data-width="phone"] .osb-swatch-line .osb-sw--custom { width: 36px; height:
 /* the key of a mode shows on hover over the mode's corner, so the lintel keeps its width and the modes stay in place */
 .osb-modes .osb-mode { position: relative; }
 .osb-modes .osb-mode > .osb-hint { position: absolute; right: 4px; top: 4px; }
+.new-slot-pic img { display: block; height: 100%; width: auto; max-width: 100%; margin: 0 auto; object-fit: contain; }

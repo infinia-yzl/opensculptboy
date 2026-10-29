@@ -3,8 +3,8 @@
 //
 // The Dress mode's section in React: the open card's outfits and wearable packages (the page reads them from the
 // user's own files through the Open path, shell/open.ts, and sends nothing), every piece with a switch (a piece of
-// another outfit takes its slot), the covered-skin switch, a line in plain words of what the dress did, the numbers
-// behind a Details fold, and a card's eyes (its blinks). The section repaints when the wardrobe finishes a full dress;
+// another outfit takes its slot) and a statue's props as switches of their own, the covered-skin switch, a line in
+// plain words of what the dress did, the numbers behind a Details fold, and a card's eyes (its blinks). The section repaints when the wardrobe finishes a full dress;
 // the quick dress of a slider edit leaves it as it is.
 
 import { useState, useSyncExternalStore } from 'react';
@@ -65,9 +65,12 @@ export function DressSection({ shown }: { shown: boolean }) {
   const groups: [string, PieceRow[]][] = [];
   if (loaded) {
     const add = (title: string, list: PieceRow[]) => { if (list.length) groups.push([title, list]); };
-    add('Worn outfit', rows.filter((r) => r.outfit !== null && r.outfit === worn));
-    add('Loose pieces', rows.filter((r) => r.outfit === null));
-    for (const o of W!.outfits()) if (o.id !== worn) add(o.label, rows.filter((r) => r.outfit === o.id));
+    // a statue's props (pieces of the slot prop: its base, a stump, what it holds) first, as switches of their own
+    const props = rows.filter((r) => r.slot === 'prop' && (r.outfit === null || r.outfit === worn)), other = rows.filter((r) => !props.includes(r));
+    add('Props', props);
+    add('Worn outfit', other.filter((r) => r.outfit !== null && r.outfit === worn));
+    add('Loose pieces', other.filter((r) => r.outfit === null));
+    for (const o of W!.outfits()) if (o.id !== worn) add(o.label, other.filter((r) => r.outfit === o.id));
   }
   const st = loaded ? W!.stats() : null, t = (st?.timing || {}) as any;
   const repaint = () => setRev((r) => r + 1);

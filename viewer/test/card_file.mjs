@@ -6,15 +6,17 @@
 // It checks the card's look block both ways (src/card/file.ts), Save card's card of the page's character and of an
 // open card with its files, the files that a card names, a .zip written and read again (stored, and deflated by
 // node's zlib as other tools write it), the card in the scene extras of a GLB and of a .gltf, the stone library
-// (src/stones.ts) and the starters (src/starters.ts). It writes OUT/card.json and OUT/card_open.json for the Python
-// side to read with opensculptboy.character.Character, and prints a JSON summary. A failed check throws.
+// (src/stones.ts), the starters (src/starters.ts) with the files of a statue's fit, and a statue's props in their
+// slot. It writes OUT/card.json and OUT/card_open.json for the Python side to read with
+// opensculptboy.character.Character, and prints a JSON summary. A failed check throws.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { CARD_SCHEMA, cardInGltf, cardOf, crc32, lookBlock, namedFiles, needsFiles, readZip, withLookBlock, writeZip } from '../src/card/file.ts';
 import { STONES, stoneOf, stoneRoughness } from '../src/stones.ts';
-import { STARTERS, STONE_HAIR } from '../src/starters.ts';
+import { STARTERS, STONE_HAIR, finishedPicture, finishedUrl, lightCardUrl, lightLook } from '../src/starters.ts';
+import { wornPieces } from '../src/wearables/wardrobe.ts';
 
 const out = process.argv[2] || '.';
 fs.mkdirSync(out, { recursive: true });
@@ -108,5 +110,23 @@ for (const s of STARTERS) {
   assert.ok(STONES.some((x) => x.id === s.light.skin.stone), s.id);
   assert.ok(!/\b(woman|man|girl|boy|youth|old|young|child)\b/i.test(s.name + ' ' + s.description), s.id);
 }
+// the files of a statue's fit beside the page, and its light card over the table: sliders and face, the stone kept
+const spear = STARTERS.find((s) => s.id === 'spear_bearer');
+assert.deepEqual([finishedUrl(spear), finishedPicture(spear), lightCardUrl(spear)], ['starters/doryphoros.zip', 'starters/doryphoros.png', 'starters/doryphoros.light.json']);
+assert.equal(finishedUrl(STARTERS.find((s) => s.id === 'muse')), 'starters/muse.zip');
+const fitted = lightLook(spear, { name: 'Doryphoros', phenotype: { muscle: 0.9 }, face_shapes: { 'nose-hump': 0.1 } });
+assert.equal(fitted.name, 'Doryphoros');
+assert.equal(fitted.phenotype.muscle, 0.9);
+assert.equal(fitted.phenotype.height, spear.light.phenotype.height);
+assert.deepEqual(fitted.face, { 'nose-hump': 0.1 });
+assert.equal(fitted.skin.stone, 'carrara');
+assert.deepEqual(lightLook(spear, null), spear.light);
+assert.notEqual(lightLook(spear, null), spear.light);
+// a statue's props sit beside each other in their slot, as accessories do; another slot's loose piece replaces
+const slots = { base: 'prop', stump: 'prop', sword: 'prop', tunic: 'torso', vest: 'torso' };
+const statue = { name: 'statue', outfits: [{ id: 'statue', pieces: [{ piece: 'base', file: 'b' }, { piece: 'stump', file: 's' }, { piece: 'tunic', file: 't' }] }],
+  active_outfit: 'statue', wearables: [{ id: 'sword', file: 'w', enabled: true }, { id: 'vest', file: 'v', enabled: true }] };
+const worn = wornPieces(statue, (ref) => ({ slot: slots[ref.split('/').pop()], hides: [] })).map((p) => p.ref);
+assert.deepEqual(worn.sort(), ['statue/base', 'statue/stump', 'sword', 'vest']);
 fs.writeFileSync(path.join(out, 'starters.json'), JSON.stringify(STARTERS.map((s) => cardOf(s.light))));
 console.log(JSON.stringify({ ok: true, zip: zip.length, starters: STARTERS.length }));

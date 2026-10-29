@@ -20,7 +20,7 @@ import { sheetController } from '../sheet/controller.ts';
 import { stageSections } from './stage_ui.ts';
 import { wearLoader } from '../shell/sections/DressSection.tsx';
 import { cardOf, writeZip } from '../card/file.ts';
-import { STARTERS, starterById, finishedUrl } from '../starters.ts';
+import { STARTERS, starterById, finishedUrl, lightCardUrl, lightLook, type Starter } from '../starters.ts';
 import { stoneOf } from '../stones.ts';
 import { makeStats, type Stats } from './stats.ts';
 import { toast } from './toast.ts';
@@ -30,7 +30,7 @@ import { mountShell } from '../shell/Shell.tsx';
 import type { Legacy } from '../shell/context.ts';
 import { flushSync } from 'react-dom';
 
-export interface UI { hooks: Hooks; nav: CameraNav; stats: Stats }
+export interface UI { hooks: Hooks; nav: CameraNav; stats: Stats; firstStarter: (id: string) => Promise<void> }
 
 const rgb = (c: number[]) => `rgb(${c.map((v) => Math.round(v * 255)).join(',')})`;
 
@@ -103,7 +103,14 @@ export function initUI(app: App): UI {
     download(`${name}.zip`, new Blob([writeZip(entries) as BlobPart], { type: 'application/zip' }));
     toast(`Saved the card with ${entries.length - 1} files`);
   };
-  // a starter of the New screen: the light kind from the page, the finished kind from beside the page when it is there
+  // a starter of the New screen: the light kind from the page (with the light card of its statue's fit when one lies
+  // beside the page), the finished kind from beside the page when it is there
+  const besidePage = (s: Starter) => !!s.statue && location.protocol !== 'file:';
+  const lightCard = async (s: Starter) => {
+    if (!besidePage(s)) return null;
+    try { const r = await fetch(lightCardUrl(s)); return r.ok ? await r.json() : null; } catch (e) { return null; }
+  };
+  const hasPose = (card: any) => !!card?.pose?.bones && Object.keys(card.pose.bones).length > 0;
   const startStarter = async (id: string, kind: 'light' | 'finished') => {
     const s = starterById(id);
     if (!s) return;
@@ -111,18 +118,28 @@ export function initUI(app: App): UI {
       try {
         const r = await fetch(finishedUrl(s));
         if (!r.ok) throw new Error(String(r.status));
-        const f = new File([await r.arrayBuffer()], s.id + '.zip');
-        if (await opener.open([{ path: f.name, file: f }])) { if (app.clips().some((c) => c.name === s.pose)) app.setMotion(s.pose); return; }
+        const f = new File([await r.arrayBuffer()], (s.statue || s.id) + '.zip');
+        // the fitted card stands in its own pose
+        if (await opener.open([{ path: f.name, file: f }]) && !hasPose(app.wardrobe()?.card)) app.setMotion(app.starterPose(s.id, s.name, s.pose));
         return;
       } catch (e) {
         toast(`The finished ${s.name} comes with the statue cards. The light ${s.name} is shown.`);
       }
     }
+    const card = await lightCard(s);
     app.wardrobe()?.unload();
-    ed.commit(s.name, JSON.parse(JSON.stringify(s.light))); ed.origin = s.name;
-    if (app.clips().some((c) => c.name === s.pose)) app.setMotion(s.pose);
+    ed.commit(card?.name || s.name, lightLook(s, card)); ed.origin = s.name;
+    app.setMotion((hasPose(card) && app.cardPose(card)) || app.starterPose(s.id, s.name, s.pose));
     actions.hideNew();
     if (ui.get().welcome) actions.dismissWelcome();
+  };
+  // a first visit shows the light starter from the page's table at once, then the finished statue when its .zip lies
+  // beside the page, or else the light card of its fit
+  const firstStarter = async (id: string) => {
+    const s = starterById(id);
+    if (!s || !besidePage(s)) return;
+    try { if ((await fetch(finishedUrl(s), { method: 'HEAD' })).ok) return await startStarter(id, 'finished'); } catch (e) { /* not there */ }
+    if (await lightCard(s)) await startStarter(id, 'light');
   };
   const startBase = () => {
     app.wardrobe()?.unload();
@@ -379,5 +396,5 @@ export function initUI(app: App): UI {
     passEnd: () => stats.passEnd(),
     interacted: () => { /* the welcome card stays until it is closed */ },
   };
-  return { hooks, nav, stats };
+  return { hooks, nav, stats, firstStarter };
 }

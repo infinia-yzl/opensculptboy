@@ -79,6 +79,10 @@ export interface App {
   setMotion(name: string): void;
   // the pose from a picture (MediaPipe loads on first use), and the character card and silhouette of the pose shown
   poseFromPicture(file: Blob): Promise<{ hands: number }>;
+  // the pose of a starter (src/starters.ts): its clip, made from a pose of the library and turns of some bones
+  starterPose(id: string, label: string, def: { base: string; turns?: [string, number[]][] }): string;
+  // the still pose of a character card as a pose clip, or null for a card without one
+  cardPose(card: any): string | null;
   // the head's correction of the picture's pose (degrees: turn to the right, up, tilt to the right), null before a picture
   pictureHead(): { turn: number; up: number; tilt: number } | null;
   setPictureHead(head: { turn: number; up: number; tilt: number }): void;
