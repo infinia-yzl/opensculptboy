@@ -304,7 +304,7 @@ def export_glb(
                 vertices,
                 offsets,
                 [t.name for t in targets],
-                card_blink_poses(character, detail, detail_dir),
+                card_blink_poses(character, detail, detail_dir, vertices),
             )
             if blinks is not None:
                 targets = targets + blink_targets(blinks)

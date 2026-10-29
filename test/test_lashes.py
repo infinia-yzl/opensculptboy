@@ -242,6 +242,77 @@ class TestLashMesh(unittest.TestCase):
                         side_of = ((outer - x[near]) * normals[near]).sum(1)
                         self.assertGreater((side_of > 0).mean(), 0.95)
 
+    def test_upper_lashes_in_front(self):
+        # the upper lashes stay in front of the lids at every weight of a blink, along the
+        # path with the in-between (GLB) and along the straight line (VRM), as they lie at
+        # rest (0.3 mm out, or nearer where their roots lie nearer)
+        names = ["eyeBlinkLeft", "eyeBlinkRight"]
+        offsets = np.stack([self.targets[n] for n in names])
+        weights = np.round(np.arange(0.05, 1.0001, 0.05), 2)
+        for inbetween in (True, False):
+            shaped, blinks = B.blink_offsets(
+                self.eyed, self.rest, offsets, names, None, inbetween
+            )
+            full = B.blink_lash_offsets(
+                self.eyed, blinks, self.rest, self.eyed.targets(shaped)
+            )
+            for side in ("L", "R"):
+                lids, row = blinks.lids[side], blinks.rows[side]
+                shape = blinks.shapes[side]
+                extra = blinks.inbetween_rows.get(side)
+                for p, rows in B.lash_rows(self.eyed, side):
+                    if p.lid != UPPER:
+                        continue
+                    for t in weights:
+                        a, b = B.played(t, inbetween)
+                        lid = self.rest + b * shape.closed
+                        lash = p.rest + b * full[row, rows]
+                        if extra is not None:
+                            lid = lid + a * (shape.inbetween + 0.5 * shape.closed)
+                            lash = lash + a * (
+                                full[extra, rows] + 0.5 * full[row, rows]
+                            )
+                        depth, _ = B.lash_penetration(
+                            lids, lid, self.rest, lash, p.rest
+                        )
+                        with self.subTest(inbetween=inbetween, side=side, t=t):
+                            self.assertLessEqual(depth, 0.02)
+
+    def test_lashes_in_front_pushes_out(self):
+        # a lash point that a closing lid would cover moves out along the skin's normal,
+        # in the poses that play it at that weight
+        names = ["eyeBlinkLeft", "eyeBlinkRight"]
+        shaped, blinks = B.blink_offsets(
+            self.eyed, self.rest, np.stack([self.targets[n] for n in names]), names
+        )
+        shape = blinks.shapes["L"]
+        part = next(p for p, _ in B.lash_rows(self.eyed, "L") if p.lid == UPPER)
+        lids = blinks.lids["L"]
+        # every lash point pushed 2 mm into the eye in the closed pose: the push takes them
+        # out of the lids again
+        inward = -B._radial(lids.frame, part.rest) * 0.002
+        closed, between = B.lashes_in_front(
+            part,
+            self.rest,
+            (shape.closed, shape.inbetween),
+            (inward, -0.5 * inward),
+            True,
+        )
+        lid = self.rest + shape.closed
+        depth, _ = B.lash_penetration(
+            lids, lid, self.rest, part.rest + closed, part.rest
+        )
+        self.assertLessEqual(depth, 0.02)
+        before, _ = B.lash_penetration(
+            lids, lid, self.rest, part.rest + inward, part.rest
+        )
+        self.assertGreater(before, 0.5)
+        # the half-closed pose is untouched at rest: nothing moves at weight 0
+        self.assertEqual(B.played(0.0, True), (0.0, 0.0))
+        self.assertEqual(B.played(0.5, True), (1.0, 0.0))
+        self.assertEqual(B.played(1.0, True), (0.0, 1.0))
+        self.assertEqual(B.played(0.3, False), (0.0, 0.3))
+
     def test_squint_and_look_down(self):
         # a squint and a look down move the upper lid without rolling its edge: the lashes
         # turn with the margin's frame alone (the blinks set their own turn); measured as

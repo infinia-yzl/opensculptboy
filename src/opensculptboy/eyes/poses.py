@@ -19,6 +19,13 @@ into the card's rest frame by the rigid motion of the fitted head. The reference
 :func:`opensculptboy.eyes.lashes.reference_lashes`) take the same poses with their own skin,
 so the lids and the lashes close as one piece. The exports take these poses as the blink
 targets (:func:`opensculptboy.eyes.blink.blink_offsets`).
+
+A detail level takes level 0's poses by its subdivision, and its relief (its detail offsets
+beyond level 0's, such as a fitted lid's rim and crease) flattens where the lid moves
+(:data:`FLATTEN`): the skin of a closing lid stretches over the eye, and the reference's
+closed lid is smooth where its open lid holds a crease. Kept in its rest direction on a lid
+that turns about the eye, the relief showed as lumps, and the folded skin of the crease as
+tears.
 """
 
 from __future__ import annotations
@@ -37,6 +44,15 @@ HALF = {"L": "half_l", "R": "half_r"}
 # centre in full, and fades out to none at FADE_OUT
 FADE_IN = 1.8
 FADE_OUT = 2.4
+# a detail level's relief flattens on the rows that a pose moves, in full on those that move
+# this far (metres) and by a smooth step on those that move less (:func:`flatten_relief`):
+# the whole moving lid flattens as one piece, and the step lies where the motion fades out
+FLATTEN = 0.0002
+# the rows within this share of an eyeball's radius from its centre at rest (the lining of the
+# lids, tucked into the socket behind their margins, and the margins on the eye) keep their
+# relief, those beyond SOCKET_OUT flatten in full, and a smooth step lies between
+SOCKET_IN = 1.0
+SOCKET_OUT = 1.1
 # a vertex whose carried motion stands out of its neighbours' mean by more than ROUGH
 # (metres) plus ROUGH_SHARE of the size of that mean is a rough spot: next to a fold of the
 # reference's skin (the crease of the upper lid) two neighbouring vertices can find their
@@ -391,11 +407,14 @@ def card_eye_poses(character, detail_dir=None) -> EyePoses | None:
     return EyePoses.load(pathlib.Path(detail_dir or ".") / name)
 
 
-def card_blink_poses(character, detail=None, detail_dir=None) -> dict | None:
+def card_blink_poses(character, detail=None, detail_dir=None, rest=None) -> dict | None:
     """
     The reference's blinks of a card on the mesh of a file: side to :class:`BlinkPose`, with
-    offsets of the file's base mesh (``detail``, a resolved detail level, carries level 0's
-    offsets to its own vertices), or None for a card without them.
+    offsets of the file's base mesh, or None for a card without them. On a detail level
+    (``detail``, a resolved detail level), level 0's offsets go to the level's vertices by
+    the level's subdivision, and the level's relief (:func:`level_relief`) flattens where
+    the lids move (:func:`flatten_relief`), except on the lining of the lids inside the
+    eyeballs (:func:`socket_keep`, from the file's rest vertices ``rest`` (N, 3) when given).
     """
     poses = card_eye_poses(character, detail_dir)
     if poses is None:
@@ -407,11 +426,64 @@ def card_blink_poses(character, detail=None, detail_dir=None) -> dict | None:
         operators = detail.topology.operators
         if operators:  # the poses hold the rows of level 0
             check_rows(blinks, operators[0].shape[1])
+        relief = level_relief(character, detail, detail_dir) if operators else None
+        if relief is not None and rest is not None:
+            relief = relief * (1.0 - socket_keep(character, detail, rest))[:, None]
         for pose in blinks.values():
             pose.closed = detail.targets(pose.closed[None])[0]
             if pose.half is not None:
                 pose.half = detail.targets(pose.half[None])[0]
+            if relief is not None:
+                pose.closed = flatten_relief(pose.closed, relief)
+                if pose.half is not None:
+                    pose.half = flatten_relief(pose.half, relief)
     return blinks
+
+
+def level_relief(character, detail, detail_dir=None) -> np.ndarray:
+    """The relief (N, 3) of a detail level: its detail offsets less level 0's offsets
+    subdivided, the part of its shape that level 0's eye poses do not move."""
+    from opensculptboy.detail import character_offsets
+
+    topology = detail.topology
+    out = np.zeros((topology.vertex_count, 3))
+    if detail.offsets is not None:
+        out += np.asarray(detail.offsets, dtype=np.float64)
+    level0 = character_offsets(character, 0, detail_dir)
+    if level0 is not None:
+        out -= np.asarray(topology.apply(np.asarray(level0, dtype=np.float64)))
+    return out
+
+
+def socket_keep(character, detail, rest) -> np.ndarray:
+    """The share (N,) of a detail level's relief that its rows keep in a blink: 1 within
+    :data:`SOCKET_IN` eyeball radii of an eyeball's centre (fitted to the level's eyeball rows
+    at ``rest``), where the lining of the lids tucks into the socket behind their margins and
+    would come out in front of the closed lid, 0 beyond :data:`SOCKET_OUT`."""
+    from opensculptboy.eyes.geometry import fit_sphere
+    from opensculptboy.eyes.mesh import eyeball_rows
+
+    rest = np.asarray(rest, dtype=np.float64)
+    keep = np.zeros(len(rest))
+    for rows in eyeball_rows(character.build_model(), detail.topology).values():
+        centre, radius = fit_sphere(rest[rows])
+        d = np.linalg.norm(rest - centre, axis=1) / radius
+        t = np.clip((SOCKET_OUT - d) / (SOCKET_OUT - SOCKET_IN), 0.0, 1.0)
+        keep = np.maximum(keep, t * t * (3.0 - 2.0 * t))
+    return keep
+
+
+def flatten_relief(offsets, relief, reach: float = FLATTEN) -> np.ndarray:
+    """
+    A pose's offsets (N, 3) on a detail level with the level's ``relief`` (N, 3) taken out
+    on the rows that the pose moves: in full on the rows that move ``reach`` metres or more,
+    by a smooth step of their motion on the others, and not at all on the rows that keep
+    still. The skin of a closing lid stretches over the eye, and the detail of its rim and
+    crease would otherwise keep its rest direction on the turning lid, as lumps and tears.
+    """
+    offsets = np.asarray(offsets, dtype=np.float64)
+    t = np.clip(np.linalg.norm(offsets, axis=1) / reach, 0.0, 1.0)
+    return offsets - (t * t * (3.0 - 2.0 * t))[:, None] * np.asarray(relief, np.float64)
 
 
 def check_rows(blinks: dict, count: int) -> None:
