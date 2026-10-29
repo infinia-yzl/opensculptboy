@@ -163,12 +163,15 @@ The last stage moves the vertices onto the target, so the reverse errors carry t
 
 ## Statue scans
 
-`opensculptboy.statues` turns a scan of a statue (STL, OBJ, PLY or GLB, in any unit and with any axis up) into a handoff folder, and fits it with the statue's losses in mind:
+`opensculptboy.statues` fits a scan of a statue (STL, OBJ, PLY or GLB, in any unit and with any axis up) with one pipeline for every statue. A statue is a config file (`opensculptboy.statue/1`, the shipped ones in `src/opensculptboy/data/statues/`): the scan's file, name, licence, source and credit, the stature, the up and front axes when the guesses fail, the plinth, the masks, the lost parts, the start pose and landmark hints. Positions are in the frame of the converted figure (`replica.glb`: metres, Y up, facing +Z, on y = 0), which the `preview` step draws over a 10 cm grid.
 
 ```bash
-python -m opensculptboy.statues statue.stl --out handoff/ --stature 1.8 --licence CC0-1.0 --lost hand.l,nose
-python -m opensculptboy.statues statue.stl --out handoff/ --masks masks.json --landmarks landmarks.json
+python -m opensculptboy.statues run doryphoros.json david_goliath.json --scans scans/ --out out/ --steps convert,preview   # a first look
+python -m opensculptboy.statues run doryphoros.json david_goliath.json --scans scans/ --out out/                           # convert, preview, fit, measure
+python -m opensculptboy.statues convert statue.stl --out handoff/ --lost hand.l,nose                                       # the conversion alone
 ```
+
+Each statue writes `out/<name>/`: `handoff/`, `preview/` (front, side and back over the grid, and the fit's skin alone), `card/<name>.json` with its detail levels, `measures.json` (the distances per region of each stage) and `meshes/` (the scan's skin, the removed pieces and each fitted stage in glTF's frame).
 
 ```python
 from opensculptboy.statues import fit_statue, scan_to_handoff
@@ -179,10 +182,12 @@ fit_statue("handoff/", detail=2).write("statue.json")
 
 - **Frame.** The up axis is the scan's longest principal axis, pointing away from the end with the wider footprint, and the scan's own axis when it lies within 12 degrees of one; the front is the direction in which the outline of the head stands out most in the band of the nose. `--up` and `--front` give them by hand, as a raised arm over the head needs.
 - **Plinth.** Walking up from the bottom, the plinth ends at the first slab whose footprint falls under 45 % of the lowest slab's; its top is the height that many of the plinth's points share. The figure above it is scaled to `--stature`.
-- **Masks.** Boxes, spheres, half spaces and vertex lists in the frame of `replica.glb` (a first run without masks writes it) take pieces out: `support` and `break` are removed, `drapery` becomes a part of the role `clothing` and `hair` a part of the role `hair`, both out of the fit. Loose fragments under 2 % of the skin's area are removed too. `removed.glb` holds what was taken out, and `appearance.json` records the source, the licence and the transform from the scan under `statue`.
+- **Masks.** Boxes, spheres, half spaces, capsules (a segment with a radius, for spears, swords and slanted struts) and vertex lists in the frame of `replica.glb` take pieces out: `support` and `break` are removed, `drapery` becomes a part of the role `clothing` and `hair` a part of the role `hair`, both out of the fit. Loose fragments under 2 % of the skin's area are removed too. `removed.glb` holds what was taken out, and `appearance.json` records the source, the licence and the transform from the scan under `statue`.
 - **Lost parts.** `--lost` names parts the statue lost (`hand.l`, `forearm.r`, `arm.l`, `foot.r`, `lower_leg.l`, `leg.r`, `nose`). `fit_statue` gives their vertices no data (`FitOptions.no_data`), so that anny keeps its own shape there and the part follows the fitted skin; the plain fit pulls a lost hand onto the thigh beside it.
 - **Borders.** Where a support came off, the scan has an open border. `fit_statue` marks the scan's open borders and two rings around them as the reference's `border` region, and the refinement drops the pairs whose closest point lies on it, so that the skin along the cut keeps anny's shape and shows no crease.
-- **Measures.** `opensculptboy.statues.compare.region_distances` measures a fitted mesh against a surface per region of the figure (face, scalp, ears, neck, torso, arms, hands, legs, feet), both ways, with the share of fitted vertices more than 5 mm from it.
+- **Start pose.** A statue stands far from anny's rest pose, and with few landmarks the parameter stage reached half of the scan. `fit_statue` starts the bone turns (`FitOptions.initial_pose`) from the pose of anny's library with the smallest trimmed chamfer distance to the scan (`library_start`), or from the config's `pose`. Joint hints (elbows, wrists, knees, ankles) in the config guide a pose that no library pose matches; hints of the face snap to the scan.
+- **Front.** The front guess takes the nose under the crown, then the chest's widest axis, so that a turned head leaves the body facing the camera. A hat's brim, a helmet or a head bowed under long hair defeat it, and the config gives `front`.
+- **Measures.** `opensculptboy.statues.compare.region_distances` measures a fitted mesh against a surface per region of the figure (face, scalp, ears, neck, torso, arms, hands, legs, feet), both ways, with the share of fitted vertices more than 5 mm from it and the share of the scan's points more than 20 mm from the fit (pieces the fit does not cover, left out of the reverse distances).
 
 On a synthetic statue (anny in contrapposto with a 4 mm sculpted surface and a 9 mm mass of curls, a plinth, a stump fused to the right leg, a lost left hand and a nose broken flat, remeshed at 4 mm with 0.2 mm of noise), level 2 lies within 0.13 mm (mean) of the statue as made on the torso and the arms, 0.17 mm on the curls and 0.31 mm on the face; measured from the statue as made to the fitted surface, the lost hand keeps anny's shape within 3.9 mm (mean) and the leg along the stump within 0.31 mm, where the plain fit leaves 15.6 mm and 3.9 mm. `test/test_statues.py` checks the conversion on a synthetic statue.
 

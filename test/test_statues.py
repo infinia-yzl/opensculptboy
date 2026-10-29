@@ -305,6 +305,66 @@ class TestBorders(unittest.TestCase):
         self.assertFalse(plain.closest(points, edge=True)[3].any())
 
 
+class TestPipeline(unittest.TestCase):
+    def test_shipped_configs(self):
+        from opensculptboy.statues.pipeline import StatueConfig
+
+        folder = pathlib.Path(__file__).resolve().parents[1] / "src" / "opensculptboy"
+        configs = sorted((folder / "data" / "statues").glob("*.json"))
+        self.assertGreaterEqual(len(configs), 2)
+        for path in configs:
+            with self.subTest(path.name):
+                config = StatueConfig.load(path)
+                self.assertEqual(config.name, path.stem)
+                self.assertTrue(config.licence and config.source)
+                for mask in config.masks:
+                    Mask.from_dict({k: v for k, v in mask.items() if k != "frame"})
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({"name": "x", "scan": "x.stl", "colour": "red"})
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({"format": "other/1", "name": "x", "scan": "x.stl"})
+
+    def test_convert_and_preview_from_a_config(self):
+        import trimesh
+
+        from opensculptboy.statues.pipeline import StatueConfig, run_statue
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            trimesh.Trimesh(
+                statue["vertices"], statue["triangles"], process=False
+            ).export(str(tmp / "statue.stl"))
+            config = StatueConfig.from_dict(
+                {
+                    "name": "synthetic",
+                    "scan": "statue.stl",
+                    "licence": "CC0-1.0",
+                    "lost": ["hand.l"],
+                    "landmarks": {
+                        "nose_tip": [0.0, 1.6, 0.3],
+                        "knee_l": [0.1, 0.5, 0.0],
+                    },
+                },
+            )
+            summary = run_statue(
+                config, tmp / "out", scans=tmp, steps=("convert", "preview")
+            )
+            root = tmp / "out" / "synthetic"
+            self.assertTrue(summary["frame"]["plinth"])
+            for picture in ("front", "side", "back", "figure_front", "figure_side"):
+                self.assertTrue((root / "preview" / f"{picture}.png").exists(), picture)
+            appearance = json.loads((root / "handoff" / "appearance.json").read_text())
+            self.assertEqual(appearance["statue"]["lost"], ["hand.l"])
+            # the nose hint lies in front of the face and snaps onto it; the knee stays
+            skin = load_handoff(root / "handoff").skin_parts()[0]
+            nose = np.asarray(appearance["landmarks"]["nose_tip"]) @ GLTF_TO_ANNY.T
+            gap = np.linalg.norm(skin.vertices - nose, axis=1).min()
+            self.assertLess(gap, 0.005)
+            self.assertEqual(appearance["landmarks"]["knee_l"], [0.1, 0.5, 0.0])
+            self.assertTrue((root / "summary.json").exists())
+
+
 class TestRegionDistances(unittest.TestCase):
     def test_regions_and_zero_distance(self):
         model = _model()
