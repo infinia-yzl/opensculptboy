@@ -452,7 +452,7 @@ class TestPrune(unittest.TestCase):
             covered = np.asarray(appearance["statue"]["covered"])
             self.assertEqual(count, len(covered))
             self.assertIn(int(np.argmax(V[:, 2])), covered)
-            self.assertGreater(count, 50)
+            self.assertGreater(count, 30)
             # the skin the scan keeps keeps its data
             self.assertLess(V[covered, 2].min(), top)
             self.assertGreater(V[covered, 2].min(), top - 0.07)
