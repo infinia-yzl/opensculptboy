@@ -344,7 +344,17 @@ class TestShortcutsPage(unittest.TestCase):
                     " { ...ev, bubbles: true, cancelable: true }))",
                     ev,
                 )
-                tab.wait_for_timeout(60)
+                # the interface shows the panel once the page has drawn the key's change (at most a frame or two)
+                try:
+                    tab.wait_for_function(
+                        "([side, sec]) => { const p = document.getElementById('insp-' + side);"
+                        " const s = p && !p.hidden ? p.querySelector('.sec:not([hidden])') : null;"
+                        " return !!s && s.id === 'sec-' + sec; }",
+                        arg=[side, sec],
+                        timeout=5000,
+                    )
+                except Exception:
+                    pass
                 self.assertEqual(state()[side], sec, (ev, before, state()))
             browser.close()
         print(
