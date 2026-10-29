@@ -331,8 +331,8 @@ class TestShortcutsPage(unittest.TestCase):
             # ---------------------------------------------------------------- other keyboards
             tab.mouse.click(500, 350)
             for ev, side, sec in (
-                ({"key": "X", "code": "KeyX"}, "right", "expression"),
-                ({"key": "ы", "code": "KeyS"}, "right", "sheet"),
+                ({"key": "X", "code": "KeyX"}, "left", "expression"),
+                ({"key": "ы", "code": "KeyS"}, "left", "sheet"),
                 ({"key": "Process", "code": "KeyD", "keyCode": 229}, "left", "wear"),
             ):
                 for s0 in ("left", "right"):
