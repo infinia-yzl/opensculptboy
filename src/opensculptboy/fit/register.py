@@ -329,8 +329,9 @@ class FitOptions:
     # under the reference, filling the corners of the eyes and the lips
     close_rim: float = 0.006
     # the eyeballs' rims tuck under the carved lids that their rays meet within this distance
-    # (metres) of them; a ray that grazes the lids and meets the temple further off is left
-    close_lid: float = 0.008
+    # (metres) of them (0: none, the default: at 4 and 8 mm the corners of Doryphoros' eyes
+    # crumpled into knots)
+    close_lid: float = 0.0
     close_rim_depth: float = 0.0005
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
@@ -3437,35 +3438,6 @@ def fit_levels(
                 _log(
                     options, f"level {subdiv}: {len(rows)} vertices without data filled"
                 )
-        if options.unfold_rounds > 0:
-            every = np.ones(len(fitted), bool)
-            on = np.asarray(mask, bool) & ~(np.asarray(topology.apply(cavity0)) > 0.5)
-            if _level_no_data(options) is not None:
-                on &= ~(np.asarray(topology.apply(_level_no_data(options))) > 0.5)
-            fitted_new, count = unfold(
-                fitted,
-                topology.triangles,
-                reference,
-                every,
-                on,
-                options.unfold_rounds,
-            )
-            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
-            if len(rows):
-                fitted = fitted_new
-                offsets[subdiv] = offsets[subdiv].copy()
-                offsets[subdiv][rows] = (
-                    R_.unpose(
-                        fitted[rows],
-                        w[rows],
-                        i[rows],
-                        transforms,
-                        rotation,
-                        translation,
-                    )
-                    - parametric[rows]
-                )
-            _log(options, f"level {subdiv}: {count} folded vertices untangled")
         if options.close_openings > 0:
             fitted, offsets[subdiv] = _close_openings(
                 model,
@@ -3500,6 +3472,35 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {len(rows)} pits relaxed")
+        if options.unfold_rounds > 0:
+            every = np.ones(len(fitted), bool)
+            on = np.asarray(mask, bool) & ~(np.asarray(topology.apply(cavity0)) > 0.5)
+            if _level_no_data(options) is not None:
+                on &= ~(np.asarray(topology.apply(_level_no_data(options))) > 0.5)
+            fitted_new, count = unfold(
+                fitted,
+                topology.triangles,
+                reference,
+                every,
+                on,
+                options.unfold_rounds,
+            )
+            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
+            if len(rows):
+                fitted = fitted_new
+                offsets[subdiv] = offsets[subdiv].copy()
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            _log(options, f"level {subdiv}: {count} folded vertices untangled")
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3747,7 +3748,7 @@ def _close_openings(
         # the rim of the front half tucks under the carved lids where its own ray meets them
         # within close_lid: shrunk with the back, it left a gap above the eye through which
         # the socket showed dark (snapped to the nearest marble, it crumpled the corner)
-        if len(rim):
+        if len(rim) and options.close_lid > 0:
             radial_rim = original[rim] - centre
             length = np.linalg.norm(radial_rim, axis=1)
             direction = radial_rim / np.maximum(length, 1e-12)[:, None]
