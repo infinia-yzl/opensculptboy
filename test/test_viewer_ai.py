@@ -444,6 +444,8 @@ class TestAiPage(unittest.TestCase):
             self.assertFalse(errors, errors)
             self.assertEqual(tab.evaluate("window.__csp"), [])
 
+            ctx.close()  # each context keeps drawing, and slow machines share their cores
+
             # an authenticator without PRF: the plain line, a key for this visit only, no record
             ctx2 = browser.new_context()
             blocked2 = route_all(ctx2, port, anthropic, openai)
@@ -473,6 +475,8 @@ class TestAiPage(unittest.TestCase):
             self.assertIn("used for this visit only", panel2.text_content())
             self.assertEqual(blocked2, [])
             self.assertEqual(tab2.evaluate("window.__csp"), [])
+
+            ctx2.close()
 
             # the page opened as a file: the way to http://localhost, and no database
             ctx3 = browser.new_context()
