@@ -11,6 +11,7 @@ import { flushSync } from 'react-dom';
 import { ShellCtx, type ShellDeps } from './context.ts';
 import { useUI } from './hooks.ts';
 import { startTheme } from './theme.ts';
+import { actions, ui } from './state.ts';
 import { TopBar } from './components/TopBar.tsx';
 import { ModePanel, PhoneBar, Rail, ToolPanel } from './components/Panels.tsx';
 import { OpenDialog, ViewBar, Welcome } from './components/Frame.tsx';
@@ -43,5 +44,7 @@ export function mountShell(deps: ShellDeps) {
   document.body.append(host, parked);
   const root = createRoot(host);
   flushSync(() => root.render(<ShellCtx.Provider value={deps}><Shell /></ShellCtx.Provider>));
+  // for scripts and the page tests: the interface's state and its actions (state.ts)
+  (window as any).__shell = { ui, actions };
   return root;
 }
