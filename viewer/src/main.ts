@@ -30,6 +30,7 @@ import { STRAND_VS } from './hair/glsl.ts';
 import { initUI } from './ui/index.ts';
 import { Retargeter, adjustHead, cardBones, quaternions, type M3, type RestBody, type V3 } from './pose_from_image.ts';
 import { detect as detectPicture } from './picture.ts';
+import { gunzipSync } from 'fflate';
 import { silhouetteSvg } from './flat.ts';
 import { Wardrobe } from './wearables/view.ts';
 import { CardLook } from './card/look.ts';
@@ -544,7 +545,7 @@ async function gunzip(bytes) {
     const s = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
     return new Uint8Array(await new Response(s).arrayBuffer());
   }
-  const { gunzipSync } = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/esm/browser.js');
+  // browsers without DecompressionStream: fflate, bundled into the page (the page loads no remote code)
   return gunzipSync(bytes);
 }
 function parseContainer(u8) {

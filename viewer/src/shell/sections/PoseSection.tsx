@@ -49,7 +49,7 @@ export function PoseSection({ shown }: { shown: boolean }) {
   const query = q.trim().toLowerCase();
   const pick = async (f: File) => {
     setBusy(true);
-    setMsg({ text: 'Reading the pose. The first picture loads MediaPipe, about 20 MB.', kind: '' });
+    setMsg({ text: 'Reading the pose. The first picture starts MediaPipe, which takes a few seconds.', kind: '' });
     try {
       const r = await app.poseFromPicture(f);
       const h = app.pictureHead();
@@ -57,7 +57,8 @@ export function PoseSection({ shown }: { shown: boolean }) {
       setHead(h);
       setMsg({ text: r.hands === 2 ? 'Posed from the picture, with both hands.' : r.hands === 1 ? 'Posed from the picture, with one hand. The other hand keeps its rest pose.' : 'Posed from the picture. No hands were clear enough, so they keep their rest pose.', kind: '' });
     } catch (e) {
-      setMsg({ text: e instanceof Error && e.message.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : 'The picture could not be read. MediaPipe loads from the internet the first time.', kind: 'error' });
+      const m = e instanceof Error ? e.message : '';
+      setMsg({ text: m.startsWith('No figure') ? 'No figure was found in this picture. Try one where the whole figure shows.' : m.startsWith('From a picture') ? m : 'The picture could not be read' + (m ? ': ' + m : '.'), kind: 'error' });
     } finally { setBusy(false); }
   };
   const headSlider = (key: 'turn' | 'up' | 'tilt', label: string, min: number, max: number, ends: string[]) => (

@@ -14,6 +14,7 @@ import * as esbuild from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -132,6 +133,71 @@ function reusedData() {
 }
 const gz = process.argv.includes('--reuse-data') ? reusedData() : await encodeData();
 
+// MediaPipe for "From a picture": the WebAssembly loader and binary of the npm package @mediapipe/tasks-vision 1.0.1
+// and the pose and hand models, as files beside the page (dist/mediapipe/, in git: they change only with the pinned
+// version). Each file is pinned here by SHA-256; the page fetches each one from its own origin with that hash as its
+// integrity, so the browser refuses any other bytes, and the policy allows the loader script by the same hash. The
+// models come from dist/mediapipe/ or build/mediapipe/ when they are there, else from Google's model store.
+const MEDIAPIPE = {
+  'vision_wasm_internal.js': { sha256: 'e170ee67dd4e16c1a6fcd8840a206687e5a59b22c20e4a902bc445b095454d73', npm: true },
+  'vision_wasm_internal.wasm': { sha256: '8da277a733926eacd0474b8704b36742d6ec3231c57a860c5b889dff8f1df886', npm: true },
+  'pose_landmarker_full.task': { sha256: '4eaa5eb7a98365221087693fcc286334cf0858e2eb6e15b506aa4a7ecdcec4ad',
+    url: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task' },
+  'hand_landmarker.task': { sha256: 'fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1',
+    url: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task' },
+};
+const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
+const mpDir = path.join(path.dirname(out), 'mediapipe');
+async function mediapipeFiles() {
+  fs.mkdirSync(mpDir, { recursive: true });
+  const sri = {};
+  for (const [name, pin] of Object.entries(MEDIAPIPE)) {
+    const target = path.join(mpDir, name);
+    const candidates = [target, path.join(dir, 'mediapipe', name)];
+    if (pin.npm) candidates.unshift(path.join(here, 'node_modules', '@mediapipe', 'tasks-vision', 'wasm', name));
+    let bytes = null;
+    for (const c of candidates) if (fs.existsSync(c)) { const b = fs.readFileSync(c); if (sha256(b) === pin.sha256) { bytes = b; break; } }
+    if (!bytes && pin.url) {
+      const r = await fetch(pin.url);
+      if (!r.ok) throw new Error(`MediaPipe model ${name}: ${r.status} from ${pin.url}`);
+      bytes = Buffer.from(await r.arrayBuffer());
+    }
+    if (!bytes || sha256(bytes) !== pin.sha256) throw new Error(`MediaPipe file ${name}: no copy with the pinned SHA-256 ${pin.sha256}`);
+    if (!fs.existsSync(target) || !fs.readFileSync(target).equals(bytes)) fs.writeFileSync(target, bytes);
+    sri[name] = 'sha256-' + Buffer.from(pin.sha256, 'hex').toString('base64');
+  }
+  console.log('mediapipe', Object.keys(MEDIAPIPE).length, 'files in', mpDir);
+  return sri;
+}
+const mpSri = await mediapipeFiles();
+
+
+// the body worker (src/body_worker.ts): its own bundle, which the page starts from a string
+const worker = await esbuild.build({
+  entryPoints: [path.join(here, 'src', 'body_worker.ts')],
+  bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
+  legalComments: 'none',
+});
+// the worker of the wearables' query pool (src/wearables/query_worker.ts), started the same way
+const queryWorker = await esbuild.build({
+  entryPoints: [path.join(here, 'src', 'wearables', 'query_worker.ts')],
+  bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
+  legalComments: 'none',
+});
+// MediaPipe's task code sends usage records (task, platform, timings) to Google every minute
+// (odml.pa.googleapis.com/v1/log). The page keeps everything on the computer, so the build cuts that one call out of
+// the bundle, and the policy would block it anyway. The build stops when the pattern is gone (a new MediaPipe).
+const TELEMETRY = 'this.m.send({url:"https://odml.pa.googleapis.com/v1/log"';
+const noTelemetry = {
+  name: 'no-mediapipe-telemetry',
+  setup(b) {
+    b.onLoad({ filter: /tasks-vision[\\/]vision_bundle\.mjs$/ }, (args) => {
+      const code = fs.readFileSync(args.path, 'utf8');
+      if (code.split(TELEMETRY).length !== 2) throw new Error('MediaPipe\'s usage logging call was not found in ' + args.path);
+      return { contents: code.replace(TELEMETRY, '((o, done) => done())({url:"about:blank"'), loader: 'js' };
+    });
+  },
+};
 // ------------------------------------------------------------------ the interface's styles
 // The page carries its styles inline and loads nothing from the network: the fonts as data URLs, the design system's
 // tokens (src/shell/design/tokens.json) as CSS variables for both themes, Tailwind's output for the classes that the
@@ -194,41 +260,44 @@ async function interfaceCss() {
   return [fonts, twCss, tokens, osb, own].join('\n');
 }
 
-// the body worker (src/body_worker.ts): its own bundle, which the page starts from a string
-const worker = await esbuild.build({
-  entryPoints: [path.join(here, 'src', 'body_worker.ts')],
-  bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
-  legalComments: 'none',
-});
-// the worker of the wearables' query pool (src/wearables/query_worker.ts), started the same way
-const queryWorker = await esbuild.build({
-  entryPoints: [path.join(here, 'src', 'wearables', 'query_worker.ts')],
-  bundle: true, format: 'iife', minify: true, write: false, target: 'es2022',
-  legalComments: 'none',
-});
 // the script: the TypeScript with three.js and the interface (React, src/shell/) in one bundle
 const bundle = await esbuild.build({
   entryPoints: [path.join(here, 'src', 'main.ts')],
   bundle: true, format: 'esm', minify: true, write: false, target: 'es2022',
   alias: { 'three/addons': 'three/examples/jsm' },
+  plugins: [noTelemetry],
   jsx: 'automatic',
   define: {
     __BODY_WORKER__: JSON.stringify(worker.outputFiles[0].text), __QUERY_WORKER__: JSON.stringify(queryWorker.outputFiles[0].text),
-    'process.env.NODE_ENV': '"production"',
+    __MEDIAPIPE_SRI__: JSON.stringify(mpSri), 'process.env.NODE_ENV': '"production"',
   },
   legalComments: 'none',
 });
 const app = bundle.outputFiles[0].text;
-const css = await interfaceCss();
-const shell = fs.readFileSync(path.join(here, 'shell.html'), 'utf8');
 const ref = fs.readFileSync(path.join(here, 'src', 'meshopt_ref.js'), 'utf8');
-const head = '<style id="osb-design">\n' + css + '\n</style>\n' + shell;
+const css = await interfaceCss();
+// the shell with the interface's styles (in place of its DESIGN slot) and with the hashes of the page's scripts in its
+// Content Security Policy: the scripts that the build adds, and the shell's own inline scripts (the early theme)
+const hash = (text) => `'sha256-${crypto.createHash('sha256').update(text, 'utf8').digest('base64')}'`;
+function shellWith(scripts) {
+  const shell = fs.readFileSync(path.join(here, 'shell.html'), 'utf8');
+  if (!shell.includes('script-src SCRIPT_HASHES') || !shell.includes('<!-- DESIGN:')) throw new Error('shell.html lacks SCRIPT_HASHES or the DESIGN slot');
+  const own = [...shell.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const loader = `'${mpSri['vision_wasm_internal.js']}'`;
+  return shell.replace('script-src SCRIPT_HASHES', 'script-src ' + [...own, ...scripts].map(hash).join(' ') + ' ' + loader)
+    .replace(/<!-- DESIGN:[^>]*-->/, () => '<style id="osb-design">\n' + css + '\n</style>');
+}
+const appText = '\n' + app.replace(/<\/script/g, '<\\/script') + '\n';
+const refText = '\n' + ref + '\n';
+const dataText = 'window.MODEL_B64 = "' + gz.toString('base64') + '";';
 console.log('script', (app.length / 1e6).toFixed(2), 'MB, interface styles', (css.length / 1e6).toFixed(2), 'MB');
 const page = '<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">\n'
-  + head + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_B64 = "' + gz.toString('base64') + '";</script>\n'
-  + '<script type="module">\n' + app.replace(/<\/script/g, '<\\/script') + '\n</script>\n</head><body></body></html>\n';
+  + shellWith([refText, dataText, appText]) + '\n<script>' + refText + '</script>\n<script>' + dataText + '</script>\n'
+  + '<script type="module">' + appText + '</script>\n</head><body></body></html>\n';
 fs.mkdirSync(path.dirname(out), { recursive: true });
 fs.writeFileSync(out, page);
+// the page's server (serve_viewer.py, docs/viewer.md "AI providers") and its port travel with the page
+for (const [from, to] of [['serve_viewer.py', 'serve_viewer.py'], [path.join('src', 'ai', 'serve.json'), 'serve.json']]) fs.copyFileSync(path.join(here, from), path.join(path.dirname(out), to));
 console.log('page', out, (page.length / 1e6).toFixed(1), 'MB');
 
 // --parts <dir>: the page and its data as separate files, for hosts that limit the size of a file (such as a Claude
@@ -245,8 +314,10 @@ if (partsAt >= 0) {
     names.push(`data/model-${k + 1}.txt`);
     fs.writeFileSync(path.join(dirOut, names[k]), b64.slice(k * size, (k + 1) * size));
   }
-  const small = head + '\n<script>\n' + ref + '\n</script>\n<script>window.MODEL_PARTS = ' + JSON.stringify(names) + ';</script>\n'
-    + '<script type="module">\n' + app.replace(/<\/script/g, '<\\/script') + '\n</script>\n';
+  fs.cpSync(mpDir, path.join(dirOut, 'mediapipe'), { recursive: true });
+  const partsText = 'window.MODEL_PARTS = ' + JSON.stringify(names) + ';';
+  const small = shellWith([refText, partsText, appText]) + '\n<script>' + refText + '</script>\n<script>' + partsText + '</script>\n'
+    + '<script type="module">' + appText + '</script>\n';
   fs.writeFileSync(path.join(dirOut, 'index.html'), small);
   console.log('parts', dirOut, (small.length / 1e6).toFixed(1), 'MB page,', count, 'data files of', (size / 1e6).toFixed(1), 'MB');
 }

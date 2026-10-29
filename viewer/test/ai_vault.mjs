@@ -15,7 +15,7 @@ import { aad, b64url, deriveKek, fromB64url, newDek, open, randomBytes, seal, un
 import { memoryStore } from '../src/ai/store.ts';
 import { KeyVault, VaultError, cleanKey } from '../src/ai/vault.ts';
 import { SessionKeys } from '../src/ai/session.ts';
-import { NO_PRF, PasskeyError, pageSupport } from '../src/ai/passkey.ts';
+import { LOCAL_PORT, NO_PRF, PasskeyError, pageSupport } from '../src/ai/passkey.ts';
 import { PROVIDERS, ProviderError, keyHint, scrub } from '../src/ai/providers.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -224,13 +224,15 @@ const KEY_O = 'sk-proj-' + 'Z9y8X7w6'.repeat(8);
   const at = (url) => { const u = new URL(url); return { protocol: u.protocol, hostname: u.hostname.replace(/^\[|\]$/g, ''), port: u.port, pathname: u.pathname, search: u.search }; };
   const f = pageSupport(at('file:///srv/My%20Viewer/anny_viewer.html'), { ...yes });
   assert.equal(f.code, 'file-page');
-  assert.equal(f.url, 'http://localhost:8765/anny_viewer.html');
-  assert.equal(f.command, 'python -m http.server 8765 --bind 127.0.0.1');
-  assert.equal(pageSupport(at('http://127.0.0.1:8765/anny_viewer.html?acc=1'), yes).url, 'http://localhost:8765/anny_viewer.html?acc=1');
-  assert.equal(pageSupport(at('http://[::1]:8765/p.html'), yes).code, 'ip-address');
+  const port = JSON.parse(fs.readFileSync(path.join(here, '..', 'src', 'ai', 'serve.json'), 'utf8')).port;
+  assert.equal(port, LOCAL_PORT);
+  assert.equal(f.url, `http://localhost:${port}/anny_viewer.html`);
+  assert.equal(f.command, 'python serve_viewer.py --open');
+  assert.equal(pageSupport(at('http://127.0.0.1:41730/anny_viewer.html?acc=1'), yes).url, 'http://localhost:41730/anny_viewer.html?acc=1');
+  assert.equal(pageSupport(at('http://[::1]:41730/p.html'), yes).code, 'ip-address');
   assert.equal(pageSupport(at('http://cafe.example/p.html'), { ...yes, isSecureContext: false }).code, 'insecure');
   assert.equal(pageSupport(at('https://beef/p.html'), { isSecureContext: true, navigator: {} }).code, 'no-webauthn');
-  assert.equal(pageSupport(at('http://localhost:8765/anny_viewer.html'), yes).ok, true);
+  assert.equal(pageSupport(at('http://localhost:41730/anny_viewer.html'), yes).ok, true);
   assert.equal(pageSupport(at('https://example.github.io/opensculptboy/'), yes).ok, true);
   ok('the page checks: file page, an address in numbers, an insecure page, no WebAuthn, localhost, https');
 }
@@ -333,7 +335,23 @@ const MSG = [{ role: 'system', content: 'Be brief.' }, { role: 'user', content: 
     for (const word of ['console.', 'localStorage', 'sessionStorage', 'location.hash', 'history.', 'document.cookie', 'postMessage'])
       assert.ok(!code.includes(word), name + ' uses ' + word);
   }
-  ok('the vault and the adapters use no console, web storage, cookie, URL or message channel');
+  const panel = fs.readFileSync(path.join(here, '..', 'src', 'shell', 'sections', 'SettingsSection.tsx'), 'utf8').replace(/\/\/.*$/gm, '');
+  for (const word of ['console.', 'sessionStorage', 'location.hash', 'history.', 'document.cookie', 'postMessage', 'fetch('])
+    assert.ok(!panel.includes(word), 'SettingsSection.tsx uses ' + word);
+  ok('the vault, the adapters and the panel use no console, web storage, cookie, URL or message channel');
+  // every address that the page's sources fetch from is one of the providers' API hosts
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(path.join(d, e.name)) : /\.tsx?$/.test(e.name) ? [path.join(d, e.name)] : []);
+  const hosts = new Set();
+  for (const f of walk(path.join(here, '..', 'src'))) {
+    const code = fs.readFileSync(f, 'utf8').split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    for (const m of code.matchAll(/['"`](https?:\/\/[^/'"`$]+)/g)) hosts.add(m[1]);
+    assert.ok(!/import\(\s*['"`]https?:/.test(code), f + ' imports code from another host');
+  }
+  const allowed = ['https://api.anthropic.com', 'https://api.openai.com', 'https://openrouter.ai', 'https://platform.claude.com', 'https://platform.openai.com', 'http://localhost:',
+    'http://www.w3.org', // the SVG namespace, never fetched
+    'https://github.com']; // the project's docs (FIT_DOCS), a link that a person opens and the page never fetches
+  for (const h of hosts) assert.ok(allowed.some((a) => h === a || h.startsWith(a)), 'a remote address in the page: ' + h);
+  ok('the page\'s sources name no remote host but the providers (and their key pages), and import no remote code');
 }
 
 console.log(JSON.stringify({ ok: true, checks }));

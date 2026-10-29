@@ -126,7 +126,7 @@ export function makeOpener(deps: OpenDeps): Opener {
       if (look) { done.push(`Opened ${deps.applyLook(look)}`); mode ||= ['create', 'body']; }
       if (sheet) { deps.setSheet(sheet); done.push('Opened the sheet settings'); mode = ['sheet']; }
       if (pictures.length) {
-        ui.set({ openBusy: 'Reading the pose. The first picture loads MediaPipe, about 20 MB' });
+        ui.set({ openBusy: 'Reading the pose. The first picture starts MediaPipe, which takes a few seconds' });
         await deps.posePicture(pictures[0].file);
         done.push('Posed the figure from the picture'); mode ||= ['pose'];
       }

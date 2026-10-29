@@ -52,7 +52,7 @@ function PosePicker({ sheet, title, slot, onPick, onClose }: { sheet: SheetContr
             <input type="file" accept="image/*" hidden disabled={busy} onChange={async (e) => {
               const f = e.target.files?.[0]; e.target.value = '';
               if (!f) return;
-              setBusy(true); setMsg({ text: 'Reading the pose. The first picture loads MediaPipe, about 20 MB.', kind: '' });
+              setBusy(true); setMsg({ text: 'Reading the pose. The first picture starts MediaPipe, which takes a few seconds.', kind: '' });
               try { onPick(await sheet.poseFromPicture(f)); } catch (err) { setMsg({ text: 'The picture gave no pose. Try one where the whole figure shows.', kind: 'error' }); } finally { setBusy(false); }
             }} />
           </label>

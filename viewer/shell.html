@@ -1,3 +1,11 @@
+<!-- The page loads nothing from other hosts: its scripts, styles and fonts are inside it, and MediaPipe's files sit beside
+     it (mediapipe/, pinned by SHA-256). The policy lets only the page's own scripts and MediaPipe's loader run, by their
+     SHA-256 hashes (build.mjs puts them in place of SCRIPT_HASHES, the early theme script below among them), lets the
+     interface's inline styles and the fonts as data URLs apply, and lets the page connect only to itself and to the
+     three AI providers' API hosts (docs/viewer.md, "AI providers"). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src SCRIPT_HASHES 'wasm-unsafe-eval' blob:; worker-src blob:; connect-src 'self' blob: https://api.anthropic.com https://api.openai.com https://openrouter.ai; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; object-src 'none'">
+<link rel="icon" href="data:,">
+<!-- DESIGN: build.mjs puts the interface's styles here (the design system's tokens, Tailwind, the components and the page's rules, with the fonts as data URLs) -->
 <title>OpenSculptBoy</title>
 <script>
   // the theme before the page draws: the choice of the View menu (saved by src/shell/state.ts), else the system's

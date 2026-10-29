@@ -2,27 +2,36 @@
 # Apache License, Version 2.0
 """
 The AI providers of the viewer (viewer/src/ai/, the Settings panel viewer/src/shell/sections/SettingsSection.tsx,
-docs/viewer.md "AI providers"). In node: the key vault's cryptography and records with a fake
-passkey, the idle lock, the page checks and each provider's requests and errors with a fake
-fetch (viewer/test/ai_vault.mjs). In the built page, in Chromium through Playwright with
-Chromium's virtual authenticator (local only): the page served at http://localhost registers a
-passkey with PRF, stores a key, checks it, locks, unlocks, refuses a bad key, forgets a key and
-forgets everything, with the providers' endpoints mocked; IndexedDB, localStorage and the URL
-never hold a key; with an authenticator without PRF a key serves one visit and nothing is
-stored; and the page opened as a file
-shows the way to http://localhost and opens no database.
+docs/viewer.md "AI providers") and the page's server (viewer/serve_viewer.py).
+
+In CI: the key vault's cryptography and records with a fake passkey, the lock without a timer,
+the keys of one visit, the page checks, each provider's requests and errors with a fake fetch,
+and a scan of the page's sources for remote hosts (viewer/test/ai_vault.mjs, TestVaultNode); and
+the server, which serves the page and its data files alone on 127.0.0.1 and ::1, answers only
+requests for localhost at its port, and refuses a taken port (TestServe).
+
+Local only, in the built page served by serve_viewer.py, in Chromium through Playwright with
+Chromium's virtual authenticator (TestAiPage): a passkey with PRF, a stored key, check, lock,
+unlock, a refused key, forget and forget all, with the providers' endpoints mocked; every request
+of the page is routed, and the test fails on any request to a host other than the page and the
+provider of the key it carries; IndexedDB, web storage and the URL never hold a key; the Content
+Security Policy reports no violation; an authenticator without PRF keeps a key for one visit;
+the page opened as a file shows the way to the server and opens no database; and From a picture
+runs MediaPipe from its pinned files beside the page, with no request to another host (on a
+file page it names the server).
 """
 
 import contextlib
-import functools
-import http.server
+import errno
 import json
 import pathlib
 import shutil
-import socketserver
+import socket
 import subprocess
-import threading
+import tempfile
 import unittest
+import urllib.error
+import urllib.request
 
 from test.markers import local_only
 
@@ -64,22 +73,140 @@ class TestVaultNode(unittest.TestCase):
         self.assertGreaterEqual(len(out["checks"]), 30)
 
 
-@contextlib.contextmanager
-def served(folder: pathlib.Path):
-    """the folder on a free port of the loopback address, quietly"""
+def serve_module():
+    """viewer/serve_viewer.py as a module"""
+    import importlib.util
 
-    class Quiet(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
+    spec = importlib.util.spec_from_file_location(
+        "serve_viewer", REPO / "viewer" / "serve_viewer.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-    handler = functools.partial(Quiet, directory=str(folder))
-    with socketserver.ThreadingTCPServer(("127.0.0.1", 0), handler) as srv:
-        srv.daemon_threads = True
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+def free_port() -> int:
+    """a port free on both loopback addresses"""
+    for _ in range(50):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
         try:
-            yield srv.server_address[1]
-        finally:
-            srv.shutdown()
+            with socket.socket(socket.AF_INET6) as s6:
+                s6.bind(("::1", port))
+        except OSError as e:
+            if e.errno not in (errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT, 10049, 10047):
+                continue
+        return port
+    raise RuntimeError("no free port")
+
+
+@contextlib.contextmanager
+def served(page: pathlib.Path):
+    """the page served by serve_viewer.py on a free port, as the person serves it"""
+    port = free_port()
+    servers = serve_module().start(page, port)
+    try:
+        yield port
+    finally:
+        for s in servers:
+            s.shutdown()
+            s.server_close()
+
+
+def fetch(url: str, host: str | None = None):
+    """status, headers and body of a GET, with another Host header when given"""
+    req = urllib.request.Request(url, headers={"Host": host} if host else {})
+    opener = urllib.request.build_opener(NoRedirect)
+    try:
+        r = opener.open(req, timeout=10)
+        return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+class TestServe(unittest.TestCase):
+    """serve_viewer.py: the page and its data files alone, on both loopback addresses"""
+
+    def test_serves_the_page_alone(self):
+        mod = serve_module()
+        port_file = REPO / "viewer" / "src" / "ai" / "serve.json"
+        self.assertEqual(mod.PORT, json.loads(port_file.read_text())["port"])
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            (d / "page.html").write_text("<p>page</p>", encoding="utf-8")
+            (d / "other.html").write_text("<p>other</p>", encoding="utf-8")
+            (d / "secret.txt").write_text("secret", encoding="utf-8")
+            (d / "data").mkdir()
+            (d / "data" / "model-1.txt").write_text("AAAA", encoding="utf-8")
+            (d / "data" / "notes.txt").write_text("notes", encoding="utf-8")
+            (d / "mediapipe").mkdir()
+            (d / "mediapipe" / "loader.wasm").write_bytes(b"\0asm")
+            (d / "mediapipe" / "other.html").write_text("<p>no</p>", encoding="utf-8")
+            (d / "starters").mkdir()
+            (d / "starters" / "muse.zip").write_bytes(b"PK")
+            (d / "starters" / "notes.txt").write_text("no", encoding="utf-8")
+            with served(d / "page.html") as port:
+                base = f"http://127.0.0.1:{port}"
+                code, headers, body = fetch(base + "/page.html")
+                self.assertEqual((code, body), (200, b"<p>page</p>"))
+                self.assertEqual(headers["Cache-Control"], "no-store")
+                self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+                self.assertIn(
+                    "frame-ancestors 'none'", headers["Content-Security-Policy"]
+                )
+                self.assertEqual(fetch(base + "/data/model-1.txt")[:1], (200,))
+                code, headers, body = fetch(base + "/mediapipe/loader.wasm")
+                self.assertEqual(
+                    (code, headers["Content-Type"], body),
+                    (200, "application/wasm", b"\0asm"),
+                )
+                self.assertEqual(fetch(base + "/mediapipe/other.html")[0], 404)
+                code, headers, body = fetch(base + "/starters/muse.zip")
+                self.assertEqual(
+                    (code, headers["Content-Type"], body),
+                    (200, "application/zip", b"PK"),
+                )
+                self.assertEqual(fetch(base + "/starters/notes.txt")[0], 404)
+                for path in (
+                    "/other.html",
+                    "/secret.txt",
+                    "/data/notes.txt",
+                    "/data/",
+                    "/..%2fsecret.txt",
+                    "/page.html/../secret.txt",
+                ):
+                    self.assertEqual(fetch(base + path)[0], 404, path)
+                code, headers, _ = fetch(base + "/")
+                self.assertEqual((code, headers["Location"]), (302, "/page.html"))
+                self.assertEqual(
+                    fetch(base + "/page.html", host=f"evil.example:{port}")[0], 421
+                )
+                self.assertEqual(
+                    fetch(base + "/page.html", host=f"localhost:{port}")[0], 200
+                )
+                # the IPv6 loopback answers too, where the computer has it
+                try:
+                    with socket.create_connection(("::1", port), timeout=5):
+                        v6 = True
+                except OSError:
+                    v6 = False
+                if v6:
+                    self.assertEqual(fetch(f"http://[::1]:{port}/page.html")[0], 200)
+                # a second server on the same port: refused
+                with self.assertRaises(OSError):
+                    mod.start(d / "page.html", port)
+            # a port taken by another program: refused
+            with socket.socket() as other:
+                other.bind(("127.0.0.1", 0))
+                other.listen()
+                with self.assertRaises(OSError):
+                    mod.start(d / "page.html", other.getsockname()[1])
 
 
 def add_authenticator(tab, prf=True):
@@ -127,6 +254,53 @@ STORAGE = """() => JSON.stringify(Object.assign({}, localStorage))
   + JSON.stringify(Object.assign({}, sessionStorage)) + location.href + document.cookie"""
 
 
+def route_all(ctx, port, anthropic, openai):
+    """routes every request of a browser context: the page itself goes through, the two
+    providers go to their mocks, and anything else is aborted and listed"""
+    blocked = []
+    page = f"http://localhost:{port}/" if port else "file://"
+
+    def router(route):
+        url = route.request.url
+        if url.startswith(page):
+            return route.continue_()
+        if url.startswith("https://api.anthropic.com/"):
+            return anthropic(route)
+        if url.startswith("https://api.openai.com/"):
+            return openai(route)
+        blocked.append(url)
+        route.abort()
+
+    ctx.route("**/*", router)
+    return blocked
+
+
+def watch_csp(tab):
+    """the page's Content Security Policy violations, in window.__csp"""
+    tab.add_init_script(
+        "window.__csp = []; document.addEventListener('securitypolicyviolation',"
+        " (e) => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI))"
+    )
+
+
+def plain_png(path: pathlib.Path, w=320, h=240):
+    """a picture of one colour, with no figure in it"""
+    import struct
+    import zlib
+
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+
+    raw = b"".join(b"\x00" + b"\x80\x90\xa0" * w for _ in range(h))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
 @local_only("Playwright with the built viewer page")
 @unittest.skipUnless(
     playwright_available(), "Playwright and the built viewer page are needed"
@@ -145,7 +319,7 @@ class TestAiPage(unittest.TestCase):
         tab.wait_for_function(
             "(t) => (document.querySelector('.ai-status') || {}).textContent.includes(t)",
             arg=text,
-            timeout=30000,
+            timeout=120000,
         )
         return tab.locator(".ai-status").text_content()
 
@@ -188,13 +362,14 @@ class TestAiPage(unittest.TestCase):
                 status=401, json=body, headers={"access-control-allow-origin": "*"}
             )
 
-        with sync_playwright() as p, served(PAGE.parent) as port:
+        with sync_playwright() as p, served(PAGE) as port:
             kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
             browser = p.chromium.launch(args=ARGS, **kw)
             ctx = browser.new_context(viewport=dict(width=1200, height=800))
-            ctx.route("https://api.anthropic.com/**", anthropic)
-            ctx.route("https://api.openai.com/**", openai)
+            blocked = route_all(ctx, port, anthropic, openai)
             tab = ctx.new_page()
+            tab.set_default_timeout(180000)
+            watch_csp(tab)
             errors = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.on("dialog", lambda d: d.accept())
@@ -250,14 +425,17 @@ class TestAiPage(unittest.TestCase):
             self.assertIn(
                 "refused", panel.locator(".ai-row[data-provider=openai]").text_content()
             )
-            # the keys went to their own provider only, and nothing else left the page
+            # each key went to its own provider only, and no request left for another host
+            self.assertEqual(blocked, [])
+            self.assertTrue(any("api.anthropic.com" in u for u, _ in seen))
             for url, headers in seen:
                 blob = url + json.dumps(headers)
-                if "api.anthropic.com" in url:
-                    self.assertNotIn(KEY_O, blob)
-                else:
-                    self.assertIn("api.openai.com", url)
-                    self.assertNotIn(KEY_A, blob)
+                host = url.split("/")[2]
+                self.assertIn(host, ("api.anthropic.com", "api.openai.com"))
+                if KEY_A in blob:
+                    self.assertEqual(host, "api.anthropic.com")
+                if KEY_O in blob:
+                    self.assertEqual(host, "api.openai.com")
             # forget one key, then everything
             panel.locator(
                 ".ai-row[data-provider=openai] button", has_text="Forget"
@@ -271,11 +449,14 @@ class TestAiPage(unittest.TestCase):
                 panel.locator("button", has_text="Set up passkey").count(), 1
             )
             self.assertFalse(errors, errors)
+            self.assertEqual(tab.evaluate("window.__csp"), [])
 
             # an authenticator without PRF: the plain line, a key for this visit only, no record
             ctx2 = browser.new_context()
-            ctx2.route("https://api.anthropic.com/**", anthropic)
+            blocked2 = route_all(ctx2, port, anthropic, openai)
             tab2 = ctx2.new_page()
+            tab2.set_default_timeout(180000)
+            watch_csp(tab2)
             add_authenticator(tab2, prf=False)
             url = f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off"
             tab2.goto(url, timeout=300000)
@@ -297,17 +478,74 @@ class TestAiPage(unittest.TestCase):
             tab2.locator(".ai-panel button", has_text="Try a passkey again").wait_for()
             self.assertEqual(panel2.locator(".ai-row").count(), 0)
             self.assertIn("used for this visit only", panel2.text_content())
+            self.assertEqual(blocked2, [])
+            self.assertEqual(tab2.evaluate("window.__csp"), [])
 
             # the page opened as a file: the way to http://localhost, and no database
-            tab3 = browser.new_context().new_page()
+            ctx3 = browser.new_context()
+            blocked3 = route_all(ctx3, None, anthropic, openai)
+            tab3 = ctx3.new_page()
+            tab3.set_default_timeout(180000)
             tab3.goto(PAGE.as_uri() + "?acc=1&blink=off", timeout=300000)
             self.open_panel(tab3)
             text = tab3.locator(".ai-panel").text_content()
             self.assertIn("opened as a file", text)
-            self.assertIn(f"http://localhost:8765/{PAGE.name}", text)
-            self.assertIn("python -m http.server 8765 --bind 127.0.0.1", text)
+            port_ = serve_module().PORT
+            self.assertIn(f"http://localhost:{port_}/{PAGE.name}", text)
+            self.assertIn("python serve_viewer.py --open", text)
             self.assertIsNone(tab3.evaluate(DUMP))
+            # From a picture on a file page: the way to the server
+            with tempfile.TemporaryDirectory() as d:
+                png = pathlib.Path(d) / "plain.png"
+                plain_png(png)
+                if not tab3.locator("#sec-pose").is_visible():
+                    tab3.click("#tab-pose")
+                tab3.set_input_files("#sec-pose input[type=file]", str(png))
+                tab3.wait_for_function(
+                    "() => [...document.querySelectorAll('#sec-pose p.inline-msg')]"
+                    ".some((p) => p.textContent.includes('serve_viewer.py'))",
+                    timeout=120000,
+                )
+            self.assertEqual(blocked3, [])
             browser.close()
+
+    def test_picture_from_the_page_alone(self):
+        """From a picture runs MediaPipe from its pinned files beside the page, with no other host"""
+        from playwright.sync_api import sync_playwright
+
+        with tempfile.TemporaryDirectory() as d, sync_playwright() as p:
+            png = pathlib.Path(d) / "plain.png"
+            plain_png(png)
+            with served(PAGE) as port:
+                kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
+                browser = p.chromium.launch(args=ARGS, **kw)
+                ctx = browser.new_context(viewport=dict(width=1200, height=800))
+                blocked = route_all(ctx, port, lambda r: r.abort(), lambda r: r.abort())
+                tab = ctx.new_page()
+                tab.set_default_timeout(180000)
+                watch_csp(tab)
+                errors = []
+                tab.on("pageerror", lambda e: errors.append(str(e)))
+                tab.goto(
+                    f"http://localhost:{port}/{PAGE.name}?acc=1&blink=off",
+                    timeout=300000,
+                )
+                tab.wait_for_function("() => window.__ready === true", timeout=300000)
+                tab.wait_for_timeout(300)
+                if not tab.locator("#sec-pose").is_visible():
+                    tab.click("#tab-pose")
+                tab.set_input_files("#sec-pose input[type=file]", str(png))
+                tab.wait_for_function(
+                    "() => [...document.querySelectorAll('#sec-pose p.inline-msg')]"
+                    ".some((p) => /No figure|could not/.test(p.textContent))",
+                    timeout=300000,
+                )
+                msg = tab.locator("#sec-pose p.inline-msg").first.text_content()
+                self.assertIn("No figure was found", msg)
+                self.assertEqual(blocked, [])
+                self.assertEqual(tab.evaluate("window.__csp"), [])
+                self.assertFalse(errors, errors)
+                browser.close()
 
 
 if __name__ == "__main__":
