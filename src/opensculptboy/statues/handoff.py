@@ -213,7 +213,7 @@ def scan_to_handoff(
 
     role = np.zeros(len(F), np.int64)  # 0 skin; see ROLE_NAMES
     names = ["skin", "plinth", "support", "break", "drapery", "hair", "debris"]
-    top = plinth_top(X) if plinth else None
+    top = plinth_top(X, F) if plinth else None
     floor = X[:, 2].min()
     if top is not None:
         margin = PLINTH_MARGIN * np.ptp(X[:, 2])

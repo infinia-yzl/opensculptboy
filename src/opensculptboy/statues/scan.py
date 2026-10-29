@@ -37,9 +37,10 @@ AXES = {
 }
 # the share of the height at each end in which guess_up compares the footprints
 END_BAND = 0.06
-# the band of the head (shares of the figure's height above its lowest point) in which
-# guess_front looks for the nose: below the brow, above the chin
-FACE_BAND = (0.885, 0.925)
+# the band of the nose in which guess_front looks for it: shares of the height below the
+# highest point (the crown), and the reach (share of the height) of the head around the crown
+FACE_BAND = (0.075, 0.105)
+HEAD_REACH = 0.07
 # the angle (degrees) on each side of a direction against which guess_front measures how far
 # the outline stands out there
 FRONT_SPREAD = 40.0
@@ -128,32 +129,25 @@ def guess_up(vertices: np.ndarray) -> tuple[np.ndarray, float]:
 
 def guess_front(vertices: np.ndarray, up: np.ndarray) -> tuple[np.ndarray, float]:
     """
-    The direction the statue faces (across ``up``) and a score: in the band of the face
-    (:data:`FACE_BAND`), the direction in which the outline stands out most beyond the outline
-    :data:`FRONT_SPREAD` degrees to each side, which is the nose; the score is that lead over
-    the band's radius (0.1 and more reads as a clear nose).
+    The direction the statue faces (across ``up``) and a score. The head lies under the
+    highest point; in its band of the nose (:data:`FACE_BAND`, shares of the height below the
+    highest point), the outline stands out most in the direction of the nose, beyond the
+    outline :data:`FRONT_SPREAD` degrees to each side. The score is that lead over the
+    head's radius (0.1 and more reads as a clear nose).
     """
     V = np.asarray(vertices, dtype=np.float64)
     up = axis_vector(up)
     height = V @ up
     lo, hi = height.min(), height.max()
-    share = (height - lo) / max(hi - lo, 1e-12)
-    band = V[(share > FACE_BAND[0]) & (share < FACE_BAND[1])]
+    below = (hi - height) / max(hi - lo, 1e-12)
+    basis = _plane_basis(up)
+    crown = (V[np.argmax(height)] @ basis.T)[None]
+    flat = V @ basis.T
+    near = np.linalg.norm(flat - crown, axis=1) < HEAD_REACH * (hi - lo)
+    band = flat[near & (below > FACE_BAND[0]) & (below < FACE_BAND[1])]
     if len(band) < 10:
         raise ValueError("The scan has too few vertices in the band of the face.")
-    basis = _plane_basis(up)
-    flat = (band - band.mean(0)) @ basis.T
-    # the head alone: the points nearest the band's densest column (a raised arm or a spear
-    # may share the band)
-    from scipy.spatial import cKDTree
-
-    tree = cKDTree(flat)
-    counts = np.array(
-        [len(r) for r in tree.query_ball_point(flat[::7], 0.08 * (hi - lo))]
-    )
-    centre = flat[::7][counts.argmax()]
-    head = flat[np.linalg.norm(flat - centre, axis=1) < 0.09 * (hi - lo)]
-    head = head - np.median(head, axis=0)
+    head = band - 0.5 * (band.max(0) + band.min(0))
     angles = np.radians(np.arange(0.0, 360.0, 2.0))
     directions = np.stack([np.cos(angles), np.sin(angles)], 1)
     reach = (head @ directions.T).max(0)
@@ -162,7 +156,7 @@ def guess_front(vertices: np.ndarray, up: np.ndarray) -> tuple[np.ndarray, float
     lead = reach - beside
     best = int(lead.argmax())
     front = directions[best] @ basis
-    radius = float(np.median(np.linalg.norm(head, axis=1)))
+    radius = float(np.median(reach))
     return front / np.linalg.norm(front), float(lead[best] / max(radius, 1e-12))
 
 
@@ -179,13 +173,40 @@ def frame_rotation(up, front) -> np.ndarray:
     return np.stack([x, y, z])
 
 
-def plinth_top(vertices: np.ndarray, slabs: int = 100) -> float | None:
+def surface_points(
+    vertices: np.ndarray, triangles: np.ndarray, count: int = 200000, seed: int = 0
+) -> np.ndarray:
+    """``count`` points (N, 3) spread over a mesh by area, and the vertices of its triangles: a plinth's flat
+    sides may be a few large triangles with no vertex between their corners."""
+    V = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    p = V[T]
+    V = V[np.unique(T)]
+    area = 0.5 * np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    if area.sum() <= 0:
+        return V
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(len(p), count, p=area / area.sum())
+    u, v = rng.random(count), rng.random(count)
+    flip = u + v > 1
+    u[flip], v[flip] = 1 - u[flip], 1 - v[flip]
+    points = p[pick, 0] + u[:, None] * (p[pick, 1] - p[pick, 0])
+    points += v[:, None] * (p[pick, 2] - p[pick, 0])
+    return np.concatenate([V, points])
+
+
+def plinth_top(
+    vertices: np.ndarray, triangles: np.ndarray | None = None, slabs: int = 100
+) -> float | None:
     """
     The height (Anny's frame, Z up) where the plinth ends, or None when the bottom shows no
     plinth: walking up in ``slabs`` slabs, the first slab whose footprint falls under
     :data:`PLINTH_SHARE` of the lowest slab's, within :data:`PLINTH_REACH` of the height.
+    With ``triangles``, the footprints take points spread over the surface as well.
     """
     V = np.asarray(vertices, dtype=np.float64)
+    if triangles is not None:
+        V = surface_points(V, triangles)
     z = V[:, 2]
     lo, hi = z.min(), z.max()
     edges = np.linspace(lo, hi, slabs + 1)
