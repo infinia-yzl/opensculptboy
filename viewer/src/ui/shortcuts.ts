@@ -127,7 +127,9 @@ export function helpSheet() {
   const empty = h('p.osb-note.help-empty', { text: 'No key matches.', hidden: true });
   const groups = SHORTCUTS.map(([title, rows]) => {
     const items = rows.map(([k, v]) => {
-      const dt = h('dt', {}, ...k.split(', ').map((x, i) => [i ? ', ' : '', ...x.split(' ').map((p, j) => [j ? ' ' : '', h('kbd.osb-key', { text: keyText(p) })]).flat()]).flat());
+      // a key cap for each key of a combination; the words between them ("to", "drag", "two fingers") stay text
+      const part = (p: string) => (/^[a-z]{2,}$/.test(p) ? p : h('kbd.osb-key', { text: keyText(p) }));
+      const dt = h('dt', {}, ...k.split(', ').map((x, i) => [i ? ', ' : '', ...x.split(' ').map((p, j) => [j ? ' ' : '', part(p)]).flat()]).flat());
       const dd = h('dd', { text: v });
       return { dt, dd, text: (k + ' ' + v).toLowerCase() };
     });
