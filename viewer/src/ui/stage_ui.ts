@@ -3,9 +3,11 @@
 // Apache License, Version 2.0
 //
 // The sections of the Stage segment: Pose (the clips with a timeline, the poses, the soft tissue) and Scene (the
-// lights, their rotation, the exposure, the quality of the picture, the frame rate limit and the display toggles).
+// lights, their rotation, the exposure, the quality of the picture, the frame rate limit, the display toggles and, for
+// now, the AI providers of ai_ui.ts).
 // The Rig section (rig_ui.ts) sits between Pose and Scene.
 
+import { aiPanel } from './ai_ui.ts';
 import type { App } from './app.ts';
 import { chip, foldGroup, searchField, sectionHead, segmented, slider, textButton, toggle } from './controls.ts';
 import { download, h, saveUi, slug, uiState } from './dom.ts';
@@ -176,7 +178,8 @@ export function stageSections(app: App) {
       h('h3.sub', { text: 'Quality' }), qual.el, qNote,
       h('h3.sub', { text: 'Frame rate limit' }), fps.el,
       h('p.note', { text: 'A lower limit saves energy while the figure, the hair or the camera moves. A still picture refines and then stops drawing at any limit.' }),
-      h('h3.sub', { text: 'Display' }), h('div.switches', {}, hairT.el, physT.el, turnT.el));
+      h('h3.sub', { text: 'Display' }), h('div.switches', {}, hairT.el, physT.el, turnT.el),
+      h('div.folds', {}, aiPanel()));
     const sync = () => {
       lightEls.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.preset === app.preset())));
       head.note.textContent = app.presets[app.preset()]?.label || '';
