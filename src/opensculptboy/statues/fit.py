@@ -8,7 +8,10 @@ would pull anny's hand onto the nearest marble (the thigh beside it, the stump o
 :func:`fit_statue` instead names the lost parts of the handoff's ``statue.lost`` list
 (:data:`LOST_PARTS`, with the side: ``"hand.l"``, ``"forearm.r"``, ``"nose"``) to the fit as
 vertices without data (``FitOptions.no_data``), so that anny keeps its own shape there and the
-part follows the fitted skin around it.
+part follows the fitted skin around it. Where a support came off, the scan has an open border
+along its cut; the refinement drops the pairs whose closest point lies on that border
+(:func:`open_border`, the reference's ``"border"`` region), so that the skin does not crease
+along the cut.
 """
 
 from __future__ import annotations
@@ -31,6 +34,29 @@ LOST_PARTS = {
 }
 # the nose: the skin within this distance (metres) of the tip of anny's nose (pronasale)
 NOSE_RADIUS = 0.014
+# the rings of the scan's vertices around its open borders whose pairs the refinement drops
+BORDER_RINGS = 2
+
+
+def open_border(vertices: np.ndarray, triangles: np.ndarray, rings: int = BORDER_RINGS):
+    """The vertices (V,) bool on the open borders of a mesh (the edges of one triangle, the
+    cuts where supports came off and the holes of a scan) and ``rings`` rings around them,
+    with the vertices at one position welded."""
+    from opensculptboy.fit.register import welded_ids
+
+    T = np.asarray(triangles)
+    ids = welded_ids(np.asarray(vertices, dtype=np.float64))
+    W = ids[T]
+    edges = np.sort(np.concatenate([W[:, [0, 1]], W[:, [1, 2]], W[:, [2, 0]]]), 1)
+    unique, counts = np.unique(edges, axis=0, return_counts=True)
+    on = np.zeros(ids.max() + 1, bool)
+    on[unique[counts == 1].ravel()] = True
+    for _ in range(rings):
+        grown = on.copy()
+        touched = on[W].any(1)
+        grown[W[touched].ravel()] = True
+        on = grown
+    return on[ids]
 
 
 def _subtree(model, first: str) -> np.ndarray:
@@ -100,6 +126,7 @@ def fit_statue(folder, detail: int = 2, name: str | None = None, options=None):
     if lost:
         options = dataclasses.replace(options, no_data=lost_mask(model, lost))
     reference = Reference.from_handoff(load_handoff(folder))
+    reference.regions["border"] = open_border(reference.vertices, reference.triangles)
     title = (appearance.get("statue") or {}).get("title")
     return fit_reference(
         reference,

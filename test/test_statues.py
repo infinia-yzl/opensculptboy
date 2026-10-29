@@ -245,6 +245,42 @@ class TestLostParts(unittest.TestCase):
             )
 
 
+def _grid(n=11, size=0.1):
+    """A flat square patch of n by n vertices in the plane z = 0."""
+    x, y = np.meshgrid(np.linspace(0, size, n), np.linspace(0, size, n))
+    V = np.c_[x.ravel(), y.ravel(), np.zeros(n * n)]
+    T = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            T += [(a, a + 1, a + n + 1), (a, a + n + 1, a + n)]
+    return V, np.asarray(T)
+
+
+class TestBorders(unittest.TestCase):
+    def test_open_border(self):
+        from opensculptboy.statues.fit import open_border
+
+        V, T = _grid()
+        edge = open_border(V, T, rings=0)
+        self.assertEqual(edge.sum(), 40)  # the 4 * 10 vertices around the patch
+        self.assertEqual(open_border(V, T, rings=1).sum(), 40 + 32)
+
+    def test_pairs_on_the_border_drop_out(self):
+        from opensculptboy.fit.register import Target
+        from opensculptboy.statues.fit import open_border
+
+        V, T = _grid()
+        reference = Reference.from_mesh(V, T, {"crown": [0.05, 0.05, 0.0]})
+        target = Target(reference, border=open_border(V, T, rings=0))
+        points = np.array([[0.05, 0.05, 0.003], [0.12, 0.05, 0.001], [0.12, 0.05, 0.0]])
+        _, _, _, off = target.closest(points, edge=True)
+        # above the middle: kept; past the border along the surface: dropped
+        self.assertEqual(off.tolist(), [False, True, True])
+        plain = Target(reference)
+        self.assertFalse(plain.closest(points, edge=True)[3].any())
+
+
 class TestRegionDistances(unittest.TestCase):
     def test_regions_and_zero_distance(self):
         model = _model()

@@ -1165,6 +1165,7 @@ class Target:
         shading: bool = False,
         split: EarSplit | None = None,
         anny_ear: np.ndarray | None = None,
+        border: np.ndarray | None = None,
     ):
         self.reference = reference
         self.smooth = smooth
@@ -1173,6 +1174,10 @@ class Target:
         self.normals = reference.shading_normals if shading else reference.normals
         self.split = split
         self.anny_ear = None if anny_ear is None else np.asarray(anny_ear, bool)
+        # the reference's vertices along its open borders (a statue's cut supports), whose
+        # pairs drop out in both terms; None: every pair counts
+        self.border = None if border is None else np.asarray(border, bool)
+        self.skip_reverse = self.border
 
     @property
     def is_split(self) -> bool:
@@ -1195,7 +1200,8 @@ class Target:
         across it and is over 0.2 mm. Those are the points of anny's head past the line, or of
         its ears, which would all clamp onto it and crease there; their pairs drop out, as
         Amberg et al. drop the pairs on the borders of a target, and the attachment term holds
-        the root of the ear on the line. All False without a split.
+        the root of the ear on the line. All False without a split. With a ``border``, the
+        points whose closest point lies on it in the same way are marked as well.
         """
         points = np.asarray(points, dtype=np.float64)
         C = np.zeros_like(points)
@@ -1215,6 +1221,12 @@ class Target:
                 across = np.abs((offset * n).sum(1))
                 along = np.sqrt(np.maximum(dd**2 - across**2, 0.0))
                 off[take] = on_cut & (along > 0.5 * dd) & (dd > 2e-4)
+            if edge and mask is None and self.border is not None:
+                on_border = (self.border[part.triangles[tri]] | (bary < 1e-6)).all(1)
+                offset = points[take] - c
+                across = np.abs((offset * n).sum(1))
+                along = np.sqrt(np.maximum(dd**2 - across**2, 0.0))
+                off[take] |= on_border & (along > 0.5 * dd) & (dd > 2e-4)
         return (C, N, d, off) if edge else (C, N, d)
 
 
@@ -2951,7 +2963,12 @@ def fit_levels(
             options.normal_threshold,
         )
         target = Target(
-            reference, options.target_smooth, options.target_shading, split, anny_ear
+            reference,
+            options.target_smooth,
+            options.target_shading,
+            split,
+            anny_ear,
+            border=reference.regions.get("border"),
         )
         fitted = nicp(
             posed,
