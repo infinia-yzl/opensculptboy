@@ -546,9 +546,11 @@ class TestPrune(unittest.TestCase):
             self.assertEqual(count, len(covered))
             self.assertIn(int(np.argmax(V[:, 2])), covered)
             self.assertGreater(count, 30)
-            # the skin the scan keeps keeps its data
+            # the skin the scan keeps keeps its data, but along the hat's cut
             self.assertLess(V[covered, 2].min(), top)
-            self.assertGreater(V[covered, 2].min(), top - 0.07)
+            self.assertGreater(V[covered, 2].min(), top - 0.085)
+            below = V[:, 2] < top - 0.1
+            self.assertFalse(np.isin(np.nonzero(below)[0], covered).any())
 
 
 class TestRegionDistances(unittest.TestCase):

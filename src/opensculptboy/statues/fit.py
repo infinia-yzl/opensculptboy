@@ -390,6 +390,15 @@ COVER_REGIONS = {
     # set on a removed head, a leg by a sword and a sole on the plinth keep anny's shape
     "removed": ("feet", "legs", "hands", "arms", "torso"),
 }
+# and the regions whose skin is covered where the first fit laid it on the scan's cut within
+# COVER_CUT of a hat or locks (the face by the locks included)
+CUT_REGIONS = {
+    "clothing": ("scalp", "ears", "neck", "face"),
+    "hair": ("scalp", "ears", "neck", "face"),
+}
+# the cut there: the scan's border, this many rings and this far (metres) around it
+CUT_RINGS = 1
+CUT_REACH = 0.003
 # a vertex is covered when a hair or drapery piece lies this much (metres) nearer to it than
 # the skin, and the skin is further than COVER_SKIN
 COVER_MARGIN = 0.002
@@ -529,6 +538,23 @@ def covered_skin(folder, result, model=None) -> int:
                 ((d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN))
                 | (on_cut & (d_cover < COVER_CUT))
             )
+        # the skin that the first fit laid on the cut along a hat or locks: the brow pulled up
+        # to the cut under the brim in a ridge, and the cheek by the locks folded onto their cut
+        X0 = fitted0[rows]
+        cut_covers = [c for c in covers if c[0] in CUT_REGIONS]
+        if cut_covers:
+            # the cut itself (a narrow band): the band of open_border reaches over the brows
+            rim = open_border(
+                skin.vertices, skin.triangles, rings=CUT_RINGS, reach=CUT_REACH
+            )
+            tri0, _, _ = closest_triangles(X0, skin.vertices, skin.triangles)
+            on_cut0 = rim[skin.triangles[tri0]].any(1)
+        for role, pv, pt in cut_covers:
+            _, _, d0 = closest_triangles(X0, pv, pt)
+            near = np.isin(
+                regions[rows], [STATUE_REGIONS.index(r) for r in CUT_REGIONS[role]]
+            )
+            marked[rows] |= near & on_cut0 & (d0 < COVER_CUT)
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
     if marked_levels.any() and COVER_GROW > 0:
