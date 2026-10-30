@@ -473,6 +473,31 @@ class TestPrune(unittest.TestCase):
         top = hat.vertices[:, 2] > 0.09
         np.testing.assert_allclose(V[top], hat.vertices[top])
 
+    def test_shards_leave_a_piece(self):
+        import trimesh
+
+        from opensculptboy.statues.fit import trim_piece
+
+        skull = trimesh.creation.icosphere(4, radius=0.1)
+        hat = trimesh.creation.icosphere(4, radius=0.11)
+        keep = hat.triangles_center[:, 2] > 0.02
+        cap = trimesh.Trimesh(hat.vertices, hat.faces[keep])
+        cap.remove_unreferenced_vertices()
+        # a shard of the brow 1 cm inside the skull, and a crumb 3 cm off the cap
+        shard = trimesh.creation.box(extents=(0.03, 0.002, 0.01))
+        shard.apply_translation((0.0, -0.085, 0.0))
+        crumb = trimesh.creation.box(extents=(0.002, 0.002, 0.002))
+        crumb.apply_translation((0.0, 0.0, 0.14))
+        parts = [cap, shard, crumb]
+        base = np.cumsum([0] + [len(p.vertices) for p in parts[:-1]])
+        V = np.concatenate([p.vertices for p in parts])
+        T = np.concatenate([p.faces + b for p, b in zip(parts, base)])
+        out_V, out_T, dropped = trim_piece(V, T, skull.vertices, skull.faces)
+        self.assertEqual(len(out_T), len(cap.faces))
+        self.assertEqual(dropped, len(shard.faces) + len(crumb.faces))
+        self.assertEqual(len(out_V), len(cap.vertices))
+        self.assertGreater(np.linalg.norm(out_V, axis=1).min(), 0.105)
+
     def test_feet_on_a_removed_piece_take_no_data(self):
         import types
 
