@@ -335,6 +335,9 @@ class FitOptions:
     # the lids' margins that are each other's nearest within this distance (metres) meet at
     # their mean, which closes the corners of a carved eye (0: none)
     close_lid_contact: float = 0.0
+    # fill the socket of a carved eye up to the marble within this distance (metres) of the
+    # eye's centre (0: none)
+    close_socket: float = 0.0
     close_rim_depth: float = 0.0005
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
@@ -3847,6 +3850,40 @@ def _close_openings(
                 reach = np.maximum(reach, 0.2 * length)
                 fitted[out_rows] = origin + direction * reach[:, None]
                 moved += [out_rows]
+    if options.close_socket > 0 and eye_centres:
+        hidden_all = lining.copy()
+        for side_rows in eyes.values():
+            base = np.zeros(n0)
+            base[side_rows] = 1.0
+            hidden_all |= np.asarray(topology.apply(base)) > 0.5
+        # the socket of a carved eye is filled up to the marble: every vertex within
+        # close_socket of the eye's centre, but the carved front and the skin on the scan,
+        # moves out along its ray from the centre to just under the first marble it meets
+        # when that lies within 12 mm beyond it (the corners showed the socket's lining dark
+        # through the gap between the lids and the carved eyeball)
+        on = np.zeros(len(fitted), bool)
+        for done in carved:
+            on[done] = True
+        d_scan = reference.closest(fitted)[2]
+        for centre in eye_centres:
+            rows = np.nonzero(
+                (np.linalg.norm(fitted - centre, axis=1) < options.close_socket)
+                & ~on
+                & ~(~hidden_all & (d_scan < 0.001))
+            )[0]
+            if not len(rows):
+                continue
+            ray = fitted[rows] - centre
+            length = np.linalg.norm(ray, axis=1)
+            direction = ray / np.maximum(length, 1e-12)[:, None]
+            hits, index, _ = surface.ray.intersects_location(
+                np.repeat(centre[None], len(rows), 0), direction, multiple_hits=False
+            )
+            hit = np.linalg.norm(hits - centre, axis=1)
+            take = (hit > length[index]) & (hit - length[index] < 0.012)
+            goal = hit[take] - options.close_rim_depth
+            fitted[rows[index[take]]] = centre + direction[index[take]] * goal[:, None]
+            moved += [rows[index[take]]]
     if options.close_lid_contact > 0 and eye_centres:
         # the lids' margins meet at the corners of a carved eye: the rows of skin along the
         # socket's lining above and below each eye's centre that are each other's nearest
