@@ -334,8 +334,12 @@ void main() {
   if (uStoneHair > 0.5) {
     vec3 hq0 = (uHeadInv * vec4(wp.xyz, 1.0)).xyz;
     vec3 nh = normalize(mat3(uHeadInv) * vN);
-    float occ0 = textureLod(uHairOcc, (hq0 + nh * 0.002 - uHairOccLo) / uHairOccSize, 0.0).r;
-    if (occ0 < 0.93) {
+    vec3 hv0 = textureLod(uHairOcc, (hq0 + nh * 0.002 - uHairOccLo) / uHairOccSize, 0.0).rgb;
+    float occ0 = hv0.x;
+    // only the scalp, where the hair has its roots, rises: skin under hair that falls over the neck stays, so no
+    // crease opens between a raised and a resting vertex
+    float roots = smoothstep(0.08, 0.45, hv0.y);
+    if (occ0 < 0.93 && roots > 0.0) {
       // the depth of the hair along the normal, summed softly over the march so that it varies smoothly from one
       // vertex to the next (a step function of the march would carve terraces)
       float off = 0.0;
@@ -343,7 +347,7 @@ void main() {
         float d = float(i) * 0.005;
         off += 0.005 * smoothstep(0.97, 0.86, textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r);
       }
-      float w = smoothstep(0.93, 0.7, occ0);
+      float w = smoothstep(0.93, 0.7, occ0) * roots;
       wp.xyz += vN * (off * 0.85 + 0.002) * w;
       vWPos = wp.xyz; vHairMass = w;
     }
