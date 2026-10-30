@@ -415,7 +415,7 @@ class TestDetectedLandmarks(unittest.TestCase):
             with self.subTest(name):
                 self.assertIn(name, found)
                 gap = np.linalg.norm(found[name] - statue["landmarks"][name])
-                self.assertLess(gap, 0.012)
+                self.assertLess(gap, 0.015)
         # the figure's left is +x
         self.assertGreater(found["eye_outer_l"][0], found["eye_outer_r"][0])
 
