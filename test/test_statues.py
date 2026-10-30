@@ -518,6 +518,26 @@ class TestPrune(unittest.TestCase):
         far = (P + [0.0, 0.0, 0.02], PT)
         self.assertEqual(fill_to_cover(V, T, free, far, reach=0.015)[0], 0)
 
+    def test_strips_on_the_skin_leave_a_hat(self):
+        import trimesh
+
+        from opensculptboy.statues.fit import on_skin
+
+        skull = trimesh.creation.icosphere(4, radius=0.1)
+        # a strip of the brow 1 mm out on the skull, and a brim 2 cm over it facing down
+        front = skull.triangles_center[:, 1] < -0.09
+        strip = trimesh.Trimesh(skull.vertices * 1.01, skull.faces[front])
+        strip.remove_unreferenced_vertices()
+        brim = trimesh.creation.annulus(r_min=0.1, r_max=0.15, height=0.002)
+        brim.apply_translation((0.0, 0.0, 0.03))
+        parts = [strip, brim]
+        base = np.cumsum([0] + [len(p.vertices) for p in parts[:-1]])
+        V = np.concatenate([p.vertices for p in parts])
+        T = np.concatenate([p.faces + b for p, b in zip(parts, base)])
+        flagged = on_skin(V, T, skull.vertices, skull.faces, 0.004)
+        self.assertTrue(flagged[: len(strip.faces)].all())
+        self.assertFalse(flagged[len(strip.faces) :].any())
+
     def test_teeth_leave_a_border(self):
         from opensculptboy.statues.fit import trim_piece
 

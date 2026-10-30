@@ -803,6 +803,71 @@ def trim_piece(
     return V[used], remap[T[kept]], int((~kept).sum())
 
 
+# the triangles of a seated hat that lie on the fitted skin within this distance (metres) and
+# face as it does go (the strips of the brow's fringe under the brim), by role
+ON_SKIN_BY_ROLE = {"clothing": 0.004, "hair": None}
+
+
+def on_skin(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    skin_vertices: np.ndarray,
+    skin_triangles: np.ndarray,
+    within: float,
+    agree: float = 0.5,
+) -> np.ndarray:
+    """Mask (T,) of a piece's triangles that lie on the skin: their centres within ``within``
+    of it, and their normals within acos(``agree``) of the skin's there (a brim over the brow
+    faces down and stays)."""
+    from anny.hair import closest_triangles
+
+    V = np.asarray(vertices, np.float64)
+    T = np.asarray(triangles)
+    SV = np.asarray(skin_vertices, np.float64)
+    ST = np.asarray(skin_triangles)
+    centres = V[T].mean(1)
+    tri, _, d = closest_triangles(centres, SV, ST)
+    corners = SV[ST[tri]]
+    skin_normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    skin_normal /= np.maximum(np.linalg.norm(skin_normal, axis=1, keepdims=True), 1e-18)
+    p = V[T]
+    normal = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
+    return (d < within) & (np.abs((normal * skin_normal).sum(1)) > agree)
+
+
+def finish_piece(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    skin_vertices: np.ndarray,
+    skin_triangles: np.ndarray,
+    role: str,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """A hat or locks cut from a statue made ready to wear on the fitted skin: trimmed
+    (:func:`trim_piece`), seated (:func:`seat_piece`), and for a hat the strips that the seat
+    laid on the skin taken out and the piece trimmed and seated again. Returns the vertices,
+    the triangles and what was done."""
+    reach, blend = SEAT_BY_ROLE[role]
+    V, T, dropped = trim_piece(
+        vertices, triangles, skin_vertices, skin_triangles, inside=TRIM_BY_ROLE[role]
+    )
+    V, moved = seat_piece(V, T, skin_vertices, skin_triangles, reach=reach, blend=blend)
+    stripped = 0
+    within = ON_SKIN_BY_ROLE[role]
+    if within:
+        strip = on_skin(V, T, skin_vertices, skin_triangles, within)
+        stripped = int(strip.sum())
+        if stripped:
+            V, T, again = trim_piece(
+                V, T[~strip], skin_vertices, skin_triangles, inside=None
+            )
+            dropped += again
+            V, moved = seat_piece(
+                V, T, skin_vertices, skin_triangles, reach=reach, blend=blend
+            )
+    return V, T, {"dropped": dropped, "on_skin": stripped, "border_moved": moved}
+
+
 def seat_piece(
     vertices: np.ndarray,
     triangles: np.ndarray,
