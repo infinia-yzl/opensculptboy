@@ -566,7 +566,9 @@ def _removed_pieces(folder) -> list:
     return out
 
 
-def covered_skin(folder, result, model=None) -> int:
+def covered_skin(
+    folder, result, model=None, cut: tuple = (CUT_RINGS, CUT_REACH)
+) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
     of the head that a hat or fused locks cover, by a first fit (``result``, its sliders and
@@ -575,7 +577,8 @@ def covered_skin(folder, result, model=None) -> int:
     The scan has no skin under the hat and the locks, and the skin's cut at their edges would
     pull the skull flat onto it; :func:`fit_statue` gives those vertices no data, so that the
     skull keeps anny's own shape under them and follows the fitted skin around it. Returns
-    the number of vertices marked.
+    the number of vertices marked. ``cut`` (rings, metres) is the band along the scan's cut
+    by a hat or locks.
     """
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import load_handoff
@@ -633,7 +636,7 @@ def covered_skin(folder, result, model=None) -> int:
         if cut_covers:
             # the cut itself (a narrow band): the band of open_border reaches over the brows
             rim = open_border(
-                skin.vertices, skin.triangles, rings=CUT_RINGS, reach=CUT_REACH
+                skin.vertices, skin.triangles, rings=int(cut[0]), reach=float(cut[1])
             )
             tri0, _, _ = closest_triangles(X0, skin.vertices, skin.triangles)
             on_cut0 = rim[skin.triangles[tri0]].any(1)

@@ -68,6 +68,11 @@ def run(argv) -> int:
         help="the rings around the eyes' and the mouth's openings that keep anny's shape",
     )
     parser.add_argument(
+        "--cut",
+        metavar="RINGS,METRES",
+        help="the band along the scan's cut by a hat or locks whose skin takes no data",
+    )
+    parser.add_argument(
         "--from",
         dest="stage1",
         metavar="RUN",
@@ -102,6 +107,9 @@ def run(argv) -> int:
             config = dataclasses.replace(
                 config, hold=[int(x) for x in args.hold.split(",")]
             )
+        if args.cut:
+            rings, reach = args.cut.split(",")
+            config = dataclasses.replace(config, cut=[int(rings), float(reach)])
         if args.variant:
             config = dataclasses.replace(config, name=f"{config.name}.{args.variant}")
         steps = [s for s in args.steps.split(",") if s]
