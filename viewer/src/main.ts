@@ -1952,7 +1952,7 @@ function groundPieces() {
   // a figure in the middle of a blend keeps its blend: the root it blends from moves with the floor
   if (MOTION.fade < 1) MOTION.from.root[1] += MOTION.ground - before;
   evalMotion();
-  if (Math.abs(MOTION.lift - lift) > 1e-4) refitBody(MOTION.cur);
+  refitBody(MOTION.cur, Math.abs(MOTION.lift - lift) > 1e-4);
   HOOKS.motion();
 }
 // the stool of a seated pose meets the lowest point of the seat; its size follows the hips
@@ -2024,16 +2024,19 @@ function setMotion(name: string, opts: any = {}) {
 }
 // the Body view fits each pose or clip: a raised arm or a jump needs more room above, a seated figure less
 function bodyFrameFor(c: any) {
-  const b = c && c.bounds;
-  if (!b || !BODY.ready) return FRAMES.body;
+  const b = c && c.bounds, now = !!c && c === MOTION.cur && RIG.ready && FIG.top > FIG.lo.y;
+  if ((!b && !now) || !BODY.ready) return FRAMES.body;
   const hip = hipHeight(), fl = BODY.anny.floor;
-  // the props under the body lift its top (MOTION.lift belongs to the current clip)
-  const lo = fl + b[0] * hip, hi = fl + b[1] * hip + (c === MOTION.cur ? MOTION.lift : 0), wx = b[2] * hip;
+  // a clip of the library has its bounds; a pose of the page's own (a card's pose) takes the figure as it stands, from
+  // the floor to the top of its head (FIG, from the joints); the props under the body lift its top (MOTION.lift
+  // belongs to the current clip)
+  const lo = b ? fl + b[0] * hip : fl, hi = b ? fl + b[1] * hip + (now ? MOTION.lift : 0) : Math.max(FIG.top, FIG.hi.y);
+  const wx = b ? b[2] * hip : Math.max(Math.abs(FIG.lo.x), Math.abs(FIG.hi.x));
   return { target: [0, (lo + hi) / 2 - 0.11 * hip / MANIFEST.authoring.hip_height, 0.03], yaw: 24, pitch: 4, halfH: (hi - lo) / 2 + 0.21 * hip / MANIFEST.authoring.hip_height,
     halfW: Math.max(0.58 * hip / MANIFEST.authoring.hip_height, wx + 0.1) };
 }
 function refitBody(c: any, force = false) {
-  if (SHOT || currentFrame !== 'body' || !c.bounds || VIEW.userMoved) return;
+  if (SHOT || currentFrame !== 'body' || (!c.bounds && c !== MOTION.cur) || VIEW.userMoved) return;
   const f = bodyFrameFor(c), dNow = camera.position.distanceTo(controls.target);
   const dOld = frameDistance(bodyFrameFor(MOTION.lastFramed)), dNew = frameDistance(f);
   // a view the viewer has zoomed well away from the fitted one stays as it is

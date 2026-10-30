@@ -24,7 +24,8 @@ export interface OpenDeps {
   setSheet(json: any): void;
   posePicture(file: File): Promise<void>;
 }
-export interface Opener { pickFiles(): void; pickFolder(): void; open(picked: PickedFile[]): Promise<boolean> }
+// quiet: a first visit's statue opens without its messages, and the welcome card and the mode stay
+export interface Opener { pickFiles(): void; pickFolder(): void; open(picked: PickedFile[], opts?: { quiet?: boolean }): Promise<boolean> }
 
 // the steps of a card's open, in order, with their words
 export const CARD_STEPS: [string, string][] = [
@@ -59,11 +60,11 @@ export function makeOpener(deps: OpenDeps): Opener {
     return r;
   }
 
-  async function open(picked: PickedFile[]): Promise<boolean> {
+  async function open(picked: PickedFile[], opts: { quiet?: boolean } = {}): Promise<boolean> {
     if (!picked.length) { fail({ title: 'The drop held no files', body: 'Drop the files themselves, or choose them with Choose files.' }); return false; }
     ui.set({ openBusy: picked.length > 1 ? `Reading ${picked.length} files` : 'Reading the file', openError: null });
     // a drop with the dialog closed says that the files are on their way
-    if (!ui.get().openDialog) toast(ui.get().openBusy + '…');
+    if (!ui.get().openDialog && !opts.quiet) toast(ui.get().openBusy + '…');
     // a .zip opens as the files it holds
     const zips = picked.filter((p) => ext(p.path) === 'zip');
     if (zips.length) {
@@ -148,6 +149,7 @@ export function makeOpener(deps: OpenDeps): Opener {
     ui.set({ openBusy: '', progress: null });
     actions.hideOpen();
     actions.hideNew();
+    if (opts.quiet) return true;
     if (ui.get().welcome) actions.dismissWelcome();
     if (mode) actions.openMode(mode[0], mode[1]);
     toast(done.join('. ') + '.');

@@ -167,7 +167,7 @@ export class Wardrobe {
     this.cancel();
     this.clearMeshes();
     // the dress cache holds the packages (their garments and texture bytes) by reference
-    this.card = null; this.source = null; this.cardPath = ''; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
+    this.card = null; this.cardName = ''; this.source = null; this.cardPath = ''; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
     this.host.unloadCard();
     this.restoreBody();
     this.host.ground();

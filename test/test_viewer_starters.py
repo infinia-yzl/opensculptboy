@@ -30,9 +30,20 @@ import unittest
 import numpy as np
 
 from test.markers import local_only
-from test.test_hair_page import CHROMIUM, PAGE, playwright_available
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+PAGE = REPO / "viewer" / "dist" / "anny_viewer.html"
+CHROMIUM = pathlib.Path("/opt/pw-browsers/chromium")
+
+
+def playwright_available():
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        return False
+    return PAGE.exists()
+
+
 PINS = json.loads(
     (REPO / "viewer" / "src" / "starter_packages.json").read_text(encoding="utf-8")
 )
@@ -71,6 +82,12 @@ def served(folder: pathlib.Path, packages: dict):
     return servers, f"http://localhost:{port}/{PAGE.name}"
 
 
+def stop(servers):
+    for s in servers:
+        s.shutdown()
+        s.server_close()
+
+
 def open_tab(p, url: str, width=1280, height=800):
     kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
     browser = p.chromium.launch(args=ARGS, **kw)
@@ -78,6 +95,7 @@ def open_tab(p, url: str, width=1280, height=800):
     tab.set_default_timeout(120000)
     tab.goto(url)
     tab.wait_for_function("() => window.__ready === true", timeout=300000)
+    # sync_playwright's exit closes the browser, also after a failure
     return browser, tab
 
 
@@ -174,10 +192,9 @@ class TestStarterPackages(unittest.TestCase):
         dory, david = PINS["packages"]["doryphoros"], PINS["packages"]["david_goliath"]
         # the pinned size with other bytes: the page fetches it and the browser refuses it
         servers, url = served(folder, {dory["file"]: b"\x00" * dory["bytes"]})
-        self.addCleanup(lambda: [s.shutdown() for s in servers])
+        self.addCleanup(stop, servers)
         with sync_playwright() as p:
             browser, tab = open_tab(p, url)
-            self.addCleanup(browser.close)
             requests = []
             tab.on("request", lambda r: requests.append(r.url))
             # the first visit tries the default statue: the bytes differ, so the welcome card shows its note
@@ -243,7 +260,6 @@ class TestPropFloor(unittest.TestCase):
         payload = {f.name: base64.b64encode(f.read_bytes()).decode() for f in files}
         with sync_playwright() as p:
             browser, tab = open_tab(p, PAGE.as_uri() + "?base")
-            self.addCleanup(browser.close)
             before = tab.evaluate("() => window.groundInfo()")
             self.assertIsNone(before["props"])
             self.assertAlmostEqual(before["body"], before["floor"], delta=1e-4)
@@ -294,10 +310,9 @@ class TestStatueStarters(unittest.TestCase):
             for e in PINS["packages"].values()
         }
         servers, url = served(folder, packages)
-        self.addCleanup(lambda: [s.shutdown() for s in servers])
+        self.addCleanup(stop, servers)
         with sync_playwright() as p:
             browser, tab = open_tab(p, url + "?querypool=off")
-            self.addCleanup(browser.close)
             # the first visit opens the Doryphoros
             tab.wait_for_function(
                 "() => window.wearStats()?.card === %s"

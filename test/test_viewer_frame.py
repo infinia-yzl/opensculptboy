@@ -166,36 +166,6 @@ class TestFramePage(unittest.TestCase):
                 .get_attribute("href")
                 .endswith("/doryphoros.zip")
             )
-            # a card's pose (each bone's turn in anny's frame) stands the figure in it, and the card of the pose
-            # shown gives it back
-            turn = [0.0, 0.0, 0.258819, 0.965926]
-            tab.evaluate(
-                DROP,
-                {
-                    "character.json": base64.b64encode(
-                        json.dumps(
-                            {
-                                "schema": 5,
-                                "name": "Fitted",
-                                "phenotype": {"muscle": 0.3},
-                                "face_shapes": {"nose-hump": 0.5},
-                                "pose": {"bones": {"upperarm01.L": turn}},
-                                "look": {"skin": {"stone": "carrara"}},
-                            }
-                        ).encode()
-                    ).decode()
-                },
-            )
-            tab.wait_for_function("() => window.viewState().clip === 'card:Fitted'")
-            fitted = tab.evaluate(
-                "() => ({ look: window.__look(), card: window.poseCard() })"
-            )
-            self.assertEqual(fitted["look"]["skin"]["stone"], "carrara")
-            self.assertAlmostEqual(fitted["look"]["phenotype"]["muscle"], 0.3)
-            self.assertEqual(fitted["look"]["face"], {"nose-hump": 0.5})
-            self.assertEqual(sorted(fitted["card"]["pose"]["bones"]), ["upperarm01.L"])
-            for a, b in zip(fitted["card"]["pose"]["bones"]["upperarm01.L"], turn):
-                self.assertAlmostEqual(a, b, delta=2e-4)
             # the figure stands between the top bar and the view bar at every framing and angle
             bars = tab.evaluate(
                 "() => ({ top: document.querySelector('.osb-top').getBoundingClientRect().bottom,"
@@ -241,6 +211,36 @@ class TestFramePage(unittest.TestCase):
             # the welcome card closes and stays closed on the next visit
             tab.locator(".welcome button", has_text="Got it").click()
             self.assertEqual(tab.locator(".welcome").count(), 0)
+            # a card's pose (each bone's turn in anny's frame) stands the figure in it, and the card of the pose
+            # shown gives it back
+            turn = [0.0, 0.0, 0.258819, 0.965926]
+            tab.evaluate(
+                DROP,
+                {
+                    "character.json": base64.b64encode(
+                        json.dumps(
+                            {
+                                "schema": 5,
+                                "name": "Fitted",
+                                "phenotype": {"muscle": 0.3},
+                                "face_shapes": {"nose-hump": 0.5},
+                                "pose": {"bones": {"upperarm01.L": turn}},
+                                "look": {"skin": {"stone": "carrara"}},
+                            }
+                        ).encode()
+                    ).decode()
+                },
+            )
+            tab.wait_for_function("() => window.viewState().clip === 'card:Fitted'")
+            fitted = tab.evaluate(
+                "() => ({ look: window.__look(), card: window.poseCard() })"
+            )
+            self.assertEqual(fitted["look"]["skin"]["stone"], "carrara")
+            self.assertAlmostEqual(fitted["look"]["phenotype"]["muscle"], 0.3)
+            self.assertEqual(fitted["look"]["face"], {"nose-hump": 0.5})
+            self.assertEqual(sorted(fitted["card"]["pose"]["bones"]), ["upperarm01.L"])
+            for a, b in zip(fitted["card"]["pose"]["bones"]["upperarm01.L"], turn):
+                self.assertAlmostEqual(a, b, delta=2e-4)
             # a drop of sheet settings opens them in the Sheet mode
             tab.evaluate(
                 DROP,

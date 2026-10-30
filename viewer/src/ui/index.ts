@@ -124,7 +124,7 @@ export function initUI(app: App): UI {
     if (!s) return;
     const r = await fetchStarter(s);
     if ('note' in r) { actions.setStarter({ busy: '', note: r.note }); return; }
-    await opener.open([{ path: r.file.name, file: r.file }]);
+    await opener.open([{ path: r.file.name, file: r.file }], { quiet: true });
   };
   const startBase = () => {
     app.wardrobe()?.unload();
