@@ -157,6 +157,25 @@ class TestScanToHandoff(unittest.TestCase):
         self.assertFalse(near.any())
         self.assertTrue((self.folder / "handoff" / "removed.glb").exists())
 
+    def test_a_skin_mask_gives_a_prop_back(self):
+        # a later mask of role skin over the stump keeps it in the figure's skin
+        stump = stump_mask(self.statue, self.preview)
+        scan = (self.statue["vertices"], self.statue["triangles"])
+        with tempfile.TemporaryDirectory() as tmp:
+            kept = scan_to_handoff(
+                scan,
+                pathlib.Path(tmp) / "h",
+                stature=1.8,
+                masks=[stump, {**stump, "role": "skin", "prop": None}],
+            )
+            skin = load_handoff(pathlib.Path(tmp) / "h").skin_parts()[0]
+        self.assertEqual(kept.triangles.get("support", 0), 0)
+        self.assertEqual(
+            len(skin.triangles),
+            len(self.handoff.skin_parts()[0].triangles)
+            + self.result.triangles["support"],
+        )
+
     def test_appearance_records_the_statue(self):
         appearance = json.loads(
             (self.folder / "handoff" / "appearance.json").read_text(encoding="utf-8")
@@ -344,6 +363,17 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(config.fit, {"close_lid": 0.004})
         with self.assertRaises(ValueError):
             StatueConfig.from_dict({**base, "fit": {"no_such_option": 1}})
+        config = StatueConfig.from_dict(
+            {
+                **base,
+                "chains": ["hand.r"],
+                "chain_options": {"rounds": 2},
+                "restore": 0.006,
+                "cover_removed": False,
+            }
+        )
+        self.assertEqual(config.chains, ["hand.r"])
+        self.assertFalse(config.cover_removed)
 
     def test_convert_and_preview_from_a_config(self):
         import trimesh
@@ -602,6 +632,80 @@ class TestPrune(unittest.TestCase):
             self.assertGreater(count, 20)
             self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.15)
 
+    def test_feet_by_a_removed_piece_keep_their_data_on_request(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import covered_skin
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        V, T = synthetic_statue(0)["body"]
+        cut = (V[T][:, :, 2] < V[:, 2].min() + 0.06).any(1)
+        block = trimesh.creation.box(extents=(0.5, 0.4, 0.05))
+        block.apply_translation((V[:, 0].mean(), V[:, 1].mean(), V[:, 2].min() + 0.02))
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(
+                write_handoff(pathlib.Path(tmp) / "h", V, T[~cut], name="statue")
+            )
+            _write_removed(
+                folder / "removed.glb",
+                np.asarray(block.vertices),
+                np.asarray(block.faces),
+                np.ones(len(block.faces), np.int64),
+                ["skin", "support"],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            self.assertEqual(
+                covered_skin(folder, result, model, cover_removed=False), 0
+            )
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            self.assertEqual(appearance["statue"]["covered_levels"], [])
+
+    def test_skin_inside_a_coarse_mask_comes_back(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import restore_near
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        V, T = synthetic_statue(0)["body"]
+        # a box round a prop took the feet with it; the prop stands 10 cm off the body
+        feet = (V[T][:, :, 2] < V[:, 2].min() + 0.06).any(1)
+        prop = trimesh.creation.box(extents=(0.05, 0.05, 0.05))
+        prop.apply_translation((0.0, -0.3, 0.1))
+        pieces = [(V, T[feet]), (np.asarray(prop.vertices), np.asarray(prop.faces))]
+        P = np.concatenate([p[0] for p in pieces])
+        F = np.concatenate([pieces[0][1], pieces[1][1] + len(V)])
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(
+                write_handoff(pathlib.Path(tmp) / "h", V, T[~feet], name="statue")
+            )
+            _write_removed(
+                folder / "removed.glb",
+                P,
+                F,
+                np.ones(len(F), np.int64),
+                ["skin", "support"],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            count = restore_near(folder, result, model)
+            # the feet's skin is back (the closed eyeballs and the cavities aside), the prop
+            # stays out
+            self.assertGreater(count, 0.9 * feet.sum())
+            self.assertLessEqual(count, feet.sum())
+            skin = load_handoff(folder).skin_parts()[0]
+            self.assertEqual(len(skin.triangles), (~feet).sum() + count)
+            removed = trimesh.load(str(folder / "removed.glb"), force="mesh")
+            self.assertGreaterEqual(len(removed.faces), len(prop.faces))
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            self.assertEqual(appearance["statue"]["restored"]["triangles"], count)
+
     def test_a_covered_foot_keeps_the_start_pose(self):
         from opensculptboy.statues.fit import held_feet
 
@@ -669,6 +773,76 @@ class TestPrune(unittest.TestCase):
             )["statue"]["covered"]
             self.assertTrue(set(covered.tolist()) <= set(wide))
             self.assertGreater(V[wide, 2].min(), top - 0.2)
+
+
+class TestChains(unittest.TestCase):
+    def test_chain_bones_and_shapes(self):
+        from opensculptboy.statues.chains import chain_bones, chain_shapes
+
+        model = _model()
+        labels = list(model.bone_labels)
+        bones, anchors = chain_bones(model, "hand.l")
+        names = {labels[b] for b in bones}
+        self.assertIn("wrist.L", names)
+        self.assertIn("finger2-3.L", names)
+        self.assertFalse(any(n.endswith(".R") for n in names))
+        self.assertEqual([labels[b] for b in anchors], ["lowerarm01.L"])
+        bones, _ = chain_bones(model, "foot.r")
+        self.assertIn("toe1-1.R", {labels[b] for b in bones})
+        self.assertIn("l-hand-scale-incr", chain_shapes(model, "hand.l"))
+        self.assertIn("r-foot-trans-up", chain_shapes(model, "foot.r"))
+        with self.assertRaises(ValueError):
+            chain_bones(model, "tail.l")
+
+    def test_a_hand_closes_on_a_fist(self):
+        import anny.poses
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.statues.chains import (
+            ChainOptions,
+            chain_bones,
+            chain_vertices,
+            refine_chains,
+        )
+        from opensculptboy.statues.fit import parametric_vertices
+
+        model = _model()
+        bones, _ = chain_bones(model, "hand.l")
+        labels = list(model.bone_labels)
+        fingers = [b for b in bones if labels[b].startswith(("finger", "metacarpal"))]
+        fist = anny.poses.pose_parameters(model, "mh_boxing")["pose_parameters"]
+        pose = torch.eye(4, dtype=fist.dtype).repeat(1, len(labels), 1, 1)
+        pose[0, fingers] = fist[0, fingers]
+        with torch.no_grad():
+            target = model(pose_parameters=pose)["vertices"][0].double().numpy()
+        reference = Reference(target, model.faces.cpu().numpy())
+        character = Character(name="rest")
+        on_chain, _ = chain_vertices(model, "hand.l")
+        rotation, translation = np.eye(3), np.zeros(3)
+        import types
+
+        def error(c):
+            V = parametric_vertices(
+                types.SimpleNamespace(
+                    character=c, rotation=rotation, translation=translation
+                ),
+                model,
+            )
+            return np.linalg.norm(V[on_chain] - target[on_chain], axis=1).mean()
+
+        options = ChainOptions(
+            rounds=4, steps=15, trial_rounds=1, search=(0.0,), keep=2, shape=False
+        )
+        fitted, report = refine_chains(
+            model, reference, character, rotation, translation, ("hand.l",), options
+        )
+        self.assertIn("hand.l", report)
+        self.assertLess(error(fitted), 0.5 * error(character))
+        # the other hand stays at rest
+        self.assertFalse(
+            any(b.endswith(".R") for b in (fitted.pose or {}).get("bones", {}))
+        )
 
 
 class TestRegionDistances(unittest.TestCase):

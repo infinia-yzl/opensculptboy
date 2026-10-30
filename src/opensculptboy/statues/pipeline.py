@@ -92,6 +92,16 @@ class StatueConfig:
     # and the skin of the head within this distance (metres) of fused locks on the first fit
     near_locks: float = 0.0
     prune: float | bool = 0.025
+    # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
+    # levels (False: it keeps its data, for masks that keep the figure's skin whole)
+    cover_removed: bool = True
+    # the chains fitted one limb at a time after the parameters ("hand.l", "foot.r"; see
+    # opensculptboy.statues.chains), with ChainOptions fields
+    chains: list = dataclasses.field(default_factory=list)
+    # the removed pieces' skin within this distance (metres) of the first fit goes back to the
+    # figure (opensculptboy.statues.fit.restore_near; 0: none)
+    restore: float = 0.0
+    chain_options: dict = dataclasses.field(default_factory=dict)
     pose: str | None = "auto"
     detail: int = 2
     # FitOptions fields that this statue's fit takes over the defaults (name -> value)
@@ -381,14 +391,64 @@ def stage1_from_card(run) -> dict:
     )
 
 
-def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
+def _chain_options(config: StatueConfig, verbose: bool):
+    from opensculptboy.statues.chains import ChainOptions
+
+    return ChainOptions(**{"verbose": verbose, **_fit_options(config.chain_options)})
+
+
+def _first_with_chains(config: StatueConfig, folder, first, verbose: bool = False):
+    """An earlier first fit (its card and level 0) with its chains fitted again to the
+    handoff ``folder``: the level 0 moves with the parametric mesh of the new pose."""
+    import types
+
+    from opensculptboy.fit.handoff import load_handoff
+    from opensculptboy.fit.reference import Reference
+    from opensculptboy.fit.register import fit_model
+    from opensculptboy.statues.chains import refine_chains
+    from opensculptboy.statues.fit import open_border, parametric_vertices
+
+    model = fit_model()
+    reference = Reference.from_handoff(load_handoff(folder))
+    reference.regions["border"] = open_border(reference.vertices, reference.triangles)
+    character, _ = refine_chains(
+        model,
+        reference,
+        first.character,
+        first.rotation,
+        first.translation,
+        tuple(config.chains),
+        _chain_options(config, verbose),
+    )
+    before = parametric_vertices(first, model)
+    moved = types.SimpleNamespace(
+        character=character, rotation=first.rotation, translation=first.translation
+    )
+    after = parametric_vertices(moved, model)
+    level0, triangles = first.meshes[0]
+    if triangles is None:
+        triangles = model.faces.cpu().numpy()
+    moved.meshes = {0: (np.asarray(level0) + (after - before), triangles)}
+    return moved
+
+
+def fit(
+    config: StatueConfig,
+    folder,
+    card,
+    verbose: bool = False,
+    stage1=None,
+    reprune: bool = False,
+):
     """Step 4: the fit of the handoff folder, written to the card ``card``. With ``prune``
     (a distance in metres), a first fit to level 0 takes out the scan's pieces further than
     that from it (:func:`~opensculptboy.statues.fit.prune_far`: props and leftovers of
     supports, and locks of hair as a hair piece) before the fit itself. The sliders, pose
     and placement of both fits go to ``stage1/`` beside the card's folder; with ``stage1``
     (such a folder of an earlier run, whose handoff ``folder`` already holds), the covered
-    skin is judged again on its first fit and only the detail levels run."""
+    skin is judged again on its first fit and only the detail levels run; with ``reprune``
+    (a handoff converted again), the earlier first fit also prunes the new handoff, its
+    chains fitted again."""
     import types
 
     from opensculptboy.fit.register import FitOptions
@@ -409,6 +469,8 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
             solid=config.solid,
             hold=tuple(config.hold),
             stage1=start,
+            chains=tuple(config.chains),
+            chain_options=_chain_options(config, verbose) if config.chains else None,
         )
 
     saved = pathlib.Path(card).parent.parent / "stage1"
@@ -426,16 +488,28 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
                 translation=translation,
                 meshes={0: (level0, None)},
             )
-            pruned = {
-                "covered": covered_skin(
-                    folder,
-                    first,
-                    cut=tuple(config.cut),
-                    locks_face=config.locks_face,
-                    grow=config.cover_grow,
-                    near_locks=config.near_locks,
-                )
-            }
+            pruned = {}
+            if reprune:
+                from opensculptboy.fit.register import fit_model
+                from opensculptboy.statues.fit import prune_far, restore_near
+
+                first.meshes = {0: (level0, fit_model().faces.cpu().numpy())}
+                if config.chains:
+                    first = _first_with_chains(config, folder, first, verbose)
+                if config.restore:
+                    pruned["restored"] = restore_near(
+                        folder, first, distance=float(config.restore)
+                    )
+                pruned.update(prune_far(folder, first, distance=float(config.prune)))
+            pruned["covered"] = covered_skin(
+                folder,
+                first,
+                cut=tuple(config.cut),
+                locks_face=config.locks_face,
+                grow=config.cover_grow,
+                near_locks=config.near_locks,
+                cover_removed=config.cover_removed,
+            )
         if stage1.resolve() != saved.resolve():
             saved.mkdir(parents=True, exist_ok=True)
             for item in stage1.iterdir():
@@ -452,7 +526,14 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
                 json.dumps(stage1_dict(first)) + "\n", encoding="utf-8"
             )
             np.save(saved / "first_level0.npy", np.asarray(first.meshes[0][0]))
-            pruned = prune_far(folder, first, distance=float(config.prune))
+            pruned = {}
+            if config.restore:
+                from opensculptboy.statues.fit import restore_near
+
+                pruned["restored"] = restore_near(
+                    folder, first, distance=float(config.restore)
+                )
+            pruned.update(prune_far(folder, first, distance=float(config.prune)))
             # the skull under a hat and fused locks keeps anny's own shape
             pruned["covered"] = covered_skin(
                 folder,
@@ -461,10 +542,19 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
                 locks_face=config.locks_face,
                 grow=config.cover_grow,
                 near_locks=config.near_locks,
+                cover_removed=config.cover_removed,
             )
         result = run(config.detail)
         (saved / "main.json").write_text(
             json.dumps(stage1_dict(result)) + "\n", encoding="utf-8"
+        )
+    if getattr(result, "chains", None):
+        (saved / "chains.json").write_text(
+            json.dumps(
+                {"report": result.chains, "pose": result.character.pose}, indent=1
+            )
+            + "\n",
+            encoding="utf-8",
         )
     if verbose and pruned:
         print(f"pruned {pruned}", flush=True)
@@ -590,11 +680,13 @@ def run_statue(
     steps=STEPS,
     verbose: bool = False,
     stage1=None,
+    reconvert: bool = False,
 ) -> dict:
     """Run ``steps`` (of :data:`STEPS`, in their order) for one statue into
     ``<out>/<name>/``; returns a summary with the time of each step. With ``stage1`` (the
     folder of an earlier run of the statue), its handoff and its sliders, pose and placement
-    are taken over and only the fit's detail levels and the measures run."""
+    are taken over and only the fit's detail levels and the measures run; with ``reconvert``
+    the scan is converted again (new masks) and the earlier first fit prunes it."""
     unknown = set(steps) - set(STEPS)
     if unknown:
         raise ValueError(f"Unknown steps {sorted(unknown)}; use {STEPS}.")
@@ -608,7 +700,9 @@ def run_statue(
         import shutil
 
         earlier = pathlib.Path(stage1)
-        if earlier.resolve() != root.resolve():
+        if reconvert:
+            convert(config, folder, scans)
+        elif earlier.resolve() != root.resolve():
             shutil.copytree(earlier / "handoff", folder, dirs_exist_ok=True)
         source = earlier / "stage1"
         if not (source / "main.json").exists():
@@ -641,7 +735,12 @@ def run_statue(
             summary["preview"] = preview(config, folder, root / "preview")
         elif step == "fit":
             result = fit(
-                config, folder, root / "card" / f"{config.name}.json", verbose, source
+                config,
+                folder,
+                root / "card" / f"{config.name}.json",
+                verbose,
+                source,
+                reprune=reconvert and source is not None,
             )
             summary["pruned"] = getattr(result, "pruned", None)
         elif step == "measure":

@@ -250,7 +250,14 @@ def scan_to_handoff(
     for entry in masks or ():
         mask = _mask_in_anny(entry, to_anny, scale)
         chosen = select_triangles(A, F, mask)
+        if mask.role == "skin":
+            # the plinth stays the plinth under a sole
+            chosen &= role != names.index("plinth")
         role[chosen] = names.index(mask.role)
+        if mask.role == "skin":
+            # given back to the figure: no longer a piece of a prop
+            prop[chosen] = -1
+            continue
         if mask.prop:
             if mask.prop not in prop_names:
                 prop_names.append(mask.prop)

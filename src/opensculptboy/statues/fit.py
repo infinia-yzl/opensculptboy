@@ -214,6 +214,8 @@ def fit_statue(
     solid: bool = False,
     stage1: dict | None = None,
     hold: tuple = (HOLD_EYE_RINGS, HOLD_LIP_RINGS),
+    chains: tuple = (),
+    chain_options=None,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
@@ -230,7 +232,10 @@ def fit_statue(
     eyeballs behind them (``FitOptions.close_openings``).
     With ``stage1`` (:func:`stage1_dict` of an earlier fit), the sliders, pose and placement
     are that fit's and only the detail levels run
-    (:func:`~opensculptboy.fit.register.fit_levels`). Returns the
+    (:func:`~opensculptboy.fit.register.fit_levels`). ``chains`` (``"hand.l"``, ``"foot.r"``)
+    are fitted one limb at a time after the parameters and before the detail levels
+    (:func:`~opensculptboy.statues.chains.refine_chains`, with ``chain_options``); the
+    result's ``chains`` holds their report. Returns the
     :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -305,27 +310,62 @@ def fit_statue(
                 np.concatenate([p.triangles + b for p, b in zip(locks, base)]),
             ),
         )
-    if stage1 is not None:
-        from opensculptboy.fit.register import fit_levels
-
-        character, rotation, translation = stage1_from(stage1)
-        return fit_levels(
-            reference, character, rotation, translation, detail, options, model
-        )
-    if start_pose and options.initial_pose is None:
-        names = None if start_pose == "auto" else [start_pose]
-        chosen, rotations, scores = library_start(model, reference, names)
-        options = dataclasses.replace(options, initial_pose=rotations)
-        if options.verbose:
-            print(f"start pose: {chosen} ({1000 * scores[chosen]:.1f} mm)", flush=True)
     title = (appearance.get("statue") or {}).get("title")
-    return fit_reference(
-        reference,
-        detail=detail,
-        name=name or title or folder.resolve().name,
-        options=options,
-        model=model,
+    name = name or title or folder.resolve().name
+    if stage1 is None and not chains:
+        if start_pose and options.initial_pose is None:
+            options = _library_start(model, reference, start_pose, options)
+        return fit_reference(
+            reference, detail=detail, name=name, options=options, model=model
+        )
+    import time
+
+    from opensculptboy.fit.register import (
+        _character_from,
+        fit_levels,
+        fit_parameters,
     )
+
+    clock = time.perf_counter()
+    if stage1 is not None:
+        character, rotation, translation = stage1_from(stage1)
+    else:
+        if start_pose and options.initial_pose is None:
+            options = _library_start(model, reference, start_pose, options)
+        params, _, rotation, translation = fit_parameters(model, reference, options)
+        character = _character_from(model, params, name)
+    seconds = {"parameters": time.perf_counter() - clock}
+    report = {}
+    if chains:
+        from opensculptboy.statues.chains import ChainOptions, refine_chains
+
+        clock = time.perf_counter()
+        chain_options = chain_options or ChainOptions(verbose=options.verbose)
+        character, report = refine_chains(
+            model,
+            reference,
+            character,
+            rotation,
+            translation,
+            tuple(chains),
+            chain_options,
+            no_data=options.no_data,
+        )
+        seconds["chains"] = time.perf_counter() - clock
+    result = fit_levels(
+        reference, character, rotation, translation, detail, options, model, seconds
+    )
+    result.chains = report
+    return result
+
+
+def _library_start(model, reference, start_pose, options):
+    """The options with the start pose of the parameter stage from anny's library."""
+    names = None if start_pose == "auto" else [start_pose]
+    chosen, rotations, scores = library_start(model, reference, names)
+    if options.verbose:
+        print(f"start pose: {chosen} ({1000 * scores[chosen]:.1f} mm)", flush=True)
+    return dataclasses.replace(options, initial_pose=rotations)
 
 
 def held_openings(
@@ -491,6 +531,139 @@ def prune_far(folder, result, model=None, distance: float = PRUNE_DISTANCE) -> d
     return counts
 
 
+# the removed pieces' triangles within this distance (metres) of a first fit's surface, facing
+# as it does, are the figure's skin that a coarse mask took (restore_near)
+RESTORE_DISTANCE = 0.006
+RESTORE_NORMAL = 0.5
+# the regions of the first fit whose skin restore_near gives back: the hands stay out, as a
+# hand's first fit wraps the grip it holds
+RESTORE_REGIONS = ("torso", "arms", "legs", "feet", "neck")
+# the removed roles that restore_near looks at
+RESTORE_ROLES = ("support", "break", "debris")
+
+
+def restore_near(
+    folder,
+    result,
+    model=None,
+    distance: float = RESTORE_DISTANCE,
+    regions=RESTORE_REGIONS,
+) -> int:
+    """
+    Give back to a statue handoff's skin the triangles of its removed pieces (supports,
+    breaks, debris) that lie within ``distance`` of a first fit's level 0 (``result``) and
+    face as it does, beside the fit's ``regions``: a box round a prop takes the skin of the
+    foot that stands on it or of the thigh that it touches, and the first fit, which has no
+    data there, still lies within a few millimetres of that skin. The triangles leave
+    removed.glb and the props of props.glb and join the skin part of replica.glb. Returns
+    the number of triangles given back.
+    """
+    import trimesh
+    from scipy.spatial import cKDTree
+
+    from anny.hair import closest_triangles
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY, load_handoff
+    from opensculptboy.fit.register import excluded_vertices, fit_model, vertex_normals
+    from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+    folder = pathlib.Path(folder)
+    removed_path = folder / "removed.glb"
+    if not removed_path.exists():
+        return 0
+    model = model or fit_model()
+    V, T = (np.asarray(a) for a in result.meshes[0])
+    V = np.asarray(V, np.float64)
+    labels = statue_regions(model)[: len(V)]
+    allowed = np.isin(labels, [STATUE_REGIONS.index(r) for r in regions])
+    allowed &= ~excluded_vertices(model)[: len(V)]
+    T_allowed = T[allowed[T].all(1)]
+    normals = vertex_normals(V, T)
+    removed = trimesh.load(str(removed_path), force="scene")
+    back_v, back_t, count = [], [], 0
+    kept = trimesh.Scene()
+    taken_centres = []
+    for name, geometry in removed.geometry.items():
+        P = np.asarray(geometry.vertices, np.float64) @ GLTF_TO_ANNY.T
+        F = np.asarray(geometry.faces)
+        take = np.zeros(len(F), bool)
+        if name in RESTORE_ROLES and len(F) and len(T_allowed):
+            centres = P[F].mean(1)
+            tri, bary, d = closest_triangles(centres, V, T_allowed)
+            n_fit = np.einsum("nk, nkd -> nd", bary, normals[T_allowed[tri]])
+            n_fit /= np.maximum(np.linalg.norm(n_fit, axis=1, keepdims=True), 1e-12)
+            a, b, c = (P[F[:, k]] for k in range(3))
+            n_tri = np.cross(b - a, c - a)
+            n_tri /= np.maximum(np.linalg.norm(n_tri, axis=1, keepdims=True), 1e-18)
+            take = (d < distance) & ((n_fit * n_tri).sum(1) > RESTORE_NORMAL)
+        if take.any():
+            used = np.unique(F[take])
+            remap = np.full(len(P), -1)
+            remap[used] = np.arange(len(used))
+            back_v.append(P[used])
+            back_t.append(remap[F[take]])
+            taken_centres.append(P[F[take]].mean(1))
+            count += int(take.sum())
+        rest = F[~take]
+        if len(rest):
+            used = np.unique(rest)
+            remap = np.full(len(P), -1)
+            remap[used] = np.arange(len(used))
+            kept.add_geometry(
+                trimesh.Trimesh(P[used] @ GLTF_TO_ANNY, remap[rest], process=False),
+                node_name=name,
+                geom_name=name,
+            )
+    if not count:
+        return 0
+    kept.export(str(removed_path))
+    handoff = load_handoff(folder)
+    scene = trimesh.Scene()
+    for part in handoff.parts:
+        pv, pt = part.vertices, part.triangles
+        if part.is_skin:
+            base = np.cumsum([len(pv)] + [len(v) for v in back_v[:-1]])
+            pv = np.concatenate([pv] + back_v)
+            pt = np.concatenate([pt] + [t + b for t, b in zip(back_t, base)])
+        scene.add_geometry(
+            trimesh.Trimesh(pv @ GLTF_TO_ANNY, pt, process=False),
+            node_name=part.name,
+            geom_name=part.name,
+        )
+    scene.export(str(folder / "replica.glb"))
+    props_path = folder / "props.glb"
+    if props_path.exists():
+        # the props lose the triangles that went back to the skin
+        tree = cKDTree(np.concatenate(taken_centres))
+        props = trimesh.load(str(props_path), force="scene")
+        out = trimesh.Scene()
+        for name, geometry in props.geometry.items():
+            P = np.asarray(geometry.vertices, np.float64) @ GLTF_TO_ANNY.T
+            F = np.asarray(geometry.faces)
+            same = tree.query(P[F].mean(1))[0] < 1e-6
+            rest = F[~same]
+            if not len(rest):
+                continue
+            used = np.unique(rest)
+            remap = np.full(len(P), -1)
+            remap[used] = np.arange(len(used))
+            out.add_geometry(
+                trimesh.Trimesh(P[used] @ GLTF_TO_ANNY, remap[rest], process=False),
+                node_name=name,
+                geom_name=name,
+            )
+        out.export(str(props_path))
+    appearance_path = folder / "appearance.json"
+    appearance = json.loads(appearance_path.read_text(encoding="utf-8"))
+    appearance.setdefault("statue", {})["restored"] = {
+        "distance": distance,
+        "triangles": count,
+    }
+    appearance_path.write_text(
+        json.dumps(appearance, indent=2) + "\n", encoding="utf-8"
+    )
+    return count
+
+
 # the regions whose skin a statue's hat may cover, and those that fused locks may cover: the
 # face and the ears beside the locks keep their data, so that the cheeks meet the locks where
 # the scan joins them
@@ -597,6 +770,7 @@ def covered_skin(
     locks_face: bool = False,
     grow: int = 0,
     near_locks: float = 0.0,
+    cover_removed: bool = True,
 ) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
@@ -612,6 +786,8 @@ def covered_skin(
     fitted brow smoothly; ``near_locks`` (metres) covers the skin of the head that the first
     fit's level 0 laid within that distance of fused locks (the cheek and the neck beside
     them kept data from the cut and stayed narrow, which left a dark gap under the locks).
+    ``cover_removed`` False leaves the skin by the removed pieces (supports, props, the
+    plinth) with its data, for a statue whose masks keep the figure's skin whole.
     """
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import load_handoff
@@ -627,7 +803,8 @@ def covered_skin(
         for p in handoff.parts
         if p.role in ("hair", "clothing")
     ]
-    covers += _removed_pieces(folder)
+    if cover_removed:
+        covers += _removed_pieces(folder)
     # the sliders and the pose alone: the first fit's level 0 already lies flat on the skin's
     # cut under the hat, and its skull would read as uncovered skin
     V = parametric_vertices(result, model)

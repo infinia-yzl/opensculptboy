@@ -296,9 +296,11 @@ class Mask:
     welded vertices). ``role`` is ``"support"``
     (a strut, a stump or the plinth: taken out), ``"break"`` (the face of a break where a
     part was lost: taken out, so that anny keeps its own shape there), ``"drapery"`` (kept as
-    clothing, out of the fit) or ``"hair"`` (kept as a sculpted mass of its own, out of the
-    fit). ``prop`` names the piece of the statue that the region belongs to, which the
-    conversion writes to ``props.glb`` for the finished starters.
+    clothing, out of the fit), ``"hair"`` (kept as a sculpted mass of its own, out of the
+    fit) or ``"skin"`` (given back to the figure's skin: a later mask wins, so a skin mask
+    after a prop's mask keeps a foot or a hand that the prop's region would cut). ``prop``
+    names the piece of the statue that the region belongs to, which the conversion writes to
+    ``props.glb`` for the finished starters.
     """
 
     kind: str
@@ -317,7 +319,7 @@ class Mask:
     # Goliath"): masks with one prop name make one piece (props.glb); None: no prop
     prop: str | None = None
 
-    ROLES = ("support", "break", "drapery", "hair")
+    ROLES = ("support", "break", "drapery", "hair", "skin")
 
     @classmethod
     def from_dict(cls, entry: dict) -> "Mask":

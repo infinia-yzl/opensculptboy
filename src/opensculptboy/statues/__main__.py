@@ -87,6 +87,12 @@ def run(argv) -> int:
         "and its sliders, pose and placement, and run the detail levels and the measures",
     )
     parser.add_argument(
+        "--reconvert",
+        action="store_true",
+        help="with --from: convert the scan again (new masks) and prune it with the earlier "
+        "run's first fit, its chains fitted again",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="the fit's progress lines"
     )
     args = parser.parse_args(argv)
@@ -94,6 +100,8 @@ def run(argv) -> int:
 
     if args.stage1 and len(args.configs) > 1:
         parser.error("--from takes one config")
+    if args.reconvert and not args.stage1:
+        parser.error("--reconvert goes with --from")
 
     from opensculptboy.statues.pipeline import StatueConfig, run_statue
 
@@ -134,6 +142,7 @@ def run(argv) -> int:
                 steps,
                 verbose=args.verbose,
                 stage1=args.stage1,
+                reconvert=args.reconvert,
             )
         )
     print(json.dumps(results, indent=2, default=float))
