@@ -585,6 +585,7 @@ def covered_skin(
     cut: tuple = (CUT_RINGS, CUT_REACH),
     locks_face: bool = False,
     grow: int = 0,
+    near_locks: float = 0.0,
 ) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
@@ -597,7 +598,9 @@ def covered_skin(
     the number of vertices marked. ``cut`` (rings, metres) is the band along the scan's cut
     by a hat or locks; ``locks_face`` lets locks cover the face beside them too; ``grow``
     widens the covered skin of the head by that many rings, so that the fill meets the
-    fitted brow smoothly.
+    fitted brow smoothly; ``near_locks`` (metres) covers the skin of the head that the first
+    fit's level 0 laid within that distance of fused locks (the cheek and the neck beside
+    them kept data from the cut and stayed narrow, which left a dark gap under the locks).
     """
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import load_handoff
@@ -649,6 +652,15 @@ def covered_skin(
                 ((d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN))
                 | (on_cut & (d_cover < COVER_CUT))
             )
+        if near_locks > 0:
+            head = np.isin(
+                regions[rows],
+                [STATUE_REGIONS.index(r) for r in ("face", "ears", "neck", "scalp")],
+            )
+            for role, pv, pt in covers:
+                if role == "hair":
+                    _, _, d_lock = closest_triangles(fitted0[rows], pv, pt)
+                    marked[rows] |= head & (d_lock < near_locks)
         # the skin that the first fit laid on the cut along a hat or locks: the brow pulled up
         # to the cut under the brim in a ridge, and the cheek by the locks folded onto their cut
         X0 = fitted0[rows]
@@ -713,6 +725,8 @@ SEAT_BLEND = 0.025
 SEAT_BY_ROLE = {"clothing": (0.025, 0.03), "hair": (0.025, 0.025)}
 # the border's sawtooth and the moves are averaged along the border within this distance
 SEAT_SMOOTH = 0.01
+# in this many rounds
+SEAT_ROUNDS = 5
 
 
 # a piece's triangles whose centres lie this far (metres) inside the fitted skin go (shards of
@@ -798,6 +812,7 @@ def seat_piece(
     sink: float = SEAT_SINK,
     blend: float = SEAT_BLEND,
     smooth: float = SEAT_SMOOTH,
+    rounds: int = SEAT_ROUNDS,
 ) -> tuple[np.ndarray, int]:
     """
     The vertices (V, 3) of a piece cut from a statue (a hat, locks of hair) seated on the
@@ -824,7 +839,7 @@ def seat_piece(
     groups = tree.query_ball_point(V[border], smooth)
     # the sawtooth of the cut, smoothed along the border
     B = V[border].copy()
-    for _ in range(5):
+    for _ in range(rounds):
         B = np.array([B[g].mean(0) for g in groups])
     tri, bary, d = closest_triangles(B, SV, ST)
     corners = SV[ST[tri]]

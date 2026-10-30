@@ -89,6 +89,8 @@ class StatueConfig:
     # this many rings (the fill met the fitted brow in a ledge)
     locks_face: bool = False
     cover_grow: int = 0
+    # and the skin of the head within this distance (metres) of fused locks on the first fit
+    near_locks: float = 0.0
     prune: float | bool = 0.025
     pose: str | None = "auto"
     detail: int = 2
@@ -431,6 +433,7 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
                     cut=tuple(config.cut),
                     locks_face=config.locks_face,
                     grow=config.cover_grow,
+                    near_locks=config.near_locks,
                 )
             }
         if stage1.resolve() != saved.resolve():
@@ -457,6 +460,7 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
                 cut=tuple(config.cut),
                 locks_face=config.locks_face,
                 grow=config.cover_grow,
+                near_locks=config.near_locks,
             )
         result = run(config.detail)
         (saved / "main.json").write_text(
