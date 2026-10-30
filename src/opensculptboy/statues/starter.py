@@ -91,6 +91,11 @@ def thumbnail(vertices: np.ndarray, triangles: np.ndarray, size=THUMBNAIL_SIZE):
 PROP_SLOT = "prop"
 # a prop keeps at most this many triangles for the page
 PROP_TRIANGLES = 20000
+# and a hat or locks, whose carving the reduction to PROP_TRIANGLES smoothed away, by role
+PIECE_TRIANGLES = {"drapery": 80000, "hair": 100000}
+# the rebuilt pieces (opensculptboy/statues/blender_pieces.py) beside a run, by role: they
+# take the place of the seated cuts
+REBUILT = {"drapery": "hat.ply", "hair": "locks.ply"}
 # a prop that reaches this close (metres) to the ground stands on it: bound to the root
 GROUND_REACH = 0.03
 PROP_COLOUR = (0.84, 0.82, 0.79, 1.0)
@@ -107,8 +112,10 @@ def statue_props(root, props=None) -> list:
     """
     The props of a statue run, as (name, vertices (N, 3) in the handoff's frame, triangles):
     the named pieces of ``props.glb`` beside the handoff (``props``, default
-    ``<root>/handoff``), with a hat and locks taken from the measure step's seated pieces
-    (``meshes/seated_*``), which meet the fitted skin.
+    ``<root>/handoff``), with a hat and locks taken from the rebuilt pieces in
+    ``<root>/pieces/`` (:data:`REBUILT`, the closed meshes of ``blender_pieces.py``) when
+    they exist, else from the measure step's seated pieces (``meshes/seated_*``), which meet
+    the fitted skin. Each entry carries the piece's role as a fourth item.
     """
     import trimesh
 
@@ -127,7 +134,10 @@ def statue_props(root, props=None) -> list:
     seated_role = {"drapery": "clothing", "hair": "hair"}
     for name, geometry in scene.geometry.items():
         role = roles.get(name, "support")
-        if role in seated_role:
+        rebuilt = pathlib.Path(root) / "pieces" / REBUILT.get(role, "-")
+        if rebuilt.exists():
+            geometry = trimesh.load(str(rebuilt), process=False)
+        elif role in seated_role:
             files = sorted(
                 (pathlib.Path(root) / "meshes").glob(
                     f"seated_{seated_role[role]}_*.ply"
@@ -141,6 +151,7 @@ def statue_props(root, props=None) -> list:
                 name,
                 np.asarray(geometry.vertices, np.float64) @ GLTF_TO_ANNY.T,
                 np.asarray(geometry.faces),
+                role,
             )
         )
     return out
@@ -180,7 +191,8 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     ``prop`` into ``out_dir`` and return their entries (name, label, files, bone). Each prop
     goes from the placed, posed statue to the card's rest by the inverse of its bone's
     turn, is
-    reduced to :data:`PROP_TRIANGLES` and bound rigidly to that bone, so that the viewer
+    reduced to :data:`PROP_TRIANGLES` (a hat and locks to :data:`PIECE_TRIANGLES`) and bound
+    rigidly to that bone, so that the viewer
     poses it with the figure. A prop that stands on the ground (within :data:`GROUND_REACH`
     of the base's top) is bound to the root as the base is; the others to the bone of the
     skin nearest their closest points.
@@ -216,7 +228,7 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     tree = cKDTree(posed)
     # the ground: the base's top where there is a base, else the figure's lowest point
     floor = posed[:, 2].min()
-    for name, V, _ in pieces:
+    for name, V, _, _ in pieces:
         if name in ROOT_PROPS:
             floor = float(np.quantile(V[:, 2], 0.98))
     body = card_body(
@@ -231,7 +243,7 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     out_dir = pathlib.Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     entries = []
-    for layer, (name, V, T) in enumerate(pieces):
+    for layer, (name, V, T, role) in enumerate(pieces):
         sample = V[:: max(1, len(V) // 20000)]
         d, near = tree.query(sample)
         grounded = sample[:, 2].min() < floor + GROUND_REACH
@@ -247,8 +259,9 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
         idx = np.zeros((len(V), indices.shape[1]), indices.dtype)
         idx[:, 0] = bone
         rest = R_.unpose(V, one, idx, transforms, R, t)
-        if len(T) > PROP_TRIANGLES:
-            reduced = decimate(rest, T, PROP_TRIANGLES)
+        budget = PIECE_TRIANGLES.get(role, PROP_TRIANGLES)
+        if len(T) > budget:
+            reduced = decimate(rest, T, budget)
             T = reduced.triangles
             used = np.unique(T)
             remap = np.full(len(rest), -1)

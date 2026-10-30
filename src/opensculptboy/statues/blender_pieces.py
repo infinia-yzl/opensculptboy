@@ -23,7 +23,8 @@ Usage::
 
 ``MESH_DIR`` holds ``seated_clothing_drapery.ply`` (the hat) and ``seated_hair_hair.ply`` with
 ``seated_hair_hair_cut.ply`` (the locks); ``OUT_DIR`` receives ``hat.ply``, ``locks.ply`` (in the
-same frame) and ``report.json`` (triangles before and after, the non-manifold edges, which a
+same frame; with ``union=1`` one piece ``hat_locks.ply``, which closes the slit along their shared
+cut under the brim) and ``report.json`` (triangles before and after, the non-manifold edges, which a
 closed piece has none of, and the islands).
 """
 
@@ -44,6 +45,9 @@ DEFAULTS = {
     "border_repeat": 10,
     "hat": 150000,
     "locks": 200000,
+    # 1: the hat and the locks as one piece (they share the cut under the brim, and apart
+    # they left a dark slit there)
+    "union": 0,
 }
 
 
@@ -89,7 +93,12 @@ def rebuild(mesh_dir: str, out_dir: str, settings: dict) -> dict:
 
     os.makedirs(out_dir, exist_ok=True)
     report = {}
-    for piece, files in PIECES.items():
+    pieces = dict(PIECES)
+    budgets = {k: int(settings[k]) for k in PIECES}
+    if settings["union"]:
+        pieces = {"hat_locks": PIECES["hat"] + PIECES["locks"]}
+        budgets = {"hat_locks": int(settings["hat"]) + int(settings["locks"])}
+    for piece, files in pieces.items():
         paths = [os.path.join(mesh_dir, f) for f in files]
         paths = [p for p in paths if os.path.exists(p)]
         if not paths:
@@ -148,7 +157,7 @@ def rebuild(mesh_dir: str, out_dir: str, settings: dict) -> dict:
             bmesh.ops.delete(bm, geom=small, context="FACES")
         bm.to_mesh(ob.data)
         bm.free()
-        budget = int(settings[piece])
+        budget = budgets[piece]
         if triangles(ob) > budget:
             decimate = ob.modifiers.new("decimate", "DECIMATE")
             decimate.ratio = budget / triangles(ob)

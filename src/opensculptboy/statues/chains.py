@@ -115,8 +115,8 @@ class ChainOptions:
     # the weight of the chain's depth inside the rest of the figure in the score (0: none)
     depth: float = 0.0
     # the starts tried (names of the report's trials: "stage", "<pose>/fingers",
-    # "<pose>/whole"); None: all of them
-    starts: tuple | None = None
+    # "<pose>/whole"), for every chain or by chain ({"hand.r": [...]}); None: all of them
+    starts: tuple | dict | None = None
     verbose: bool = False
 
 
@@ -394,8 +394,13 @@ def refine_chains(
             mixed[fingers] = whole[fingers]
             starts[f"{name}/fingers"] = mixed
             starts[f"{name}/whole"] = whole
-        if options.starts is not None:
-            starts = {k: v for k, v in starts.items() if k in set(options.starts)}
+        wanted = options.starts
+        if isinstance(wanted, dict):
+            wanted = wanted.get(chain)
+        if wanted is not None:
+            # the named starts of this chain (a chain that has none of them keeps all)
+            named = {k: v for k, v in starts.items() if k in set(wanted)}
+            starts = named or starts
         index = torch.as_tensor(bones)
 
         def pairs(X, limit):

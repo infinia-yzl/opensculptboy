@@ -663,6 +663,15 @@ class TestPrune(unittest.TestCase):
             )
             appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
             self.assertEqual(appearance["statue"]["covered_levels"], [])
+            # by region: the feet alone
+            from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+            self.assertGreater(
+                covered_skin(folder, result, model, cover_removed=("feet",)), 0
+            )
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            regions = statue_regions(model)[appearance["statue"]["covered_levels"]]
+            self.assertTrue((regions == STATUE_REGIONS.index("feet")).all())
 
     def test_skin_inside_a_coarse_mask_comes_back(self):
         import types
@@ -843,6 +852,22 @@ class TestChains(unittest.TestCase):
         self.assertFalse(
             any(b.endswith(".R") for b in (fitted.pose or {}).get("bones", {}))
         )
+        # a chain's starts can be named, and a start whose joint fit comes out worse stays
+        named = ChainOptions(
+            rounds=0,
+            trial_rounds=0,
+            search=(0.0,),
+            keep=1,
+            shape=False,
+            starts={"hand.l": ["mh_boxing/fingers"]},
+        )
+        _, report = refine_chains(
+            model, reference, character, rotation, translation, ("hand.l",), named
+        )
+        self.assertTrue(report["hand.l"]["start"].startswith("mh_boxing/fingers"))
+        self.assertEqual(
+            list(report["hand.l"]["trials_mm"]), [report["hand.l"]["start"]]
+        )
 
 
 class TestPieceRebuild(unittest.TestCase):
@@ -859,6 +884,43 @@ class TestPieceRebuild(unittest.TestCase):
             parse(["m", "o", "colour=1"])
         with self.assertRaises(SystemExit):
             parse(["m"])
+
+
+class TestRebuiltPieces(unittest.TestCase):
+    def test_a_starter_takes_the_rebuilt_hat(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import statue_props
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "statue"
+            (root / "handoff").mkdir(parents=True)
+            (root / "pieces").mkdir()
+            scene = trimesh.Scene()
+            for name in ("Hat", "Sword"):
+                scene.add_geometry(
+                    trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
+                    node_name=name,
+                    geom_name=name,
+                )
+            scene.export(str(root / "handoff" / "props.glb"))
+            (root / "handoff" / "props.json").write_text(
+                json.dumps(
+                    {
+                        "props": [
+                            {"name": "Hat", "role": "drapery"},
+                            {"name": "Sword", "role": "support"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rebuilt = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+            rebuilt.export(str(root / "pieces" / "hat.ply"))
+            props = {name: (V, T, role) for name, V, T, role in statue_props(root)}
+        self.assertEqual(props["Hat"][2], "drapery")
+        self.assertEqual(len(props["Hat"][1]), len(rebuilt.faces))
+        self.assertEqual(len(props["Sword"][1]), 12)
 
 
 class TestRegionDistances(unittest.TestCase):
