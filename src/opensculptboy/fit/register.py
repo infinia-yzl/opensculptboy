@@ -339,6 +339,10 @@ class FitOptions:
     # eye's centre (0: none)
     close_socket: float = 0.0
     close_rim_depth: float = 0.0005
+    # a solid figure: within this distance (metres) of the eyes' and the mouth's centres, the
+    # fitted surface that a look at the reference sees more than 1 mm behind it comes forward
+    # to close_rim_depth under it (close_seen; 0: none)
+    close_seen: float = 0.0
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
@@ -3516,6 +3520,36 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {count} folded vertices untangled")
+        if options.close_seen > 0:
+            free = np.ones(len(fitted), bool)
+            if _level_no_data(options) is not None:
+                free &= ~(np.asarray(topology.apply(_level_no_data(options))) > 0.5)
+            centres = opening_centres(model, topology, fitted)
+            fitted_new, count = close_seen(
+                fitted,
+                topology.triangles,
+                reference,
+                centres,
+                options.close_seen,
+                free,
+                depth=options.close_rim_depth,
+            )
+            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
+            if len(rows):
+                fitted = fitted_new
+                offsets[subdiv] = offsets[subdiv].copy()
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            _log(options, f"level {subdiv}: {count} seen gaps closed")
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3691,6 +3725,152 @@ def _outward(reference) -> float:
     T = np.asarray(reference.triangles)
     a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
     return 1.0 if float((a * np.cross(b, c)).sum()) >= 0 else -1.0
+
+
+def opening_centres(model, topology, fitted) -> np.ndarray:
+    """The centres of the eyeballs and of the mouth's lining on the fitted mesh of a level
+    (an empty (0, 3) array when the model has neither)."""
+    from opensculptboy.export.vrm_tables import eyeball_vertices
+
+    n0 = model.template_vertices.shape[-2]
+    centres = []
+    try:
+        eyes = eyeball_vertices(model)
+    except ValueError:
+        eyes = {}
+    for side_rows in eyes.values():
+        base = np.zeros(n0)
+        base[side_rows] = 1.0
+        rows = np.asarray(topology.apply(base)) > 0.5
+        if rows.any():
+            centres.append(fitted[rows].mean(0))
+    try:
+        mouth = (
+            np.asarray(topology.apply(mouth_lining(model, 0).astype(np.float64))) > 0.5
+        )
+    except (ValueError, IndexError):
+        mouth = np.zeros(len(fitted), bool)
+    if mouth.any():
+        centres.append(fitted[mouth].mean(0))
+    return np.asarray(centres, np.float64).reshape(-1, 3)
+
+
+def close_seen(
+    fitted: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    centres: np.ndarray,
+    radius: float,
+    free: np.ndarray | None = None,
+    depth: float = 0.0005,
+    behind: float = 0.001,
+    rounds: int = 6,
+    tilt: float = 25.0,
+    lead: float = 0.01,
+) -> tuple[np.ndarray, int]:
+    """
+    Close the openings of a solid figure as a look at it sees them: from the reference's
+    vertices within ``radius`` of ``centres``, rays come in along the vertex normal and along
+    the openings' mean forward direction, straight on, turned by ``tilt`` degrees to each side
+    and by half as much up and down.
+    Where a ray's first fitted triangle lies more than ``behind`` beyond the reference point it
+    sees, that triangle's ``free`` corners come out along the reference's normal at the point
+    to ``depth`` under its tangent plane there (each by the mean of its rays' shifts), in
+    ``rounds`` rounds, since a triangle brought
+    forward uncovers the walls behind it. The eyes' corners and the parted lips of a carved
+    figure showed the hollow behind them as dark slits. Returns the vertices and how many
+    moved.
+    """
+    import trimesh
+
+    fitted = np.asarray(fitted, np.float64).copy()
+    triangles = np.asarray(triangles)
+    centres = np.asarray(centres, np.float64).reshape(-1, 3)
+    if not len(centres) or radius <= 0:
+        return fitted, 0
+    free = np.ones(len(fitted), bool) if free is None else np.asarray(free, bool)
+    near = np.zeros(len(fitted), bool)
+    V = np.asarray(reference.vertices, np.float64)
+    seen = np.zeros(len(V), bool)
+    for c in centres:
+        near |= np.linalg.norm(fitted - c, axis=1) < radius
+        seen |= np.linalg.norm(V - c, axis=1) < radius
+    free = free & near
+    if not seen.any() or not free.any():
+        return fitted, 0
+    points = V[seen]
+    normals = np.asarray(reference.normals, np.float64)[seen] * _outward(reference)
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-12)
+    forward = normals.mean(0)
+    forward /= max(np.linalg.norm(forward), 1e-12)
+    # the looks turn sideways (along the line from the first centre to the second: the eyes)
+    # and by half as much up and down
+    if len(centres) >= 2:
+        side = centres[1] - centres[0]
+    else:
+        side = np.cross(forward, [0.0, 0.0, 1.0])
+    side = side - (side @ forward) * forward
+    if np.linalg.norm(side) < 1e-9:
+        side = np.cross(forward, [1.0, 0.0, 0.0])
+    side /= max(np.linalg.norm(side), 1e-12)
+    up = np.cross(forward, side)
+    looks = [forward]
+    for axis, angle in ((side, tilt), (side, -tilt), (up, tilt / 2), (up, -tilt / 2)):
+        t = np.radians(angle)
+        looks.append(np.cos(t) * forward + np.sin(t) * axis)
+    surface = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
+    origins, directions, targets, across = [], [], [], []
+    for look in looks:
+        facing = normals @ look > 0.2
+        origins.append(points[facing] + lead * look)
+        directions.append(np.repeat(-look[None], facing.sum(), 0))
+        targets.append(points[facing])
+        across.append(normals[facing])
+    origins.append(points + lead * normals)
+    directions.append(-normals)
+    targets.append(points)
+    across.append(normals)
+    S = np.concatenate(origins)
+    D = np.concatenate(directions)
+    P = np.concatenate(targets)
+    N = np.concatenate(across)
+    # the rays whose first marble is their own point (the others look at it through stone)
+    hits, index, _ = surface.ray.intersects_location(S, D, multiple_hits=False)
+    first = np.full(len(S), np.inf)
+    first[index] = np.linalg.norm(hits - S[index], axis=1)
+    t_point = np.linalg.norm(P - S, axis=1)
+    clear = np.abs(first - t_point) < 0.0005
+    S, D, P, N = S[clear], D[clear], P[clear], N[clear]
+    t_point = t_point[clear]
+    moved = np.zeros(len(fitted), bool)
+    for _ in range(rounds):
+        mesh = trimesh.Trimesh(fitted, triangles, process=False)
+        hits, index, tri = mesh.ray.intersects_location(S, D, multiple_hits=False)
+        if not len(index):
+            break
+        t_fit = np.linalg.norm(hits - S[index], axis=1)
+        deep = t_fit - t_point[index] > behind
+        if not deep.any():
+            break
+        normal = N[index[deep]]
+        point = P[index[deep]]
+        corners = triangles[tri[deep]]
+        total = np.zeros_like(fitted)
+        count = np.zeros(len(fitted))
+        # each corner comes out along the marble's normal at the seen point to depth under its
+        # tangent plane there; a corner already there stays
+        for k in range(3):
+            v = corners[:, k]
+            amount = ((point - fitted[v]) * normal).sum(1) - depth
+            on = amount > 0
+            np.add.at(total, v[on], amount[on, None] * normal[on])
+            np.add.at(count, v[on], 1.0)
+        rows = np.nonzero((count > 0) & free)[0]
+        if not len(rows):
+            break
+        fitted[rows] += total[rows] / count[rows, None]
+        moved[rows] = True
+    return fitted, int(moved.sum())
 
 
 def _close_openings(

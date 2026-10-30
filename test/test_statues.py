@@ -632,6 +632,29 @@ class TestSolid(unittest.TestCase):
         self.assertLess(abs(out[220, 2]), 0.0005)
         self.assertEqual(out[66, 2], pit)  # the reference's own pit stays
 
+    def test_seen_gaps_close(self):
+        from opensculptboy.fit.register import close_seen
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        fitted = V.copy()
+        fitted[
+            [220, 66, 222], 2
+        ] = -0.01  # holes 1 cm deep: two by the opening, one far
+        free = np.ones(len(V), bool)
+        free[222] = False
+        centre = np.array([[0.05, 0.05, 0.0]])
+        out, count = close_seen(fitted, T, reference, centre, 0.015, free)
+        self.assertLess(abs(out[220, 2]), 0.001)  # brought up to just under the surface
+        self.assertLessEqual(out[220, 2], 0.0)
+        self.assertEqual(out[66, 2], -0.01)  # beyond the radius
+        self.assertEqual(out[222, 2], -0.01)  # held
+        self.assertGreater(count, 0)
+        np.testing.assert_allclose(out[:, 2].max(), 0.0, atol=1e-9)  # none comes out
+        np.testing.assert_allclose(out[:, :2], V[:, :2])
+        same, none = close_seen(V, T, reference, centre, 0.015)
+        self.assertEqual(none, 0)
+
     def test_folds_untangle(self):
         from opensculptboy.fit.register import unfold
 
