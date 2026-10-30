@@ -722,8 +722,10 @@ def covered_skin(
 SEAT_REACH = 0.02
 SEAT_SINK = 0.0005
 SEAT_BLEND = 0.025
-# by role, the reach and the blend (metres): a hat's brim was cut a slab above the brow
-SEAT_BY_ROLE = {"clothing": (0.025, 0.03), "hair": (0.025, 0.025)}
+# by role, the reach and the blend (metres): a hat's brim was cut a slab above the brow, and
+# its inner rim comes down onto the skin along a narrow band (at 2.5 cm a dark crescent showed
+# under the brim, at 6 cm slits at its sides)
+SEAT_BY_ROLE = {"clothing": (0.1, 0.015), "hair": (0.025, 0.025)}
 # the border's sawtooth and the moves are averaged along the border within this distance
 SEAT_SMOOTH = 0.01
 # in this many rounds
@@ -838,7 +840,7 @@ def on_skin(
 
 
 # a piece's holes (open border loops) up to this perimeter (metres) are filled
-HOLE_PERIMETER = 0.08
+HOLE_PERIMETER = 0.2
 
 
 def fill_holes(

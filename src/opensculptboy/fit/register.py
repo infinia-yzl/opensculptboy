@@ -354,6 +354,8 @@ class FitOptions:
     # fit that moved and widened the lids left the eyeballs behind them, and the sockets
     # showed dark around them
     eyes_to_lids: bool = False
+    # and grown by this factor about the rim's centre (a fuller eye fills the corners)
+    eyes_to_lids_scale: float = 1.0
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
@@ -3565,6 +3567,7 @@ def fit_levels(
                 topology,
                 fitted,
                 R_.pose_vertices(parametric, w, i, transforms, rotation, translation),
+                options.eyes_to_lids_scale,
             )
             rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
             if len(rows):
@@ -3836,12 +3839,15 @@ def fill_to_cover(
     return len(met), out
 
 
-def eyes_to_lids(model, topology, fitted, posed) -> tuple[np.ndarray, int]:
+def eyes_to_lids(
+    model, topology, fitted, posed, grow: float = 1.0
+) -> tuple[np.ndarray, int]:
     """
     Each eyeball of a level (``fitted``) placed against the rim of its lids as it sits on
     anny's own posed face (``posed``, the level without offsets): the rim is the lining of
     the socket where it meets the skin, and the eyeball keeps its place and size relative to
-    the rim's centre and spread there. Returns the vertices and the number of eyes moved.
+    the rim's centre and spread there, grown by ``grow``. Returns the vertices and the number
+    of eyes moved.
     """
     from anny.faces.authoring.base_mesh import base_mesh
     from opensculptboy.export.vrm_tables import eyeball_vertices
@@ -3894,7 +3900,7 @@ def eyes_to_lids(model, topology, fitted, posed) -> tuple[np.ndarray, int]:
         m0, m1 = posed[rim].mean(0), fitted[rim].mean(0)
         spread0 = np.median(np.linalg.norm(posed[rim] - m0, axis=1))
         spread1 = np.median(np.linalg.norm(fitted[rim] - m1, axis=1))
-        scale = spread1 / max(spread0, 1e-9)
+        scale = grow * spread1 / max(spread0, 1e-9)
         fitted[rows] = m1 + scale * (posed[rows] - m0)
         moved += 1
     return fitted, moved
