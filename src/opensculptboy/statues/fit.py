@@ -217,8 +217,9 @@ def fit_statue(
     ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. By
     default the figure keeps anny's working face: the skin within ``hold`` rings (eyes, lips)
     of the eyes' and the mouth's openings takes no data and follows the fitted skin around it
-    (:func:`held_openings`), and the lips are not sealed, so that the lids and the lips keep
-    anny's openings and close and open as anny's do. A ``solid`` statue has carved eyes and
+    (:func:`held_openings`), and the lips meet where anny's own edges meet
+    (``FitOptions.lip_seal_self``), so that the lids and the lips keep anny's openings and
+    close and open as anny's do. A ``solid`` statue has carved eyes and
     closed lips: the fit closes anny's eye and mouth openings on the scan and hides the
     eyeballs behind them (``FitOptions.close_openings``).
     With ``stage1`` (:func:`stage1_dict` of an earlier fit), the sliders, pose and placement
@@ -256,14 +257,15 @@ def fit_statue(
         options = dataclasses.replace(options, relax_dents=PIT_EXCESS)
     if not solid:
         # anny's working face: the lids and the lips around their openings follow the fitted
-        # skin (on the carved eyes and lips they tore into slits), unsealed
+        # skin (on the carved eyes and lips they tore into slits), and the lips meet where
+        # anny's own edges meet (held apart, they showed a dark slit)
         held = held_openings(model, *hold)
         no_data = held if options.no_data is None else (options.no_data | held)
         options = dataclasses.replace(
             options,
             no_data=no_data,
             fill_no_data=True,
-            lip_seal=False,
+            lip_seal_self=True,
             unfold_rounds=options.unfold_rounds or SOLID_UNFOLD,
         )
     if solid and options.close_openings == 0:

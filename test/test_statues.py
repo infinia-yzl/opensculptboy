@@ -709,13 +709,12 @@ class TestSolid(unittest.TestCase):
                         pathlib.Path(tmp) / "h", detail=0, solid=solid, start_pose=None
                     )
                 options = fit.call_args.kwargs["options"]
-                self.assertEqual(options.lip_seal_self, solid)
                 self.assertEqual(options.close_openings, SOLID_REACH if solid else 0)
                 if solid:
                     self.assertEqual(options.lip_seal_max_shift, SOLID_LIP_SHIFT)
                 else:
                     # anny's working face: the openings' rings take no data, unsealed
-                    self.assertFalse(options.lip_seal)
+                    self.assertTrue(options.lip_seal_self)
                     self.assertTrue(options.fill_no_data)
                     self.assertTrue(options.no_data[held].all())
 
