@@ -163,16 +163,20 @@ FACE_MESH = {
 }
 # the head's picture: the scan's triangles within this distance (metres) of its top
 HEAD_REACH = 0.32
+# the views tried in turn (yaw, pitch: from below when positive, degrees): a bowed head under
+# a hat shows its face from below
+FACE_VIEWS = ((0.0, 0.0), (0.0, 20.0), (0.0, 35.0), (20.0, 15.0), (-20.0, 15.0))
 
 
 def detect_face(vertices, triangles, pictures: dict | None = None) -> dict:
     """
     The landmarks of the face (name -> point in Anny's frame) of a figure standing upright and
-    facing -Y, found by MediaPipe's face landmarker on a front picture of its head alone (the
+    facing -Y, found by MediaPipe's face landmarker on a picture of its head alone (the
     triangles within :data:`HEAD_REACH` of the top), where the face fills the picture: the
-    eyes' corners, the nose's tip, the mouth's corners and the chin (:data:`FACE_MESH`). Each
-    point takes the front-most surface under its pixel. An empty dict when no face is found.
-    ``pictures``, when given, receives the picture with the points as ``"face"``.
+    eyes' corners, the nose's tip, the mouth's corners and the chin (:data:`FACE_MESH`). The
+    views of :data:`FACE_VIEWS` are tried in turn. Each point takes the surface nearest the
+    camera under its pixel. An empty dict when no view shows a face. ``pictures``, when
+    given, receives the picture (with the points when found) as ``"face"``.
     """
     import mediapipe as mp
     from mediapipe.tasks.python import BaseOptions, vision
@@ -189,33 +193,38 @@ def detect_face(vertices, triangles, pictures: dict | None = None) -> dict:
         return {}
     remap = np.full(len(V), -1)
     remap[used] = np.arange(len(used))
-    image, frame = _picture(V[used], remap[T[keep]], View(0.0))
-    pixels = np.asarray(image.convert("RGB"))
-    with vision.FaceLandmarker.create_from_options(
-        vision.FaceLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=str(model_path("face"))),
-            num_faces=1,
-        )
-    ) as landmarker:
-        found = landmarker.detect(
-            mp.Image(
-                image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(pixels)
+    head, head_triangles = V[used], remap[T[keep]]
+    options = vision.FaceLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(model_path("face"))),
+        num_faces=1,
+    )
+    with vision.FaceLandmarker.create_from_options(options) as landmarker:
+        for yaw, pitch in FACE_VIEWS:
+            view = View(yaw, pitch)
+            image, frame = _picture(head, head_triangles, view)
+            if pictures is not None and "face" not in pictures:
+                pictures["face"] = image
+            pixels = np.ascontiguousarray(np.asarray(image.convert("RGB")))
+            found = landmarker.detect(
+                mp.Image(image_format=mp.ImageFormat.SRGB, data=pixels)
             )
-        )
-    if not found.face_landmarks:
-        return {}
+            if found.face_landmarks:
+                break
+        else:
+            return {}
     h, w = pixels.shape[:2]
     mesh = found.face_landmarks[0]
+    picture, depth = view.project(head)
     out = {}
     paint = ImageDraw.Draw(image) if pictures is not None else None
     for name, k in FACE_MESH.items():
         px = (mesh[k].x * w, mesh[k].y * h)
-        x, z = _unproject(px, frame)
-        gap = np.linalg.norm(V[:, [0, 2]] - [x, z], axis=1)
+        at = np.array(_unproject(px, frame))
+        gap = np.linalg.norm(picture - at, axis=1)
         if gap.min() > 0.01:
             continue
-        near = gap < max(0.002, float(np.partition(gap, 9)[9]))
-        out[name] = np.array([x, V[near, 1].min(), z])
+        near = np.nonzero(gap < max(0.002, float(np.partition(gap, 9)[9])))[0]
+        out[name] = head[near[np.argmin(depth[near])]]
         if paint is not None:
             paint.ellipse(
                 [px[0] - 3, px[1] - 3, px[0] + 3, px[1] + 3], fill=(40, 200, 90)
