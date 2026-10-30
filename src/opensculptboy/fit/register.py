@@ -350,6 +350,10 @@ class FitOptions:
     # fitted surface that a look at the reference sees more than 1 mm behind it comes forward
     # to close_rim_depth under it (close_seen; 0: none)
     close_seen: float = 0.0
+    # place each eyeball against the rim of its lids as on anny's own face (eyes_to_lids): a
+    # fit that moved and widened the lids left the eyeballs behind them, and the sockets
+    # showed dark around them
+    eyes_to_lids: bool = False
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
@@ -3555,6 +3559,29 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {count} folded vertices untangled")
+        if options.eyes_to_lids:
+            fitted_new, count = eyes_to_lids(
+                model,
+                topology,
+                fitted,
+                R_.pose_vertices(parametric, w, i, transforms, rotation, translation),
+            )
+            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
+            if len(rows):
+                fitted = fitted_new
+                offsets[subdiv] = offsets[subdiv].copy()
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            _log(options, f"level {subdiv}: {count} eyes set against their lids")
         if options.close_seen > 0:
             free = np.ones(len(fitted), bool)
             if _level_no_data(options) is not None:
@@ -3807,6 +3834,70 @@ def fill_to_cover(
     out = fitted.copy()
     out[rows] += move[rows]
     return len(met), out
+
+
+def eyes_to_lids(model, topology, fitted, posed) -> tuple[np.ndarray, int]:
+    """
+    Each eyeball of a level (``fitted``) placed against the rim of its lids as it sits on
+    anny's own posed face (``posed``, the level without offsets): the rim is the lining of
+    the socket where it meets the skin, and the eyeball keeps its place and size relative to
+    the rim's centre and spread there. Returns the vertices and the number of eyes moved.
+    """
+    from anny.faces.authoring.base_mesh import base_mesh
+    from opensculptboy.export.vrm_tables import eyeball_vertices
+    from opensculptboy.topology.lookup import base_mesh_rows
+
+    fitted = np.asarray(fitted, np.float64).copy()
+    posed = np.asarray(posed, np.float64)
+    n0 = model.template_vertices.shape[-2]
+    try:
+        eyes = eyeball_vertices(model)
+    except ValueError:
+        return fitted, 0
+    mesh = base_mesh()
+    base = base_mesh_rows(model)
+    T = np.asarray(topology.triangles)
+
+    def carry(mask0):
+        return np.asarray(topology.apply(np.asarray(mask0, np.float64))) > 0.5
+
+    eye_any = np.zeros(len(fitted), bool)
+    groups = []
+    for side_rows in eyes.values():
+        m = np.zeros(n0)
+        m[side_rows] = 1.0
+        rows = carry(m)
+        eye_any |= rows
+        groups.append(rows)
+    linings = []
+    for label in ("eye_cavity.L", "eye_cavity.R"):
+        lining = np.zeros(len(mesh.V), bool)
+        lining[np.unique(mesh.quads[mesh.face_labels == label])] = True
+        linings.append(carry(lining[base]))
+    moved = 0
+    for rows in groups:
+        if not rows.any():
+            continue
+        centre = posed[rows].mean(0)
+        lining = min(
+            linings,
+            key=lambda m: np.inf
+            if not m.any()
+            else np.linalg.norm(posed[m].mean(0) - centre),
+        )
+        # the rim: the lining's vertices that share a triangle with the skin
+        skin = ~lining & ~eye_any
+        mixed = T[lining[T].any(1) & skin[T].any(1)]
+        rim = np.unique(mixed[lining[mixed]])
+        if len(rim) < 6:
+            continue
+        m0, m1 = posed[rim].mean(0), fitted[rim].mean(0)
+        spread0 = np.median(np.linalg.norm(posed[rim] - m0, axis=1))
+        spread1 = np.median(np.linalg.norm(fitted[rim] - m1, axis=1))
+        scale = spread1 / max(spread0, 1e-9)
+        fitted[rows] = m1 + scale * (posed[rows] - m0)
+        moved += 1
+    return fitted, moved
 
 
 def opening_centres(model, topology, fitted) -> np.ndarray:

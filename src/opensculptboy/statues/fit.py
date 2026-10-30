@@ -269,6 +269,7 @@ def fit_statue(
             fill_no_data=True,
             lip_seal_self=True,
             unfold_rounds=options.unfold_rounds or SOLID_UNFOLD,
+            eyes_to_lids=True,
         )
     if solid and options.close_openings == 0:
         # carved eyes, and closed lips sealed further than a character's would be
@@ -836,21 +837,86 @@ def on_skin(
     return (d < within) & (np.abs((normal * skin_normal).sum(1)) > agree)
 
 
+# a piece's holes (open border loops) up to this perimeter (metres) are filled
+HOLE_PERIMETER = 0.08
+
+
+def fill_holes(
+    vertices: np.ndarray, triangles: np.ndarray, perimeter: float = HOLE_PERIMETER
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """A piece with its holes up to ``perimeter`` filled: each such loop of open edges gets
+    a vertex at its centre and a fan of triangles that turn as the piece's around the loop
+    (the masks left holes in the brim, which showed dark from below). Returns the vertices,
+    the triangles and the number of holes filled."""
+    V = np.asarray(vertices, np.float64)
+    T = np.asarray(triangles)
+    directed = T[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2)
+    keys = np.sort(directed, axis=1)
+    _, inverse, counts = np.unique(
+        keys, axis=0, return_inverse=True, return_counts=True
+    )
+    open_edges = directed[counts[inverse.ravel()] == 1]
+    following = {}
+    for a, b in open_edges:
+        following.setdefault(int(a), []).append(int(b))
+    seen = set()
+    new_V, new_T, filled = [V], [T], 0
+    count = len(V)
+    for start in list(following):
+        if (start, following[start][0]) in seen:
+            continue
+        loop, a = [start], start
+        ok = True
+        while True:
+            nexts = [b for b in following.get(a, []) if (a, b) not in seen]
+            if not nexts:
+                ok = False
+                break
+            b = nexts[0]
+            seen.add((a, b))
+            if b == start:
+                break
+            loop.append(b)
+            a = b
+            if len(loop) > 2000:
+                ok = False
+                break
+        if not ok or len(loop) < 3:
+            continue
+        P = V[loop]
+        length = np.linalg.norm(P - np.roll(P, -1, axis=0), axis=1).sum()
+        if length > perimeter:
+            continue
+        centre = P.mean(0)
+        new_V.append(centre[None])
+        # the open edge a -> b of a triangle runs the other way in the filling one
+        fan = [(b, a, count) for a, b in zip(loop, loop[1:] + loop[:1])]
+        new_T.append(np.asarray(fan, T.dtype))
+        count += 1
+        filled += 1
+    return np.concatenate(new_V), np.concatenate(new_T), filled
+
+
 def finish_piece(
     vertices: np.ndarray,
     triangles: np.ndarray,
     skin_vertices: np.ndarray,
     skin_triangles: np.ndarray,
     role: str,
+    seat: tuple | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """A hat or locks cut from a statue made ready to wear on the fitted skin: trimmed
     (:func:`trim_piece`), seated (:func:`seat_piece`), and for a hat the strips that the seat
-    laid on the skin taken out and the piece trimmed and seated again. Returns the vertices,
-    the triangles and what was done."""
-    reach, blend = SEAT_BY_ROLE[role]
+    laid on the skin taken out and the piece trimmed and seated again; ``seat`` (reach,
+    blend) overrides :data:`SEAT_BY_ROLE`. Returns the vertices, the triangles and what was
+    done."""
+    reach, blend = seat or SEAT_BY_ROLE[role]
     V, T, dropped = trim_piece(
         vertices, triangles, skin_vertices, skin_triangles, inside=TRIM_BY_ROLE[role]
     )
+    holes = 0
+    if role == "clothing":
+        V, T, holes = fill_holes(V, T)
     V, moved = seat_piece(V, T, skin_vertices, skin_triangles, reach=reach, blend=blend)
     stripped = 0
     within = ON_SKIN_BY_ROLE[role]
@@ -865,7 +931,16 @@ def finish_piece(
             V, moved = seat_piece(
                 V, T, skin_vertices, skin_triangles, reach=reach, blend=blend
             )
-    return V, T, {"dropped": dropped, "on_skin": stripped, "border_moved": moved}
+    return (
+        V,
+        T,
+        {
+            "dropped": dropped,
+            "holes_filled": holes,
+            "on_skin": stripped,
+            "border_moved": moved,
+        },
+    )
 
 
 def seat_piece(

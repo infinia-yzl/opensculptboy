@@ -538,6 +538,21 @@ class TestPrune(unittest.TestCase):
         self.assertTrue(flagged[: len(strip.faces)].all())
         self.assertFalse(flagged[len(strip.faces) :].any())
 
+    def test_small_holes_fill(self):
+        from opensculptboy.statues.fit import fill_holes
+
+        V, T = _grid(11, 0.1)
+        # a hole of two triangles in the middle of the patch
+        hole = np.isin(np.arange(len(T)), [88, 89])
+        out_V, out_T, filled = fill_holes(V, T[~hole], perimeter=0.05)
+        self.assertEqual(filled, 1)
+        self.assertEqual(len(out_V), len(V) + 1)
+        a, b, c = (out_V[out_T[:, k]] for k in range(3))
+        z = np.cross(b - a, c - a)[:, 2]
+        self.assertTrue((z > 0).all())  # the fan turns as the patch does
+        # the patch's own border (40 cm) stays open
+        self.assertEqual(fill_holes(V, T, perimeter=0.05)[2], 0)
+
     def test_teeth_leave_a_border(self):
         from opensculptboy.statues.fit import trim_piece
 
