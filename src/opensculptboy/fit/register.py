@@ -3852,8 +3852,8 @@ def eyes_to_lids(
     anny's own posed face (``posed``, the level without offsets): the rim is the lining of
     the socket where it meets the skin, and the eyeball keeps its place and size relative to
     the rim's centre and spread there, grown by ``grow``. With ``hug`` >= 0, the socket's
-    lining in front of the eyeball's centre (toward the rim), but its rim, comes onto a
-    sphere ``hug`` outside the eyeball. Returns the vertices and the number of eyes moved.
+    lining in front of the eyeball's centre (toward the rim), but its rim, that lies beyond
+    a sphere ``hug`` outside the eyeball comes in to it. Returns the vertices and the number of eyes moved.
     """
     from anny.faces.authoring.base_mesh import base_mesh
     from opensculptboy.export.vrm_tables import eyeball_vertices
@@ -3919,7 +3919,9 @@ def eyes_to_lids(
             pocket = np.nonzero(inner)[0]
             radial = fitted[pocket] - centre
             length = np.linalg.norm(radial, axis=1)
-            front = (radial @ forward) > 0.2 * length
+            # the pockets beyond the sphere come in to it; the lining behind the eyeball
+            # stays (pushed out, it crumpled over the eye between the lids)
+            front = ((radial @ forward) > 0.2 * length) & (length > radius + hug)
             pocket, radial, length = pocket[front], radial[front], length[front]
             fitted[pocket] = centre + radial / np.maximum(length, 1e-12)[:, None] * (
                 radius + hug
