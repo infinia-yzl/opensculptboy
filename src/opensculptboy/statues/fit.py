@@ -216,6 +216,7 @@ def fit_statue(
     hold: tuple = (HOLD_EYE_RINGS, HOLD_LIP_RINGS),
     chains: tuple = (),
     chain_options=None,
+    chain_hints: dict | None = None,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
@@ -235,7 +236,8 @@ def fit_statue(
     (:func:`~opensculptboy.fit.register.fit_levels`). ``chains`` (``"hand.l"``, ``"foot.r"``)
     are fitted one limb at a time after the parameters and before the detail levels
     (:func:`~opensculptboy.statues.chains.refine_chains`, with ``chain_options``); the
-    result's ``chains`` holds their report. Returns the
+    result's ``chains`` holds their report; ``chain_hints`` maps bones of the chains to their
+    heads' places in the handoff's frame (Anny's). Returns the
     :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -350,6 +352,7 @@ def fit_statue(
             tuple(chains),
             chain_options,
             no_data=options.no_data,
+            hints=chain_hints,
         )
         seconds["chains"] = time.perf_counter() - clock
     result = fit_levels(
@@ -770,7 +773,7 @@ def covered_skin(
     locks_face: bool = False,
     grow: int = 0,
     near_locks: float = 0.0,
-    cover_removed: bool = True,
+    cover_removed: bool | tuple = True,
 ) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
@@ -787,7 +790,9 @@ def covered_skin(
     fit's level 0 laid within that distance of fused locks (the cheek and the neck beside
     them kept data from the cut and stayed narrow, which left a dark gap under the locks).
     ``cover_removed`` False leaves the skin by the removed pieces (supports, props, the
-    plinth) with its data, for a statue whose masks keep the figure's skin whole.
+    plinth) with its data, for a statue whose masks keep the figure's skin whole; a list of
+    regions (``("feet",)``) covers the skin by removed pieces in those regions alone (the sole
+    and the toes of a foot set on a removed head).
     """
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import load_handoff
@@ -832,6 +837,8 @@ def covered_skin(
         for role, d_cover in nearest.items():
             d_skin, on_cut = skins[role]
             allowed = COVER_REGIONS[role]
+            if role == "removed" and not isinstance(cover_removed, bool):
+                allowed = tuple(cover_removed)
             if role == "hair" and locks_face:
                 allowed = allowed + ("face",)
             head = np.isin(regions[rows], [STATUE_REGIONS.index(r) for r in allowed])
@@ -878,10 +885,12 @@ def covered_skin(
             triangles, np.nonzero(marked_levels)[0], COVER_GROW, len(marked_levels)
         )
         regions = statue_regions(model)
-        limbs = np.isin(
-            regions,
-            [STATUE_REGIONS.index(r) for r in ("feet", "legs", "hands", "arms")],
+        grown_regions = (
+            ("feet", "legs", "hands", "arms")
+            if isinstance(cover_removed, bool)
+            else tuple(cover_removed)
         )
+        limbs = np.isin(regions, [STATUE_REGIONS.index(r) for r in grown_regions])
         marked_levels |= grown & limbs[: len(grown)]
     if grow > 0 and marked.any():
         from opensculptboy.fit.lips import rings_from

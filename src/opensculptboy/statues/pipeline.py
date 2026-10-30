@@ -93,8 +93,9 @@ class StatueConfig:
     near_locks: float = 0.0
     prune: float | bool = 0.025
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
-    # levels (False: it keeps its data, for masks that keep the figure's skin whole)
-    cover_removed: bool = True
+    # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
+    # of regions: only there, such as ["feet"] for a foot set on a removed head)
+    cover_removed: bool | list = True
     # the chains fitted one limb at a time after the parameters ("hand.l", "foot.r"; see
     # opensculptboy.statues.chains), with ChainOptions fields
     chains: list = dataclasses.field(default_factory=list)
@@ -102,6 +103,9 @@ class StatueConfig:
     # figure (opensculptboy.statues.fit.restore_near; 0: none)
     restore: float = 0.0
     chain_options: dict = dataclasses.field(default_factory=dict)
+    # bones of the chains -> their heads in the frame of replica.glb, read off the preview
+    # (a knuckle, a toe), for hands and feet that the surface alone leaves ambiguous
+    chain_hints: dict = dataclasses.field(default_factory=dict)
     pose: str | None = "auto"
     detail: int = 2
     # FitOptions fields that this statue's fit takes over the defaults (name -> value)
@@ -397,6 +401,11 @@ def _chain_options(config: StatueConfig, verbose: bool):
     return ChainOptions(**{"verbose": verbose, **_fit_options(config.chain_options)})
 
 
+def _chain_hints(config: StatueConfig) -> dict:
+    """The config's joint hints of the chains in Anny's frame."""
+    return {k: _anny([v])[0] for k, v in (config.chain_hints or {}).items()}
+
+
 def _first_with_chains(config: StatueConfig, folder, first, verbose: bool = False):
     """An earlier first fit (its card and level 0) with its chains fitted again to the
     handoff ``folder``: the level 0 moves with the parametric mesh of the new pose."""
@@ -419,6 +428,7 @@ def _first_with_chains(config: StatueConfig, folder, first, verbose: bool = Fals
         first.translation,
         tuple(config.chains),
         _chain_options(config, verbose),
+        hints=_chain_hints(config),
     )
     before = parametric_vertices(first, model)
     moved = types.SimpleNamespace(
@@ -471,6 +481,7 @@ def fit(
             stage1=start,
             chains=tuple(config.chains),
             chain_options=_chain_options(config, verbose) if config.chains else None,
+            chain_hints=_chain_hints(config),
         )
 
     saved = pathlib.Path(card).parent.parent / "stage1"

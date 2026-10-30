@@ -42,6 +42,8 @@ ANCHORS = {"hand": ("lowerarm01",), "foot": ("lowerleg01",)}
 FINGERS = {"hand": ("metacarpal", "finger"), "foot": ("toe",)}
 # the chain's root, whose turn the search samples
 ROOTS = {"hand": "wrist", "foot": "foot"}
+# the scan's points of a chain lie within this distance (metres) of its root at the stage's pose
+ROOT_REACH = {"hand": 0.14, "foot": 0.24}
 # the library poses whose chains are tried as starts
 STARTS = {
     "hand": (
@@ -99,13 +101,22 @@ class ChainOptions:
     trim: float = 0.9
     # the scan's points that may pair with a chain lie within this distance (metres) of the
     # chain at the stage's pose
-    region: float = 0.06
+    region: float = 0.1
+    # the weight of the joint hints (refine_chains' hints) against the surface's pairs, and
+    # in the score (per metre)
+    hint_weight: float = 10.0
+    hint_score: float = 1.0
     # and lie further than this (metres) from the rest of the figure at the stage's pose
     explained: float = 0.012
     # the turns (degrees) about each axis that the search tries at the chain's root, and the
     # starts of the search that are fitted
-    search: tuple = (-45.0, 0.0, 45.0)
+    search: tuple = (-90.0, -45.0, 0.0, 45.0, 90.0)
     keep: int = 4
+    # the weight of the chain's depth inside the rest of the figure in the score (0: none)
+    depth: float = 0.0
+    # the starts tried (names of the report's trials: "stage", "<pose>/fingers",
+    # "<pose>/whole"); None: all of them
+    starts: tuple | None = None
     verbose: bool = False
 
 
@@ -189,8 +200,10 @@ class _Skinner:
         self.t = torch.as_tensor(np.asarray(translation), dtype=dtype)
 
     def __call__(self, pose):
-        transforms, _ = self.model.get_bone_transforms(pose, self.rest_bone_poses)
+        transforms, poses = self.model.get_bone_transforms(pose, self.rest_bone_poses)
         V = self.model.get_skinned_vertices(self.rest_vertices, transforms)[0]
+        # the bones' heads, placed
+        self.joints = poses[0, :, :3, 3] @ self.R.T + self.t
         return V @ self.R.T + self.t
 
 
@@ -222,6 +235,7 @@ class _ShapedSkinner:
             local_changes_kwargs=local,
             face_shape_kwargs=self.face,
         )
+        self.joints = out["bone_poses"][0, :, :3, 3] @ self.R.T + self.t
         return out["vertices"][0] @ self.R.T + self.t
 
 
@@ -253,6 +267,20 @@ def _local(reference, points: np.ndarray, reach: float):
     return local
 
 
+def _subset(reference, keep: np.ndarray):
+    """The triangles of a reference whose corners are all kept, as a reference."""
+    from opensculptboy.fit.reference import Reference
+
+    T = np.asarray(reference.triangles)
+    T = T[np.asarray(keep, bool)[T].all(1)]
+    used = np.unique(T)
+    remap = np.full(len(reference.vertices), -1)
+    remap[used] = np.arange(len(used))
+    out = Reference(reference.vertices[used], remap[T])
+    out.normals = np.asarray(reference.normals)[used]
+    return out
+
+
 def _trimmed(values: np.ndarray, share: float) -> float:
     values = np.sort(np.asarray(values, np.float64))
     if not len(values):
@@ -269,13 +297,17 @@ def refine_chains(
     chains=("hand.l", "hand.r", "foot.l", "foot.r"),
     options: ChainOptions | None = None,
     no_data: np.ndarray | None = None,
+    hints: dict | None = None,
 ):
     """
     Fit the bones and the local changes (:data:`SHAPES`) of each chain (``"hand.l"``,
     ``"foot.r"``; :data:`CHAINS`) of a fitted card (its sliders, pose and placement:
     ``x_reference = rotation @ x_anny + translation``) to ``reference``
     (:class:`~opensculptboy.fit.reference.Reference`), with every other bone and slider
-    held. ``no_data`` (V,) bool: the level-0 vertices that take no pairs. Returns the card
+    held. ``no_data`` (V,) bool: the level-0 vertices that take no pairs. ``hints`` maps
+    bones of the chains (``"finger3-1.R"``) to where their heads lie in the reference's
+    frame: a person's reading of a knuckle or a toe off pictures of the scan, which guides
+    a hand whose fingers the scan's surface alone leaves ambiguous. Returns the card
     with the new pose and local changes, and a report per chain (the start that won, the
     scores in mm).
     """
@@ -298,7 +330,9 @@ def refine_chains(
     report = {}
     pose = character.pose_parameters(model)
     pose = (_identity_pose(model) if pose is None else pose).detach().clone()
-    start_vertices = _Skinner(model, character, rotation, translation)(pose).numpy()
+    stage_skin = _Skinner(model, character, rotation, translation)
+    start_vertices = stage_skin(pose).numpy()
+    stage_joints = stage_skin.joints.numpy()
 
     for chain in chains:
         part, side = _split(chain)
@@ -324,11 +358,22 @@ def refine_chains(
             cKDTree(start_vertices[others]).query(reference.vertices[near])[0]
             > options.explained
         )
+        # and within reach of the chain's root (the wrist, the ankle)
+        root_bone = [b for b in bones if labels[b].startswith(ROOTS[part])][0]
+        near &= (
+            np.linalg.norm(reference.vertices - stage_joints[root_bone], axis=1)
+            < ROOT_REACH[part]
+        )
         points = reference.vertices[near]
         point_normals = reference.normals[near]
         if not len(points):
             report[chain] = {"skipped": "no scan near the chain"}
             continue
+        # the chain pairs with its own scan alone: a finger near the hip it rests on was
+        # pulled flat onto the hip
+        own = _subset(reference, near)
+        # and the rest of the figure's scan near it, which the chain must not pass into
+        rest = _subset(reference, ~near) if (~near).any() else None
         shapes = chain_shapes(model, chain) if options.shape else []
         before_shape = {n: character.local_changes.get(n, 0.0) for n in shapes}
         for n in shapes:
@@ -349,17 +394,26 @@ def refine_chains(
             mixed[fingers] = whole[fingers]
             starts[f"{name}/fingers"] = mixed
             starts[f"{name}/whole"] = whole
+        if options.starts is not None:
+            starts = {k: v for k, v in starts.items() if k in set(options.starts)}
         index = torch.as_tensor(bones)
 
         def pairs(X, limit):
-            C, N, d = reference.closest(X[rows])[:3]
+            C, N, d = own.closest(X[chain_rows])[:3]
             normals = vertex_normals(X, triangles)
-            ok = (d < limit) & ((normals[rows] * N).sum(1) > options.normal_threshold)
+            # a vertex inside the chain's own marble is left there (anny's fist lies inside
+            # the statue's larger one; pulled out, the fingers opened)
+            outside = ((X[chain_rows] - C) * N).sum(1) > -0.002
+            ok = (
+                (d < limit)
+                & outside
+                & ((normals[chain_rows] * N).sum(1) > options.normal_threshold)
+            )
             dist, nearest = cKDTree(X[chain_rows]).query(points)
             mine = chain_rows[nearest]
             take = (dist < limit) & ((normals[mine] * point_normals).sum(1) > 0.0)
             return (
-                torch.as_tensor(rows[ok]),
+                torch.as_tensor(chain_rows[ok]),
                 torch.as_tensor(C[ok]),
                 torch.as_tensor(N[ok]),
                 torch.as_tensor(mine[take]),
@@ -381,13 +435,43 @@ def refine_chains(
                     loss = loss + 0.1 * (diff**2).sum(-1).mean()
             return loss
 
+        hinted = [
+            (labels.index(b), np.asarray(p, np.float64))
+            for b, p in (hints or {}).items()
+            if b in labels and labels.index(b) in bones
+        ]
+        hint_rows = torch.as_tensor([h[0] for h in hinted], dtype=torch.long)
+        hint_points = torch.as_tensor(
+            np.asarray([h[1] for h in hinted]).reshape(-1, 3), dtype=pose.dtype
+        )
+
+        def hint_loss(J):
+            if not len(hinted):
+                return J.new_zeros(())
+            return (
+                options.hint_weight * ((J[hint_rows] - hint_points) ** 2).sum(-1).mean()
+            )
+
+        def hint_score(J):
+            if not len(hinted):
+                return 0.0
+            d = np.linalg.norm(
+                J.numpy()[hint_rows.numpy()] - hint_points.numpy(), axis=1
+            )
+            return options.hint_score * float(d.mean())
+
         def score(X):
             # trimmed distances both ways between the chain and the scan's points of the
-            # chain; a vertex inside the marble counts twice, and a point whose nearest
-            # vertex faces away at least 1 cm
-            C, N, forward = reference.closest(X[chain_rows])[:3]
-            inside = ((X[chain_rows] - C) * N).sum(1) < -0.002
-            forward = np.where(inside, 2.0 * forward, forward)
+            # chain, a point whose nearest vertex faces away at least 1 cm off; and the depth
+            # of the chain's vertices inside the rest of the figure (fingers that pass into
+            # the hip under them). Inside the chain's own marble a vertex costs its distance
+            # alone: anny's fist lies inside the statue's larger one until the detail levels
+            C, N, forward = own.closest(X[chain_rows])[:3]
+            if rest is not None and options.depth > 0:
+                C2, N2, d2 = rest.closest(X[chain_rows])[:3]
+                depth = np.maximum(-((X[chain_rows] - C2) * N2).sum(1), 0.0)
+                depth = np.where(d2 < 0.03, depth, 0.0)
+                forward = forward + options.depth * depth
             normals = vertex_normals(X, triangles)
             dist, nearest = cKDTree(X[chain_rows]).query(points)
             facing = (normals[chain_rows[nearest]] * point_normals).sum(1) > 0.0
@@ -415,17 +499,19 @@ def refine_chains(
                     optimizer.zero_grad()
                     current = pose.clone()
                     current[0, index, :3, :3] = roma.rotvec_to_rotmat(rotvec)
-                    loss = data_loss(skin(current), *found)
+                    loss = data_loss(skin(current), *found) + hint_loss(skin.joints)
                     loss = loss + options.prior * ((rotvec - origin) ** 2).sum()
                     loss.backward()
                     optimizer.step()
             with torch.no_grad():
                 current = pose.clone()
                 current[0, index, :3, :3] = roma.rotvec_to_rotmat(rotvec)
-                return rotvec.detach(), score(skin(current).numpy())
+                X = skin(current).numpy()
+                return rotvec.detach(), score(X) + hint_score(skin.joints)
 
         with torch.no_grad():
-            stage_score = score(skin(pose).numpy())
+            X = skin(pose).numpy()
+            stage_score = score(X) + hint_score(skin.joints)
         # a search over the turn of the chain's root (the wrist, the foot) for each start,
         # scored as they are, then the best few fitted
         root = [k for k, b in enumerate(bones) if labels[b].startswith(ROOTS[part])]
@@ -443,10 +529,12 @@ def refine_chains(
                     trial[root] = trial[root] @ offset
                     current = pose.clone()
                     current[0, index, :3, :3] = torch.as_tensor(trial, dtype=pose.dtype)
+                    X = skin(current).numpy()
                     searched.append(
-                        (score(skin(current).numpy()), f"{name}#{j}", trial)
+                        (score(X) + hint_score(skin.joints), f"{name}#{j}", trial)
                     )
         searched.sort(key=lambda item: item[0])
+        top = {name: round(1000 * value, 3) for value, name, _ in searched[:8]}
         scores, results = {}, {}
         for value, name, start in searched[: options.keep]:
             results[name], scores[name] = fit_pose(start, options.trial_rounds)
@@ -474,6 +562,7 @@ def refine_chains(
                 current = pose.clone()
                 current[0, index, :3, :3] = roma.rotvec_to_rotmat(rotvec)
                 loss = data_loss(shaped(current, columns, values), *found)
+                loss = loss + hint_loss(shaped.joints)
                 loss = loss + options.prior * ((rotvec - origin) ** 2).sum()
                 loss = loss + options.shape_prior * (values**2).sum()
                 loss.backward()
@@ -481,8 +570,23 @@ def refine_chains(
                 with torch.no_grad():
                     values.clamp_(-1.0, 1.0)
         with torch.no_grad():
-            pose[0, index, :3, :3] = roma.rotvec_to_rotmat(rotvec)
-            final = score(shaped(pose, columns, values).numpy())
+            trial = pose.clone()
+            trial[0, index, :3, :3] = roma.rotvec_to_rotmat(rotvec)
+            X = shaped(trial, columns, values).numpy()
+            final = score(X) + hint_score(shaped.joints)
+            if final > scores[best]:
+                # the joint fit came out worse than its start: keep the start
+                rotvec = torch.nn.Parameter(results[best].clone())
+                values.zero_()
+                trial[0, index, :3, :3] = roma.rotvec_to_rotmat(rotvec)
+                X = shaped(trial, columns, values).numpy()
+                final = score(X) + hint_score(shaped.joints)
+            pose[0, index, :3, :3] = trial[0, index, :3, :3]
+            hint_mm = (
+                1000 * hint_score(shaped.joints) / options.hint_score
+                if hinted
+                else None
+            )
         fitted_shape = {n: round(float(v), 6) for n, v in zip(shapes, values.tolist())}
         for n, v in fitted_shape.items():
             if abs(v) > 1e-6:
@@ -492,6 +596,8 @@ def refine_chains(
             "score_mm": round(1000 * final, 3),
             "stage_mm": round(1000 * stage_score, 3),
             "points": int(len(points)),
+            "search_mm": top,
+            "hints_mm": hint_mm,
             "trials_mm": {k: round(1000 * v, 3) for k, v in scores.items()},
             "shape_before": before_shape,
             "shape": fitted_shape,

@@ -845,6 +845,22 @@ class TestChains(unittest.TestCase):
         )
 
 
+class TestPieceRebuild(unittest.TestCase):
+    def test_settings(self):
+        from opensculptboy.statues.blender_pieces import DEFAULTS, PIECES, parse
+
+        mesh_dir, out_dir, settings = parse(["m", "o", "voxel=0.001", "hat=1000"])
+        self.assertEqual((mesh_dir, out_dir), ("m", "o"))
+        self.assertEqual(settings["voxel"], 0.001)
+        self.assertEqual(settings["hat"], 1000)
+        self.assertEqual(settings["locks"], DEFAULTS["locks"])
+        self.assertEqual(set(PIECES), {"hat", "locks"})
+        with self.assertRaises(SystemExit):
+            parse(["m", "o", "colour=1"])
+        with self.assertRaises(SystemExit):
+            parse(["m"])
+
+
 class TestRegionDistances(unittest.TestCase):
     def test_regions_and_zero_distance(self):
         model = _model()
