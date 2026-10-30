@@ -802,6 +802,7 @@ class TestSolid(unittest.TestCase):
             from opensculptboy.statues.pipeline import stage1_from_card
 
             data = card.to_dict()
+            data["schema"] = 2
             data["detail"] = {
                 "levels": [],
                 "fit": {
