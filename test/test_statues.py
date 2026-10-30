@@ -695,6 +695,68 @@ class TestSolid(unittest.TestCase):
                 if solid:
                     self.assertEqual(options.lip_seal_max_shift, SOLID_LIP_SHIFT)
 
+    def test_stage1_runs_the_levels_alone(self):
+        import types
+        from unittest import mock
+
+        from opensculptboy import Character
+        from opensculptboy.statues import fit_statue
+        from opensculptboy.statues.fit import stage1_dict, stage1_from
+        from opensculptboy.statues.pipeline import StatueConfig, fit
+
+        card = Character(name="kouros", phenotype={"height": 0.7})
+        earlier = types.SimpleNamespace(
+            character=card, rotation=np.eye(3), translation=np.array([0.0, 0.1, 0.0])
+        )
+        data = json.loads(json.dumps(stage1_dict(earlier)))
+        back, rotation, translation = stage1_from(data)
+        self.assertEqual(back.phenotype, card.phenotype)
+        np.testing.assert_allclose(translation, [0.0, 0.1, 0.0])
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp) / "kouros" / "handoff"
+            scan_to_handoff((statue["vertices"], statue["triangles"]), folder)
+            with (
+                mock.patch("opensculptboy.fit.register.fit_levels") as levels,
+                mock.patch("opensculptboy.fit.register.fit_reference") as full,
+            ):
+                fit_statue(folder, detail=1, stage1=data)
+            self.assertFalse(full.called)
+            self.assertEqual(levels.call_args.args[1].phenotype, card.phenotype)
+            self.assertEqual(levels.call_args.args[4], 1)
+            # the pipeline's fit saves both stages, and a run from them runs the levels alone
+            config = StatueConfig.from_dict(
+                {
+                    "format": "opensculptboy.statue/1",
+                    "name": "kouros",
+                    "scan": "k.stl",
+                    "prune": False,
+                }
+            )
+            result = types.SimpleNamespace(
+                character=card,
+                rotation=np.eye(3),
+                translation=np.zeros(3),
+                write=lambda path: None,
+            )
+            cardpath = pathlib.Path(tmp) / "kouros" / "card" / "kouros.json"
+            with mock.patch(
+                "opensculptboy.statues.fit.fit_statue", return_value=result
+            ) as run:
+                fit(config, folder, cardpath)
+                saved = pathlib.Path(tmp) / "kouros" / "stage1"
+                self.assertTrue((saved / "main.json").exists())
+                self.assertIsNone(run.call_args.kwargs["stage1"])
+                other = pathlib.Path(tmp) / "other" / "card" / "kouros.json"
+                fit(config, folder, other, stage1=saved)
+                self.assertEqual(
+                    run.call_args.kwargs["stage1"]["character"]["phenotype"],
+                    card.to_dict()["phenotype"],
+                )
+                self.assertTrue(
+                    (pathlib.Path(tmp) / "other" / "stage1" / "main.json").exists()
+                )
+
 
 class TestStarter(unittest.TestCase):
     def test_starter_zip(self):

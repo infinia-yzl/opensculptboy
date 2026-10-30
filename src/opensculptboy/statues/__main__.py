@@ -63,10 +63,20 @@ def run(argv) -> int:
         help="a name for the variant: its results go to <out>/<name>.<variant>",
     )
     parser.add_argument(
+        "--from",
+        dest="stage1",
+        metavar="RUN",
+        help="an earlier run's folder of the statue (<out>/<name>): take over its handoff "
+        "and its sliders, pose and placement, and run the detail levels and the measures",
+    )
+    parser.add_argument(
         "--verbose", action="store_true", help="the fit's progress lines"
     )
     args = parser.parse_args(argv)
     import dataclasses
+
+    if args.stage1 and len(args.configs) > 1:
+        parser.error("--from takes one config")
 
     from opensculptboy.statues.pipeline import StatueConfig, run_statue
 
@@ -87,7 +97,14 @@ def run(argv) -> int:
             config = dataclasses.replace(config, name=f"{config.name}.{args.variant}")
         steps = [s for s in args.steps.split(",") if s]
         results.append(
-            run_statue(config, args.out, args.scans, steps, verbose=args.verbose)
+            run_statue(
+                config,
+                args.out,
+                args.scans,
+                steps,
+                verbose=args.verbose,
+                stage1=args.stage1,
+            )
         )
     print(json.dumps(results, indent=2, default=float))
     return 0

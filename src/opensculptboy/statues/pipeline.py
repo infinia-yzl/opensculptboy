@@ -332,15 +332,25 @@ def _fit_options(fit: dict) -> dict:
     return {k: tuple(v) if isinstance(v, list) else v for k, v in fit.items()}
 
 
-def fit(config: StatueConfig, folder, card, verbose: bool = False):
+def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
     """Step 4: the fit of the handoff folder, written to the card ``card``. With ``prune``
     (a distance in metres), a first fit to level 0 takes out the scan's pieces further than
     that from it (:func:`~opensculptboy.statues.fit.prune_far`: props and leftovers of
-    supports, and locks of hair as a hair piece) before the fit itself."""
-    from opensculptboy.fit.register import FitOptions
-    from opensculptboy.statues.fit import fit_statue
+    supports, and locks of hair as a hair piece) before the fit itself. The sliders, pose
+    and placement of both fits go to ``stage1/`` beside the card's folder; with ``stage1``
+    (such a folder of an earlier run, whose handoff ``folder`` already holds), the covered
+    skin is judged again on its first fit and only the detail levels run."""
+    import types
 
-    def run(detail):
+    from opensculptboy.fit.register import FitOptions
+    from opensculptboy.statues.fit import (
+        covered_skin,
+        fit_statue,
+        stage1_dict,
+        stage1_from,
+    )
+
+    def run(detail, start=None):
         return fit_statue(
             folder,
             detail=detail,
@@ -348,20 +358,50 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False):
             options=FitOptions(verbose=verbose, **_fit_options(config.fit)),
             start_pose=config.pose,
             solid=config.solid,
+            stage1=start,
         )
 
+    saved = pathlib.Path(card).parent.parent / "stage1"
     pruned = None
-    if config.prune:
-        # a first fit to level 0 tells the figure from what is left of props and supports
-        from opensculptboy.statues.fit import covered_skin, prune_far
+    if stage1 is not None:
+        stage1 = pathlib.Path(stage1)
+        main = json.loads((stage1 / "main.json").read_text(encoding="utf-8"))
+        if config.prune and (stage1 / "first.json").exists():
+            data = json.loads((stage1 / "first.json").read_text(encoding="utf-8"))
+            character, rotation, translation = stage1_from(data)
+            level0 = np.load(stage1 / "first_level0.npy")
+            first = types.SimpleNamespace(
+                character=character,
+                rotation=rotation,
+                translation=translation,
+                meshes={0: (level0, None)},
+            )
+            pruned = {"covered": covered_skin(folder, first)}
+        if stage1.resolve() != saved.resolve():
+            saved.mkdir(parents=True, exist_ok=True)
+            for item in stage1.iterdir():
+                (saved / item.name).write_bytes(item.read_bytes())
+        result = run(config.detail, main)
+    else:
+        saved.mkdir(parents=True, exist_ok=True)
+        if config.prune:
+            # a first fit to level 0 tells the figure from what is left of props and supports
+            from opensculptboy.statues.fit import prune_far
 
-        first = run(0)
-        pruned = prune_far(folder, first, distance=float(config.prune))
-        # the skull under a hat and fused locks keeps anny's own shape
-        pruned["covered"] = covered_skin(folder, first)
-        if verbose:
-            print(f"pruned {pruned}", flush=True)
-    result = run(config.detail)
+            first = run(0)
+            (saved / "first.json").write_text(
+                json.dumps(stage1_dict(first)) + "\n", encoding="utf-8"
+            )
+            np.save(saved / "first_level0.npy", np.asarray(first.meshes[0][0]))
+            pruned = prune_far(folder, first, distance=float(config.prune))
+            # the skull under a hat and fused locks keeps anny's own shape
+            pruned["covered"] = covered_skin(folder, first)
+        result = run(config.detail)
+        (saved / "main.json").write_text(
+            json.dumps(stage1_dict(result)) + "\n", encoding="utf-8"
+        )
+    if verbose and pruned:
+        print(f"pruned {pruned}", flush=True)
     result.pruned = pruned
     card = pathlib.Path(card)
     card.parent.mkdir(parents=True, exist_ok=True)
@@ -486,9 +526,12 @@ def run_statue(
     scans=None,
     steps=STEPS,
     verbose: bool = False,
+    stage1=None,
 ) -> dict:
     """Run ``steps`` (of :data:`STEPS`, in their order) for one statue into
-    ``<out>/<name>/``; returns a summary with the time of each step."""
+    ``<out>/<name>/``; returns a summary with the time of each step. With ``stage1`` (the
+    folder of an earlier run of the statue), its handoff and its sliders, pose and placement
+    are taken over and only the fit's detail levels and the measures run."""
     unknown = set(steps) - set(STEPS)
     if unknown:
         raise ValueError(f"Unknown steps {sorted(unknown)}; use {STEPS}.")
@@ -497,6 +540,16 @@ def run_statue(
     folder = root / "handoff"
     summary = {"name": config.name, "steps": {}}
     result = None
+    source = None
+    if stage1 is not None:
+        import shutil
+
+        earlier = pathlib.Path(stage1)
+        if earlier.resolve() != root.resolve():
+            shutil.copytree(earlier / "handoff", folder, dirs_exist_ok=True)
+        source = earlier / "stage1"
+        steps = [s for s in steps if s in ("fit", "measure")]
+        summary["stage1"] = str(earlier)
     for step in STEPS:
         if step not in steps:
             continue
@@ -517,7 +570,9 @@ def run_statue(
         elif step == "preview":
             summary["preview"] = preview(config, folder, root / "preview")
         elif step == "fit":
-            result = fit(config, folder, root / "card" / f"{config.name}.json", verbose)
+            result = fit(
+                config, folder, root / "card" / f"{config.name}.json", verbose, source
+            )
             summary["pruned"] = getattr(result, "pruned", None)
         elif step == "measure":
             if result is None:

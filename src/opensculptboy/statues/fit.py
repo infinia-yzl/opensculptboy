@@ -202,6 +202,7 @@ def fit_statue(
     options=None,
     start_pose: str | None = "auto",
     solid: bool = True,
+    stage1: dict | None = None,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
@@ -211,8 +212,10 @@ def fit_statue(
     ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. A
     ``solid`` statue has carved eyes and closed lips: the fit closes anny's eye and mouth
     openings on the scan and hides the eyeballs behind them (``FitOptions.close_openings``).
-    Returns
-    the :class:`~opensculptboy.fit.register.FitResult`.
+    With ``stage1`` (:func:`stage1_dict` of an earlier fit), the sliders, pose and placement
+    are that fit's and only the detail levels run
+    (:func:`~opensculptboy.fit.register.fit_levels`). Returns the
+    :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
     from opensculptboy.fit.reference import Reference
@@ -254,6 +257,13 @@ def fit_statue(
         )
     reference = Reference.from_handoff(load_handoff(folder))
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)
+    if stage1 is not None:
+        from opensculptboy.fit.register import fit_levels
+
+        character, rotation, translation = stage1_from(stage1)
+        return fit_levels(
+            reference, character, rotation, translation, detail, options, model
+        )
     if start_pose and options.initial_pose is None:
         names = None if start_pose == "auto" else [start_pose]
         chosen, rotations, scores = library_start(model, reference, names)
@@ -267,6 +277,32 @@ def fit_statue(
         name=name or title or folder.resolve().name,
         options=options,
         model=model,
+    )
+
+
+def stage1_dict(result) -> dict:
+    """The sliders, pose and placement of a fit (JSON), from which :func:`fit_statue` can run
+    the detail levels again."""
+    card = result.character.to_dict()
+    card.pop("detail", None)
+    return {
+        "format": "opensculptboy.statue-stage1/1",
+        "character": card,
+        "rotation": np.asarray(result.rotation, np.float64).tolist(),
+        "translation": np.asarray(result.translation, np.float64).tolist(),
+    }
+
+
+def stage1_from(data: dict):
+    """The card, rotation and translation of :func:`stage1_dict`."""
+    from opensculptboy.character import Character
+
+    if data.get("format") != "opensculptboy.statue-stage1/1":
+        raise ValueError(f"Not a statue stage-1 file: {data.get('format')!r}.")
+    return (
+        Character.from_dict(data["character"]),
+        np.asarray(data["rotation"], np.float64),
+        np.asarray(data["translation"], np.float64),
     )
 
 
