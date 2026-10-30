@@ -79,7 +79,7 @@ def main():
         "// pose, front three-quarter, in the character sheet's metered studio lights, on a\n"
         "// transparent ground (WebP data URLs). Written by viewer/starter_thumbnails.py; run it\n"
         "// again after a change to the starters or the stones.\n\n"
-        "export const STARTER_THUMBS: Record<string, string> = {{\n"
+        "export const STARTER_THUMBS: Record<string, string> = {\n"
         + "\n".join(lines)
         + "\n};\n",
         encoding="utf-8",
