@@ -50,6 +50,10 @@ SOLID_LIP_CONTACT = 0.006
 # corner, and 6 narrowed the eyes
 HOLD_EYE_RINGS = 5
 HOLD_LIP_RINGS = 5
+# a working face's eyes grow this much against their lids, and the sockets' lining comes to
+# this far (metres) outside them: on David the corners of the eyes showed the sockets dark
+EYE_GROW = 1.05
+EYE_HUG = 0.001
 # the fitted skin's pits deeper than the scan's own by this much (metres) relax
 PIT_EXCESS = 0.0005
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
@@ -270,6 +274,12 @@ def fit_statue(
             lip_seal_self=True,
             unfold_rounds=options.unfold_rounds or SOLID_UNFOLD,
             eyes_to_lids=True,
+            eyes_to_lids_scale=(
+                EYE_GROW
+                if options.eyes_to_lids_scale == 1.0
+                else options.eyes_to_lids_scale
+            ),
+            eyes_lining=EYE_HUG if options.eyes_lining < 0 else options.eyes_lining,
         )
     if solid and options.close_openings == 0:
         # carved eyes, and closed lips sealed further than a character's would be
