@@ -3654,6 +3654,8 @@ window.setSliders = (v) => syncBody(() => { applyLook(Object.assign({}, currentL
 window.__look = () => currentLook;
 // a starter of the New screen in its light kind and its pose (src/starters.ts), for the thumbnails' script
 // (viewer/starter_thumbnails.py) and the page tests; card: the starter's light card (starters.ts lightCardUrl), if any
+// the starters' table, which the pose review script turns to try poses before they go into starters.ts
+window.__starters = STARTERS;
 window.showStarter = (id: string, card: any = null) => syncBody(() => {
   const st = STARTERS.find((x) => x.id === id);
   if (!st) return false;

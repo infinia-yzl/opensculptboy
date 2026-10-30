@@ -337,8 +337,8 @@ void main() {
     float occ0 = textureLod(uHairOcc, (hq0 + nh * 0.002 - uHairOccLo) / uHairOccSize, 0.0).r;
     if (occ0 < 0.93) {
       float off = 0.0;
-      for (int i = 1; i <= 16; i++) {
-        float d = float(i) * 0.004;
+      for (int i = 1; i <= 22; i++) {
+        float d = float(i) * 0.005;
         if (textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r < 0.93) off = d;
       }
       float w = smoothstep(0.93, 0.7, occ0);
