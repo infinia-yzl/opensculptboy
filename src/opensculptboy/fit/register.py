@@ -339,6 +339,13 @@ class FitOptions:
     # eye's centre (0: none)
     close_socket: float = 0.0
     close_rim_depth: float = 0.0005
+    # pieces that cover skin without data (a statue's locks, as (vertices, triangles) in the
+    # reference's frame): the skin without data whose outward normal meets them within
+    # cover_reach (metres) comes out to cover_depth under them, and the rest of that skin
+    # follows smoothly (the fill left a dark gap between the cheek and the locks)
+    cover_pieces: tuple | None = None
+    cover_reach: float = 0.015
+    cover_depth: float = 0.001
     # a solid figure: within this distance (metres) of the eyes' and the mouth's centres, the
     # fitted surface that a look at the reference sees more than 1 mm behind it comes forward
     # to close_rim_depth under it (close_seen; 0: none)
@@ -3457,6 +3464,34 @@ def fit_levels(
                 _log(
                     options, f"level {subdiv}: {len(rows)} vertices without data filled"
                 )
+        if options.cover_pieces is not None and _level_no_data(options) is not None:
+            lost = np.asarray(topology.apply(_level_no_data(options))) > 0.5
+            free = lost & np.asarray(mask, bool)
+            moved, fitted_new = fill_to_cover(
+                fitted,
+                topology.triangles,
+                free,
+                options.cover_pieces,
+                options.cover_reach,
+                options.cover_depth,
+            )
+            if moved:
+                rows = np.nonzero(free)[0]
+                new = offsets[subdiv].copy()
+                new[rows] = (
+                    R_.unpose(
+                        fitted_new[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+                offsets[subdiv] = new
+                fitted = fitted_new
+            _log(options, f"level {subdiv}: {moved} vertices brought out to the cover")
         if options.close_openings > 0:
             fitted, offsets[subdiv] = _close_openings(
                 model,
@@ -3725,6 +3760,53 @@ def _outward(reference) -> float:
     T = np.asarray(reference.triangles)
     a, b, c = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
     return 1.0 if float((a * np.cross(b, c)).sum()) >= 0 else -1.0
+
+
+def fill_to_cover(
+    fitted: np.ndarray,
+    triangles: np.ndarray,
+    free: np.ndarray,
+    pieces: tuple,
+    reach: float = 0.015,
+    depth: float = 0.001,
+) -> tuple[int, np.ndarray]:
+    """
+    The skin without data (``free``) brought out to the pieces that cover it: each free vertex
+    whose outward normal meets ``pieces`` (vertices, triangles) within ``reach`` moves to
+    ``depth`` short of the hit, and the other free vertices follow by the harmonic extension
+    of the moves (the skin with data stays). Returns the number of vertices that met a piece
+    and the vertices.
+    """
+    import trimesh
+
+    from opensculptboy.fit.lips import harmonic_fill
+    from opensculptboy.fit.reference import vertex_normals
+
+    fitted = np.asarray(fitted, np.float64)
+    free = np.asarray(free, bool)
+    rows = np.nonzero(free)[0]
+    if not len(rows):
+        return 0, fitted
+    normals = vertex_normals(fitted, triangles)
+    cover = trimesh.Trimesh(
+        np.asarray(pieces[0], np.float64), np.asarray(pieces[1]), process=False
+    )
+    hits, index, _ = cover.ray.intersects_location(
+        fitted[rows], normals[rows], multiple_hits=False
+    )
+    distance = np.linalg.norm(hits - fitted[rows[index]], axis=1)
+    near = distance < reach
+    move = np.zeros_like(fitted)
+    met = rows[index[near]]
+    move[met] = normals[met] * np.maximum(distance[near] - depth, 0.0)[:, None]
+    if not len(met):
+        return 0, fitted
+    hold = np.zeros(len(fitted), bool)
+    hold[met] = True
+    move = harmonic_fill(move, triangles, free & ~hold)
+    out = fitted.copy()
+    out[rows] += move[rows]
+    return len(met), out
 
 
 def opening_centres(model, topology, fitted) -> np.ndarray:

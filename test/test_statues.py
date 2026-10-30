@@ -498,6 +498,38 @@ class TestPrune(unittest.TestCase):
         self.assertEqual(len(out_V), len(cap.vertices))
         self.assertGreater(np.linalg.norm(out_V, axis=1).min(), 0.105)
 
+    def test_skin_without_data_comes_out_to_the_locks(self):
+        from opensculptboy.fit.register import fill_to_cover
+
+        V, T = _grid(21, 0.1)
+        free = np.zeros(len(V), bool)
+        inner = (np.abs(V[:, 0] - 0.05) < 0.03) & (np.abs(V[:, 1] - 0.05) < 0.03)
+        free[inner] = True
+        # a lock 5 mm over the middle of the patch, and the grid's normals point up (+z)
+        P, PT = _grid(5, 0.02)
+        P = P + [0.04, 0.04, 0.005]
+        moved, out = fill_to_cover(V, T, free, (P, PT), reach=0.015, depth=0.001)
+        self.assertGreater(moved, 0)
+        middle = np.argmin(np.linalg.norm(V[:, :2] - 0.05, axis=1))
+        self.assertAlmostEqual(out[middle, 2], 0.004, places=6)
+        np.testing.assert_allclose(out[~free], V[~free])  # the skin with data stays
+        self.assertTrue((out[free, 2] >= -1e-12).all())
+        self.assertTrue((out[free, 2] <= 0.004 + 1e-9).all())
+        far = (P + [0.0, 0.0, 0.02], PT)
+        self.assertEqual(fill_to_cover(V, T, free, far, reach=0.015)[0], 0)
+
+    def test_teeth_leave_a_border(self):
+        from opensculptboy.statues.fit import trim_piece
+
+        V, T = _grid(11, 0.1)
+        # a tooth: one triangle on the edge with two open edges
+        V = np.vstack([V, [0.05, -0.01, 0.0]])
+        T = np.vstack([T, [5, 4, len(V) - 1]])
+        skin_V = V + [0.0, 0.0, -0.01]
+        _, out_T, dropped = trim_piece(V, T, skin_V, T, inside=None, keep=0.0)
+        self.assertEqual(dropped, 1)
+        self.assertEqual(len(out_T), len(T) - 1)
+
     def test_feet_on_a_removed_piece_take_no_data(self):
         import types
 

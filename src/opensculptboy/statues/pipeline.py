@@ -496,7 +496,12 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         if not part.is_skin:
             save(f"part_{part.role}_{part.name}", part.vertices, part.triangles)
     # the hat and the locks seated on the finest fitted skin, for review and for the card
-    from opensculptboy.statues.fit import SEAT_BY_ROLE, seat_piece, trim_piece
+    from opensculptboy.statues.fit import (
+        SEAT_BY_ROLE,
+        TRIM_BY_ROLE,
+        seat_piece,
+        trim_piece,
+    )
 
     finest = result.meshes[max(result.meshes)]
     seated = {}
@@ -505,7 +510,9 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         if part.is_skin or part.role not in ("hair", "clothing"):
             continue
         reach, blend = SEAT_BY_ROLE[part.role]
-        V, T, dropped = trim_piece(part.vertices, part.triangles, *finest)
+        V, T, dropped = trim_piece(
+            part.vertices, part.triangles, *finest, inside=TRIM_BY_ROLE[part.role]
+        )
         V, moved = seat_piece(V, T, *finest, reach=reach, blend=blend)
         save(f"seated_{part.role}_{part.name}", V, T)
         seated[part.name] = {

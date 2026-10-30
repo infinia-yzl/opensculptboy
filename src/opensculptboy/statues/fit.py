@@ -280,8 +280,20 @@ def fit_statue(
             unfold_rounds=SOLID_UNFOLD,
             lip_contact=max(options.lip_contact, SOLID_LIP_CONTACT),
         )
-    reference = Reference.from_handoff(load_handoff(folder))
+    handoff = load_handoff(folder)
+    reference = Reference.from_handoff(handoff)
     reference.regions["border"] = open_border(reference.vertices, reference.triangles)
+    locks = [p for p in handoff.parts if p.role == "hair"]
+    if locks and options.cover_pieces is None and covered:
+        # the cheek and the neck under fused locks come out to them
+        base = np.cumsum([0] + [len(p.vertices) for p in locks[:-1]])
+        options = dataclasses.replace(
+            options,
+            cover_pieces=(
+                np.concatenate([p.vertices for p in locks]),
+                np.concatenate([p.triangles + b for p, b in zip(locks, base)]),
+            ),
+        )
     if stage1 is not None:
         from opensculptboy.fit.register import fit_levels
 
@@ -688,6 +700,11 @@ SEAT_SMOOTH = 0.01
 # under TRIM_KEEP of its area
 TRIM_INSIDE = 0.002
 TRIM_KEEP = 0.02
+# the rounds that take the teeth off a piece's open border
+TRIM_TEETH = 4
+# by role, how far inside the skin a piece's triangles go (None: they stay; the locks lie
+# against the cheek, and trimmed they showed holes)
+TRIM_BY_ROLE = {"clothing": TRIM_INSIDE, "hair": None}
 
 
 def trim_piece(
@@ -695,16 +712,18 @@ def trim_piece(
     triangles: np.ndarray,
     skin_vertices: np.ndarray,
     skin_triangles: np.ndarray,
-    inside: float = TRIM_INSIDE,
+    inside: float | None = TRIM_INSIDE,
     keep: float = TRIM_KEEP,
+    teeth: int = TRIM_TEETH,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """
     A piece cut from a statue (a hat, locks of hair) without the triangles whose centres lie
     more than ``inside`` under the fitted skin and without its loose bits under ``keep`` of
-    its area: the masks cut whole triangles, and the shards of the brow and the cheek that
-    came with the hat and the locks hung jagged under the brim and beside the face. Returns
-    the vertices and the triangles that are left (compacted) and the number of triangles
-    dropped.
+    its area (``inside`` None keeps the triangles under the skin), and without the teeth of
+    its open border (the triangles with two open edges, in up to ``teeth`` rounds): the masks
+    cut whole triangles, and the shards of the brow and the cheek that came with the hat and
+    the locks hung jagged under the brim and beside the face. Returns the vertices and the
+    triangles that are left (compacted) and the number of triangles dropped.
     """
     from anny.hair import closest_triangles
     from opensculptboy.statues.scan import components
@@ -720,7 +739,21 @@ def trim_piece(
     normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
     normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
     # the skin's triangles turn outward (anny's mesh)
-    kept = ((centres - on) * normal).sum(1) > -inside
+    kept = np.ones(len(T), bool)
+    if inside is not None:
+        kept = ((centres - on) * normal).sum(1) > -inside
+    for _ in range(teeth):
+        # a tooth of the sawtooth: a triangle with two edges on the open border
+        edges = np.sort(T[kept][:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+        _, inverse, counts = np.unique(
+            edges, axis=0, return_inverse=True, return_counts=True
+        )
+        open_edges = (counts[inverse.ravel()] == 1).reshape(-1, 3).sum(1)
+        tooth = open_edges >= 2
+        if not tooth.any():
+            break
+        rows = np.nonzero(kept)[0]
+        kept[rows[tooth]] = False
     if kept.any():
         p = V[T[kept]]
         area = 0.5 * np.linalg.norm(
