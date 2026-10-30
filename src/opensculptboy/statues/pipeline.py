@@ -494,7 +494,7 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         if not part.is_skin:
             save(f"part_{part.role}_{part.name}", part.vertices, part.triangles)
     # the hat and the locks seated on the finest fitted skin, for review and for the card
-    from opensculptboy.statues.fit import SEAT_BY_ROLE, seat_piece
+    from opensculptboy.statues.fit import SEAT_BY_ROLE, seat_piece, trim_piece
 
     finest = result.meshes[max(result.meshes)]
     seated = {}
@@ -503,12 +503,15 @@ def measure(config: StatueConfig, folder, result, out) -> dict:
         if part.is_skin or part.role not in ("hair", "clothing"):
             continue
         reach, blend = SEAT_BY_ROLE[part.role]
-        V, moved = seat_piece(
-            part.vertices, part.triangles, *finest, reach=reach, blend=blend
-        )
-        save(f"seated_{part.role}_{part.name}", V, part.triangles)
-        seated[part.name] = {"role": part.role, "border_moved": moved}
-        trimesh.Trimesh(_gltf(V), part.triangles, process=False).export(
+        V, T, dropped = trim_piece(part.vertices, part.triangles, *finest)
+        V, moved = seat_piece(V, T, *finest, reach=reach, blend=blend)
+        save(f"seated_{part.role}_{part.name}", V, T)
+        seated[part.name] = {
+            "role": part.role,
+            "border_moved": moved,
+            "triangles_dropped": dropped,
+        }
+        trimesh.Trimesh(_gltf(V), T, process=False).export(
             str(out / "card" / f"{config.name}.{part.name}.glb")
         )
     removed = pathlib.Path(folder) / "removed.glb"

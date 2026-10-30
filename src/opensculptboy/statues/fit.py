@@ -680,6 +680,59 @@ SEAT_BY_ROLE = {"clothing": (0.025, 0.03), "hair": (0.025, 0.025)}
 SEAT_SMOOTH = 0.01
 
 
+# a piece's triangles whose centres lie this far (metres) inside the fitted skin go (shards of
+# the brow and the cheek that the masks cut with a hat and locks), and so do the pieces of it
+# under TRIM_KEEP of its area
+TRIM_INSIDE = 0.002
+TRIM_KEEP = 0.02
+
+
+def trim_piece(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    skin_vertices: np.ndarray,
+    skin_triangles: np.ndarray,
+    inside: float = TRIM_INSIDE,
+    keep: float = TRIM_KEEP,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    A piece cut from a statue (a hat, locks of hair) without the triangles whose centres lie
+    more than ``inside`` under the fitted skin and without its loose bits under ``keep`` of
+    its area: the masks cut whole triangles, and the shards of the brow and the cheek that
+    came with the hat and the locks hung jagged under the brim and beside the face. Returns
+    the vertices and the triangles that are left (compacted) and the number of triangles
+    dropped.
+    """
+    from anny.hair import closest_triangles
+    from opensculptboy.statues.scan import components
+
+    V = np.asarray(vertices, np.float64)
+    T = np.asarray(triangles)
+    SV = np.asarray(skin_vertices, np.float64)
+    ST = np.asarray(skin_triangles)
+    centres = V[T].mean(1)
+    tri, bary, _ = closest_triangles(centres, SV, ST)
+    corners = SV[ST[tri]]
+    on = np.einsum("nk, nkd -> nd", bary, corners)
+    normal = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+    normal /= np.maximum(np.linalg.norm(normal, axis=1, keepdims=True), 1e-18)
+    # the skin's triangles turn outward (anny's mesh)
+    kept = ((centres - on) * normal).sum(1) > -inside
+    if kept.any():
+        p = V[T[kept]]
+        area = 0.5 * np.linalg.norm(
+            np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1
+        )
+        labels = components(T[kept], len(V))
+        sizes = np.bincount(labels, area)
+        rows = np.nonzero(kept)[0]
+        kept[rows[sizes[labels] < keep * sizes.sum()]] = False
+    used = np.unique(T[kept])
+    remap = np.full(len(V), -1)
+    remap[used] = np.arange(len(used))
+    return V[used], remap[T[kept]], int((~kept).sum())
+
+
 def seat_piece(
     vertices: np.ndarray,
     triangles: np.ndarray,
