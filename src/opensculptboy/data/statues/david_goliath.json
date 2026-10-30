@@ -157,15 +157,15 @@
       "name": "sword cross-guard",
       "start": [
         -0.303,
-        0.889,
-        0.02
+        0.888,
+        -0.005
       ],
       "end": [
         -0.303,
-        0.889,
-        0.2
+        0.888,
+        0.225
       ],
-      "radius": 0.026,
+      "radius": 0.027,
       "prop": "Sword"
     },
     {
@@ -174,10 +174,10 @@
       "name": "cross-guard's front end",
       "centre": [
         -0.3,
-        0.86,
-        0.19
+        0.858,
+        0.195
       ],
-      "radius": 0.03,
+      "radius": 0.033,
       "prop": "Sword"
     },
     {
@@ -187,9 +187,9 @@
       "centre": [
         -0.3,
         0.875,
-        0.03
+        0.02
       ],
-      "radius": 0.025,
+      "radius": 0.03,
       "prop": "Sword"
     },
     {
