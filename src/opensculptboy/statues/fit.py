@@ -44,6 +44,10 @@ SOLID_UNFOLD = 10
 # and stitches the lips' rows that are each other's nearest within this distance (metres),
 # as the seal left a slit in the middle of Doryphoros' mouth
 SOLID_LIP_CONTACT = 0.006
+# the rings of skin around the eyes' and the mouth's openings (the linings of the sockets and
+# of the mouth) that keep anny's shape on a figure with a working face
+HOLD_EYE_RINGS = 3
+HOLD_LIP_RINGS = 3
 # the fitted skin's pits deeper than the scan's own by this much (metres) relax
 PIT_EXCESS = 0.0005
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops
@@ -201,17 +205,22 @@ def fit_statue(
     name: str | None = None,
     options=None,
     start_pose: str | None = "auto",
-    solid: bool = True,
+    solid: bool = False,
     stage1: dict | None = None,
+    hold: tuple = (HOLD_EYE_RINGS, HOLD_LIP_RINGS),
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
     :func:`~opensculptboy.fit.register.fit_reference` with the parts that ``statue.lost`` of
     appearance.json names left without data, the pairs on the scan's open borders dropped,
     and the parameter stage started from ``start_pose``: a pose of anny's library by name,
-    ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. A
-    ``solid`` statue has carved eyes and closed lips: the fit closes anny's eye and mouth
-    openings on the scan and hides the eyeballs behind them (``FitOptions.close_openings``).
+    ``"auto"`` for the closest one (:func:`library_start`) or None for the rest pose. By
+    default the figure keeps anny's working face: the skin within ``hold`` rings (eyes, lips)
+    of the eyes' and the mouth's openings takes no data and follows the fitted skin around it
+    (:func:`held_openings`), and the lips are not sealed, so that the lids and the lips keep
+    anny's openings and close and open as anny's do. A ``solid`` statue has carved eyes and
+    closed lips: the fit closes anny's eye and mouth openings on the scan and hides the
+    eyeballs behind them (``FitOptions.close_openings``).
     With ``stage1`` (:func:`stage1_dict` of an earlier fit), the sliders, pose and placement
     are that fit's and only the detail levels run
     (:func:`~opensculptboy.fit.register.fit_levels`). Returns the
@@ -245,6 +254,18 @@ def fit_statue(
     if options.relax_dents == 0:
         # a dense fit of a coarse scan dents single vertices (a pit on a forehead)
         options = dataclasses.replace(options, relax_dents=PIT_EXCESS)
+    if not solid:
+        # anny's working face: the lids and the lips around their openings follow the fitted
+        # skin (on the carved eyes and lips they tore into slits), unsealed
+        held = held_openings(model, *hold)
+        no_data = held if options.no_data is None else (options.no_data | held)
+        options = dataclasses.replace(
+            options,
+            no_data=no_data,
+            fill_no_data=True,
+            lip_seal=False,
+            unfold_rounds=options.unfold_rounds or SOLID_UNFOLD,
+        )
     if solid and options.close_openings == 0:
         # carved eyes, and closed lips sealed further than a character's would be
         options = dataclasses.replace(
@@ -278,6 +299,33 @@ def fit_statue(
         options=options,
         model=model,
     )
+
+
+def held_openings(
+    model, eye_rings: int = HOLD_EYE_RINGS, lip_rings: int = HOLD_LIP_RINGS
+) -> np.ndarray:
+    """Mask (V,) of the skin within ``eye_rings`` faces of the eye sockets' linings and within
+    ``lip_rings`` faces of the mouth's, the linings themselves included."""
+    from anny.faces.authoring.base_mesh import base_mesh
+    from opensculptboy.fit.lips import rings_from
+    from opensculptboy.topology.lookup import base_mesh_rows
+
+    mesh = base_mesh()
+    base = base_mesh_rows(model)
+    faces = model.faces.cpu().numpy()
+    n = model.template_vertices.shape[-2]
+    out = np.zeros(n, bool)
+    for labels, rings in (
+        (("eye_cavity.L", "eye_cavity.R"), eye_rings),
+        (("mouth_cavity",), lip_rings),
+    ):
+        lining = np.zeros(len(mesh.V), bool)
+        for label in labels:
+            lining[np.unique(mesh.quads[mesh.face_labels == label])] = True
+        rows = np.nonzero(lining[base])[0]
+        if len(rows):
+            out |= rings_from(faces, rows, int(rings), n)
+    return out
 
 
 def stage1_dict(result) -> dict:

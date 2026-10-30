@@ -679,6 +679,9 @@ class TestSolid(unittest.TestCase):
         from opensculptboy.statues import fit_statue
         from opensculptboy.statues.fit import SOLID_LIP_SHIFT, SOLID_REACH
 
+        from opensculptboy.statues.fit import held_openings
+
+        held = held_openings(_model())
         statue = synthetic_statue(0)
         with tempfile.TemporaryDirectory() as tmp:
             scan_to_handoff(
@@ -694,6 +697,29 @@ class TestSolid(unittest.TestCase):
                 self.assertEqual(options.close_openings, SOLID_REACH if solid else 0)
                 if solid:
                     self.assertEqual(options.lip_seal_max_shift, SOLID_LIP_SHIFT)
+                else:
+                    # anny's working face: the openings' rings take no data, unsealed
+                    self.assertFalse(options.lip_seal)
+                    self.assertTrue(options.fill_no_data)
+                    self.assertTrue(options.no_data[held].all())
+
+    def test_working_face_holds_the_openings(self):
+        from opensculptboy.fit.register import cavity_vertices
+        from opensculptboy.statues.fit import held_openings
+
+        model = _model()
+        lining = cavity_vertices(model)
+        narrow = held_openings(model, 1, 1)
+        wide = held_openings(model, 3, 3)
+        self.assertTrue(narrow[lining].all())
+        self.assertTrue(wide[narrow].all())
+        self.assertGreater(wide.sum(), narrow.sum() + 50)
+        V = model.template_vertices.detach().double().numpy().reshape(-1, 3)
+        head = V[lining].mean(0)
+        # the face's openings alone: nothing below the chin
+        self.assertLess(np.linalg.norm(V[wide] - head, axis=1).max(), 0.12)
+        eyes_only = held_openings(model, 3, 0)
+        self.assertLess(eyes_only.sum(), wide.sum())
 
     def test_stage1_runs_the_levels_alone(self):
         import types

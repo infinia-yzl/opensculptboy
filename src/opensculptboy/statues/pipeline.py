@@ -75,7 +75,11 @@ class StatueConfig:
     lost: list = dataclasses.field(default_factory=list)
     landmarks: dict = dataclasses.field(default_factory=dict)
     auto_landmarks: bool = True
-    solid: bool = True
+    # False (the default): anny's own working face, its lids and lips held open as anny's
+    # (hold: the rings around the eyes' and the mouth's openings that take no data); True:
+    # carved eyes and closed lips on the scan
+    solid: bool = False
+    hold: list = dataclasses.field(default_factory=lambda: [3, 3])
     prune: float | bool = 0.025
     pose: str | None = "auto"
     detail: int = 2
@@ -380,6 +384,7 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
             options=FitOptions(verbose=verbose, **_fit_options(config.fit)),
             start_pose=config.pose,
             solid=config.solid,
+            hold=tuple(config.hold),
             stage1=start,
         )
 

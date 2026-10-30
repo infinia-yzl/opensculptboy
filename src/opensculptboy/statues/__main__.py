@@ -63,6 +63,11 @@ def run(argv) -> int:
         help="a name for the variant: its results go to <out>/<name>.<variant>",
     )
     parser.add_argument(
+        "--hold",
+        metavar="EYES,LIPS",
+        help="the rings around the eyes' and the mouth's openings that keep anny's shape",
+    )
+    parser.add_argument(
         "--from",
         dest="stage1",
         metavar="RUN",
@@ -92,6 +97,10 @@ def run(argv) -> int:
                 fit[key.strip()] = json.loads(value)
             config = StatueConfig.from_dict(
                 {**_as_dict(config), "fit": fit}, config.path
+            )
+        if args.hold:
+            config = dataclasses.replace(
+                config, hold=[int(x) for x in args.hold.split(",")]
             )
         if args.variant:
             config = dataclasses.replace(config, name=f"{config.name}.{args.variant}")
