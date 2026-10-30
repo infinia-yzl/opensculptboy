@@ -73,16 +73,18 @@ def main():
             print(sid, len(thumbs[sid]) * 3 // 4, "bytes", flush=True)
         browser.close()
     lines = [f"  {sid}: {json.dumps(url)}," for sid, url in thumbs.items()]
-    OUT.write_text(
-        "// OpenSculptBoy\n// Apache License, Version 2.0\n//\n"
-        "// The thumbnails of the New screen's starters: each light starter in its stone and its\n"
-        "// pose, front three-quarter, in the character sheet's metered studio lights, on a\n"
-        "// transparent ground (WebP data URLs). Written by viewer/starter_thumbnails.py; run it\n"
-        "// again after a change to the starters or the stones.\n\n"
-        "export const STARTER_THUMBS: Record<string, string> = {\n"
-        + "\n".join(lines)
-        + "\n};\n",
-        encoding="utf-8",
+    # LF line endings on every system, as the repository keeps them
+    OUT.write_bytes(
+        (
+            "// OpenSculptBoy\n// Apache License, Version 2.0\n//\n"
+            "// The thumbnails of the New screen's starters: each light starter in its stone and its\n"
+            "// pose, front three-quarter, in the character sheet's metered studio lights, on a\n"
+            "// transparent ground (WebP data URLs). Written by viewer/starter_thumbnails.py; run it\n"
+            "// again after a change to the starters or the stones.\n\n"
+            "export const STARTER_THUMBS: Record<string, string> = {\n"
+            + "\n".join(lines)
+            + "\n};\n"
+        ).encode("utf-8")
     )
     print("wrote", OUT, sum(len(u) for u in thumbs.values()) // 1024, "KB")
 
