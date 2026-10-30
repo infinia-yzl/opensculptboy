@@ -524,12 +524,12 @@ class TestPrune(unittest.TestCase):
         from opensculptboy.statues.fit import on_skin
 
         skull = trimesh.creation.icosphere(4, radius=0.1)
-        # a strip of the brow 1 mm out on the skull, and a brim 2 cm over it facing down
+        # a strip of the brow 1 mm out on the skull, and a brim over it facing down
         front = skull.triangles_center[:, 1] < -0.09
         strip = trimesh.Trimesh(skull.vertices * 1.01, skull.faces[front])
         strip.remove_unreferenced_vertices()
         brim = trimesh.creation.annulus(r_min=0.1, r_max=0.15, height=0.002)
-        brim.apply_translation((0.0, 0.0, 0.03))
+        brim.apply_translation((0.0, 0.0, 0.05))
         parts = [strip, brim]
         base = np.cumsum([0] + [len(p.vertices) for p in parts[:-1]])
         V = np.concatenate([p.vertices for p in parts])
