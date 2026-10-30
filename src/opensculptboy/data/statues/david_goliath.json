@@ -191,12 +191,12 @@
       "centre": [
         0.107,
         1.547,
-        0.025
+        0.045
       ],
       "size": [
         0.105,
         0.195,
-        0.21
+        0.25
       ],
       "prop": "Locks"
     },
@@ -224,5 +224,11 @@
     -0.9985,
     0.0
   ],
-  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece; the joints come from MediaPipe on pictures of the scan."
+  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece; the joints come from MediaPipe on pictures of the scan.",
+  "locks_face": true,
+  "cover_grow": 3,
+  "near_locks": 0.035,
+  "fit": {
+    "cover_reach": 0.03
+  }
 }
