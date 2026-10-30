@@ -420,6 +420,41 @@ class TestWardrobe(unittest.TestCase):
         self.assertEqual(len(every), 4)
         self.assertFalse(next(p for p in every if p.ref == "spare/vest").shown)
 
+    def test_props_sit_side_by_side(self):
+        for name in ("stump", "base", "sword"):
+            prop = tunic()
+            prop.name, prop.slot, prop.layer = name, "prop", 70
+            write_wearable(self.folder / f"{name}.wearable.json", prop)
+            self.assertEqual(
+                read_wearable(self.folder / f"{name}.wearable.json").slot, "prop"
+            )
+        card = Character.from_dict(
+            dict(
+                self.card.to_dict(),
+                outfits=self.card.outfits
+                + [
+                    {
+                        "id": "statue",
+                        "label": "Statue pieces",
+                        "pieces": [
+                            {"piece": n, "file": f"{n}.wearable.json"}
+                            for n in ("stump", "base")
+                        ],
+                    }
+                ],
+                active_outfit="statue",
+                wearables=[{"id": "sword", "file": "sword.wearable.json"}],
+            )
+        )
+        names = sorted(p.ref for p in worn_pieces(card, self.folder))
+        self.assertEqual(names, ["statue/base", "statue/stump", "sword"])
+        # a prop shown from another outfit keeps the worn outfit's props
+        card = Character.from_dict(dict(card.to_dict(), active_outfit="test_outfit"))
+        names = [p.ref for p in worn_pieces(card, self.folder, show=["statue/base"])]
+        self.assertIn("statue/base", names)
+        self.assertIn("sword", names)
+        self.assertIn("test_outfit/tunic", names)
+
 
 class TestDressedFiles(unittest.TestCase):
     @classmethod

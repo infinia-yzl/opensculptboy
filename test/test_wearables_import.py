@@ -1207,6 +1207,24 @@ class TestCardCommands(unittest.TestCase):
         )
         self.assertEqual(result["error"]["code"], "bad_option")
 
+    def test_replace_keeps_the_other_props(self):
+        card = self.card("props.json")
+        wear = []
+        for name in ("stump", "base"):
+            prop = read_wearable(self.folder / "wear" / "tunic.wearable.json")
+            prop.name, prop.slot = name, "prop"
+            wear.append(str(write_wearable(self.folder / "props" / name, prop)))
+        status, result, _ = run(
+            ["wearables", "add", str(card), *wear, "--outfit", "statue", "--replace"]
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            [a["ref"] for a in result["added"]], ["statue/stump", "statue/base"]
+        )
+        self.assertEqual((result["removed"], result["warnings"]), ([], []))
+        pieces = json.loads(card.read_text())["outfits"][0]["pieces"]
+        self.assertEqual([p["piece"] for p in pieces], ["stump", "base"])
+
     def test_remove_and_outfit(self):
         card = self.card("remove.json")
         wear = [
