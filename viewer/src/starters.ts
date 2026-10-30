@@ -46,7 +46,7 @@ export const STARTERS: Starter[] = [
       // contrapposto: the weight on the right leg, the hips down on the left and the shoulders down on the right
       ['root', [0, -6, -4]], ['upperleg01.R', [0, 0, 4]], ['spine05', [0, 4, 6]], ['spine03', [0, 0, 2]],
       // the left knee bent and the left foot back, on its toes
-      ['upperleg01.L', [-2, 0, 3]], ['lowerleg01.L', [24, 0, 0]], ['foot.L', [-6, 0, 0]],
+      ['upperleg01.L', [4, 0, 4]], ['lowerleg01.L', [26, 0, 0]], ['foot.L', [-4, 0, 0]],
       // the right arm down, the left arm bent as if it held a spear
       ['upperarm01.R', [0, 0, 4]], ['upperarm01.L', [-10, 0, 8]], ['lowerarm01.L', [-62, 10, 0]], ['wrist.L', [0, 0, -10]],
       // the head turned to its right and a little down
@@ -67,9 +67,9 @@ export const STARTERS: Starter[] = [
   { id: 'muse', name: 'Muse', description: 'A quiet figure lost in thought', pose: { base: 'relaxed', turns: [
       ['root', [0, 8, 4]], ['upperleg01.L', [0, 0, -4]], ['upperleg01.R', [6, 0, -2]], ['lowerleg01.R', [18, 0, 0]], ['foot.R', [-8, 0, 0]],
       ['spine05', [0, -4, -5]],
-      // the right hand raised to the chin, the left arm across the waist under the right elbow
-      ['upperarm01.R', [-45, 0, 25]], ['lowerarm01.R', [-115, 0, -20]], ['wrist.R', [-10, 0, 0]],
-      ['upperarm01.L', [-14, 0, 6]], ['lowerarm01.L', [-70, -30, 0]],
+      // the right hand raised to the cheek, the left arm across the waist under the right elbow
+      ['upperarm01.R', [-20, 0, 35]], ['lowerarm01.R', [-130, -40, 0]], ['wrist.R', [20, 0, 0]],
+      ['upperarm01.L', [-10, 0, 4]], ['lowerarm01.L', [-80, -60, 0]],
       ['neck01', [10, 6, 0]], ['head', [12, 10, -6]]] },
     light: { format: 'anny-viewer/look@4', name: 'Muse', skin: { tone: 0.35, undertone: 0, stone: 'carrara' }, hair: { style: 'low_bun', color: STONE_HAIR['carrara'] }, eyes: { color: STONE_HAIR['carrara'] },
       phenotype: {gender: 1, age: 0.8, muscle: 0.42, weight: 0.45, height: 0.52, proportions: 0.6, african: 0, asian: 1, caucasian: 0},
@@ -80,18 +80,18 @@ export const STARTERS: Starter[] = [
       ['root', [0, -4, -4]], ['upperleg01.R', [0, 0, 4]], ['upperleg01.L', [-14, -10, 6]], ['lowerleg01.L', [20, 0, 0]], ['foot.L', [-6, 0, 0]],
       ['spine05', [0, 4, 5]],
       ['upperarm01.R', [-6, 0, -8]], ['lowerarm01.R', [-20, 0, 0]],
-      ['upperarm01.L', [10, 0, 35]], ['lowerarm01.L', [-20, 0, -95]], ['wrist.L', [0, 0, 20]],
+      ['upperarm01.L', [15, 0, 40]], ['lowerarm01.L', [5, 0, -90]], ['wrist.L', [0, 0, 20]],
       ['neck01', [10, 8, 0]], ['head', [12, 10, 0]]] },
     light: { format: 'anny-viewer/look@4', name: 'Athlete', skin: { tone: 0.35, undertone: 0, stone: 'bronze' }, hair: { style: 'curly_top_taper', color: STONE_HAIR['bronze'] }, eyes: { color: STONE_HAIR['bronze'] },
       phenotype: {gender: 0, age: 0.82, muscle: 0.88, weight: 0.45, height: 0.58, proportions: 0.68, african: 1, asian: 0, caucasian: 0.4},
       face: {} } },
-  { id: 'huntress', name: 'Huntress', description: 'A striding figure with the hair tied up', pose: { base: 'relaxed', turns: [
-      // a stride forward on the right foot, the right hand reaching over the shoulder, the left arm forward and down
-      ['upperleg01.R', [-20, 0, 0]], ['lowerleg01.R', [10, 0, 0]], ['upperleg01.L', [14, 0, 0]], ['lowerleg01.L', [22, 0, 0]], ['foot.L', [-14, 0, 0]],
-      ['spine05', [0, -10, 0]],
-      ['upperarm01.R', [-120, 0, -20]], ['lowerarm01.R', [-140, 0, 0]],
-      ['upperarm01.L', [-30, 0, 10]], ['lowerarm01.L', [-20, 0, 0]],
-      ['neck01', [0, 16, 0]], ['head', [0, 20, 0]]] },
+  { id: 'huntress', name: 'Huntress', description: 'A figure pinning a cloak at the shoulder, the hair tied up', pose: { base: 'relaxed', turns: [
+      // the weight on the left leg, the right knee eased; the left hand at the right shoulder, the right arm down
+      ['root', [0, 6, 3]], ['upperleg01.L', [0, 0, -3]], ['upperleg01.R', [-4, 0, -3]], ['lowerleg01.R', [18, 0, 0]], ['foot.R', [-6, 0, 0]],
+      ['spine05', [0, -4, -4]],
+      ['upperarm01.R', [-8, 0, -4]], ['lowerarm01.R', [-30, 0, 0]],
+      ['upperarm01.L', [-30, 0, 10]], ['lowerarm01.L', [-90, -50, 0]],
+      ['neck01', [6, -6, 0]], ['head', [8, -10, 0]]] },
     light: { format: 'anny-viewer/look@4', name: 'Huntress', skin: { tone: 0.35, undertone: 0, stone: 'travertine' }, hair: { style: 'top_knot', color: STONE_HAIR['travertine'] }, eyes: { color: STONE_HAIR['travertine'] },
       phenotype: {gender: 1, age: 0.82, muscle: 0.6, weight: 0.42, height: 0.62, proportions: 0.66, african: 0, asian: 1, caucasian: 1},
       face: { 'head-scale-vert': 0.34, 'head-fat': 0.07, 'head-invertedtriangular': 0.12, 'head-back-scale-depth': -0.82, 'head-round': 0.03, 'head-scale-depth': 1.48, 'head-scale-horiz': 0.21, 'forehead-temple': -0.23, 'forehead-trans': 0.05, 'forehead-scale-vert': 0.05, 'forehead-nubian': 0.01, 'eyebrows-angle': 0.01, 'eyebrows-trans-down-up': -0.02, 'eyebrows-trans-backward-forward': 0.07, 'eye-corner1': 0.12, 'eye-height1': -0.1, 'eye-scale': 0.24, 'eye-push1': 0.03, 'eye-eyefold-down-up': -0.04, 'eye-height3': -0.18, 'eye-height2': -0.14, 'eye-bag-decr-incr': -0.02, 'eye-push2': -0.04, 'eye-trans-down-up': 0.15, 'eye-bag-height': -0.04, 'eye-epicanthus': -0.01, 'eye-eyefold-angle': -0.06, 'eye-bag-in-out': -0.06, 'eye-corner2': -0.22, 'eye-trans-in-out': 0.01, 'eye-eyefold-concave-convex': 0.26, 'nose-nostrils-angle': -0.04, 'nose-flaring': -0.01, 'nose-curve': -0.07, 'nose-scale-depth': -0.03, 'nose-scale-vert': -0.1, 'nose-point-width': -0.06, 'nose-scale-horiz': -0.02, 'nose-width1': -0.04, 'nose-trans-backward-forward': 0.06, 'nose-trans-down-up': 0.02, 'nose-hump': -0.03, 'nose-nostrils-width': 0.09, 'nose-greek': -0.13, 'nose-point': -0.07, 'nose-width2': -0.03, 'nose-width3': -0.03, 'nose-septumangle': -0.11, 'nose-base': 0.16, 'nose-compression': 0.01, 'nose-volume': -0.14, 'cheek-trans': 0.04, 'cheek-volume': -0.08, 'cheek-inner': 0.07, 'cheek-bones': -0.12, 'mouth-lowerlip-height': -0.02, 'mouth-scale-horiz': -0.04, 'mouth-scale-depth': -0.01, 'mouth-lowerlip-volume': 0.12, 'mouth-angles': 0.1, 'mouth-lowerlip-width': 0.02, 'mouth-trans-backward-forward': -0.14, 'mouth-upperlip-width': 0.06, 'mouth-scale-vert': 0.01, 'mouth-dimples': -0.05, 'mouth-upperlip-height': 0.04, 'mouth-upperlip-volume': -0.08, 'mouth-lowerlip-ext': 0.02, 'mouth-upperlip-middle': 0.03, 'mouth-trans-down-up': 0.06, 'mouth-philtrum-volume': 0.03, 'chin-jaw-drop': -0.05, 'chin-height': -0.05, 'chin-prominent': -0.1, 'chin-width': -0.03, 'chin-prognathism': -0.17, 'ear-lobe': 0.02, 'ear-shape-square-round': 0.01, 'ear-trans-backward-forward': 0.12, 'ear-rot': -0.25, 'ear-trans-down-up': -0.11, 'ear-scale-vert': -0.01, 'ear-flap': 0.03, 'ear-shape-pointed-triangle': -0.1, 'ear-scale': 0.03, 'ear-scale-depth': -0.09, 'ear-wing': 0.16, 'detail-1': 0.06, 'detail-2': -0.16, 'detail-3': 0.12, 'detail-4': -0.04, 'detail-5': -0.22, 'detail-6': -0.38, 'detail-7': -0.03, 'detail-8': -0.21, 'detail-9': 0.14, 'detail-10': -0.2 } } },
