@@ -492,7 +492,7 @@ class TestPrune(unittest.TestCase):
         base = np.cumsum([0] + [len(p.vertices) for p in parts[:-1]])
         V = np.concatenate([p.vertices for p in parts])
         T = np.concatenate([p.faces + b for p, b in zip(parts, base)])
-        out_V, out_T, dropped = trim_piece(V, T, skull.vertices, skull.faces)
+        out_V, out_T, dropped = trim_piece(V, T, skull.vertices, skull.faces, teeth=0)
         self.assertEqual(len(out_T), len(cap.faces))
         self.assertEqual(dropped, len(shard.faces) + len(crumb.faces))
         self.assertEqual(len(out_V), len(cap.vertices))
@@ -526,9 +526,11 @@ class TestPrune(unittest.TestCase):
         V = np.vstack([V, [0.05, -0.01, 0.0]])
         T = np.vstack([T, [5, 4, len(V) - 1]])
         skin_V = V + [0.0, 0.0, -0.01]
-        _, out_T, dropped = trim_piece(V, T, skin_V, T, inside=None, keep=0.0)
-        self.assertEqual(dropped, 1)
-        self.assertEqual(len(out_T), len(T) - 1)
+        out_V, out_T, dropped = trim_piece(V, T, skin_V, T, inside=None, keep=0.0)
+        # the tooth goes, and the two corners of the patch that hang by two open edges
+        self.assertEqual(dropped, 3)
+        self.assertEqual(len(out_T), len(T) - 3)
+        self.assertFalse((out_V[:, 1] < 0).any())
 
     def test_feet_on_a_removed_piece_take_no_data(self):
         import types
