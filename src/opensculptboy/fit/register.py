@@ -3720,7 +3720,7 @@ def _close_openings(
     except ValueError:
         eyes = {}
     surface = trimesh.Trimesh(reference.vertices, reference.triangles, process=False)
-    moved, carved, eye_centres = [], [], []
+    moved, carved, eye_centres, eye_forwards = [], [], [], []
     for side_rows in eyes.values():
         base = np.zeros(n0)
         base[side_rows] = 1.0
@@ -3728,13 +3728,14 @@ def _close_openings(
         if not len(eye):
             continue
         centre = fitted[eye].mean(0)
-        eye_centres.append(centre)
         original = fitted.copy()
         near = lining & (np.linalg.norm(fitted - centre, axis=1) < 0.03)
         if not near.any():
             continue
         forward = fitted[near].mean(0) - centre
         forward /= max(np.linalg.norm(forward), 1e-12)
+        eye_centres.append(centre)
+        eye_forwards.append(forward)
         radial = fitted[eye] - centre
         cosine = (radial @ forward) / np.maximum(np.linalg.norm(radial, axis=1), 1e-12)
         # rays far from the forward direction graze the lids and hit the temple
@@ -3858,14 +3859,14 @@ def _close_openings(
             hidden_all |= np.asarray(topology.apply(base)) > 0.5
         # the socket of a carved eye is filled up to the marble: every vertex within
         # close_socket of the eye's centre, but the carved front and the skin on the scan,
-        # moves out along its ray from the centre to just under the first marble it meets
-        # when that lies within 12 mm beyond it (the corners showed the socket's lining dark
-        # through the gap between the lids and the carved eyeball)
+        # in the front half of the socket moves out along its ray from the centre to just under
+        # the first marble it meets (the corners showed the socket's lining dark through the
+        # gap between the lids and the carved eyeball)
         on = np.zeros(len(fitted), bool)
         for done in carved:
             on[done] = True
         d_scan = reference.closest(fitted)[2]
-        for centre in eye_centres:
+        for centre, forward in zip(eye_centres, eye_forwards):
             rows = np.nonzero(
                 (np.linalg.norm(fitted - centre, axis=1) < options.close_socket)
                 & ~on
@@ -3880,7 +3881,10 @@ def _close_openings(
                 np.repeat(centre[None], len(rows), 0), direction, multiple_hits=False
             )
             hit = np.linalg.norm(hits - centre, axis=1)
-            take = (hit > length[index]) & (hit - length[index] < 0.012)
+            # the front half of the socket, up to the marble within the socket's reach: the
+            # walls from the lids down to a lining left deep showed as dark grooves
+            front = (direction[index] @ forward) > 0.1
+            take = front & (hit > length[index]) & (hit < options.close_socket + 0.004)
             goal = hit[take] - options.close_rim_depth
             fitted[rows[index[take]]] = centre + direction[index[take]] * goal[:, None]
             moved += [rows[index[take]]]
