@@ -851,6 +851,8 @@ def on_skin(
 
 # a piece's holes (open border loops) up to this perimeter (metres) are filled
 HOLE_PERIMETER = 0.2
+# by role: a lock's larger holes filled as a fan showed a flat star on the lock
+HOLE_BY_ROLE = {"clothing": HOLE_PERIMETER, "hair": 0.05}
 
 
 def fill_holes(
@@ -926,7 +928,7 @@ def finish_piece(
     V, T, dropped = trim_piece(
         vertices, triangles, skin_vertices, skin_triangles, inside=TRIM_BY_ROLE[role]
     )
-    V, T, holes = fill_holes(V, T)
+    V, T, holes = fill_holes(V, T, HOLE_BY_ROLE[role])
     V, moved = seat_piece(V, T, skin_vertices, skin_triangles, reach=reach, blend=blend)
     stripped = 0
     within = ON_SKIN_BY_ROLE[role]
