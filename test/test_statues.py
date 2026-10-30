@@ -820,6 +820,28 @@ class TestSolid(unittest.TestCase):
                     self.assertTrue(options.fill_no_data)
                     self.assertTrue(options.no_data[held].all())
 
+    def test_eyes_follow_their_lids(self):
+        from opensculptboy.detail import detail_topology
+        from opensculptboy.export.vrm_tables import eyeball_vertices
+        from opensculptboy.fit.register import eyes_to_lids
+
+        model = _model()
+        topology = detail_topology(model, 0)
+        posed = model.template_vertices.detach().double().numpy().reshape(-1, 3)
+        eye = np.zeros(len(posed), bool)
+        for rows in eyeball_vertices(model).values():
+            eye[rows] = True
+        # the face grew by a fifth and left the eyeballs where they were
+        fitted = posed * 1.2
+        fitted[eye] = posed[eye]
+        out, moved = eyes_to_lids(model, topology, fitted, posed)
+        self.assertEqual(moved, 2)
+        np.testing.assert_allclose(out[eye], posed[eye] * 1.2, atol=1e-9)
+        np.testing.assert_allclose(out[~eye], fitted[~eye])
+        hugged, _ = eyes_to_lids(model, topology, fitted, posed, hug=0.001)
+        self.assertGreater(np.abs(hugged[~eye] - fitted[~eye]).max(), 0.0)
+        np.testing.assert_allclose(hugged[eye], out[eye])
+
     def test_working_face_holds_the_openings(self):
         from opensculptboy.fit.register import cavity_vertices
         from opensculptboy.statues.fit import held_openings
