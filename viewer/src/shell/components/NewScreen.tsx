@@ -2,100 +2,101 @@
 // Apache License, Version 2.0
 //
 // The New character screen (N, or New in the top bar), as the design's New screen lays it out: the statue starters
-// in two kinds (Finished: a fitted card with its sculpted detail, from beside the page, the first choice when it is
-// there; Light: the page's sliders and
-// library parts, a few kilobytes), the libraries (skin, eyes, hair and wear) with Start from the base, and your own
-// 3D model, which the Open path reads when OpenSculptBoy wrote it and else explains the fit. Under them: Open a card,
-// Continue with the character shown, and Random.
+// (fitted statues from their packages beside the page, src/starters.ts) and a blank body, the libraries (skin, eyes,
+// hair and wear) with Start from the base, and your own 3D model, which the Open path reads when OpenSculptBoy wrote
+// it and else explains the fit. Under them: Open a card, Continue with the character shown, and Random. A statue
+// whose package is not beside the page carries a Download tag, and picking it shows a note with its download link.
 
 import { useEffect, useRef, useState } from 'react';
 import { useShell } from '../context.ts';
 import { useUI } from '../hooks.ts';
 import { actions } from '../state.ts';
 import { FIT_DOCS } from '../open.ts';
-import { finishedPicture, finishedUrl } from '../../starters.ts';
+import { packageUrl, sizeLabel } from '../../starters.ts';
 import { STARTER_THUMBS } from '../../starter_thumbs.ts';
 import { STONES, stoneSwatch } from '../../stones.ts';
 import { Button } from './ui/button.tsx';
 import { Icon } from './ui/icon.tsx';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog.tsx';
-import { Tip } from './ui/tooltip.tsx';
 
-// the picture of each starter in its slot: its rendered thumbnail (starter_thumbs.ts), else an icon of its pose
-const POSE_ICON: Record<string, string> = { spear_bearer: 'statue', orator: 'pose', muse: 'silhouette', athlete: 'throw', huntress: 'walk', guardian: 'taichi' };
+// the blank body: anny's default body, the slot after the statues
+const BLANK = 'blank';
 
 export function NewScreen() {
   const { legacy } = useShell();
-  const open = useUI((s) => s.newDialog), dragging = useUI((s) => s.dragging);
-  const [pick, setPick] = useState(legacy.starters[0]?.id || '');
-  const [kind, setKind] = useState<'finished' | 'light'>('light');
-  const [finished, setFinished] = useState<Record<string, boolean>>({});
+  const open = useUI((s) => s.newDialog), dragging = useUI((s) => s.dragging), starter = useUI((s) => s.starter);
+  const [pick, setPick] = useState(legacy.starters[0]?.id || BLANK);
+  // which packages lie beside the page (true, false, or undefined until the page has asked; a page opened as a file
+  // reads none)
+  const [there, setThere] = useState<Record<string, boolean>>({});
   const [name, setName] = useState('');
   const start = useRef<HTMLButtonElement>(null);
-  // which finished starters lie beside the page (a page opened as a file reads none)
   useEffect(() => {
     if (!open) return;
     setName(legacy.identity().name);
-    if (location.protocol === 'file:') return;
+    if (location.protocol === 'file:') { setThere(Object.fromEntries(legacy.starters.map((s) => [s.id, false]))); return; }
     let live = true;
     Promise.all(legacy.starters.map(async (s) => {
-      try { const r = await fetch(finishedUrl(s), { method: 'HEAD' }); return [s.id, r.ok] as const; } catch (e) { return [s.id, false] as const; }
-    })).then((rs) => {
-      if (!live) return;
-      const there = Object.fromEntries(rs);
-      setFinished(there);
-      // a finished statue beside the page is the first choice
-      if (there[pick]) setKind('finished');
-    });
+      try { const r = await fetch(packageUrl(s), { method: 'HEAD', cache: 'no-store' }); return [s.id, r.ok] as const; } catch (e) { return [s.id, false] as const; }
+    })).then((rs) => { if (live) setThere(Object.fromEntries(rs)); });
     return () => { live = false; };
   }, [open, legacy]);
-  const S = legacy.starters.find((s) => s.id === pick) || legacy.starters[0];
-  const anyFinished = Object.values(finished).some(Boolean);
-  const library = (icon: string, label: string, go: () => void) => (
-    <button type="button" className="osb-stage new-tile" onClick={() => { actions.hideNew(); go(); }}>
+  const S = legacy.starters.find((s) => s.id === pick) || null;
+  const note = starter.note && starter.note.id === pick ? starter.note : null;
+  const go = () => { if (S) legacy.startStarter(S.id); else legacy.startBase(); };
+  const library = (icon: string, label: string, fn: () => void) => (
+    <button type="button" className="osb-stage new-tile" onClick={() => { actions.hideNew(); fn(); }}>
       <Icon name={icon} size={40} /><span className="new-tile-label">{label}</span>
     </button>
   );
+  const choose = (id: string) => { setPick(id); if (starter.note) actions.setStarter({ busy: '', note: null }); };
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) actions.hideNew(); }}>
       <DialogContent className="new-screen osb-stage osb-veins" aria-describedby="new-lead" onOpenAutoFocus={(e) => { e.preventDefault(); start.current?.focus(); }}>
         <div className="new-head">
           <DialogTitle className="osb-display" id="new-title">New character</DialogTitle>
-          <DialogDescription id="new-lead" className="osb-note">Start from a statue, from the base with the libraries, or from a 3D model of your own.</DialogDescription>
+          <DialogDescription id="new-lead" className="osb-note">Start from a statue or a blank body, from the base with the libraries, or from a 3D model of your own.</DialogDescription>
         </div>
         <div className="new-grid">
           <article className="osb-card new-card new-statues" aria-labelledby="new-s">
             <div className="osb-row new-card-head">
               <h2 className="osb-title" id="new-s">Statue</h2>
-              {anyFinished ? null : <span className="osb-tag new-planned">Finished: planned</span>}
-              <div className="osb-seg" role="radiogroup" aria-label="Kind">
-                <Tip label="Finished: the sculpted statue with its own hair and drapery" side="top">
-                  <button type="button" role="radio" aria-checked={kind === 'finished'} aria-pressed={kind === 'finished'} onClick={() => setKind('finished')}>Finished</button>
-                </Tip>
-                <Tip label="Light: small file, every part editable" side="top">
-                  <button type="button" role="radio" aria-checked={kind === 'light'} aria-pressed={kind === 'light'} onClick={() => setKind('light')}>Light</button>
-                </Tip>
-              </div>
             </div>
-            <div className="new-slots" role="radiogroup" aria-label="Statues">
+            <div className="new-slots" role="radiogroup" aria-label="Starters">
               {legacy.starters.map((s) => {
-                const st = STONES.find((x) => x.id === s.light.skin.stone) || STONES[0];
-                // the finished kind shows the picture that came with its .zip
-                const pic = kind === 'finished' && finished[s.id] ? finishedPicture(s) : STARTER_THUMBS[s.id];
+                const st = STONES.find((x) => x.id === s.stone) || STONES[0], pic = STARTER_THUMBS[s.id];
                 return (
                   <button key={s.id} type="button" role="radio" className="osb-slot new-slot" aria-checked={s.id === pick} aria-pressed={s.id === pick} data-starter={s.id}
-                    onClick={() => setPick(s.id)} onDoubleClick={() => legacy.startStarter(s.id, kind)}>
+                    data-package={there[s.id] === undefined ? undefined : there[s.id] ? 'here' : 'missing'}
+                    onClick={() => choose(s.id)} onDoubleClick={() => legacy.startStarter(s.id)}>
                     <span className="osb-slot-pic new-slot-pic" style={pic ? undefined : { background: stoneSwatch(st) }}>
-                      {pic ? <img src={pic} alt="" /> : <Icon name={POSE_ICON[s.id] || 'statue'} size={72} />}
+                      {pic ? <img src={pic} alt="" /> : <Icon name="statue" size={72} />}
+                      {there[s.id] === false ? <span className="osb-tag new-slot-tag">Download</span> : null}
                     </span>
                     <span className="new-slot-name">{s.name}</span>
-                    <span className="osb-note new-slot-stone">{st.label}</span>
+                    <span className="osb-note new-slot-stone">{st.label} · {sizeLabel(s.package.bytes)}</span>
                   </button>
                 );
               })}
+              <button type="button" role="radio" className="osb-slot new-slot" aria-checked={pick === BLANK} aria-pressed={pick === BLANK} data-starter={BLANK}
+                onClick={() => choose(BLANK)} onDoubleClick={() => legacy.startBase()}>
+                <span className="osb-slot-pic new-slot-pic new-slot-blank"><Icon name="silhouette" size={72} /></span>
+                <span className="new-slot-name">Blank body</span>
+                <span className="osb-note new-slot-stone">Anny's default</span>
+              </button>
             </div>
-            <p className="osb-note new-desc">{S?.description}.{kind === 'finished' && !finished[S?.id || ''] ? ' The finished statues come with the statue cards; until then this starts the light version.' : ''}</p>
-            <Button ref={start} size="lg" className="new-start" onClick={() => S && legacy.startStarter(S.id, kind === 'finished' && finished[S.id] ? 'finished' : 'light')}>Start with the {S?.name}</Button>
+            {note ? (
+              <div className="osb-error new-note" role="alert">
+                <span className="osb-i"><Icon name="alert" /></span>
+                <p>{note.message}</p>
+                <a className="osb-btn" href={note.link} target="_blank" rel="noopener noreferrer"><Icon name="download" size={16} />{note.label}</a>
+              </div>
+            ) : (
+              <p className="osb-note new-desc">{S ? S.description + '.' : 'Anny\'s default body in the A pose, with nothing on it: shape it from the start.'}</p>
+            )}
+            <Button ref={start} size="lg" className="new-start" disabled={!!starter.busy} onClick={go}>
+              {starter.busy && S && starter.busy === S.id ? `Fetching the ${S.name}` : S ? `Start with the ${S.name}` : 'Start from a blank body'}
+            </Button>
           </article>
           <article className="osb-card new-card" aria-labelledby="new-l">
             <h2 className="osb-title" id="new-l">Libraries</h2>

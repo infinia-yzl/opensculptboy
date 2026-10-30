@@ -1,0 +1,20 @@
+{
+  "format": "opensculptboy/starter-packages@1",
+  "tag": "starters-1",
+  "release": "https://github.com/infinia-yzl/opensculptboy/releases/tag/starters-1",
+  "download": "https://github.com/infinia-yzl/opensculptboy/releases/download/starters-1/",
+  "packages": {
+    "doryphoros": {
+      "file": "doryphoros.zip",
+      "bytes": 5272999,
+      "sha256": "e7b5a9711813bb15c2b5f8b4d191a2dea1b2ec78f0c94e326c9acbd479c3f74a",
+      "card": "Doryphoros (the spear bearer)"
+    },
+    "david_goliath": {
+      "file": "david_goliath.zip",
+      "bytes": 8329698,
+      "sha256": "2caf8bf3aec1c6af0319e4e558dde6d0eb55b73074c5956e79541ff1a8bb5a91",
+      "card": "David with the head of Goliath"
+    }
+  }
+}

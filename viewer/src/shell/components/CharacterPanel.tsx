@@ -4,8 +4,7 @@
 // The Character panel (the character's button in the top bar): what the character holds, part by part, each with
 // where it comes from (the card, or the page's library) and a link to the mode that changes it: the body, the face,
 // the skin (a stone, the page's skin or the card's baked skin), the eyes, the hair, the outfit and the faces. For a
-// light starter it offers the finished version, and for a character of the page it links to the fit, with one line on
-// what a fit adds. It is a landmark with a heading, so a screen reader hears what the character holds.
+// character of the page it links to the fit, with one line on what a fit adds. It is a landmark with a heading, so a screen reader hears what the character holds.
 
 import { useEffect, useState } from 'react';
 import { face, faceReady } from '../../face/api.ts';
@@ -22,7 +21,7 @@ interface Part { id: string; label: string; value: string; card: boolean; go: ()
 export function CharacterPanel() {
   const { app, legacy } = useShell();
   const shown = useUI((s) => s.character), width = useUI((s) => s.width), tool = useUI((s) => s.tool);
-  const [rows, setRows] = useState<{ parts: Part[]; kind: string; starter: string | null }>({ parts: [], kind: '', starter: null });
+  const [rows, setRows] = useState<{ parts: Part[]; kind: string }>({ parts: [], kind: '' });
   const refresh = () => {
     if (!ui.get().character) return;
     const L = app.look(), w = app.wardrobe(), c = app.cardLook()?.summary() || null, id = legacy.identity();
@@ -39,8 +38,7 @@ export function CharacterPanel() {
       { id: 'outfit', label: 'Outfit', value: pieces ? `${outfit || 'Loose pieces'}, ${pieces} pieces` : 'None', card: pieces > 0, go: () => actions.openMode('dress') },
       { id: 'faces', label: 'Faces', value: String(faces || 0), card: !!c?.faces, go: () => actions.openMode('express') },
     ];
-    const starter = legacy.starters.find((s) => s.name === id.name || id.name.startsWith(s.name + ' ·'))?.id || null;
-    setRows({ parts, kind: id.kind || (w?.loaded ? 'Card' : 'Page character'), starter });
+    setRows({ parts, kind: id.kind || (w?.loaded ? 'Card' : 'Page character') });
   };
   useBus(['look', 'wardrobe', 'face', 'motion'], refresh);
   useEffect(refresh, [shown]);
@@ -60,9 +58,7 @@ export function CharacterPanel() {
         ])}
       </dl>
       <p className="osb-note char-legend"><span className="osb-src osb-src--card" aria-hidden="true" />card <span className="osb-src osb-src--page" aria-hidden="true" />library</p>
-      {rows.starter ? (
-        <button type="button" className="osb-link char-link" onClick={() => legacy.startStarter(rows.starter!, 'finished')}>Load the finished version</button>
-      ) : !app.wardrobe()?.loaded ? (
+      {!app.wardrobe()?.loaded ? (
         <p className="osb-note">A fit to a 3D model adds its detail, its baked skin, its own hair, eyes and mouth. <a className="osb-link" href={FIT_DOCS} target="_blank" rel="noopener noreferrer">Fit to a reference</a></p>
       ) : null}
     </aside>

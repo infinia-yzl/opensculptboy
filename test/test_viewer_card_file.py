@@ -133,22 +133,36 @@ class TestPageCards(unittest.TestCase):
                     self.assertEqual(written[key], value, key)
 
     def test_starters(self):
-        starters = json.loads((self.out / "starters.json").read_text(encoding="utf-8"))
-        self.assertEqual(len(starters), 6)
-        for data in starters:
-            with self.subTest(name=data["name"]):
-                card = Character.from_dict(data)
-                self.assertIn(
-                    card.look["skin"]["stone"],
-                    (
-                        "carrara",
-                        "travertine",
-                        "bardiglio",
-                        "basalt",
-                        "bronze",
-                        "verdigris",
-                    ),
-                )
+        """The statue starters' pins (viewer/src/starter_packages.json, as the page reads them):
+        Doryphoros first, each package with its size, SHA-256 and the name of its card, and the
+        release that holds the packages; with OPENSCULPTBOY_STARTERS set to a folder of the
+        packages, each package there matches its pins and holds its card."""
+        import hashlib
+        import os
+        import zipfile
+
+        pins = json.loads((self.out / "starter_pins.json").read_text(encoding="utf-8"))
+        self.assertEqual(pins["format"], "opensculptboy/starter-packages@1")
+        self.assertEqual(list(pins["packages"]), ["doryphoros", "david_goliath"])
+        self.assertTrue(
+            pins["download"].endswith("/releases/download/%s/" % pins["tag"])
+        )
+        for statue, entry in pins["packages"].items():
+            with self.subTest(statue=statue):
+                self.assertEqual(entry["file"], statue + ".zip")
+                self.assertRegex(entry["sha256"], "^[0-9a-f]{64}$")
+                self.assertGreater(entry["bytes"], 100000)
+        folder = os.environ.get("OPENSCULPTBOY_STARTERS")
+        if not folder:
+            return
+        for statue, entry in pins["packages"].items():
+            with self.subTest(statue=statue, folder=True):
+                data = (pathlib.Path(folder) / entry["file"]).read_bytes()
+                self.assertEqual(len(data), entry["bytes"])
+                self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
+                with zipfile.ZipFile(pathlib.Path(folder) / entry["file"]) as z:
+                    card = Character.from_dict(json.loads(z.read("character.json")))
+                self.assertEqual(card.name, entry["card"])
 
     def test_zip(self):
         import zipfile

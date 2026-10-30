@@ -19,7 +19,8 @@ export interface Legacy {
   sheet: SheetController;
   // Save card (the card with the page's edits, as .json or as a .zip with its files), the New screen's starters
   saveCard(): Promise<void>;
-  startStarter(id: string, kind: 'light' | 'finished'): Promise<void>;
+  // a statue of the New screen from its package beside the page (starters.ts); whether it opened
+  startStarter(id: string): Promise<boolean>;
   startBase(): void;
   starters: Starter[];
   undo(): void;

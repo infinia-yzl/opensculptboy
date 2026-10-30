@@ -20,7 +20,7 @@ import { sheetController } from '../sheet/controller.ts';
 import { stageSections } from './stage_ui.ts';
 import { wearLoader } from '../shell/sections/DressSection.tsx';
 import { cardOf, writeZip } from '../card/file.ts';
-import { STARTERS, starterById, finishedUrl, lightCardUrl, lightLook, type Starter } from '../starters.ts';
+import { STARTERS, fetchStarter, starterById } from '../starters.ts';
 import { stoneOf } from '../stones.ts';
 import { makeStats, type Stats } from './stats.ts';
 import { toast } from './toast.ts';
@@ -103,43 +103,28 @@ export function initUI(app: App): UI {
     download(`${name}.zip`, new Blob([writeZip(entries) as BlobPart], { type: 'application/zip' }));
     toast(`Saved the card with ${entries.length - 1} files`);
   };
-  // a starter of the New screen: the light kind from the page (with the light card of its statue's fit when one lies
-  // beside the page), the finished kind from beside the page when it is there
-  const besidePage = (s: Starter) => !!s.statue && location.protocol !== 'file:';
-  const lightCard = async (s: Starter) => {
-    if (!besidePage(s)) return null;
-    try { const r = await fetch(lightCardUrl(s)); return r.ok ? await r.json() : null; } catch (e) { return null; }
-  };
-  const hasPose = (card: any) => !!card?.pose?.bones && Object.keys(card.pose.bones).length > 0;
-  const startStarter = async (id: string, kind: 'light' | 'finished') => {
+  // a statue of the New screen: its package from beside the page (starters.ts checks it against the page's pins),
+  // opened through the Open path as a card's .zip; a package that is missing or different leaves a note with its
+  // download link for the New screen and the welcome card
+  const startStarter = async (id: string): Promise<boolean> => {
     const s = starterById(id);
-    if (!s) return;
-    if (kind === 'finished') {
-      try {
-        const r = await fetch(finishedUrl(s));
-        if (!r.ok) throw new Error(String(r.status));
-        const f = new File([await r.arrayBuffer()], (s.statue || s.id) + '.zip');
-        // the fitted card stands in its own pose
-        if (await opener.open([{ path: f.name, file: f }]) && !hasPose(app.wardrobe()?.card)) app.setMotion(app.starterPose(s.id, s.name, s.pose));
-        return;
-      } catch (e) {
-        toast(`The finished ${s.name} comes with the statue cards. The light ${s.name} is shown.`);
-      }
-    }
-    const card = await lightCard(s);
-    app.wardrobe()?.unload();
-    ed.commit(card?.name || s.name, lightLook(s, card)); ed.origin = s.name;
-    app.setMotion((hasPose(card) && app.cardPose(card)) || app.starterPose(s.id, s.name, s.pose));
-    actions.hideNew();
-    if (ui.get().welcome) actions.dismissWelcome();
+    if (!s) return false;
+    actions.setStarter({ busy: id, note: null });
+    const r = await fetchStarter(s);
+    if ('note' in r) { actions.setStarter({ busy: '', note: r.note }); return false; }
+    actions.setStarter({ busy: '', note: null });
+    const done = await opener.open([{ path: r.file.name, file: r.file }]);
+    if (done && ui.get().welcome) actions.dismissWelcome();
+    return done;
   };
-  // a first visit shows the light starter from the page's table at once, then the finished statue when its .zip lies
-  // beside the page, or else the light card of its fit
+  // a first visit opens the default statue when its package lies beside the page; otherwise the welcome card shows
+  // the note with its download link
   const firstStarter = async (id: string) => {
     const s = starterById(id);
-    if (!s || !besidePage(s)) return;
-    try { if ((await fetch(finishedUrl(s), { method: 'HEAD' })).ok) return await startStarter(id, 'finished'); } catch (e) { /* not there */ }
-    if (await lightCard(s)) await startStarter(id, 'light');
+    if (!s) return;
+    const r = await fetchStarter(s);
+    if ('note' in r) { actions.setStarter({ busy: '', note: r.note }); return; }
+    await opener.open([{ path: r.file.name, file: r.file }]);
   };
   const startBase = () => {
     app.wardrobe()?.unload();
@@ -239,9 +224,9 @@ export function initUI(app: App): UI {
   const identity = () => {
     const L = app.look(), w = app.wardrobe();
     let name = L.name;
-    const named = app.characters.concat(app.looks).some((c) => c.name === ed.origin);
+    const named = app.looks.some((c) => c.name === ed.origin);
     if (L.name === 'Custom' && named && ed.origin !== 'Baseline') name = ed.origin + ' · edited';
-    let kind = STARTERS.some((x) => x.name === ed.origin) ? 'Light starter' : '';
+    let kind = '';
     if (w?.loaded) { name = w.cardName; kind = (w as any).card?.detail || (w as any).card?.material ? 'Fitted card' : 'Your card'; }
     const st = stoneOf(L.skin);
     return { name, kind, a: st ? st.base : rgb(app.skinBase(L.skin.tone, L.skin.undertone)), b: L.hair.color };

@@ -6,9 +6,10 @@
 
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useShell } from '../context.ts';
-import { useUI } from '../hooks.ts';
+import { useBus, useUI } from '../hooks.ts';
 import { actions } from '../state.ts';
 import { FIT_DOCS } from '../open.ts';
+import { starterOfName } from '../../starters.ts';
 import { Button } from './ui/button.tsx';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog.tsx';
 import { Icon } from './ui/icon.tsx';
@@ -64,18 +65,24 @@ export function ViewBar() {
 }
 
 export function Welcome() {
+  const shown = useUI((s) => s.welcome), width = useUI((s) => s.width), note = useUI((s) => s.starter.note);
   const { legacy } = useShell();
-  const shown = useUI((s) => s.welcome), width = useUI((s) => s.width);
+  // the name of the character shown: a statue's package opens after the first frame
+  const [name, setName] = useState(() => legacy.identity().name);
+  useBus(['look', 'wardrobe'], () => setName(legacy.identity().name));
   if (!shown) return null;
-  const name = legacy.identity().name, starter = legacy.starters.some((s) => s.name === name);
+  const starter = starterOfName(name);
   const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   return (
     <section className="osb-glass osb-mended welcome" aria-labelledby="welcome-title" data-width={width}>
       <Tip label="Close" keys="Esc" side="left">
         <button type="button" className="osb-ib welcome-x" aria-label="Close the welcome" onClick={() => actions.dismissWelcome()}><Icon name="close" size={16} /></button>
       </Tip>
-      <h2 className="osb-title welcome-title" id="welcome-title">{starter ? `Meet the ${name}` : 'Meet the studio'}</h2>
+      <h2 className="osb-title welcome-title" id="welcome-title">{starter ? `Meet the ${starter.name}` : 'Meet the studio'}</h2>
       <p className="osb-note">{starter ? 'A statue to start from. Shape it, dress it, pose it and export it. Your files stay in this browser.' : 'Shape a character here, then dress, pose and export it. Your files stay in this browser.'}</p>
+      {!starter && note ? (
+        <p className="osb-note welcome-starter">The statue starters come as packages of their own. <a className="osb-link" href={note.link} target="_blank" rel="noopener noreferrer">{note.label}</a> and drop it on the page to start from it.</p>
+      ) : null}
       <p className="osb-note welcome-keys">
         {touch
           ? <><b>Drag</b> to turn · <b>pinch</b> to zoom · <b>two fingers</b> to move</>

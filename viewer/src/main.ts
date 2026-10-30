@@ -40,7 +40,8 @@ import { FACE_GLSL, FaceMorph, faceUniforms } from './face/morph.ts';
 import { QueryPool, setQueryPool } from './wearables/pool.ts';
 import { stoneOf, stoneRoughness } from './stones.ts';
 import { withLookBlock } from './card/file.ts';
-import { DEFAULT_STARTER, STARTERS, lightLook } from './starters.ts';
+import { DEFAULT_STARTER } from './starters.ts';
+import { groundShift } from './ground.ts';
 
 const qs = new URLSearchParams(location.search);
 const DEG = Math.PI / 180;
@@ -1202,6 +1203,7 @@ function initWardrobe() {
       if (pose) setMotion(pose, { instant: true });
     },
     changed: () => { shadowsDirty = true; resetAccum(); },
+    ground: groundPieces,
   });
 }
 
@@ -1876,10 +1878,11 @@ function setCorrectivesOn(on: boolean) {
 
 // ------------------------------------------------------------------ motion: anny's pose library
 // Poses and clips hold one rotation per bone relative to its parent (every bone rests along the world axes) and a
-// root offset relative to the height of the hips (anny.poses). The page grounds each pose on anny's coarse body
-// skinned by the pose, and a clip with one floor for all its frames, so a jump stays in the air.
+// root offset relative to the height of the hips (anny.poses). The page grounds each pose on the lowest point of
+// anny's coarse body and of the shown props (ground.ts), skinned by the pose, and a clip with one floor for all its
+// frames, so a jump stays in the air; lift is how far the props raise the body above its own ground.
 const MOTION: any = { clips: [], byName: {}, Q: null, R: null, nb: 0, cur: null, t: 0, playing: true, speed: 1,
-  q: null, rootOff: [0, 0, 0], from: null, fade: 1, fadeDur: 0.4, tmp: null, stool: null, lastT: 0, ground: 0, stoolInfo: null };
+  q: null, rootOff: [0, 0, 0], from: null, fade: 1, fadeDur: 0.4, tmp: null, stool: null, lastT: 0, ground: 0, lift: 0, stoolInfo: null };
 function initMotion(meta: any, B: any) {
   if (!meta.motion || !B.motion_q || !RIG.ready) return;
   MOTION.clips = meta.motion; MOTION.clips.forEach((c: any) => { MOTION.byName[c.name] = c; });
@@ -1923,16 +1926,34 @@ function sampleClip(c: any, t: number, outQ: Float32Array, outRoot: number[], gr
   for (let k = 0; k < 3; k++) outRoot[k] = (R[r0 + k] + (R[r1 + k] - R[r0 + k]) * a) * hip;
   outRoot[1] += ground;
 }
-// the vertical shift that puts this body's lowest point on the floor in a pose, or over all frames of a clip
+// the vertical shift that puts the lowest point of the body and its shown props on the floor in a pose, or over all
+// frames of a clip; it also sets MOTION.lift, the props' lift of the body, for the framing
 function groundFor(c: any) {
   const q = new Float32Array(MOTION.nb * 4), root = [0, 0, 0];
   const n = c.kind === 'loop' ? Math.min(c.count, 24) : 1;
-  let low = Infinity;
+  let body = Infinity, props = Infinity;
   for (let i = 0; i < n; i++) {
     sampleClip(c, c.kind === 'loop' ? i / n * c.duration : 0, q, root, 0);
-    low = Math.min(low, BODY.anny.lowestSkinned(poseMatrices(q, root))[1]);
+    const M = poseMatrices(q, root);
+    body = Math.min(body, BODY.anny.lowestSkinned(M)[1]);
+    if (WEAR?.pieces.length) props = Math.min(props, WEAR.lowestProps(M));
   }
-  return BODY.anny.floor - low;
+  const g = groundShift(BODY.anny.floor, body, props);
+  MOTION.lift = g.lift;
+  return g.ground;
+}
+// the shown pieces changed (a prop switched on or off, a new card): the floor under the figure again
+function groundPieces() {
+  if (!MOTION.cur || !BODY.ready || !RIG.ready) return;
+  const before = MOTION.ground, lift = MOTION.lift;
+  MOTION.ground = groundFor(MOTION.cur);
+  if (Math.abs(MOTION.ground - before) < 1e-6) return;
+  if (MOTION.cur.stool) showStool(stoolFor(MOTION.cur));
+  // a figure in the middle of a blend keeps its blend: the root it blends from moves with the floor
+  if (MOTION.fade < 1) MOTION.from.root[1] += MOTION.ground - before;
+  evalMotion();
+  if (Math.abs(MOTION.lift - lift) > 1e-4) refitBody(MOTION.cur);
+  HOOKS.motion();
 }
 // the stool of a seated pose meets the lowest point of the seat; its size follows the hips
 function stoolFor(c: any) {
@@ -2006,7 +2027,8 @@ function bodyFrameFor(c: any) {
   const b = c && c.bounds;
   if (!b || !BODY.ready) return FRAMES.body;
   const hip = hipHeight(), fl = BODY.anny.floor;
-  const lo = fl + b[0] * hip, hi = fl + b[1] * hip, wx = b[2] * hip;
+  // the props under the body lift its top (MOTION.lift belongs to the current clip)
+  const lo = fl + b[0] * hip, hi = fl + b[1] * hip + (c === MOTION.cur ? MOTION.lift : 0), wx = b[2] * hip;
   return { target: [0, (lo + hi) / 2 - 0.11 * hip / MANIFEST.authoring.hip_height, 0.03], yaw: 24, pitch: 4, halfH: (hi - lo) / 2 + 0.21 * hip / MANIFEST.authoring.hip_height,
     halfW: Math.max(0.58 * hip / MANIFEST.authoring.hip_height, wx + 0.1) };
 }
@@ -2305,9 +2327,6 @@ const EXAMPLE_LOOKS: any[] = [
   { format: LOOK_FORMAT, name: 'Olive', skin: { tone: 0.5, undertone: 0.45 }, hair: { color: '#141110' }, eyes: { color: '#4a3020' } },
   { format: LOOK_FORMAT, name: 'Deep', skin: { tone: 0.9, undertone: 0.1 }, hair: { color: '#141110' }, eyes: { color: '#4a3020' } },
 ];
-// characters: the light starters (src/starters.ts), which set everything a look carries (the phenotype sliders, the
-// face, the stone and the hair); the example looks set the colours only
-const CHARACTERS: any[] = STARTERS.map((s) => s.light);
 const LOOK_PARTS: any = { hair: null, brows: null, lashes: null, hairMeshes: [], eyes: [], iris: null };
 let currentLook: any = JSON.parse(JSON.stringify(BASELINE_LOOK));
 let hairWanted = true;
@@ -2596,11 +2615,11 @@ async function init() {
   LOOK_PARTS.hair = hairMesh.userData.hu; LOOK_PARTS.brows = browMesh.userData.hu; LOOK_PARTS.lashes = lashMesh.userData.hu;
   LOOK_PARTS.hairMeshes = [hairMesh, browMesh, lashMesh];
   const q = new URLSearchParams(location.search);
-  // a first visit opens on the default starter in its pose (src/starters.ts); ?base and the tests' still pictures
-  // (?shot) open on Anny's default body
+  // a first visit opens on Anny's default body, then on the default statue when its package lies beside the page
+  // (src/starters.ts, UI.firstStarter); ?base and the tests' still pictures (?shot) stay on the default body
   const remembered = loadRememberedLook();
-  const starter = !remembered && !SHOT && !q.has('base') ? STARTERS.find((s) => s.id === DEFAULT_STARTER) : null;
-  const start = remembered || normaliseLook(starter ? starter.light : BASELINE_LOOK);
+  const firstVisit = !remembered && !SHOT && !q.has('base');
+  const start = remembered || normaliseLook(BASELINE_LOOK);
   for (const s of BODY.sliders) if (q.has(s.name)) start.phenotype[s.name] = Math.min(1, Math.max(0, parseFloat(q.get(s.name))));
   applyLook(start, false);
   // tests wait for this: the start look is on the body, so a look set from now on stays
@@ -2608,11 +2627,7 @@ async function init() {
   if (MOTION.cur) {
     const rm = SHOT ? null : loadRememberedMotion();
     if (rm) { MOTION.playing = rm.playing !== false; MOTION.speed = rm.speed || 1; }
-    const first = starter ? starterPose(starter.id, starter.name, starter.pose) : 'a_pose';
-    // a starter's pose of the last visit is built again
-    const rs = rm && typeof rm.name === 'string' && rm.name.startsWith('starter:') ? STARTERS.find((x) => 'starter:' + x.id === rm.name) : null;
-    if (rs) starterPose(rs.id, rs.name, rs.pose);
-    setMotion(rm && MOTION.byName[rm.name] ? rm.name : first, { instant: true, remember: false });
+    setMotion(rm && MOTION.byName[rm.name] ? rm.name : 'a_pose', { instant: true, remember: false });
     if (!SHOT) { const f = bodyFrameFor(MOTION.cur); placeCamera(f.yaw, f.pitch, frameDistance(f), ...f.target); MOTION.lastFramed = MOTION.cur; }
   }
   initWardrobe();
@@ -2631,7 +2646,7 @@ async function init() {
   document.body.classList.add('ready');
   (window as any).__ready = true;
   if (!SHOT) animate();
-  if (starter) UI.firstStarter(starter.id);
+  if (firstVisit) UI.firstStarter(DEFAULT_STARTER);
 }
 function nextFrame() { return new Promise<void>(r => requestAnimationFrame(() => r())); }
 
@@ -3093,8 +3108,6 @@ function editLook(mut) {
   // an edited example look becomes a custom one; a pasted preset keeps its own name
   const ex = EXAMPLE_LOOKS.find(l => l.name === next.name);
   if (ex && !sameLook(ex, next)) next.name = 'Custom';
-  const ch = CHARACTERS.find(l => l.name === next.name);
-  if (ch && !sameCharacter(ch, next)) next.name = 'Custom';
   applyLook(next);
 }
 // the example looks set the colours and keep anny's slider values, so this comparison leaves the sliders out
@@ -3102,12 +3115,6 @@ function sameLook(a, b) {
   const A = normaliseLook(a), B = normaliseLook(b);
   return Math.abs(A.skin.tone - B.skin.tone) < 1e-3 && Math.abs(A.skin.undertone - B.skin.undertone) < 1e-3 &&
     (A.skin.stone || '') === (B.skin.stone || '') && A.hair.color === B.hair.color && A.eyes.color === B.eyes.color;
-}
-// a character also carries the slider values and the face
-function sameCharacter(a, b) {
-  const A = normaliseLook(a), B = normaliseLook(b);
-  const close = (x, y) => Object.keys(Object.assign({}, x, y)).every(k => Math.abs((x[k] ?? 0) - (y[k] ?? 0)) < 1e-3);
-  return sameLook(A, B) && close(A.phenotype, B.phenotype) && close(A.face, B.face) && A.hair.style === B.hair.style;
 }
 // the height of the current body standing, in metres (the page draws anny at the scale of the authoring rig)
 const AUTHORING_SCALE = 0.8916;
@@ -3162,30 +3169,6 @@ function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
   }
   c.label = label;
   for (let i = 0; i < nb * 4; i++) MOTION.Q[c.start * nb * 4 + i] = Math.round(Math.max(-1, Math.min(1, q[i] ?? (i % 4 === 3 ? 1 : 0))) * 32767);
-}
-// the pose of a starter (src/starters.ts): a pose of the library with some bones turned about the world's axes
-// (degrees about x, the figure's left, y, up, and z, forward, in that order), each turn taken in the pose as the
-// turns before it left it, so a turn of the upper arm carries the forearm and the hand; written as a pose clip
-// 'starter:<id>' of the page's motion
-function starterPose(id: string, label: string, def: { base: string; turns?: [string, number[]][] }): string {
-  const base = MOTION.byName[def.base] || MOTION.byName.a_pose;
-  if (!base || !RIG.ready || !MOTION.nb) return def.base;
-  const nb = MOTION.nb, q = new Float32Array(nb * 4), root = [0, 0, 0], P = RIG.parents;
-  sampleClip(base, 0, q, root);
-  const names: string[] = RIG.bones.map((b: any) => b.name);
-  const local = (i: number) => new THREE.Quaternion(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]);
-  const world = (i: number): any => (P[i] < 0 ? local(i) : world(P[i]).multiply(local(i)));
-  for (const [bone, deg] of def.turns || []) {
-    const i = names.indexOf(bone);
-    if (i < 0 || i >= nb) continue;
-    const T = new THREE.Quaternion().setFromEuler(new THREE.Euler(deg[0] * DEG, (deg[1] || 0) * DEG, (deg[2] || 0) * DEG, 'XYZ'));
-    const Wp = P[i] < 0 ? new THREE.Quaternion() : world(P[i]);
-    const l = Wp.clone().invert().multiply(T).multiply(Wp).multiply(local(i)).normalize();
-    q[i * 4] = l.x; q[i * 4 + 1] = l.y; q[i * 4 + 2] = l.z; q[i * 4 + 3] = l.w;
-  }
-  const name = 'starter:' + id;
-  writePoseFrame(name, label, q);
-  return name;
 }
 // the still pose of a character card (opensculptboy.Character.pose: each bone's turn relative to its parent as a
 // quaternion in anny's frame, the inverse of cardBones), as a pose clip 'card:<name>' of the page's motion; null for a
@@ -3467,7 +3450,7 @@ const APP: any = {
   applyLook: (l: any, remember = true) => applyLook(l, remember),
   editLook, normaliseLook,
   baseline: () => JSON.parse(JSON.stringify(BASELINE_LOOK)),
-  characters: CHARACTERS, looks: EXAMPLE_LOOKS, palettes: PALETTES, skinBase, sameLook, sameCharacter, baselinePhenotype,
+  looks: EXAMPLE_LOOKS, palettes: PALETTES, skinBase, sameLook, baselinePhenotype,
   bodyReady: () => BODY.ready,
   bodySliders: () => BODY.sliders,
   faceSliders: () => BODY.faceSliders,
@@ -3494,7 +3477,6 @@ const APP: any = {
   setSpeed: (s: number) => { MOTION.speed = s; rememberMotion(); HOOKS.motion(); },
   seek: (t: number) => { MOTION.t = t; evalMotion(); },
   poseFromPicture: (file: Blob) => poseFromPicture(file),
-  starterPose: (id: string, label: string, def: any) => starterPose(id, label, def),
   cardPose: (card: any) => cardPose(card),
   pictureHead: () => (PICTURE.W ? { ...PICTURE.head } : null),
   setPictureHead,
@@ -3652,17 +3634,13 @@ window.__BODY = BODY;
 // anny's sliders from a test: returns the times of the update (ms)
 window.setSliders = (v) => syncBody(() => { applyLook(Object.assign({}, currentLook, { phenotype: Object.assign({}, currentLook.phenotype, v) }), false); return { body: BODY.lastMs, total: BODY.lastTotalMs, steps: BODY.lastTiming }; });
 window.__look = () => currentLook;
-// a starter of the New screen in its light kind and its pose (src/starters.ts), for the thumbnails' script
-// (viewer/starter_thumbnails.py) and the page tests; card: the starter's light card (starters.ts lightCardUrl), if any
-// the starters' table, which the pose review script turns to try poses before they go into starters.ts
-window.__starters = STARTERS;
-window.showStarter = (id: string, card: any = null) => syncBody(() => {
-  const st = STARTERS.find((x) => x.id === id);
-  if (!st) return false;
-  applyLook(normaliseLook(lightLook(st, card)), false);
-  setMotion(cardPose(card) || starterPose(st.id, st.name, st.pose), { instant: true, remember: false });
-  return true;
-});
+// the floor under the figure, for the page tests: the floor's height (the body's floor and the drawn plane), the root's
+// lift and the props' share of it, and the lowest points of the body and of the shown props as the figure stands now
+window.groundInfo = () => {
+  const M = poseMatrices(MOTION.q, MOTION.rootOff);
+  const props = WEAR?.pieces.length ? WEAR.lowestProps(M) : Infinity;
+  return { floor: BODY.anny.floor, plane: GROUND_Y, ground: MOTION.ground, lift: MOTION.lift, body: BODY.anny.lowestSkinned(M)[1], props: Number.isFinite(props) ? props : null };
+};
 // the character card of the figure as it stands (Pose's card), for the page tests of the card poses
 window.poseCard = () => poseCard();
 // the figure on the screen, for the page tests of the framing: the top of its head and its lowest point (CSS pixels)

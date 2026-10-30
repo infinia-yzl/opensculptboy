@@ -5,7 +5,7 @@
 ## Using it
 
 - The top bar holds the six modes, one per task: **Create** (`C`), **Dress** (`D`), **Express** (`X`), **Pose** (`P`), **Sheet** (`S`) and **Export** (`E`). A mode opens its panel on the left; its key or its button closes the panel again. On a phone the modes sit in a bar at the bottom and the panel is a bottom sheet; between 720 and 1100 pixels they stand in a rail at the left.
-- A first visit opens on a starter statue, the Spear Bearer in Carrara marble in its contrapposto ([Starters and the New screen](#starters-and-the-new-screen)), with a welcome card at the side that leaves the page in use. `?base` opens on Anny's default body instead.
+- A first visit opens on the Doryphoros, a statue fitted to a scan, when its package lies beside a served page, and on Anny's default body until then ([Starters and the New screen](#starters-and-the-new-screen)), with a welcome card at the side that leaves the page in use. `?base` stays on Anny's default body.
 - **Create** holds the body sliders, the 103 face shapes with a **Random face** button, the skin and eyes with the stone library, and 25 hairstyles, as four tabs (`B` Body, `F` Face, `K` Skin and eyes, `H` Hair). The `age` parameter appears as **Form**, with the ends *Compact* and *Elongated*. The panel's foot holds the tab's random draw and reset, and **Use own** on the Skin tab, which makes a statue its own skin again.
 - **Dress** holds the wearables of a character card ([Wearables](#wearables)), **Express** the expressions ([Faces](#faces)), **Pose** the poses and clips, **Sheet** the [character sheet](#sheet), and **Export** the files that the page writes: the character card (**Save card**, `Ctrl S`), a picture of the view, the sheet, the pose card and the silhouette. GLB and VRM show as *Planned*, with the command that writes them now from the saved card.
 - **New** (`N`) opens the New screen; **Open** (`Ctrl O`) opens a character card with its files, its folder or its `.zip`, the card inside an OpenSculptBoy GLB or VRM file, wearable packages, sheet settings, a character of the page or a picture to pose from; a drop anywhere on the page does the same ([Opening files](#opening-files)).
@@ -21,16 +21,28 @@ The Pose section saves the pose shown as a character card ([Character card](char
 
 ## Starters and the New screen
 
-The starters are classical statues in the stones of the page's library: the Spear Bearer, the Orator, the Muse, the Athlete, the Huntress and the Guardian (`viewer/src/starters.ts`). Each comes in two kinds:
+The starters are classical statues fitted to public-domain scans (`viewer/src/starters.ts`): the **Doryphoros**, the spear bearer of Polykleitos with its tree stump and its base, and **David with the head of Goliath**, with his sword, his hat and the head at his feet. Each is a character card with its sculpted detail in one package, `<statue>.zip`, written by `python -m opensculptboy.statues starter`, and stands in the card's own pose. Its props (a base, a stump, what the statue holds) are wearables of the slot `prop`, which sit beside each other as accessories do, and Dress shows them first as switches.
 
-- **Light**: Anny's sliders for the statue's proportions, a face, a page hairstyle in the stone's colour, a stone and a classical pose: a pose of the library with some bones turned (each starter's `pose` in `starters.ts`), such as the Spear Bearer's contrapposto. It is part of the page and every part stays editable. In stone, the page hides the hair's strands and carves the style's volume into the scalp as one sculpted mass with grooved locks (the skin shader's `uStoneHair`, from the hair occlusion volume).
-- **Finished**: a fitted card of the statue with its sculpted detail and its own hair and drapery, as a `.zip` beside the page (`starters/<statue>.zip`, with its picture `<statue>.png`, written by `python -m opensculptboy.statues starter`), which the New screen and a first visit open through the Open path on a page served by `serve_viewer.py`, and stands in the card's own pose. Its props (a base, a stump, what the statue holds) are wearables of the slot `prop`, which sit beside each other as accessories do, and Dress shows them first as switches. The New screen picks the finished kind when its `.zip` is there and marks the finished statues as planned while none is.
+The packages are too large for the repository. They are files of a GitHub release (the tag in `viewer/src/starter_packages.json`), and the page reads them from the folder `starters/` beside it when it is served by `serve_viewer.py`:
 
-A starter with a statue (`statue` in `starters.ts`: the Spear Bearer is `doryphoros`, the Athlete `david_goliath`) takes its light kind from the statue's fit as well when its light card lies beside the page (`starters/<statue>.light.json`, a character card): the card's sliders, face shapes and pose replace the table's, and the table keeps the stone and the hair. A first visit shows the light starter of the table at once, then the finished statue when its `.zip` is there, or else the light card. The page applies the still pose of any card it opens (`pose`, each bone's turn in Anny's frame) as a pose of its own.
+```
+anny_viewer.html
+serve_viewer.py
+serve.json
+mediapipe/
+starters/doryphoros.zip
+starters/david_goliath.zip
+```
 
-The New screen's pictures of the light starters are rendered by the page: `python viewer/starter_thumbnails.py` shows each starter in its stone and pose (`window.showStarter`) and renders it with the character sheet's renderer in the studio lights from the front three-quarter, on a transparent ground, into `viewer/src/starter_thumbs.ts`; run it after a change to the starters or the stones, on a machine with a GPU, then build the page again.
+The page pins each package by its size and SHA-256 (`viewer/src/starter_packages.json`) and fetches it only when the person picks its statue, with that hash as the request's integrity, so the browser refuses any other bytes. The New screen tags a statue whose package is not beside the page with **Download**, and picking it shows a note with the package's download link: the package is missing, it is another version than the page pins, or the page was opened as a file and reads nothing beside it. A downloaded package dropped on the page opens as any card's `.zip` does. A first visit opens the Doryphoros when its package is there, and otherwise the welcome card carries its download link.
 
-The New screen (`N`) holds the statues with the two kinds, the libraries (skin, eyes, hair and wear) with **Start from the base**, and **Your 3D model**, which reads an OpenSculptBoy GLB or VRM file and explains the fit for other models. Its foot offers **Open a card**, **Continue** with the character shown and **Random**.
+After a package changes, pin it again with `python viewer/starter_packages.py FOLDER` (`--release TAG` for a new release), which writes `starter_packages.json` and the New screen's pictures (`viewer/src/starter_thumbs.ts`, from each package's `thumbnail.png`), build the page again, and upload the packages to the release of that tag.
+
+### The floor under the props
+
+The page stands the figure on the lowest point of what it shows: Anny's body and the shown props, skinned by the pose (`viewer/src/ground.ts`). A statue's base or a head at its feet stands on the floor, and the body stands on them; when a prop is switched on or off in Dress, the figure moves to the floor again, and the Full framing takes the props' lift into account. `window.groundInfo()` gives the floor, the root's lift and the lowest points of the body and the props for the page tests.
+
+The New screen (`N`) holds the statues and a **Blank body** (Anny's default body in the A pose), the libraries (skin, eyes, hair and wear) with **Start from the base**, and **Your 3D model**, which reads an OpenSculptBoy GLB or VRM file and explains the fit for other models. Its foot offers **Open a card**, **Continue** with the character shown and **Random**.
 
 ## The stone library
 

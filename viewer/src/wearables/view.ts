@@ -16,6 +16,7 @@ import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GA
 import { queryPool } from './pool.ts';
 import { skinTriangles } from './skin.ts';
 import { cardOutfit, NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
+import { lowestPieces } from '../ground.ts';
 
 // what the wardrobe needs from the renderer (main.ts)
 export interface WardrobeHost {
@@ -36,6 +37,7 @@ export interface WardrobeHost {
   unloadCard(): void;
   applyCard(card: any): void;                            // the card's sliders and face into the look
   changed(): void;                                       // a new picture: shadows and accumulation
+  ground(): void;                                        // the shown pieces moved: the floor under the figure again (ground.ts)
 }
 
 export interface SparseRows { rows: number; start: Uint32Array; index: Uint32Array; value: Float32Array }
@@ -168,6 +170,7 @@ export class Wardrobe {
     this.card = null; this.source = null; this.cardPath = ''; this.packages.clear(); this.pieces = []; this.worn = []; this.files = null; this.notes = []; this.failures = 0; this.cache = new DressCache();
     this.host.unloadCard();
     this.restoreBody();
+    this.host.ground();
     this.host.changed(); this.notify();
   }
 
@@ -333,6 +336,14 @@ export class Wardrobe {
   // ---------------------------------------------------------------- meshes
   // the dressed pieces into their meshes; `settled` also renews the tangents of the normal maps for the new body
   private upload(settled = false) {
+    this.uploadMeshes(settled);
+    this.host.ground();
+  }
+  // the lowest height of the shown props, skinned by bone matrices of the page's rig (ground.ts); Infinity for none
+  lowestProps(boneMats: ArrayLike<number>): number {
+    return lowestPieces(this.pieces.map((p) => ({ slot: p.wearable.slot, vertices: p.vertices, joints: p.joints, weights: p.weights })), boneMats);
+  }
+  private uploadMeshes(settled: boolean) {
     const keep = new Set(this.pieces.map((p) => p.ref));
     for (const [ref, m] of this.meshes) {
       if (m.wearable !== this.packages.get(ref)) this.dropMesh(ref);

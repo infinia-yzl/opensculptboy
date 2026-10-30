@@ -149,9 +149,9 @@ class TestServe(unittest.TestCase):
             (d / "mediapipe" / "loader.wasm").write_bytes(b"\0asm")
             (d / "mediapipe" / "other.html").write_text("<p>no</p>", encoding="utf-8")
             (d / "starters").mkdir()
-            (d / "starters" / "muse.zip").write_bytes(b"PK")
-            (d / "starters" / "muse.png").write_bytes(b"\x89PNG")
-            (d / "starters" / "muse.light.json").write_text("{}", encoding="utf-8")
+            (d / "starters" / "doryphoros.zip").write_bytes(b"PK")
+            (d / "starters" / "doryphoros.png").write_bytes(b"\x89PNG")
+            (d / "starters" / "Other.zip").write_bytes(b"PK")
             (d / "starters" / "notes.txt").write_text("no", encoding="utf-8")
             (d / "starters" / "notes.json").write_text("{}", encoding="utf-8")
             with served(d / "page.html") as port:
@@ -170,18 +170,14 @@ class TestServe(unittest.TestCase):
                     (200, "application/wasm", b"\0asm"),
                 )
                 self.assertEqual(fetch(base + "/mediapipe/other.html")[0], 404)
-                code, headers, body = fetch(base + "/starters/muse.zip")
+                # the statue packages alone: the page carries their pictures
+                code, headers, body = fetch(base + "/starters/doryphoros.zip")
                 self.assertEqual(
                     (code, headers["Content-Type"], body),
                     (200, "application/zip", b"PK"),
                 )
-                self.assertEqual(
-                    fetch(base + "/starters/muse.png")[1]["Content-Type"], "image/png"
-                )
-                code, headers, body = fetch(base + "/starters/muse.light.json")
-                self.assertEqual(
-                    (code, headers["Content-Type"]), (200, "application/json")
-                )
+                self.assertEqual(fetch(base + "/starters/doryphoros.png")[0], 404)
+                self.assertEqual(fetch(base + "/starters/Other.zip")[0], 404)
                 self.assertEqual(fetch(base + "/starters/notes.txt")[0], 404)
                 self.assertEqual(fetch(base + "/starters/notes.json")[0], 404)
                 for path in (

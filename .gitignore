@@ -22,3 +22,5 @@ viewer/build/
 !viewer/dist/
 # CC0 pose packs restored from git history for rebuilding the pose library
 pose_packs/
+# the statue starters' packages are release files, never in git (viewer/src/starter_packages.json pins them)
+viewer/dist/starters/

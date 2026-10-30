@@ -9,6 +9,7 @@
 
 import { MODES, SECTIONS, TOOLS, type ModeId } from '../ui/shortcuts.ts';
 import { saveUi, uiState } from '../ui/dom.ts';
+import type { StarterNote } from '../starters.ts';
 
 export type Theme = 'light' | 'dark' | 'system';
 export type ToolId = 'rig' | 'scene' | 'settings';
@@ -31,6 +32,8 @@ export interface UIState {
   openBusy: string;
   openError: OpenError | null;
   newDialog: boolean;                  // the New character screen
+  // the statue whose package the page fetches, and the note of the last statue that did not open (starters.ts)
+  starter: { busy: string; note: StarterNote | null };
   character: boolean;                  // the Character panel: what the character holds
   progress: Progress | null;
   stats: boolean;
@@ -96,7 +99,7 @@ export const ui = createStore<UIState>({
   snap: 'half',
   welcome: !uiState().welcomed,
   openDialog: false, openBusy: '', openError: null,
-  newDialog: false, character: !!saved.character, progress: null,
+  newDialog: false, starter: { busy: '', note: null }, character: !!saved.character, progress: null,
   stats: false,
   history: { undo: null, redo: null },
   view: { frame: '', angle: '', turntable: false },
@@ -144,6 +147,7 @@ export const actions = {
   hideOpen() { ui.set({ openDialog: false, openError: null, openBusy: '' }); },
   showNew() { ui.set({ newDialog: true, openDialog: false }); },
   hideNew() { ui.set({ newDialog: false }); },
+  setStarter(starter: UIState['starter']) { ui.set({ starter }); },
   toggleCharacter() { ui.set({ character: !ui.get().character }); },
 };
 

@@ -468,16 +468,20 @@ body[data-width="phone"] .osb-custom-row .osb-sw { width: 36px; height: 36px; }
 .new-grid { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: var(--space-4); flex: 1; min-height: 0; }
 .new-card { display: grid; gap: var(--space-4); grid-template-rows: auto 1fr auto; align-content: start; position: relative; }
 .new-statues { border-color: var(--accent-line); grid-template-rows: auto 1fr auto auto; }
-.new-card-head .new-planned { margin-left: auto; margin-right: var(--space-2); }
 .new-card-head { justify-content: space-between; }
 .new-slots { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); align-content: start; }
 .new-slot { display: grid; gap: 4px; padding: var(--space-2); text-align: center; font-size: 13px; }
-.new-slot-pic { height: clamp(64px, calc(50vh - 300px), 220px); display: grid; place-items: center; color: color-mix(in srgb, #000 55%, transparent); border-radius: var(--radius-s); }
+.new-slot-pic { height: clamp(64px, calc(100vh - 560px), 400px); display: grid; place-items: center; color: color-mix(in srgb, #000 55%, transparent); border-radius: var(--radius-s); position: relative; overflow: hidden; }
+/* a statue whose package is not beside the page, and the blank body's slot */
+.new-slot-tag { position: absolute; top: 6px; right: 6px; }
+.new-slot-blank { background: var(--raised-2); color: var(--text-muted); }
+/* the note of a statue that did not open, with its download link */
+.new-note { align-self: start; }
+.new-note > .osb-btn { justify-self: start; margin-top: 4px; text-decoration: none; }
 .new-slot-name { font-weight: 600; color: var(--text); }
 .new-slot-stone { font-size: 12px; }
 .new-desc { min-height: 40px; margin: 0; }
 .new-start { justify-self: stretch; }
-.new-planned { justify-self: center; }
 .new-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); align-content: start; }
 .new-tile { height: clamp(64px, calc(50vh - 280px), 200px); border-radius: var(--radius-s); border: 1px solid var(--line); display: grid; justify-items: center; align-content: center; gap: var(--space-3); color: var(--text); cursor: pointer; }
 .new-tile:hover { border-color: var(--accent-line); }
@@ -490,7 +494,6 @@ body[data-width="phone"] .osb-custom-row .osb-sw { width: 36px; height: 36px; }
 body[data-width="phone"] .new-screen.osb-dialog { padding: var(--space-6) var(--space-4); }
 body[data-width="phone"] .new-grid, body[data-width="medium"] .new-grid { grid-template-columns: 1fr; flex: none; }
 body[data-width="phone"] .new-slot-pic, body[data-width="phone"] .new-tile { height: 96px; }
-body[data-width="phone"] .new-planned { position: static; translate: none; justify-self: start; }
 
 .char-panel { position: fixed; z-index: 12; right: var(--space-2); top: calc(var(--top-h) + var(--space-2)); max-height: calc(100vh - var(--top-h) - 96px); overflow: auto; box-sizing: border-box; }
 body.tool-open .char-panel { right: calc(var(--space-2) + var(--insp-w) + var(--space-2)); }

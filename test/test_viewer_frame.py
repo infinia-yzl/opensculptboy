@@ -4,12 +4,13 @@
 The frame of the viewer page (viewer/src/shell): the six modes, the panels, the View menu's theme,
 the welcome card, the one Open path, the New screen, the Character panel, Save card and the phone
 layout. In node: the actions of the interface's state (viewer/test/frame.mjs). In the built page,
-in Chromium through Playwright (local only): the first visit's starter statue and its welcome card,
+in Chromium through Playwright (local only): the first visit and its welcome card with the statue's
+download link, a card's pose,
 the top bar's six modes, the theme, the figure framed between the bars at every framing, the files
 that a drop routes (sheet settings, a character of the page, a GLB without a card, a GLB with a card
 of sliders, a GLB with a fitted card that asks for its files, a card's .zip, and a card through the
 Open path's file input), Ctrl O, Save card (Ctrl S) and the saved card opened again, the New
-screen's starters, the stone library, the Character panel, View > Settings, the phone's bar of six
+screen's statues and blank body, the stone library, the Character panel, View > Settings, the phone's bar of six
 modes with its bottom sheet, and the interface kept out of the still pictures (?shot).
 """
 
@@ -148,32 +149,53 @@ class TestFramePage(unittest.TestCase):
         )
         with sync_playwright() as p:
             browser, tab, errors = self.open_page(p)
-            # a first visit opens on the default starter: a statue in Carrara marble, in its pose, with its welcome card
+            # a first visit of a page opened as a file stays on Anny's default body, and the welcome card gives the
+            # default statue's download link (a page opened as a file reads nothing beside it)
             first = tab.evaluate(
                 "() => ({ look: window.__look(), clip: window.viewState().clip })"
             )
-            self.assertEqual(first["look"]["name"], "Spear Bearer")
-            self.assertEqual(first["look"]["skin"]["stone"], "carrara")
-            self.assertEqual(first["clip"], "starter:spear_bearer")
-            # the light card of a statue's fit gives the starter its sliders, its face and its pose (a card's pose is
-            # each bone's turn in anny's frame, and the card of the pose shown gives it back)
-            turn = [0.0, 0.0, 0.258819, 0.965926]
-            fitted = tab.evaluate(
-                "(q) => { window.showStarter('spear_bearer', { name: 'Fitted', phenotype: { muscle: 0.3 },"
-                " face_shapes: { 'nose-hump': 0.5 }, pose: { bones: { 'upperarm01.L': q } } });"
-                " return { look: window.__look(), clip: window.viewState().clip, card: window.poseCard() }; }",
-                turn,
+            self.assertEqual(first["look"]["name"], "Baseline")
+            self.assertEqual(first["clip"], "a_pose")
+            tab.wait_for_function("() => __shell.ui.get().starter.note !== null")
+            self.assertEqual(
+                tab.evaluate("() => __shell.ui.get().starter.note.problem"), "file"
             )
-            self.assertEqual(fitted["clip"], "card:Fitted")
-            self.assertEqual(fitted["look"]["name"], "Fitted")
+            self.assertIn("Meet the studio", tab.locator(".welcome").inner_text())
+            self.assertTrue(
+                tab.locator(".welcome .welcome-starter a")
+                .get_attribute("href")
+                .endswith("/doryphoros.zip")
+            )
+            # a card's pose (each bone's turn in anny's frame) stands the figure in it, and the card of the pose
+            # shown gives it back
+            turn = [0.0, 0.0, 0.258819, 0.965926]
+            tab.evaluate(
+                DROP,
+                {
+                    "character.json": base64.b64encode(
+                        json.dumps(
+                            {
+                                "schema": 5,
+                                "name": "Fitted",
+                                "phenotype": {"muscle": 0.3},
+                                "face_shapes": {"nose-hump": 0.5},
+                                "pose": {"bones": {"upperarm01.L": turn}},
+                                "look": {"skin": {"stone": "carrara"}},
+                            }
+                        ).encode()
+                    ).decode()
+                },
+            )
+            tab.wait_for_function("() => window.viewState().clip === 'card:Fitted'")
+            fitted = tab.evaluate(
+                "() => ({ look: window.__look(), card: window.poseCard() })"
+            )
             self.assertEqual(fitted["look"]["skin"]["stone"], "carrara")
             self.assertAlmostEqual(fitted["look"]["phenotype"]["muscle"], 0.3)
             self.assertEqual(fitted["look"]["face"], {"nose-hump": 0.5})
             self.assertEqual(sorted(fitted["card"]["pose"]["bones"]), ["upperarm01.L"])
             for a, b in zip(fitted["card"]["pose"]["bones"]["upperarm01.L"], turn):
                 self.assertAlmostEqual(a, b, delta=2e-4)
-            tab.evaluate("() => window.showStarter('spear_bearer')")
-            self.assertIn("Meet the Spear Bearer", tab.locator(".welcome").inner_text())
             # the figure stands between the top bar and the view bar at every framing and angle
             bars = tab.evaluate(
                 "() => ({ top: document.querySelector('.osb-top').getBoundingClientRect().bottom,"
@@ -328,26 +350,35 @@ class TestFramePage(unittest.TestCase):
             tab.wait_for_function(
                 "() => window.__look().name === 'Zipped' && window.__look().skin.stone === 'bronze'"
             )
-            # the New screen: six statues; a statue starts in its stone and its pose
+            # the New screen: the two statues, Doryphoros first, and the blank body; a statue whose package the page
+            # cannot read gives its note with the download link, and the blank body starts at once
             tab.mouse.click(900, 450)
             tab.keyboard.press("n")
             tab.wait_for_function(
-                "() => document.querySelectorAll('[data-starter]').length === 6"
+                "() => document.querySelectorAll('[data-starter]').length === 3"
             )
-            tab.locator("[data-starter='huntress']").click()
-            tab.locator(".new-start").click()
-            tab.wait_for_function("() => window.__look().name === 'Huntress'")
             self.assertEqual(
-                tab.evaluate(
-                    "() => [window.__look().skin.stone, window.viewState().clip]"
+                tab.eval_on_selector_all(
+                    "[data-starter]", "(bs) => bs.map((b) => b.dataset.starter)"
                 ),
-                ["travertine", "starter:huntress"],
+                ["doryphoros", "david_goliath", "blank"],
             )
-            self.assertFalse(tab.evaluate("() => __shell.ui.get().newDialog"))
+            tab.locator("[data-starter='david_goliath']").click()
+            tab.locator(".new-start").click()
+            tab.wait_for_selector(".new-note")
+            self.assertTrue(
+                tab.locator(".new-note a")
+                .get_attribute("href")
+                .endswith("/david_goliath.zip")
+            )
+            tab.locator("[data-starter='blank']").click()
+            tab.locator(".new-start").click()
+            tab.wait_for_function("() => !__shell.ui.get().newDialog")
+            self.assertEqual(tab.evaluate("() => window.viewState().clip"), "a_pose")
             # the Character panel: what the character holds
             tab.locator(".osb-identity").click()
             panel = tab.locator("#char-panel").inner_text()
-            for word in ("Body", "Face", "Skin", "Travertine", "Hair", "Outfit"):
+            for word in ("Body", "Face", "Skin", "Hair", "Outfit"):
                 self.assertIn(word, panel)
             tab.locator(".osb-identity").click()
             # View > Settings: the AI providers

@@ -10,9 +10,9 @@ Passkeys need the page at http://localhost. This server:
 
 - serves the page file alone, plus MediaPipe's files beside it (mediapipe/*.js, *.wasm and
   *.task, which the page checks by their pinned SHA-256), the data files of a page in parts
-  (data/model-N.txt) and the starters (starters/<statue>.zip with <statue>.png, and
-  <statue>.light.json, which the New screen and a first visit open), and answers every other
-  path with 404, so no other file of the folder shares the page's origin;
+  (data/model-N.txt) and the statue starters' packages (starters/<statue>.zip, which the
+  New screen and a first visit fetch and check by their pinned SHA-256), and answers every
+  other path with 404, so no other file of the folder shares the page's origin;
 - listens on the loopback addresses only, 127.0.0.1 and ::1 both, so no other program can take the
   page's address on the other one, and stops when either is taken;
 - uses one fixed port (``serve.json``, which the page reads too), because the page's stored keys
@@ -78,19 +78,13 @@ def files_of(page: pathlib.Path) -> dict:
             kind = MEDIAPIPE.get(f.suffix)
             if f.is_file() and kind and re.fullmatch(r"[\w.-]+", f.name):
                 served["/mediapipe/" + f.name] = (f, kind)
-    # the starters of the New screen (viewer/src/starters.ts): a fitted card of each statue as a .zip with its
-    # picture, and the light card of its fit
+    # the statue starters of the New screen (viewer/src/starters.ts): each a fitted card with its props in one
+    # package, which the page checks by its pinned SHA-256
     st = page.parent / "starters"
-    kinds = {
-        ".zip": "application/zip",
-        ".png": "image/png",
-        ".light.json": "application/json",
-    }
     if st.is_dir():
         for f in sorted(st.iterdir()):
-            m = re.fullmatch(r"[a-z0-9_]+(\.zip|\.png|\.light\.json)", f.name)
-            if f.is_file() and m:
-                served["/starters/" + f.name] = (f, kinds[m.group(1)])
+            if f.is_file() and re.fullmatch(r"[a-z0-9_]+\.zip", f.name):
+                served["/starters/" + f.name] = (f, "application/zip")
     return served
 
 
