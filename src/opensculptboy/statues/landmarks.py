@@ -147,3 +147,79 @@ def detect_landmarks(
             z = 0.5 * (z + z_side)
         out[key] = np.array([x, y, z])
     return out
+
+
+# the points of MediaPipe's face mesh (its 468 points; the person's own left and right) that
+# give the contract's landmarks of the face
+FACE_MESH = {
+    "eye_outer_l": 263,
+    "eye_inner_l": 362,
+    "eye_outer_r": 33,
+    "eye_inner_r": 133,
+    "nose_tip": 1,
+    "mouth_corner_l": 291,
+    "mouth_corner_r": 61,
+    "chin": 152,
+}
+# the head's picture: the scan's triangles within this distance (metres) of its top
+HEAD_REACH = 0.32
+
+
+def detect_face(vertices, triangles, pictures: dict | None = None) -> dict:
+    """
+    The landmarks of the face (name -> point in Anny's frame) of a figure standing upright and
+    facing -Y, found by MediaPipe's face landmarker on a front picture of its head alone (the
+    triangles within :data:`HEAD_REACH` of the top), where the face fills the picture: the
+    eyes' corners, the nose's tip, the mouth's corners and the chin (:data:`FACE_MESH`). Each
+    point takes the front-most surface under its pixel. An empty dict when no face is found.
+    ``pictures``, when given, receives the picture with the points as ``"face"``.
+    """
+    import mediapipe as mp
+    from mediapipe.tasks.python import BaseOptions, vision
+    from PIL import ImageDraw
+
+    from opensculptboy.posing.landmarks import model_path
+    from opensculptboy.render.dressed import View
+
+    V = np.asarray(vertices, dtype=np.float64)
+    T = np.asarray(triangles)
+    keep = (V[T][:, :, 2] > V[:, 2].max() - HEAD_REACH).all(1)
+    used = np.unique(T[keep])
+    if len(used) < 3:
+        return {}
+    remap = np.full(len(V), -1)
+    remap[used] = np.arange(len(used))
+    image, frame = _picture(V[used], remap[T[keep]], View(0.0))
+    pixels = np.asarray(image.convert("RGB"))
+    with vision.FaceLandmarker.create_from_options(
+        vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(model_path("face"))),
+            num_faces=1,
+        )
+    ) as landmarker:
+        found = landmarker.detect(
+            mp.Image(
+                image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(pixels)
+            )
+        )
+    if not found.face_landmarks:
+        return {}
+    h, w = pixels.shape[:2]
+    mesh = found.face_landmarks[0]
+    out = {}
+    paint = ImageDraw.Draw(image) if pictures is not None else None
+    for name, k in FACE_MESH.items():
+        px = (mesh[k].x * w, mesh[k].y * h)
+        x, z = _unproject(px, frame)
+        gap = np.linalg.norm(V[:, [0, 2]] - [x, z], axis=1)
+        if gap.min() > 0.01:
+            continue
+        near = gap < max(0.002, float(np.partition(gap, 9)[9]))
+        out[name] = np.array([x, V[near, 1].min(), z])
+        if paint is not None:
+            paint.ellipse(
+                [px[0] - 3, px[1] - 3, px[0] + 3, px[1] + 3], fill=(40, 200, 90)
+            )
+    if pictures is not None:
+        pictures["face"] = image
+    return out

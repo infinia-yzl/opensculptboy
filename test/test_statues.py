@@ -389,7 +389,7 @@ class TestPipeline(unittest.TestCase):
             self.assertTrue((root / "summary.json").exists())
 
 
-@local_only("MediaPipe's pose model")
+@local_only("MediaPipe's pose and face models")
 class TestDetectedLandmarks(unittest.TestCase):
     def test_joints_from_pictures(self):
         from opensculptboy.statues.landmarks import detect_landmarks
@@ -402,6 +402,22 @@ class TestDetectedLandmarks(unittest.TestCase):
                 self.assertIn(name, found)
                 gap = np.linalg.norm(found[name] - statue["landmarks"][name])
                 self.assertLess(gap, 0.06)
+
+    def test_face_from_a_picture_of_the_head(self):
+        from opensculptboy.statues.landmarks import detect_face
+
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        pictures = {}
+        found = detect_face(V, T, pictures)
+        self.assertIn("face", pictures)
+        for name in ("eye_outer_l", "eye_inner_r", "mouth_corner_l", "nose_tip"):
+            with self.subTest(name):
+                self.assertIn(name, found)
+                gap = np.linalg.norm(found[name] - statue["landmarks"][name])
+                self.assertLess(gap, 0.012)
+        # the figure's left is +x
+        self.assertGreater(found["eye_outer_l"][0], found["eye_outer_r"][0])
 
 
 class TestPrune(unittest.TestCase):

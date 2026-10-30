@@ -75,6 +75,9 @@ class StatueConfig:
     lost: list = dataclasses.field(default_factory=list)
     landmarks: dict = dataclasses.field(default_factory=dict)
     auto_landmarks: bool = True
+    # the face's landmarks from MediaPipe's face landmarker on a picture of the head (eyes'
+    # and mouth's corners, nose tip, chin), so that anny's eyes and mouth sit on the statue's
+    face_landmarks: bool = True
     # False (the default): anny's own working face, its lids and lips held open as anny's
     # (hold: the rings around the eyes' and the mouth's openings that take no data); True:
     # carved eyes and closed lips on the scan
@@ -216,6 +219,18 @@ def landmarks(config: StatueConfig, folder, out=None) -> dict:
             for label, image in pictures.items():
                 image.save(out / f"landmarks_{label}.png")
         sources.update({k: "detected" for k in found})
+        if config.face_landmarks:
+            from opensculptboy.statues.landmarks import detect_face
+
+            try:
+                face = detect_face(skin.vertices, skin.triangles, pictures)
+            except (ValueError, ImportError) as error:
+                face = {}
+                sources["face_error"] = str(error)
+            found.update(face)
+            sources.update({k: "face" for k in face})
+            if out is not None and "face" in pictures:
+                pictures["face"].save(pathlib.Path(out) / "landmarks_face.png")
     hints = {k: _anny([v])[0] for k, v in (config.landmarks or {}).items()}
     sources.update({k: "hint" for k in hints})
     marks = snap_landmarks({**found, **hints}, skin.vertices, skin.triangles)
