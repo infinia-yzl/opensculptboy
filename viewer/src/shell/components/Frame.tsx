@@ -78,7 +78,7 @@ export function Welcome() {
       <Tip label="Close" keys="Esc" side="left">
         <button type="button" className="osb-ib welcome-x" aria-label="Close the welcome" onClick={() => actions.dismissWelcome()}><Icon name="close" size={16} /></button>
       </Tip>
-      <h2 className="osb-title welcome-title" id="welcome-title">{starter ? `Meet the ${starter.name}` : 'Meet the studio'}</h2>
+      <h2 className="osb-title welcome-title" id="welcome-title">{starter ? `Meet ${starter.name}` : 'Meet the studio'}</h2>
       <p className="osb-note">{starter ? 'A statue to start from. Shape it, dress it, pose it and export it. Your files stay in this browser.' : 'Shape a character here, then dress, pose and export it. Your files stay in this browser.'}</p>
       {!starter && note ? (
         <p className="osb-note welcome-starter">The statue starters come as packages of their own. <a className="osb-link" href={note.link} target="_blank" rel="noopener noreferrer">{note.label}</a> and drop it on the page to start from it.</p>

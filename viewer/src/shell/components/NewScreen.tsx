@@ -69,7 +69,7 @@ export function NewScreen() {
                   <button key={s.id} type="button" role="radio" className="osb-slot new-slot" aria-checked={s.id === pick} aria-pressed={s.id === pick} data-starter={s.id}
                     data-package={there[s.id] === undefined ? undefined : there[s.id] ? 'here' : 'missing'}
                     onClick={() => choose(s.id)} onDoubleClick={() => legacy.startStarter(s.id)}>
-                    <span className="osb-slot-pic new-slot-pic" style={pic ? undefined : { background: stoneSwatch(st) }}>
+                    <span className={'osb-slot-pic new-slot-pic' + (pic ? ' new-slot-statue' : '')} style={pic ? undefined : { background: stoneSwatch(st) }}>
                       {pic ? <img src={pic} alt="" /> : <Icon name="statue" size={72} />}
                       {there[s.id] === false ? <span className="osb-tag new-slot-tag">Download</span> : null}
                     </span>
@@ -95,7 +95,7 @@ export function NewScreen() {
               <p className="osb-note new-desc">{S ? S.description + '.' : 'Anny\'s default body in the A pose, with nothing on it: shape it from the start.'}</p>
             )}
             <Button ref={start} size="lg" className="new-start" disabled={!!starter.busy} onClick={go}>
-              {starter.busy && S && starter.busy === S.id ? `Fetching the ${S.name}` : S ? `Start with the ${S.name}` : 'Start from a blank body'}
+              {starter.busy && S && starter.busy === S.id ? `Fetching ${S.name}` : S ? `Start with ${S.name}` : 'Start from a blank body'}
             </Button>
           </article>
           <article className="osb-card new-card" aria-labelledby="new-l">

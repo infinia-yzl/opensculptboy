@@ -62,7 +62,7 @@ export function starterNote(s: Starter, problem: StarterProblem, pins: StarterPi
   const f = s.package.file, size = sizeLabel(s.package.bytes);
   const message = {
     file: `This page was opened as a file, so it cannot read the statue packages beside it. Download ${f} (${size}) and drop it on the page, or serve the page with serve_viewer.py and put the package in its starters folder.`,
-    missing: `The ${s.name} comes as a package of its own: ${f} (${size}) is not in the starters folder beside this page. Download it, put it in that folder and pick the statue again, or drop the downloaded file on the page.`,
+    missing: `${s.name} comes as a package of its own: ${f} (${size}) is not in the starters folder beside this page. Download it, put it in that folder and pick the statue again, or drop the downloaded file on the page.`,
     other: `The ${f} beside this page is another version than the one this page pins, so the page did not open it. Download the package again and put it in the starters folder beside the page.`,
     network: `The page could not read ${f} from the starters folder beside it. Pick the statue again, or download the package and drop it on the page.`,
   }[problem];
