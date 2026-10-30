@@ -332,6 +332,9 @@ class FitOptions:
     # (metres) of them (0: none, the default: at 4 and 8 mm the corners of Doryphoros' eyes
     # crumpled into knots)
     close_lid: float = 0.0
+    # the lids' margins that are each other's nearest within this distance (metres) meet at
+    # their mean, which closes the corners of a carved eye (0: none)
+    close_lid_contact: float = 0.0
     close_rim_depth: float = 0.0005
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
@@ -3844,6 +3847,35 @@ def _close_openings(
                 reach = np.maximum(reach, 0.2 * length)
                 fitted[out_rows] = origin + direction * reach[:, None]
                 moved += [out_rows]
+    if options.close_lid_contact > 0 and eye_centres:
+        # the lids' margins meet at the corners of a carved eye: the rows of skin along the
+        # socket's lining above and below each eye's centre that are each other's nearest
+        # within close_lid_contact move to their mean (the eyes' corners showed the socket
+        # through the gap where anny's eye is longer than the carved one)
+        T_ = np.asarray(topology.triangles)
+        hidden_eye = lining.copy()
+        for side_rows in eyes.values():
+            base = np.zeros(n0)
+            base[side_rows] = 1.0
+            hidden_eye |= np.asarray(topology.apply(base)) > 0.5
+        mixed = hidden_eye[T_].any(1) & ~hidden_eye[T_].all(1)
+        rim = np.unique(T_[mixed][~hidden_eye[T_[mixed]]])
+        for centre in eye_centres:
+            mine = rim[np.linalg.norm(fitted[rim] - centre, axis=1) < 0.025]
+            if len(mine) < 4:
+                continue
+            up = fitted[mine, 2] > centre[2]
+            pairs = lip_contact(
+                fitted,
+                np.isin(np.arange(len(fitted)), mine[up]),
+                np.isin(np.arange(len(fitted)), mine[~up]),
+                options.close_lid_contact,
+            )
+            if len(pairs):
+                mean = 0.5 * (fitted[pairs[:, 0]] + fitted[pairs[:, 1]])
+                fitted[pairs[:, 0]] = mean
+                fitted[pairs[:, 1]] = mean
+                moved += [pairs.ravel()]
     changed = np.unique(np.concatenate(moved)) if moved else np.zeros(0, np.int64)
     offsets = offsets.copy()
     if len(changed):
