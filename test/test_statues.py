@@ -756,6 +756,25 @@ class TestSolid(unittest.TestCase):
                 self.assertTrue(
                     (pathlib.Path(tmp) / "other" / "stage1" / "main.json").exists()
                 )
+            # a run from before the stage-1 files gives them from its card
+            from opensculptboy.statues.pipeline import stage1_from_card
+
+            data = card.to_dict()
+            data["detail"] = {
+                "levels": [],
+                "fit": {
+                    "placement": {
+                        "rotation": np.eye(3).tolist(),
+                        "translation": [0.0, 0.0, 0.2],
+                    }
+                },
+            }
+            old = pathlib.Path(tmp) / "old"
+            (old / "card").mkdir(parents=True)
+            (old / "card" / "kouros.json").write_text(json.dumps(data))
+            got = stage1_from_card(old)
+            self.assertEqual(got["translation"], [0.0, 0.0, 0.2])
+            self.assertNotIn("detail", got["character"])
 
 
 class TestStarter(unittest.TestCase):

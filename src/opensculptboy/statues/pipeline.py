@@ -332,6 +332,28 @@ def _fit_options(fit: dict) -> dict:
     return {k: tuple(v) if isinstance(v, list) else v for k, v in fit.items()}
 
 
+def stage1_from_card(run) -> dict:
+    """The stage-1 data (:func:`~opensculptboy.statues.fit.stage1_dict`) of an earlier run's
+    folder from its card: the sliders, the pose and the fit's placement."""
+    import types
+
+    from opensculptboy.character import Character
+    from opensculptboy.statues.fit import stage1_dict
+
+    cards = sorted((pathlib.Path(run) / "card").glob("*.json"))
+    if not cards:
+        raise FileNotFoundError(f"{run}: no card, and no stage1/main.json.")
+    data = json.loads(cards[0].read_text(encoding="utf-8"))
+    placement = data["detail"]["fit"]["placement"]
+    return stage1_dict(
+        types.SimpleNamespace(
+            character=Character.from_dict(data),
+            rotation=placement["rotation"],
+            translation=placement["translation"],
+        )
+    )
+
+
 def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
     """Step 4: the fit of the handoff folder, written to the card ``card``. With ``prune``
     (a distance in metres), a first fit to level 0 takes out the scan's pieces further than
@@ -548,6 +570,13 @@ def run_statue(
         if earlier.resolve() != root.resolve():
             shutil.copytree(earlier / "handoff", folder, dirs_exist_ok=True)
         source = earlier / "stage1"
+        if not (source / "main.json").exists():
+            # a run from before the stage-1 files: its card's sliders, pose and placement
+            source = root / "stage1"
+            source.mkdir(parents=True, exist_ok=True)
+            (source / "main.json").write_text(
+                json.dumps(stage1_from_card(earlier)) + "\n", encoding="utf-8"
+            )
         steps = [s for s in steps if s in ("fit", "measure")]
         summary["stage1"] = str(earlier)
     for step in STEPS:
