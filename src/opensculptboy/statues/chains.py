@@ -12,16 +12,18 @@ surface onto the palm and leave anny's fingers standing out of it.
 
 :func:`refine_chains` fits each named chain (:data:`CHAINS`: the forearm's twist, the wrist,
 the metacarpals and the fingers of a hand; the shin's twist, the foot and the toes of a foot)
-to the scan with the rest of the figure held. The chain's own local changes
-(:data:`SHAPES`: the hand's scale and its fingers' length, thickness and spread; the foot's
-scale and place) start again from anny's own. A few starts of the pose (the stage's own pose
-of the chain, and the fingers or the whole chain of some of anny's library poses) are fitted
-with nearest-point pairs both ways in rounds of shrinking reach, the start that comes closest
-wins, and its pose and the chain's local changes are then fitted together. The chain's
-vertices pair with the scan's closest points whose normals agree (forward), and the scan's
-points whose nearest vertex of the figure lies on the chain and faces the same way pair with
-that vertex (reverse), so that a finger moves into the scan's finger rather than into the
-palm or the hip it rests on.
+to the scan with the rest of the figure held. The chain pairs with its own scan alone: the
+points within reach of its root (:data:`ROOT_REACH`) that lie further than
+``ChainOptions.explained`` from the rest of the figure as the parameter stage placed it, so
+that a finger moves into the scan's finger and stays off the hip it rests on. The chain's
+own local changes (:data:`SHAPES`: the hand's scale and its fingers' length, thickness and
+spread; the foot's scale and place) start again from anny's own. A search turns the chain's
+root for each start of the pose (the stage's own, and the fingers or the whole chain of some
+of anny's library poses) and scores each by the trimmed distances both ways; the best few
+are fitted with nearest-point pairs in rounds of shrinking reach, and the best of them is
+fitted with the local changes, which a worse result leaves at the start. Vertices inside the
+chain's own marble take no pairs: anny's fist lies inside a statue's larger fist until the
+detail levels.
 """
 
 from __future__ import annotations
@@ -110,8 +112,8 @@ class ChainOptions:
     explained: float = 0.012
     # the turns (degrees) about each axis that the search tries at the chain's root, and the
     # starts of the search that are fitted
-    search: tuple = (-90.0, -45.0, 0.0, 45.0, 90.0)
-    keep: int = 4
+    search: tuple = (-60.0, 0.0, 60.0)
+    keep: int = 3
     # the weight of the chain's depth inside the rest of the figure in the score (0: none)
     depth: float = 0.0
     # the starts tried (names of the report's trials: "stage", "<pose>/fingers",
