@@ -490,7 +490,7 @@ class TestPrune(unittest.TestCase):
             covered = np.asarray(appearance["statue"]["covered_levels"])
             self.assertEqual(appearance["statue"]["covered"], [])
             self.assertGreater(count, 20)
-            self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.08)
+            self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.15)
 
     def test_a_covered_foot_keeps_the_start_pose(self):
         from opensculptboy.statues.fit import held_feet

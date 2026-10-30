@@ -396,6 +396,8 @@ COVER_MARGIN = 0.002
 COVER_SKIN = 0.004
 # or when its nearest skin lies along a cut of the scan and a piece lies within this distance
 COVER_CUT = 0.02
+# and the skin of the limbs within this many rings of the skin a removed piece covers
+COVER_GROW = 3
 
 
 def parametric_vertices(result, model) -> np.ndarray:
@@ -529,6 +531,21 @@ def covered_skin(folder, result, model=None) -> int:
             )
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
+    if marked_levels.any() and COVER_GROW > 0:
+        # a few rings more around the skin by a removed piece: the skin along the scan's cut
+        # there hung over the filled foot like a cuff
+        from opensculptboy.fit.lips import rings_from
+
+        triangles = model.faces.cpu().numpy()
+        grown = rings_from(
+            triangles, np.nonzero(marked_levels)[0], COVER_GROW, len(marked_levels)
+        )
+        regions = statue_regions(model)
+        limbs = np.isin(
+            regions,
+            [STATUE_REGIONS.index(r) for r in ("feet", "legs", "hands", "arms")],
+        )
+        marked_levels |= grown & limbs[: len(grown)]
     statue = appearance.setdefault("statue", {})
     statue["covered"] = np.nonzero(marked)[0].tolist()
     # by removed pieces: no data on the detail levels alone, so that the leg still poses
