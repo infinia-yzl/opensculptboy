@@ -624,6 +624,14 @@ class TestPrune(unittest.TestCase):
             self.assertGreater(V[covered, 2].min(), top - 0.085)
             below = V[:, 2] < top - 0.1
             self.assertFalse(np.isin(np.nonzero(below)[0], covered).any())
+            # grown by two rings: more of the head, and nothing below the neck
+            grown = covered_skin(folder, result, model, grow=2)
+            self.assertGreater(grown, count)
+            wide = json.loads(
+                (pathlib.Path(folder) / "appearance.json").read_text("utf-8")
+            )["statue"]["covered"]
+            self.assertTrue(set(covered.tolist()) <= set(wide))
+            self.assertGreater(V[wide, 2].min(), top - 0.2)
 
 
 class TestRegionDistances(unittest.TestCase):

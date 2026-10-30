@@ -85,6 +85,10 @@ class StatueConfig:
     hold: list = dataclasses.field(default_factory=lambda: [5, 5])
     # the band along the scan's cut by a hat or locks whose skin takes no data (rings, metres)
     cut: list = dataclasses.field(default_factory=lambda: [1, 0.003])
+    # fused locks cover the face beside them too, and the covered skin of the head grows by
+    # this many rings (the fill met the fitted brow in a ledge)
+    locks_face: bool = False
+    cover_grow: int = 0
     prune: float | bool = 0.025
     pose: str | None = "auto"
     detail: int = 2
@@ -420,7 +424,15 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
                 translation=translation,
                 meshes={0: (level0, None)},
             )
-            pruned = {"covered": covered_skin(folder, first, cut=tuple(config.cut))}
+            pruned = {
+                "covered": covered_skin(
+                    folder,
+                    first,
+                    cut=tuple(config.cut),
+                    locks_face=config.locks_face,
+                    grow=config.cover_grow,
+                )
+            }
         if stage1.resolve() != saved.resolve():
             saved.mkdir(parents=True, exist_ok=True)
             for item in stage1.iterdir():
@@ -439,7 +451,13 @@ def fit(config: StatueConfig, folder, card, verbose: bool = False, stage1=None):
             np.save(saved / "first_level0.npy", np.asarray(first.meshes[0][0]))
             pruned = prune_far(folder, first, distance=float(config.prune))
             # the skull under a hat and fused locks keeps anny's own shape
-            pruned["covered"] = covered_skin(folder, first, cut=tuple(config.cut))
+            pruned["covered"] = covered_skin(
+                folder,
+                first,
+                cut=tuple(config.cut),
+                locks_face=config.locks_face,
+                grow=config.cover_grow,
+            )
         result = run(config.detail)
         (saved / "main.json").write_text(
             json.dumps(stage1_dict(result)) + "\n", encoding="utf-8"

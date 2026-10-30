@@ -73,6 +73,13 @@ def run(argv) -> int:
         help="the band along the scan's cut by a hat or locks whose skin takes no data",
     )
     parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="FIELD=VALUE",
+        help="a statue config field over the config's (VALUE in JSON), for variants",
+    )
+    parser.add_argument(
         "--from",
         dest="stage1",
         metavar="RUN",
@@ -107,6 +114,12 @@ def run(argv) -> int:
             config = dataclasses.replace(
                 config, hold=[int(x) for x in args.hold.split(",")]
             )
+        if args.set:
+            fields = _as_dict(config)
+            for item in args.set:
+                key, _, value = item.partition("=")
+                fields[key.strip()] = json.loads(value)
+            config = StatueConfig.from_dict(fields, config.path)
         if args.cut:
             rings, reach = args.cut.split(",")
             config = dataclasses.replace(config, cut=[int(rings), float(reach)])

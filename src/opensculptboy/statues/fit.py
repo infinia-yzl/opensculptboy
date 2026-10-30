@@ -579,7 +579,12 @@ def _removed_pieces(folder) -> list:
 
 
 def covered_skin(
-    folder, result, model=None, cut: tuple = (CUT_RINGS, CUT_REACH)
+    folder,
+    result,
+    model=None,
+    cut: tuple = (CUT_RINGS, CUT_REACH),
+    locks_face: bool = False,
+    grow: int = 0,
 ) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
@@ -590,7 +595,9 @@ def covered_skin(
     pull the skull flat onto it; :func:`fit_statue` gives those vertices no data, so that the
     skull keeps anny's own shape under them and follows the fitted skin around it. Returns
     the number of vertices marked. ``cut`` (rings, metres) is the band along the scan's cut
-    by a hat or locks.
+    by a hat or locks; ``locks_face`` lets locks cover the face beside them too; ``grow``
+    widens the covered skin of the head by that many rings, so that the fill meets the
+    fitted brow smoothly.
     """
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import load_handoff
@@ -633,9 +640,10 @@ def covered_skin(
             nearest[role] = np.minimum(nearest.get(role, np.inf), d)
         for role, d_cover in nearest.items():
             d_skin, on_cut = skins[role]
-            head = np.isin(
-                regions[rows], [STATUE_REGIONS.index(r) for r in COVER_REGIONS[role]]
-            )
+            allowed = COVER_REGIONS[role]
+            if role == "hair" and locks_face:
+                allowed = allowed + ("face",)
+            head = np.isin(regions[rows], [STATUE_REGIONS.index(r) for r in allowed])
             target = marked_levels if role == "removed" else marked
             target[rows] |= head & (
                 ((d_cover + COVER_MARGIN < d_skin) & (d_skin > COVER_SKIN))
@@ -675,6 +683,18 @@ def covered_skin(
             [STATUE_REGIONS.index(r) for r in ("feet", "legs", "hands", "arms")],
         )
         marked_levels |= grown & limbs[: len(grown)]
+    if grow > 0 and marked.any():
+        from opensculptboy.fit.lips import rings_from
+
+        regions = statue_regions(model)
+        head = np.isin(
+            regions,
+            [STATUE_REGIONS.index(r) for r in ("face", "scalp", "ears", "neck")],
+        )
+        grown = rings_from(
+            model.faces.cpu().numpy(), np.nonzero(marked)[0], grow, len(marked)
+        )
+        marked |= grown & head[: len(grown)] & ~excluded_vertices(model)[: len(grown)]
     statue = appearance.setdefault("statue", {})
     statue["covered"] = np.nonzero(marked)[0].tolist()
     # by removed pieces: no data on the detail levels alone, so that the leg still poses
