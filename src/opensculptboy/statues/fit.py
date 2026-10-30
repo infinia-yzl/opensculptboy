@@ -423,9 +423,10 @@ HELD_FOOT_SHARE = 0.4
 
 
 def held_feet(model, covered: np.ndarray, share: float = HELD_FOOT_SHARE) -> tuple:
-    """The bones of the feet (``foot`` and its toes, by side) whose skin ``covered`` (a mask of
-    the level-0 vertices) covers for more than ``share``: the parameter stage keeps their turns
-    at the start pose's, as no skin turns a foot that stood on a removed head."""
+    """The bones of the feet (``foot``, its toes and the shin's lower twist ``lowerleg02``, by
+    side) whose skin ``covered`` (a mask of the level-0 vertices) covers for more than
+    ``share``: the parameter stage keeps their turns at the start pose's, as no skin turns a
+    foot that stood on a removed head."""
     labels = list(model.bone_labels)
     weights = model.vertex_bone_weights.detach().double().cpu().numpy()
     indices = model.vertex_bone_indices.cpu().numpy()
@@ -441,6 +442,9 @@ def held_feet(model, covered: np.ndarray, share: float = HELD_FOOT_SHARE) -> tup
         on = (np.isin(indices, bones) * weights).sum(1) > 0.5
         if on.any() and covered[on].mean() > share:
             out += [labels[i] for i in bones]
+            # and the twist of the shin above it: free, it turned the foot's toes sideways
+            if f"lowerleg02.{side}" in labels:
+                out.append(f"lowerleg02.{side}")
     return tuple(out)
 
 

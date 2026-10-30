@@ -90,7 +90,9 @@ def thumbnail(vertices: np.ndarray, triangles: np.ndarray, size=THUMBNAIL_SIZE):
 
 PROP_SLOT = "prop"
 # a prop keeps at most this many triangles for the page
-PROP_TRIANGLES = 40000
+PROP_TRIANGLES = 20000
+# a prop that reaches this close (metres) to the ground stands on it: bound to the root
+GROUND_REACH = 0.03
 PROP_COLOUR = (0.84, 0.82, 0.79, 1.0)
 # the props bound to the root: they stand on the ground
 ROOT_PROPS = ("Base",)
@@ -177,9 +179,11 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     Write the statue's props (:func:`statue_props`) as wearable packages of the slot
     ``prop`` into ``out_dir`` and return their entries (name, label, files, bone). Each prop
     goes from the placed, posed statue to the card's rest by the inverse of its bone's
-    turn (the base's bone is the root, the others the bone whose skin lies nearest), is
+    turn, is
     reduced to :data:`PROP_TRIANGLES` and bound rigidly to that bone, so that the viewer
-    poses it with the figure.
+    poses it with the figure. A prop that stands on the ground (within :data:`GROUND_REACH`
+    of the base's top) is bound to the root as the base is; the others to the bone of the
+    skin nearest their closest points.
     """
     import torch
     from scipy.spatial import cKDTree
@@ -210,6 +214,11 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     dominant = indices[np.arange(len(indices)), weights.argmax(1)]
     labels = list(model.bone_labels)
     tree = cKDTree(posed)
+    # the ground: the base's top where there is a base, else the figure's lowest point
+    floor = posed[:, 2].min()
+    for name, V, _ in pieces:
+        if name in ROOT_PROPS:
+            floor = float(np.quantile(V[:, 2], 0.98))
     body = card_body(
         character, character.build_model(dtype=torch.float64), root / "card"
     )
@@ -223,11 +232,16 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     out_dir.mkdir(parents=True, exist_ok=True)
     entries = []
     for layer, (name, V, T) in enumerate(pieces):
-        if name in ROOT_PROPS:
+        sample = V[:: max(1, len(V) // 20000)]
+        d, near = tree.query(sample)
+        grounded = sample[:, 2].min() < floor + GROUND_REACH
+        if name in ROOT_PROPS or grounded:
             bone = labels.index("root")
         else:
-            _, near = tree.query(V[:: max(1, len(V) // 5000)])
-            bone = int(np.bincount(dominant[near]).argmax())
+            # the bone at the contact: the skin nearest the prop's closest points (a sword's
+            # hilt in the hand, a hat on the head)
+            contact = d <= np.quantile(d, 0.01)
+            bone = int(np.bincount(dominant[near[contact]]).argmax())
         one = np.zeros((len(V), weights.shape[1]))
         one[:, 0] = 1.0
         idx = np.zeros((len(V), indices.shape[1]), indices.dtype)
