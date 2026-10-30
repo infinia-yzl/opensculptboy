@@ -341,7 +341,7 @@ class TestFramePage(unittest.TestCase):
                 tab.evaluate(
                     "() => [window.__look().skin.stone, window.viewState().clip]"
                 ),
-                ["travertine", "mh_step"],
+                ["travertine", "starter:huntress"],
             )
             self.assertFalse(tab.evaluate("() => __shell.ui.get().newDialog"))
             # the Character panel: what the character holds
