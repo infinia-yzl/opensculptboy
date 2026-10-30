@@ -45,9 +45,11 @@ SOLID_UNFOLD = 10
 # as the seal left a slit in the middle of Doryphoros' mouth
 SOLID_LIP_CONTACT = 0.006
 # the rings of skin around the eyes' and the mouth's openings (the linings of the sockets and
-# of the mouth) that keep anny's shape on a figure with a working face
-HOLD_EYE_RINGS = 3
-HOLD_LIP_RINGS = 3
+# of the mouth) that keep anny's shape on a figure with a working face: on Doryphoros 2 and 3
+# rings left dark gaps under the lids and between the lips, 4 a small one at the lips'
+# corner, and 6 narrowed the eyes
+HOLD_EYE_RINGS = 5
+HOLD_LIP_RINGS = 5
 # the fitted skin's pits deeper than the scan's own by this much (metres) relax
 PIT_EXCESS = 0.0005
 # the rings of the scan's vertices around its open borders whose pairs the refinement drops

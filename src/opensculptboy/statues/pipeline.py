@@ -82,7 +82,7 @@ class StatueConfig:
     # (hold: the rings around the eyes' and the mouth's openings that take no data); True:
     # carved eyes and closed lips on the scan
     solid: bool = False
-    hold: list = dataclasses.field(default_factory=lambda: [3, 3])
+    hold: list = dataclasses.field(default_factory=lambda: [5, 5])
     prune: float | bool = 0.025
     pose: str | None = "auto"
     detail: int = 2
