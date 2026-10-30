@@ -722,9 +722,9 @@ TRIM_INSIDE = 0.002
 TRIM_KEEP = 0.02
 # the rounds that take the teeth off a piece's open border
 TRIM_TEETH = 4
-# by role, how far inside the skin a piece's triangles go (None: they stay; the locks lie
-# against the cheek, and trimmed they showed holes)
-TRIM_BY_ROLE = {"clothing": TRIM_INSIDE, "hair": None}
+# by role, how far inside the skin a piece's triangles go (None: they stay): the locks lie
+# against the cheek and the brim over the skull, and trimmed they showed holes
+TRIM_BY_ROLE = {"clothing": None, "hair": None}
 
 
 def trim_piece(
