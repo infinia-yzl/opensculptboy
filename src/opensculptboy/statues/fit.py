@@ -916,9 +916,7 @@ def finish_piece(
     V, T, dropped = trim_piece(
         vertices, triangles, skin_vertices, skin_triangles, inside=TRIM_BY_ROLE[role]
     )
-    holes = 0
-    if role == "clothing":
-        V, T, holes = fill_holes(V, T)
+    V, T, holes = fill_holes(V, T)
     V, moved = seat_piece(V, T, skin_vertices, skin_triangles, reach=reach, blend=blend)
     stripped = 0
     within = ON_SKIN_BY_ROLE[role]

@@ -356,6 +356,10 @@ class FitOptions:
     eyes_to_lids: bool = False
     # and grown by this factor about the rim's centre (a fuller eye fills the corners)
     eyes_to_lids_scale: float = 1.0
+    # and the front of each socket's lining comes to this far (metres) outside its eyeball,
+    # so that the corners of the lids show the lining close on the eye (dark pockets showed
+    # there); a negative value leaves the lining
+    eyes_lining: float = -1.0
     # relax the fitted skin's pits that the reference lacks (relax_dents): deeper than the
     # reference's own by more than this (metres; 0: none)
     relax_dents: float = 0.0
@@ -3568,6 +3572,7 @@ def fit_levels(
                 fitted,
                 R_.pose_vertices(parametric, w, i, transforms, rotation, translation),
                 options.eyes_to_lids_scale,
+                options.eyes_lining,
             )
             rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
             if len(rows):
@@ -3840,14 +3845,15 @@ def fill_to_cover(
 
 
 def eyes_to_lids(
-    model, topology, fitted, posed, grow: float = 1.0
+    model, topology, fitted, posed, grow: float = 1.0, hug: float = -1.0
 ) -> tuple[np.ndarray, int]:
     """
     Each eyeball of a level (``fitted``) placed against the rim of its lids as it sits on
     anny's own posed face (``posed``, the level without offsets): the rim is the lining of
     the socket where it meets the skin, and the eyeball keeps its place and size relative to
-    the rim's centre and spread there, grown by ``grow``. Returns the vertices and the number
-    of eyes moved.
+    the rim's centre and spread there, grown by ``grow``. With ``hug`` >= 0, the socket's
+    lining in front of the eyeball's centre (toward the rim), but its rim, comes onto a
+    sphere ``hug`` outside the eyeball. Returns the vertices and the number of eyes moved.
     """
     from anny.faces.authoring.base_mesh import base_mesh
     from opensculptboy.export.vrm_tables import eyeball_vertices
@@ -3903,6 +3909,21 @@ def eyes_to_lids(
         scale = grow * spread1 / max(spread0, 1e-9)
         fitted[rows] = m1 + scale * (posed[rows] - m0)
         moved += 1
+        if hug >= 0:
+            centre = fitted[rows].mean(0)
+            radius = np.median(np.linalg.norm(fitted[rows] - centre, axis=1))
+            forward = fitted[rim].mean(0) - centre
+            forward /= max(np.linalg.norm(forward), 1e-12)
+            inner = lining.copy()
+            inner[rim] = False
+            pocket = np.nonzero(inner)[0]
+            radial = fitted[pocket] - centre
+            length = np.linalg.norm(radial, axis=1)
+            front = (radial @ forward) > 0.2 * length
+            pocket, radial, length = pocket[front], radial[front], length[front]
+            fitted[pocket] = centre + radial / np.maximum(length, 1e-12)[:, None] * (
+                radius + hug
+            )
     return fitted, moved
 
 
