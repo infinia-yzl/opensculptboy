@@ -161,8 +161,10 @@ FACE_MESH = {
     "mouth_corner_r": 61,
     "chin": 152,
 }
-# the head's picture: the scan's triangles within this distance (metres) of its top
-HEAD_REACH = 0.32
+# the head's pictures, tried in turn: the scan's triangles within this distance (metres) of
+# its top, and within this distance across of the top's centre (0: all; a head cut low under a
+# hat showed its shoulders, and its face was too small to find)
+HEAD_CROPS = ((0.32, 0.0), (0.24, 0.13), (0.2, 0.1))
 # the views tried in turn (yaw, pitch: from below when positive, degrees): a bowed head under
 # a hat shows its face from below
 FACE_VIEWS = ((0.0, 0.0), (0.0, 20.0), (0.0, 35.0), (20.0, 15.0), (-20.0, 15.0))
@@ -171,8 +173,8 @@ FACE_VIEWS = ((0.0, 0.0), (0.0, 20.0), (0.0, 35.0), (20.0, 15.0), (-20.0, 15.0))
 def detect_face(vertices, triangles, pictures: dict | None = None) -> dict:
     """
     The landmarks of the face (name -> point in Anny's frame) of a figure standing upright and
-    facing -Y, found by MediaPipe's face landmarker on a picture of its head alone (the
-    triangles within :data:`HEAD_REACH` of the top), where the face fills the picture: the
+    facing -Y, found by MediaPipe's face landmarker on a picture of its head alone (the crops
+    of :data:`HEAD_CROPS` around the top), where the face fills the picture: the
     eyes' corners, the nose's tip, the mouth's corners and the chin (:data:`FACE_MESH`). The
     views of :data:`FACE_VIEWS` are tried in turn. Each point takes the surface nearest the
     camera under its pixel. An empty dict when no view shows a face. ``pictures``, when
@@ -187,19 +189,28 @@ def detect_face(vertices, triangles, pictures: dict | None = None) -> dict:
 
     V = np.asarray(vertices, dtype=np.float64)
     T = np.asarray(triangles)
-    keep = (V[T][:, :, 2] > V[:, 2].max() - HEAD_REACH).all(1)
-    used = np.unique(T[keep])
-    if len(used) < 3:
+    top = V[:, 2].max()
+    centre = V[V[:, 2] > top - 0.06, :2].mean(0)
+    crops = []
+    for reach, width in HEAD_CROPS:
+        keep = (V[T][:, :, 2] > top - reach).all(1)
+        if width:
+            keep &= (np.linalg.norm(V[T][:, :, :2] - centre, axis=2) < width).all(1)
+        used = np.unique(T[keep])
+        if len(used) < 3:
+            continue
+        remap = np.full(len(V), -1)
+        remap[used] = np.arange(len(used))
+        crops.append((V[used], remap[T[keep]]))
+    if not crops:
         return {}
-    remap = np.full(len(V), -1)
-    remap[used] = np.arange(len(used))
-    head, head_triangles = V[used], remap[T[keep]]
     options = vision.FaceLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=str(model_path("face"))),
         num_faces=1,
     )
+    tries = [(c, v) for c in crops for v in FACE_VIEWS]
     with vision.FaceLandmarker.create_from_options(options) as landmarker:
-        for yaw, pitch in FACE_VIEWS:
+        for (head, head_triangles), (yaw, pitch) in tries:
             view = View(yaw, pitch)
             image, frame = _picture(head, head_triangles, view)
             if pictures is not None and "face" not in pictures:
