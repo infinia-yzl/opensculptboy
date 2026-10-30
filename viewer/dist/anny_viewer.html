@@ -4,7 +4,7 @@
      SHA-256 hashes (build.mjs puts them in place of SCRIPT_HASHES, the early theme script below among them), lets the
      interface's inline styles and the fonts as data URLs apply, and lets the page connect only to itself and to the
      three AI providers' API hosts (docs/viewer.md, "AI providers"). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-PNF++8n481UqTzwK8pWy0k2Dh/X/pLhEr8hvSmh5f6c=' 'sha256-8mQbx4vUwVOAZ1R2k+x+ejPmtavL8rx71ep/WUQ7XWM=' 'sha256-9lra8jrZ01jyxjvhmhsg3zTlr8QRssCYN65uUxWkJvw=' 'sha256-HVAdfMUMdPAMbkBOPbhE0wwk4vQbkWg3mr44vLdcH08=' 'sha256-4XDuZ91OFsGm/NiECiBmh+WlmyLCDkqQK8RFsJVFTXM=' 'wasm-unsafe-eval' blob:; worker-src blob:; connect-src 'self' blob: https://api.anthropic.com https://api.openai.com https://openrouter.ai; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-PNF++8n481UqTzwK8pWy0k2Dh/X/pLhEr8hvSmh5f6c=' 'sha256-8mQbx4vUwVOAZ1R2k+x+ejPmtavL8rx71ep/WUQ7XWM=' 'sha256-9lra8jrZ01jyxjvhmhsg3zTlr8QRssCYN65uUxWkJvw=' 'sha256-TrEyB4CH/YIHP6dDLa2fnfe5AeYESz6O26prwEc1M74=' 'sha256-4XDuZ91OFsGm/NiECiBmh+WlmyLCDkqQK8RFsJVFTXM=' 'wasm-unsafe-eval' blob:; worker-src blob:; connect-src 'self' blob: https://api.anthropic.com https://api.openai.com https://openrouter.ai; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; object-src 'none'">
 <link rel="icon" href="data:,">
 <style id="osb-design">
 /* Cinzel (c) Natanael Gama; Instrument Sans and Instrument Serif (c) The Instrument Sans and Instrument Serif Project Authors. SIL Open Font License 1.1 (https://openfontlicense.org). */
@@ -6532,10 +6532,12 @@ void main() {
     vec3 nh = normalize(mat3(uHeadInv) * vN);
     float occ0 = textureLod(uHairOcc, (hq0 + nh * 0.002 - uHairOccLo) / uHairOccSize, 0.0).r;
     if (occ0 < 0.93) {
+      // the depth of the hair along the normal, summed softly over the march so that it varies smoothly from one
+      // vertex to the next (a step function of the march would carve terraces)
       float off = 0.0;
       for (int i = 1; i <= 22; i++) {
         float d = float(i) * 0.005;
-        if (textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r < 0.93) off = d;
+        off += 0.005 * smoothstep(0.97, 0.86, textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r);
       }
       float w = smoothstep(0.93, 0.7, occ0);
       wp.xyz += vN * (off * 0.85 + 0.002) * w;

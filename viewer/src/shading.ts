@@ -336,10 +336,12 @@ void main() {
     vec3 nh = normalize(mat3(uHeadInv) * vN);
     float occ0 = textureLod(uHairOcc, (hq0 + nh * 0.002 - uHairOccLo) / uHairOccSize, 0.0).r;
     if (occ0 < 0.93) {
+      // the depth of the hair along the normal, summed softly over the march so that it varies smoothly from one
+      // vertex to the next (a step function of the march would carve terraces)
       float off = 0.0;
       for (int i = 1; i <= 22; i++) {
         float d = float(i) * 0.005;
-        if (textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r < 0.93) off = d;
+        off += 0.005 * smoothstep(0.97, 0.86, textureLod(uHairOcc, (hq0 + nh * d - uHairOccLo) / uHairOccSize, 0.0).r);
       }
       float w = smoothstep(0.93, 0.7, occ0);
       wp.xyz += vN * (off * 0.85 + 0.002) * w;
