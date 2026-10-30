@@ -88,6 +88,8 @@ export function makeOpener(deps: OpenDeps): Opener {
       if (MODELS.includes(e)) { models.push(p); continue; }
       rest.push(p);
     }
+    // with a card or a wearable package among them, the pictures and the models are its files (textures, garments)
+    if (rest.some((p) => ext(p.path) === 'json')) { rest.push(...pictures.splice(0), ...models.splice(0)); }
     // an OpenSculptBoy GLB or VRM file: the card in its scene extras; a card of sliders opens whole, a card that names
     // files opens whole with them (its folder or its .zip), and else asks for them
     let inGltf: { card: any; from: string } | null = null;
