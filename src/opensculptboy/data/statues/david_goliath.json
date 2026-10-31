@@ -93,14 +93,14 @@
       "role": "support",
       "name": "sword blade, upper",
       "start": [
-        -0.2981,
+        -0.296,
         0.86,
-        0.1307
+        0.129
       ],
       "end": [
-        -0.1708,
+        -0.174,
         0.4,
-        0.1134
+        0.122
       ],
       "radius": 0.035,
       "prop": "Sword"
@@ -110,16 +110,16 @@
       "role": "support",
       "name": "sword blade, lower",
       "start": [
-        -0.1708,
+        -0.19,
         0.4,
-        0.1134
+        0.12
       ],
       "end": [
-        -0.1236,
-        0.23,
-        0.107
+        -0.165,
+        0.18,
+        0.11
       ],
-      "radius": 0.015,
+      "radius": 0.025,
       "prop": "Sword"
     },
     {
@@ -327,7 +327,7 @@
     -0.9985,
     0.0
   ],
-  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece; the joints come from MediaPipe on pictures of the scan. The sword's blade, grip, pommel and cross-guard are masked from their own geometry (the blade's axis by principal components of the removed blade, a sphere fitted to the pommel), and the marble that the masks leave along their cuts (by the shin, the wing and the guard's ends) goes with prune_rim; a skin capsule gives the right foot back where the base's box reaches it; the skin that the boxes of Goliath's head and helmet took near the figure comes back with restore; the hands and feet are fitted one limb at a time (chains), and the sole and the toes on the removed head keep anny's shape (cover_removed: feet), blended into the carved instep over 8 rings (removed_grow).",
+  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece; the joints come from MediaPipe on pictures of the scan. The sword's grip, pommel and cross-guard are masked from their own geometry (the blade's axis, a sphere fitted to the pommel); a skin capsule gives the right foot back where the base's box reaches it; the skin that the boxes of Goliath's head and helmet took near the figure comes back with restore; the hands and feet are fitted one limb at a time (chains), and the sole and the toes on the removed head keep anny's shape (cover_removed: feet), blended into the carved ankle over 8 rings (removed_grow). prune_rim [0.01, 0.008] takes the guard's ends out of the right fist and the marble along the shin, but the left foot's fit then misses its scan, so it stays off.",
   "locks_face": true,
   "cover_grow": 3,
   "near_locks": 0.035,
@@ -352,9 +352,5 @@
     ],
     "keep": 3
   },
-  "removed_grow": 8,
-  "prune_rim": [
-    0.01,
-    0.008
-  ]
+  "removed_grow": 8
 }
