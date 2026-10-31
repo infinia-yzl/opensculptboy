@@ -370,10 +370,17 @@ class TestPipeline(unittest.TestCase):
                 "chain_options": {"rounds": 2},
                 "restore": 0.006,
                 "cover_removed": False,
+                "removed_grow": 8,
+                "prune_rim": [0.01, 0.008],
             }
         )
         self.assertEqual(config.chains, ["hand.r"])
         self.assertFalse(config.cover_removed)
+        self.assertEqual(config.prune_rim, [0.01, 0.008])
+        from opensculptboy.statues.pipeline import _removed_grow
+
+        self.assertEqual(_removed_grow(config), {"removed_grow": 8})
+        self.assertEqual(_removed_grow(StatueConfig.from_dict(base)), {})
 
     def test_convert_and_preview_from_a_config(self):
         import trimesh
@@ -483,6 +490,56 @@ class TestPrune(unittest.TestCase):
             handoff = load_handoff(folder)
             self.assertEqual(sorted(p.role for p in handoff.parts), ["hair", "skin"])
             self.assertTrue((pathlib.Path(folder) / "removed.glb").exists())
+
+    def test_the_rim_along_a_cut_leaves_the_skin(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import prune_far
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        V, T = synthetic_statue(0)["body"]
+        V = np.asarray(V, np.float64)
+        # a patch of a shin's skin raised 14 mm (the marble a blade left on the shin), with
+        # the removed blade beside it
+        from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+        regions = statue_regions(model)[: len(V)]
+        legs = np.nonzero(regions == STATUE_REGIONS.index("legs"))[0]
+        shin = legs[np.abs(V[legs, 2] - np.median(V[legs, 2])) < 0.02]
+        front = shin[np.argmin(V[shin, 1])]
+        patch = np.linalg.norm(V - V[front], axis=1) < 0.05
+        S = V.copy()
+        S[patch, 1] -= 0.014
+        blade = trimesh.creation.icosphere(subdivisions=3, radius=0.03)
+        blade.apply_translation(V[front] + (0.0, -0.05, 0.0))
+        raised = patch[T].all(1)
+        result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+        for rim, expected in ((None, 0), ((0.02, 0.008), 1)):
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = write_handoff(pathlib.Path(tmp) / "h", S, T, name="statue")
+                _write_removed(
+                    pathlib.Path(folder) / "removed.glb",
+                    np.asarray(blade.vertices),
+                    np.asarray(blade.faces),
+                    np.ones(len(blade.faces), np.int64),
+                    ["skin", "support"],
+                )
+                counts = prune_far(folder, result, model, rim=rim)
+            if expected:
+                self.assertGreater(counts["support_cut"], 0)
+                self.assertLessEqual(
+                    counts["support_cut"], int((patch[T].any(1)).sum())
+                )
+                self.assertGreaterEqual(
+                    counts["statue"], len(T) - patch[T].any(1).sum()
+                )
+                self.assertGreater(raised.sum(), 0)
+            else:
+                self.assertEqual(counts["statue"], len(T))
 
     def test_a_hat_seats_on_the_skull(self):
         import trimesh
@@ -672,6 +729,15 @@ class TestPrune(unittest.TestCase):
             appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
             regions = statue_regions(model)[appearance["statue"]["covered_levels"]]
             self.assertTrue((regions == STATUE_REGIONS.index("feet")).all())
+            # a wider blend: more rings of the feet without data, still the feet alone
+            narrow = len(appearance["statue"]["covered_levels"])
+            covered_skin(folder, result, model, cover_removed=("feet",), removed_grow=8)
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            wide = appearance["statue"]["covered_levels"]
+            self.assertGreater(len(wide), narrow)
+            self.assertTrue(
+                (statue_regions(model)[wide] == STATUE_REGIONS.index("feet")).all()
+            )
 
     def test_skin_inside_a_coarse_mask_comes_back(self):
         import types
@@ -921,6 +987,49 @@ class TestRebuiltPieces(unittest.TestCase):
         self.assertEqual(props["Hat"][2], "drapery")
         self.assertEqual(len(props["Hat"][1]), len(rebuilt.faces))
         self.assertEqual(len(props["Sword"][1]), 12)
+
+    def test_one_piece_takes_the_place_of_the_hat_and_the_locks(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import (
+            PIECE_TRIANGLES,
+            UNION_ROLE,
+            statue_props,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "statue"
+            (root / "handoff").mkdir(parents=True)
+            (root / "pieces").mkdir()
+            scene = trimesh.Scene()
+            for name in ("Hat", "Locks", "Sword"):
+                scene.add_geometry(
+                    trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
+                    node_name=name,
+                    geom_name=name,
+                )
+            scene.export(str(root / "handoff" / "props.glb"))
+            roles = {"Hat": "drapery", "Locks": "hair", "Sword": "support"}
+            (root / "handoff" / "props.json").write_text(
+                json.dumps(
+                    {"props": [{"name": n, "role": r} for n, r in roles.items()]}
+                ),
+                encoding="utf-8",
+            )
+            # the separate pieces lose to the one piece
+            trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(
+                str(root / "pieces" / "hat.ply")
+            )
+            union = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+            union.export(str(root / "pieces" / "hat_locks.ply"))
+            props = {name: (V, T, role) for name, V, T, role in statue_props(root)}
+        self.assertEqual(sorted(props), ["Hat", "Sword"])
+        self.assertEqual(props["Hat"][2], UNION_ROLE)
+        self.assertEqual(len(props["Hat"][1]), len(union.faces))
+        self.assertEqual(
+            PIECE_TRIANGLES[UNION_ROLE],
+            PIECE_TRIANGLES["drapery"] + PIECE_TRIANGLES["hair"],
+        )
 
 
 class TestRegionDistances(unittest.TestCase):

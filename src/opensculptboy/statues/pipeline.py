@@ -92,10 +92,15 @@ class StatueConfig:
     # and the skin of the head within this distance (metres) of fused locks on the first fit
     near_locks: float = 0.0
     prune: float | bool = 0.025
+    # and the skin within prune_rim[0] (metres) of the removed pieces further than
+    # prune_rim[1] from the first fit (the rims along the masks' cuts; None: none)
+    prune_rim: list | None = None
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)
     cover_removed: bool | list = True
+    # and that skin grows by this many rings (None: COVER_GROW of opensculptboy.statues.fit)
+    removed_grow: int | None = None
     # the chains fitted one limb at a time after the parameters ("hand.l", "foot.r"; see
     # opensculptboy.statues.chains), with ChainOptions fields
     chains: list = dataclasses.field(default_factory=list)
@@ -395,6 +400,13 @@ def stage1_from_card(run) -> dict:
     )
 
 
+def _removed_grow(config) -> dict:
+    """covered_skin's removed_grow when the config sets it."""
+    if config.removed_grow is None:
+        return {}
+    return {"removed_grow": int(config.removed_grow)}
+
+
 def _chain_options(config: StatueConfig, verbose: bool):
     from opensculptboy.statues.chains import ChainOptions
 
@@ -511,7 +523,14 @@ def fit(
                     pruned["restored"] = restore_near(
                         folder, first, distance=float(config.restore)
                     )
-                pruned.update(prune_far(folder, first, distance=float(config.prune)))
+                pruned.update(
+                    prune_far(
+                        folder,
+                        first,
+                        distance=float(config.prune),
+                        rim=tuple(config.prune_rim) if config.prune_rim else None,
+                    )
+                )
             pruned["covered"] = covered_skin(
                 folder,
                 first,
@@ -520,6 +539,7 @@ def fit(
                 grow=config.cover_grow,
                 near_locks=config.near_locks,
                 cover_removed=config.cover_removed,
+                **_removed_grow(config),
             )
         if stage1.resolve() != saved.resolve():
             saved.mkdir(parents=True, exist_ok=True)
@@ -544,7 +564,14 @@ def fit(
                 pruned["restored"] = restore_near(
                     folder, first, distance=float(config.restore)
                 )
-            pruned.update(prune_far(folder, first, distance=float(config.prune)))
+            pruned.update(
+                prune_far(
+                    folder,
+                    first,
+                    distance=float(config.prune),
+                    rim=tuple(config.prune_rim) if config.prune_rim else None,
+                )
+            )
             # the skull under a hat and fused locks keeps anny's own shape
             pruned["covered"] = covered_skin(
                 folder,
@@ -554,6 +581,7 @@ def fit(
                 grow=config.cover_grow,
                 near_locks=config.near_locks,
                 cover_removed=config.cover_removed,
+                **_removed_grow(config),
             )
         result = run(config.detail)
         (saved / "main.json").write_text(

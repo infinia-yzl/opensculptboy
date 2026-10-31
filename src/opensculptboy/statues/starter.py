@@ -96,6 +96,11 @@ PIECE_TRIANGLES = {"drapery": 80000, "hair": 100000}
 # the rebuilt pieces (opensculptboy/statues/blender_pieces.py) beside a run, by role: they
 # take the place of the seated cuts
 REBUILT = {"drapery": "hat.ply", "hair": "locks.ply"}
+# the hat and the locks rebuilt as one piece (blender_pieces.py union=1): the hat's prop takes
+# it with both budgets, and the locks' prop goes (apart, a slit showed along their shared cut)
+UNION = "hat_locks.ply"
+UNION_ROLE = "drapery+hair"
+PIECE_TRIANGLES[UNION_ROLE] = PIECE_TRIANGLES["drapery"] + PIECE_TRIANGLES["hair"]
 # a prop that reaches this close (metres) to the ground stands on it: bound to the root
 GROUND_REACH = 0.03
 PROP_COLOUR = (0.84, 0.82, 0.79, 1.0)
@@ -115,7 +120,9 @@ def statue_props(root, props=None) -> list:
     ``<root>/handoff``), with a hat and locks taken from the rebuilt pieces in
     ``<root>/pieces/`` (:data:`REBUILT`, the closed meshes of ``blender_pieces.py``) when
     they exist, else from the measure step's seated pieces (``meshes/seated_*``), which meet
-    the fitted skin. Each entry carries the piece's role as a fourth item.
+    the fitted skin. Each entry carries the piece's role as a fourth item. A rebuilt
+    ``hat_locks.ply`` (:data:`UNION`) takes the place of both: the hat's entry carries it with
+    the role :data:`UNION_ROLE`, and the locks' entry goes.
     """
     import trimesh
 
@@ -132,10 +139,16 @@ def statue_props(root, props=None) -> list:
     scene = trimesh.load(str(path), force="scene")
     out = []
     seated_role = {"drapery": "clothing", "hair": "hair"}
+    union = pathlib.Path(root) / "pieces" / UNION
     for name, geometry in scene.geometry.items():
         role = roles.get(name, "support")
         rebuilt = pathlib.Path(root) / "pieces" / REBUILT.get(role, "-")
-        if rebuilt.exists():
+        if union.exists() and role in seated_role:
+            if role == "hair":
+                continue
+            geometry = trimesh.load(str(union), process=False)
+            role = UNION_ROLE
+        elif rebuilt.exists():
             geometry = trimesh.load(str(rebuilt), process=False)
         elif role in seated_role:
             files = sorted(
