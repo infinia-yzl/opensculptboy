@@ -95,6 +95,10 @@ class StatueConfig:
     # and the skin within prune_rim[0] (metres) of the removed pieces further than
     # prune_rim[1] from the first fit (the rims along the masks' cuts; None: none)
     prune_rim: list | None = None
+    # the regions whose rims stay (None: RIM_KEEP of opensculptboy.statues.fit)
+    prune_rim_keep: list | None = None
+    # masks (as in "masks") whose skin on the first fit takes no data on the detail levels
+    no_data_regions: list = dataclasses.field(default_factory=list)
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)
@@ -401,10 +405,13 @@ def stage1_from_card(run) -> dict:
 
 
 def _removed_grow(config) -> dict:
-    """covered_skin's removed_grow when the config sets it."""
-    if config.removed_grow is None:
-        return {}
-    return {"removed_grow": int(config.removed_grow)}
+    """covered_skin's removed_grow and no_data_regions when the config sets them."""
+    out = {}
+    if config.removed_grow is not None:
+        out["removed_grow"] = int(config.removed_grow)
+    if config.no_data_regions:
+        out["no_data_regions"] = tuple(config.no_data_regions)
+    return out
 
 
 def _chain_options(config: StatueConfig, verbose: bool):
@@ -529,6 +536,7 @@ def fit(
                         first,
                         distance=float(config.prune),
                         rim=tuple(config.prune_rim) if config.prune_rim else None,
+                        rim_keep=config.prune_rim_keep,
                     )
                 )
             pruned["covered"] = covered_skin(
@@ -570,6 +578,7 @@ def fit(
                     first,
                     distance=float(config.prune),
                     rim=tuple(config.prune_rim) if config.prune_rim else None,
+                    rim_keep=config.prune_rim_keep,
                 )
             )
             # the skull under a hat and fused locks keeps anny's own shape

@@ -372,6 +372,10 @@ class TestPipeline(unittest.TestCase):
                 "cover_removed": False,
                 "removed_grow": 8,
                 "prune_rim": [0.01, 0.008],
+                "prune_rim_keep": ["face", "feet"],
+                "no_data_regions": [
+                    {"kind": "sphere", "centre": [0, 0, 0], "radius": 0.1}
+                ],
             }
         )
         self.assertEqual(config.chains, ["hand.r"])
@@ -379,7 +383,10 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(config.prune_rim, [0.01, 0.008])
         from opensculptboy.statues.pipeline import _removed_grow
 
-        self.assertEqual(_removed_grow(config), {"removed_grow": 8})
+        self.assertEqual(config.prune_rim_keep, ["face", "feet"])
+        grow = _removed_grow(config)
+        self.assertEqual(grow["removed_grow"], 8)
+        self.assertEqual(len(grow["no_data_regions"]), 1)
         self.assertEqual(_removed_grow(StatueConfig.from_dict(base)), {})
 
     def test_convert_and_preview_from_a_config(self):
@@ -518,7 +525,12 @@ class TestPrune(unittest.TestCase):
         blade.apply_translation(V[front] + (0.0, -0.05, 0.0))
         raised = patch[T].all(1)
         result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
-        for rim, expected in ((None, 0), ((0.02, 0.008), 1)):
+        cases = (
+            (None, None, 0),
+            ((0.02, 0.008), None, 1),
+            ((0.02, 0.008), ["legs"], 0),
+        )
+        for rim, keep, expected in cases:
             with tempfile.TemporaryDirectory() as tmp:
                 folder = write_handoff(pathlib.Path(tmp) / "h", S, T, name="statue")
                 _write_removed(
@@ -528,7 +540,7 @@ class TestPrune(unittest.TestCase):
                     np.ones(len(blade.faces), np.int64),
                     ["skin", "support"],
                 )
-                counts = prune_far(folder, result, model, rim=rim)
+                counts = prune_far(folder, result, model, rim=rim, rim_keep=keep)
             if expected:
                 self.assertGreater(counts["support_cut"], 0)
                 self.assertLessEqual(
@@ -540,6 +552,21 @@ class TestPrune(unittest.TestCase):
                 self.assertGreater(raised.sum(), 0)
             else:
                 self.assertEqual(counts["statue"], len(T))
+        # the cut of the pruning itself: the blade is still on the scan (no removed.glb) and
+        # goes as far skin, and the raised rim beside it goes too
+        S2 = np.concatenate([S, np.asarray(blade.vertices)])
+        T2 = np.concatenate([T, np.asarray(blade.faces) + len(S)])
+        for rim in (None, (0.02, 0.008)):
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = write_handoff(pathlib.Path(tmp) / "h", S2, T2, name="statue")
+                counts = prune_far(folder, result, model, rim=rim)
+            if rim is None:
+                self.assertEqual(counts["statue"], len(T))
+            else:
+                self.assertLess(counts["statue"], len(T))
+                self.assertGreaterEqual(
+                    counts["statue"], len(T) - patch[T].any(1).sum()
+                )
 
     def test_a_hat_seats_on_the_skull(self):
         import trimesh
@@ -729,6 +756,21 @@ class TestPrune(unittest.TestCase):
             appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
             regions = statue_regions(model)[appearance["statue"]["covered_levels"]]
             self.assertTrue((regions == STATUE_REGIONS.index("feet")).all())
+            # a region given no data: the skin of the first fit inside it, whatever lies by it
+            hand = V[np.argmin(V[:, 0])]
+            region = {"kind": "sphere", "centre": hand.tolist(), "radius": 0.04}
+            covered_skin(
+                folder,
+                result,
+                model,
+                cover_removed=False,
+                removed_grow=0,
+                no_data_regions=(region,),
+            )
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            inside = np.linalg.norm(V - hand, axis=1) < 0.04
+            self.assertGreater(len(appearance["statue"]["covered_levels"]), 0)
+            self.assertTrue(inside[appearance["statue"]["covered_levels"]].all())
             # a wider blend: more rings of the feet without data, still the feet alone
             narrow = len(appearance["statue"]["covered_levels"])
             covered_skin(folder, result, model, cover_removed=("feet",), removed_grow=8)

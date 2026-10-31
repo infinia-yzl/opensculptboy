@@ -440,6 +440,7 @@ def prune_far(
     model=None,
     distance: float = PRUNE_DISTANCE,
     rim: tuple | None = None,
+    rim_keep: tuple = None,
 ) -> dict:
     """
     Take out of a statue handoff the skin that a first fit (``result``, its level 0) does not
@@ -449,8 +450,11 @@ def prune_far(
     ``removed.glb`` as ``support_cut``. ``rim`` (reach, distance in metres) also takes the
     skin within reach of the removed pieces that lies further than that distance from the
     fit: the rims that a mask left along its cut (the marble between a blade and the shin,
-    the edge of a wing by the foot), which stood 1 to 2 cm off the figure and pulled its skin
-    into flaps. Returns the triangle counts.
+    the edge of a wing by the foot, and the lips that this pruning leaves where it takes the
+    marble between a blade and the shin), which stood 1 to 2 cm off the figure and pulled
+    its skin into flaps and creases. ``rim_keep`` names the regions whose rims stay (default :data:`RIM_KEEP`; a
+    foot set on a removed head lost the skin its chain posed it by). Returns the triangle
+    counts.
     """
     import trimesh
     from scipy.spatial import cKDTree
@@ -472,16 +476,6 @@ def prune_far(
     _, _, d = closest_triangles(centres, V, T)
     far = d > distance
     removed_path = folder / "removed.glb"
-    rim_far = np.zeros(len(ST), bool)
-    if rim is not None and removed_path.exists():
-        cut = trimesh.load(str(removed_path), force="scene")
-        R = [np.asarray(g.vertices) @ GLTF_TO_ANNY.T for g in cut.geometry.values()]
-        if R:
-            reach, off = float(rim[0]), float(rim[1])
-            d_cut, _ = cKDTree(np.concatenate(R)).query(
-                centres, distance_upper_bound=reach
-            )
-            rim_far = np.isfinite(d_cut) & (d > off)
     from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
 
     regions = statue_regions(model)
@@ -493,7 +487,25 @@ def prune_far(
     far &= ~np.isin(region, [STATUE_REGIONS.index(r) for r in KEEP_REGIONS])
     # the rims go by the hands too (the ends of a sword's guard left in a fist), where the
     # first fit's chains hold the fist
-    far |= rim_far & ~np.isin(region, [STATUE_REGIONS.index(r) for r in RIM_KEEP])
+    if rim is not None:
+        # the cuts are the masks' (removed.glb) and this pruning's own: the web of marble
+        # between a blade and the shin goes as far skin, and its lips stay within reach
+        R = [S[ST[far]].reshape(-1, 3)]
+        if removed_path.exists():
+            cut = trimesh.load(str(removed_path), force="scene")
+            R += [
+                np.asarray(g.vertices) @ GLTF_TO_ANNY.T for g in cut.geometry.values()
+            ]
+        R = np.concatenate(R)
+        if len(R):
+            reach, off = float(rim[0]), float(rim[1])
+            d_cut, _ = cKDTree(R).query(centres, distance_upper_bound=reach)
+            keep = RIM_KEEP if rim_keep is None else tuple(rim_keep)
+            far |= (
+                np.isfinite(d_cut)
+                & (d > off)
+                & ~np.isin(region, [STATUE_REGIONS.index(r) for r in keep])
+            )
     head = np.isin(region, [STATUE_REGIONS.index(r) for r in HAIR_REGIONS])
     # the skin left must hold together: loose bits of it go with the far triangles
     near = ~far
@@ -800,6 +812,7 @@ def covered_skin(
     near_locks: float = 0.0,
     cover_removed: bool | tuple = True,
     removed_grow: int = COVER_GROW,
+    no_data_regions: tuple = (),
 ) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
@@ -821,6 +834,11 @@ def covered_skin(
     and the toes of a foot set on a removed head). ``removed_grow`` widens the skin without
     data by removed pieces by that many rings, so that anny's posed foot blends into the
     scan's visible part over a wider band (the fill met the carved instep in a ledge).
+    ``no_data_regions`` (:class:`~opensculptboy.statues.scan.Mask` entries or their dicts) give
+    no data on the detail levels to the first fit's level-0 vertices inside them: a foot whose
+    toes the scan fuses with its base, or the band of a fist around a removed grip, which the
+    fit pulled into the grip's tunnel. That skin grows by ``removed_grow`` rings in the
+    limbs, as the skin by removed pieces does, so that the fill blends in.
     """
     from anny.hair import closest_triangles
     from opensculptboy.fit.handoff import load_handoff
@@ -901,6 +919,13 @@ def covered_skin(
                 regions[rows], [STATUE_REGIONS.index(r) for r in CUT_REGIONS[role]]
             )
             marked[rows] |= near & on_cut0 & (d0 < COVER_CUT)
+    if no_data_regions:
+        from opensculptboy.statues.scan import Mask
+
+        excluded = excluded_vertices(model)[: len(V)]
+        for region in no_data_regions:
+            mask = region if isinstance(region, Mask) else Mask.from_dict(dict(region))
+            marked_levels |= mask.inside(fitted0) & ~excluded
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
     if marked_levels.any() and removed_grow > 0:
