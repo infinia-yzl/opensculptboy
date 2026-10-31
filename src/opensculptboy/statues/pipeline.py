@@ -99,6 +99,9 @@ class StatueConfig:
     prune_rim_keep: list | None = None
     # masks (as in "masks") whose skin on the first fit takes no data on the detail levels
     no_data_regions: list = dataclasses.field(default_factory=list)
+    # props rebuilt in part from shapes (opensculptboy.statues.starter.export_props): name ->
+    # {"cut": a mask, "shapes": spheres and capsules}
+    prop_shapes: dict = dataclasses.field(default_factory=dict)
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)

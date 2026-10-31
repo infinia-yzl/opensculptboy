@@ -22,7 +22,9 @@ Usage::
         [voxel=0.0008] [thick=0.002] [sides=80] [hat=150000] [locks=200000]
 
 ``MESH_DIR`` holds ``seated_clothing_drapery.ply`` (the hat) and ``seated_hair_hair.ply`` with
-``seated_hair_hair_cut.ply`` (the locks); ``OUT_DIR`` receives ``hat.ply``, ``locks.ply`` (in the
+``seated_hair_hair_cut.ply`` (the locks), and any ``prop_<slug>.ply`` (a prop of ``props.glb``
+written by :func:`opensculptboy.statues.starter.export_props`: a sword cut from the scan, torn
+where the masks met the fist); ``OUT_DIR`` receives ``hat.ply``, ``locks.ply``, ``<slug>.ply`` (in the
 same frame; with ``union=1`` one piece ``hat_locks.ply``, which closes the slit along their shared
 cut under the brim) and ``report.json`` (triangles before and after, the non-manifold edges, which a
 closed piece has none of, and the islands).
@@ -45,10 +47,28 @@ DEFAULTS = {
     "border_repeat": 10,
     "hat": 150000,
     "locks": 200000,
+    # the budget of each prop_<slug>.ply
+    "prop": 40000,
     # 1: the hat and the locks as one piece (they share the cut under the brim, and apart
     # they left a dark slit there)
     "union": 0,
 }
+
+
+def pieces_in(mesh_dir: str, settings: dict) -> tuple[dict, dict]:
+    """The pieces found in ``mesh_dir`` (name -> its files) and their triangle budgets."""
+    pieces = dict(PIECES)
+    budgets = {k: int(settings[k]) for k in PIECES}
+    if settings["union"]:
+        pieces = {"hat_locks": PIECES["hat"] + PIECES["locks"]}
+        budgets = {"hat_locks": int(settings["hat"]) + int(settings["locks"])}
+    names = sorted(os.listdir(mesh_dir)) if os.path.isdir(mesh_dir) else []
+    for name in names:
+        if name.startswith("prop_") and name.endswith(".ply"):
+            slug = name[len("prop_") : -len(".ply")]
+            pieces[slug] = [name]
+            budgets[slug] = int(settings["prop"])
+    return pieces, budgets
 
 
 def parse(argv) -> tuple[str, str, dict]:
@@ -93,11 +113,7 @@ def rebuild(mesh_dir: str, out_dir: str, settings: dict) -> dict:
 
     os.makedirs(out_dir, exist_ok=True)
     report = {}
-    pieces = dict(PIECES)
-    budgets = {k: int(settings[k]) for k in PIECES}
-    if settings["union"]:
-        pieces = {"hat_locks": PIECES["hat"] + PIECES["locks"]}
-        budgets = {"hat_locks": int(settings["hat"]) + int(settings["locks"])}
+    pieces, budgets = pieces_in(mesh_dir, settings)
     for piece, files in pieces.items():
         paths = [os.path.join(mesh_dir, f) for f in files]
         paths = [p for p in paths if os.path.exists(p)]

@@ -93,14 +93,14 @@
       "role": "support",
       "name": "sword blade, upper",
       "start": [
-        -0.296,
+        -0.2981,
         0.86,
-        0.129
+        0.1307
       ],
       "end": [
-        -0.174,
+        -0.1708,
         0.4,
-        0.122
+        0.1134
       ],
       "radius": 0.035,
       "prop": "Sword"
@@ -110,16 +110,16 @@
       "role": "support",
       "name": "sword blade, lower",
       "start": [
-        -0.19,
+        -0.1708,
         0.4,
-        0.12
+        0.1134
       ],
       "end": [
-        -0.165,
-        0.18,
-        0.11
+        -0.1236,
+        0.23,
+        0.107
       ],
-      "radius": 0.025,
+      "radius": 0.015,
       "prop": "Sword"
     },
     {
@@ -293,12 +293,12 @@
       "name": "locks, behind",
       "centre": [
         -0.005,
-        1.547,
+        1.5122,
         -0.062
       ],
       "size": [
         0.33,
-        0.195,
+        0.2645,
         0.115
       ],
       "prop": "Locks"
@@ -327,12 +327,12 @@
     -0.9985,
     0.0
   ],
-  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece; the joints come from MediaPipe on pictures of the scan. The sword's grip, pommel and cross-guard are masked from their own geometry (the blade's axis, a sphere fitted to the pommel); a skin capsule gives the right foot back where the base's box reaches it; the skin that the boxes of Goliath's head and helmet took near the figure comes back with restore; the hands and feet are fitted one limb at a time (chains), and the sole and the toes on the removed head keep anny's shape (cover_removed: feet), blended into the carved ankle over 8 rings (removed_grow). prune_rim [0.01, 0.008] takes the guard's ends out of the right fist and the marble along the shin, but the left foot's fit then misses its scan, so it stays off.",
+  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece, the locks behind down to where the hair meets the back; the joints come from MediaPipe on pictures of the scan. The sword's blade, grip, pommel and cross-guard are masked from their own geometry (the blade's axis by principal components of the removed blade, a sphere fitted to the pommel); a skin capsule gives the right foot back where the base's box reaches it; the skin that the boxes of Goliath's head and helmet took near the figure comes back with restore. prune_rim takes the marble that the masks and the pruning leave along their cuts (the lips of the web between the blade and the shin, the guard's ends in the fist), away from the face, the trunk, the head and the feet. The hands and feet are fitted one limb at a time (chains); the sole and the toes of the left foot on the removed head keep anny's shape (cover_removed: feet), blended into the carved ankle over 8 rings (removed_grow), and the right foot, whose toes the scan fuses with the base, is anny's posed foot as well (no_data_regions). cover_reach and near_locks of 45 mm bring the left cheek out to the locks. The scan saw the sword's pommel from one side and its grip not at all inside the fist, so the starter's sword keeps the scanned blade and models the hilt from shapes at the measured axis (prop_shapes).",
   "locks_face": true,
   "cover_grow": 3,
-  "near_locks": 0.035,
+  "near_locks": 0.045,
   "fit": {
-    "cover_reach": 0.03
+    "cover_reach": 0.045
   },
   "cover_removed": [
     "feet"
@@ -352,5 +352,140 @@
     ],
     "keep": 3
   },
-  "removed_grow": 8
+  "removed_grow": 8,
+  "prune_rim": [
+    0.01,
+    0.008
+  ],
+  "prune_rim_keep": [
+    "face",
+    "ears",
+    "torso",
+    "feet",
+    "neck",
+    "scalp"
+  ],
+  "no_data_regions": [
+    {
+      "kind": "capsule",
+      "name": "right foot, anny's posed foot",
+      "start": [
+        -0.105,
+        0.05,
+        -0.07
+      ],
+      "end": [
+        -0.12,
+        0.035,
+        0.15
+      ],
+      "radius": 0.06
+    }
+  ],
+  "prop_shapes": {
+    "Sword": {
+      "cut": {
+        "kind": "half",
+        "name": "the hilt above the blade",
+        "point": [
+          0.0,
+          0.872,
+          0.0
+        ],
+        "normal": "+y"
+      },
+      "shapes": [
+        {
+          "kind": "capsule",
+          "name": "grip",
+          "start": [
+            -0.3,
+            0.87,
+            0.116
+          ],
+          "end": [
+            -0.346,
+            1.02,
+            0.118
+          ],
+          "radius": 0.0125
+        },
+        {
+          "kind": "capsule",
+          "name": "collar over the fist",
+          "start": [
+            -0.338,
+            0.972,
+            0.117
+          ],
+          "end": [
+            -0.347,
+            1.01,
+            0.118
+          ],
+          "radius": 0.018
+        },
+        {
+          "kind": "sphere",
+          "name": "pommel, the sphere fitted to the scan's",
+          "centre": [
+            -0.349,
+            1.042,
+            0.118
+          ],
+          "radius": 0.04
+        },
+        {
+          "kind": "capsule",
+          "name": "guard, front arm",
+          "start": [
+            -0.303,
+            0.888,
+            0.11
+          ],
+          "end": [
+            -0.3,
+            0.866,
+            0.196
+          ],
+          "radius": 0.011
+        },
+        {
+          "kind": "capsule",
+          "name": "guard, back arm",
+          "start": [
+            -0.303,
+            0.888,
+            0.11
+          ],
+          "end": [
+            -0.3,
+            0.878,
+            0.025
+          ],
+          "radius": 0.011
+        },
+        {
+          "kind": "sphere",
+          "name": "guard's front knob",
+          "centre": [
+            -0.3,
+            0.864,
+            0.2
+          ],
+          "radius": 0.016
+        },
+        {
+          "kind": "sphere",
+          "name": "guard's back knob",
+          "centre": [
+            -0.3,
+            0.878,
+            0.021
+          ],
+          "radius": 0.016
+        }
+      ]
+    }
+  }
 }

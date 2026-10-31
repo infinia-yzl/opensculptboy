@@ -122,7 +122,9 @@ def statue_props(root, props=None) -> list:
     they exist, else from the measure step's seated pieces (``meshes/seated_*``), which meet
     the fitted skin. Each entry carries the piece's role as a fourth item. A rebuilt
     ``hat_locks.ply`` (:data:`UNION`) takes the place of both: the hat's entry carries it with
-    the role :data:`UNION_ROLE`, and the locks' entry goes.
+    the role :data:`UNION_ROLE`, and the locks' entry goes. Another prop takes
+    ``<root>/pieces/<slug>.ply`` when it exists (a sword rebuilt closed from
+    :func:`export_props`).
     """
     import trimesh
 
@@ -143,7 +145,11 @@ def statue_props(root, props=None) -> list:
     for name, geometry in scene.geometry.items():
         role = roles.get(name, "support")
         rebuilt = pathlib.Path(root) / "pieces" / REBUILT.get(role, "-")
-        if union.exists() and role in seated_role:
+        prop_piece = pathlib.Path(root) / "pieces" / f"{_slug(name)}.ply"
+        if role not in seated_role and prop_piece.exists():
+            # a prop rebuilt closed (blender_pieces.py from export_props)
+            geometry = trimesh.load(str(prop_piece), process=False)
+        elif union.exists() and role in seated_role:
             if role == "hair":
                 continue
             geometry = trimesh.load(str(union), process=False)
@@ -168,6 +174,83 @@ def statue_props(root, props=None) -> list:
             )
         )
     return out
+
+
+def shape_mesh(entry):
+    """A closed mesh of a sphere or capsule mask entry (a dict or a
+    :class:`~opensculptboy.statues.scan.Mask`), in the masks' frame."""
+    import trimesh
+
+    from opensculptboy.statues.scan import Mask
+
+    mask = entry if isinstance(entry, Mask) else Mask.from_dict(dict(entry))
+    if mask.kind == "sphere":
+        mesh = trimesh.creation.icosphere(subdivisions=4, radius=float(mask.radius))
+        mesh.apply_translation(np.asarray(mask.centre, np.float64))
+        return mesh
+    if mask.kind == "capsule":
+        a = np.asarray(mask.start, np.float64)
+        b = np.asarray(mask.end, np.float64)
+        height = float(np.linalg.norm(b - a))
+        mesh = trimesh.creation.capsule(
+            height=height, radius=float(mask.radius), count=[24, 24]
+        )
+        mesh.apply_transform(
+            trimesh.geometry.align_vectors([0, 0, 1], (b - a) / height)
+        )
+        mesh.apply_translation((a + b) / 2)
+        return mesh
+    raise ValueError(f"A prop shape is a sphere or a capsule; got {mask.kind!r}.")
+
+
+def export_props(root, out_dir, names=None, props=None, shapes=None) -> list:
+    """Write the named props of a run's ``props.glb`` (default: every prop that is neither
+    drapery nor hair) as ``prop_<slug>.ply`` in ``out_dir``, in the file's own frame (the
+    masks' frame), for ``blender_pieces.py`` to rebuild closed. ``shapes`` (a config's
+    ``prop_shapes``: prop name -> {"cut": a mask, "shapes": spheres and capsules}) takes the
+    triangles inside ``cut`` out of that prop and adds the shapes, which the voxel remesh
+    joins: a sword's hilt whose pommel the scan saw from one side and whose grip it never
+    saw inside the fist. Returns the paths written."""
+    import trimesh
+
+    from opensculptboy.statues.scan import Mask
+
+    folder = pathlib.Path(props) if props else pathlib.Path(root) / "handoff"
+    path = folder / "props.glb"
+    if not path.exists():
+        return []
+    roles = {}
+    if (folder / "props.json").exists():
+        info = json.loads((folder / "props.json").read_text(encoding="utf-8"))
+        roles = {p["name"]: p["role"] for p in info.get("props", [])}
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    scene = trimesh.load(str(path), force="scene")
+    for name, geometry in scene.geometry.items():
+        if names is not None and name not in names:
+            continue
+        if names is None and roles.get(name, "support") in ("drapery", "hair"):
+            continue
+        target = out_dir / f"prop_{_slug(name)}.ply"
+        mesh = trimesh.Trimesh(
+            np.asarray(geometry.vertices), np.asarray(geometry.faces), process=False
+        )
+        spec = (shapes or {}).get(name)
+        if spec:
+            if spec.get("cut"):
+                cut = Mask.from_dict(dict(spec["cut"]))
+                inside = cut.inside(np.asarray(mesh.vertices))
+                mesh = trimesh.Trimesh(
+                    mesh.vertices, mesh.faces[~inside[mesh.faces].all(1)], process=False
+                )
+                mesh.remove_unreferenced_vertices()
+            mesh = trimesh.util.concatenate(
+                [mesh] + [shape_mesh(e) for e in spec.get("shapes", [])]
+            )
+        mesh.export(str(target))
+        written.append(target)
+    return written
 
 
 def _write_prop_glb(path, vertices, triangles, name):

@@ -988,6 +988,15 @@ class TestPieceRebuild(unittest.TestCase):
         self.assertEqual(settings["hat"], 1000)
         self.assertEqual(settings["locks"], DEFAULTS["locks"])
         self.assertEqual(set(PIECES), {"hat", "locks"})
+        # a prop exported for the rebuild joins the pieces with the prop budget
+        from opensculptboy.statues.blender_pieces import pieces_in
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "prop_sword.ply").write_bytes(b"")
+            pieces, budgets = pieces_in(tmp, dict(DEFAULTS))
+        self.assertEqual(pieces["sword"], ["prop_sword.ply"])
+        self.assertEqual(budgets["sword"], DEFAULTS["prop"])
+        self.assertIn("hat", pieces)
         with self.assertRaises(SystemExit):
             parse(["m", "o", "colour=1"])
         with self.assertRaises(SystemExit):
@@ -1029,6 +1038,72 @@ class TestRebuiltPieces(unittest.TestCase):
         self.assertEqual(props["Hat"][2], "drapery")
         self.assertEqual(len(props["Hat"][1]), len(rebuilt.faces))
         self.assertEqual(len(props["Sword"][1]), 12)
+        # the sword exported, rebuilt (here: a sphere) and taken in its place
+        from opensculptboy.statues.starter import export_props
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "statue"
+            (root / "handoff").mkdir(parents=True)
+            scene = trimesh.Scene()
+            box = trimesh.creation.box(extents=(0.1, 0.2, 0.3))
+            box.apply_translation((0.5, 0.0, 0.0))
+            for name in ("Hat", "Sword"):
+                scene.add_geometry(box, node_name=name, geom_name=name)
+            scene.export(str(root / "handoff" / "props.glb"))
+            (root / "handoff" / "props.json").write_text(
+                json.dumps(
+                    {
+                        "props": [
+                            {"name": "Hat", "role": "drapery"},
+                            {"name": "Sword", "role": "support"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            written = export_props(root, root / "meshes")
+            self.assertEqual([p.name for p in written], ["prop_sword.ply"])
+            exported = trimesh.load(str(written[0]), process=False)
+            # the file's own frame: the props of statue_props come out the same
+            before = {n: V for n, V, T, r in statue_props(root)}
+            np.testing.assert_allclose(
+                np.sort(exported.vertices, 0), np.sort(box.vertices, 0), atol=1e-6
+            )
+            (root / "pieces").mkdir()
+            sphere = trimesh.creation.icosphere(subdivisions=2, radius=0.1)
+            sphere.export(str(root / "pieces" / "sword.ply"))
+            after = {n: (V, T) for n, V, T, r in statue_props(root)}
+            # the hilt from shapes: the top of the box cut, a pommel added
+            shapes = {
+                "Sword": {
+                    "cut": {"kind": "half", "point": [0, 0.05, 0], "normal": "+y"},
+                    "shapes": [
+                        {"kind": "sphere", "centre": [0.5, 0.2, 0.0], "radius": 0.05},
+                        {
+                            "kind": "capsule",
+                            "start": [0.5, 0.0, 0.0],
+                            "end": [0.5, 0.2, 0.0],
+                            "radius": 0.01,
+                        },
+                    ],
+                }
+            }
+            hilt = export_props(root, root / "hilt", shapes=shapes)[0]
+            hilt = trimesh.load(str(hilt), process=False)
+            self.assertAlmostEqual(hilt.vertices[:, 1].max(), 0.25, places=3)
+            plain = trimesh.load(str(written[0]), process=False)
+            self.assertLess((plain.vertices[:, 1] > 0.05).sum(), len(plain.vertices))
+            with self.assertRaises(ValueError):
+                export_props(
+                    root,
+                    root / "bad",
+                    shapes={
+                        "Sword": {"shapes": [{"kind": "box", "centre": [0, 0, 0]}]}
+                    },
+                )
+        self.assertEqual(len(after["Sword"][1]), len(sphere.faces))
+        self.assertEqual(len(after["Hat"][1]), 12)
+        self.assertEqual(len(before["Sword"]), len(after["Hat"][0]))
 
     def test_one_piece_takes_the_place_of_the_hat_and_the_locks(self):
         import trimesh
