@@ -376,6 +376,8 @@ class TestPipeline(unittest.TestCase):
                 "no_data_regions": [
                     {"kind": "sphere", "centre": [0, 0, 0], "radius": 0.1}
                 ],
+                "prop_shapes": {"Sword": {"shapes": []}},
+                "prop_bones": {"Locks": "head"},
             }
         )
         self.assertEqual(config.chains, ["hand.r"])
@@ -384,6 +386,8 @@ class TestPipeline(unittest.TestCase):
         from opensculptboy.statues.pipeline import _removed_grow
 
         self.assertEqual(config.prune_rim_keep, ["face", "feet"])
+        self.assertEqual(config.prop_shapes, {"Sword": {"shapes": []}})
+        self.assertEqual(config.prop_bones, {"Locks": "head"})
         grow = _removed_grow(config)
         self.assertEqual(grow["removed_grow"], 8)
         self.assertEqual(len(grow["no_data_regions"]), 1)
@@ -757,8 +761,12 @@ class TestPrune(unittest.TestCase):
             regions = statue_regions(model)[appearance["statue"]["covered_levels"]]
             self.assertTrue((regions == STATUE_REGIONS.index("feet")).all())
             # a region given no data: the skin of the first fit inside it, whatever lies by it
+            from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
             hand = V[np.argmin(V[:, 0])]
-            region = {"kind": "sphere", "centre": hand.tolist(), "radius": 0.04}
+            # in the masks' frame (the scan's: y up), the fit in anny's (z up)
+            centre = hand @ GLTF_TO_ANNY
+            region = {"kind": "sphere", "centre": centre.tolist(), "radius": 0.04}
             covered_skin(
                 folder,
                 result,
@@ -1147,6 +1155,47 @@ class TestRebuiltPieces(unittest.TestCase):
             PIECE_TRIANGLES[UNION_ROLE],
             PIECE_TRIANGLES["drapery"] + PIECE_TRIANGLES["hair"],
         )
+
+
+class TestPropPieces(unittest.TestCase):
+    def test_pruned_pieces_join_the_nearest_prop(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import PROP_FIGURE, complete_props
+
+        head = trimesh.creation.box(extents=(0.2, 0.2, 0.2))
+        base = trimesh.creation.box(extents=(0.2, 0.2, 0.2))
+        base.apply_translation((1.0, 0.0, 0.0))
+        # four pruned triangles by the boxes' corners: by the head, by the base, by the
+        # figure (beside the head), far from both
+        centres = np.array(
+            [[0.12, 0.1, 0.1], [0.88, 0.1, 0.1], [0.1, -0.12, -0.1], [0.5, 0.6, 0.5]]
+        )
+        step = np.array([[0, 0, 0], [0.005, 0, 0], [0, 0.005, 0]])
+        V = np.concatenate([c + step for c in centres])
+        T = np.arange(12).reshape(4, 3)
+        figure = np.array([[0.1, -0.12 - PROP_FIGURE / 2, -0.1]])
+        out = complete_props({"Head": head, "Base": base}, (V, T), figure)
+        self.assertEqual(len(out["Head"].faces), len(head.faces) + 1)
+        self.assertEqual(len(out["Base"].faces), len(base.faces) + 1)
+        self.assertIs(complete_props({"Head": head}, None)["Head"], head)
+
+    def test_a_turned_piece_from_its_profile(self):
+        from opensculptboy.statues.starter import shape_mesh
+
+        entry = {
+            "kind": "revolve",
+            "start": [0.0, 1.0, 0.0],
+            "end": [0.0, 2.0, 0.0],
+            "profile": [[0.0, 0.01], [0.05, 0.04], [0.1, 0.01]],
+        }
+        mesh = shape_mesh(entry)
+        self.assertTrue(mesh.is_watertight)
+        self.assertGreater(mesh.volume, 0)
+        np.testing.assert_allclose(mesh.bounds[:, 1], [1.0, 1.1], atol=1e-6)
+        self.assertAlmostEqual(mesh.bounds[1, 0], 0.04, places=3)
+        with self.assertRaises(ValueError):
+            shape_mesh({**entry, "profile": [[0.0, 0.01]]})
 
 
 class TestRegionDistances(unittest.TestCase):
@@ -1553,6 +1602,25 @@ class TestStarter(unittest.TestCase):
             self.assertEqual([e["label"] for e in made], ["Staff", "Base"])
             self.assertEqual(made[1]["bone"], "root")
             self.assertIn(".R", made[0]["bone"])
+            # a prop bound to the bone the config names
+            config.prop_bones = {"Staff": "head"}
+            made = prop_packages(
+                root,
+                starter_card(card, config),
+                config,
+                pathlib.Path(tmp) / "out2",
+                log=lambda m: None,
+            )
+            self.assertEqual(made[0]["bone"], "head")
+            config.prop_bones = {"Staff": "no-such-bone"}
+            with self.assertRaises(ValueError):
+                prop_packages(
+                    root,
+                    starter_card(card, config),
+                    config,
+                    pathlib.Path(tmp) / "out3",
+                    log=lambda m: None,
+                )
             for e in made:
                 wearable = read_wearable(pathlib.Path(tmp) / "out" / e["file"])
                 self.assertEqual(wearable.slot, "prop")

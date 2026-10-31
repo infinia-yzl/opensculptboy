@@ -102,6 +102,8 @@ class StatueConfig:
     # props rebuilt in part from shapes (opensculptboy.statues.starter.export_props): name ->
     # {"cut": a mask, "shapes": spheres and capsules}
     prop_shapes: dict = dataclasses.field(default_factory=dict)
+    # the bone each named prop is bound to in a starter (default: the bone at its contact)
+    prop_bones: dict = dataclasses.field(default_factory=dict)
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)

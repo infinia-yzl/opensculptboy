@@ -178,11 +178,30 @@ def statue_props(root, props=None) -> list:
 
 def shape_mesh(entry):
     """A closed mesh of a sphere or capsule mask entry (a dict or a
-    :class:`~opensculptboy.statues.scan.Mask`), in the masks' frame."""
+    :class:`~opensculptboy.statues.scan.Mask`), or of a ``"revolve"`` entry (``start``,
+    ``end``: the axis; ``profile``: (distance along the axis from ``start``, radius) pairs in
+    metres, the profile of a turned piece such as a pommel), in the masks' frame."""
     import trimesh
 
     from opensculptboy.statues.scan import Mask
 
+    if isinstance(entry, dict) and entry.get("kind") == "revolve":
+        a = np.asarray(entry["start"], np.float64)
+        b = np.asarray(entry["end"], np.float64)
+        axis = (b - a) / np.linalg.norm(b - a)
+        profile = np.asarray(entry["profile"], np.float64)
+        if profile.ndim != 2 or profile.shape[1] != 2 or len(profile) < 2:
+            raise ValueError("A revolve profile is a list of (distance, radius) pairs.")
+        # closed on the axis at both ends
+        line = np.vstack(
+            [[0.0, profile[0, 0]], profile[:, ::-1], [0.0, profile[-1, 0]]]
+        )
+        mesh = trimesh.creation.revolve(line, sections=int(entry.get("sections", 48)))
+        if mesh.volume < 0:
+            mesh.invert()
+        mesh.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], axis))
+        mesh.apply_translation(a)
+        return mesh
     mask = entry if isinstance(entry, Mask) else Mask.from_dict(dict(entry))
     if mask.kind == "sphere":
         mesh = trimesh.creation.icosphere(subdivisions=4, radius=float(mask.radius))
@@ -203,14 +222,75 @@ def shape_mesh(entry):
     raise ValueError(f"A prop shape is a sphere or a capsule; got {mask.kind!r}.")
 
 
-def export_props(root, out_dir, names=None, props=None, shapes=None) -> list:
+# the pruned pieces (removed.glb's support_cut) join the prop nearest them within this
+# distance (metres), away from the figure: those within PROP_FIGURE of the fitted skin are
+# rims along the masks' cuts
+PROP_REACH = 0.05
+PROP_FIGURE = 0.012
+
+
+def _pruned_triangles(folder):
+    """The pruned pieces of a handoff's removed.glb and its skin (replica.glb's ``statue``
+    part: the parts of a prop within the pruning's reach of the first fit stayed there), as
+    (vertices, triangles) in the file's frame, or None."""
+    import trimesh
+
+    meshes = []
+    for name, keep in (("removed.glb", "support_cut"), ("replica.glb", "statue")):
+        path = pathlib.Path(folder) / name
+        if path.exists():
+            scene = trimesh.load(str(path), force="scene")
+            meshes += [g for n, g in scene.geometry.items() if n.startswith(keep)]
+    if not meshes:
+        return None
+    mesh = trimesh.util.concatenate(meshes)
+    return np.asarray(mesh.vertices), np.asarray(mesh.faces)
+
+
+def complete_props(meshes: dict, pruned, figure=None) -> dict:
+    """The props (name -> trimesh) with the pruned triangles (vertices, triangles) that lie
+    within :data:`PROP_REACH` of each, by nearest prop, leaving those within
+    :data:`PROP_FIGURE` of ``figure`` (the fitted skin's vertices): the prune took the parts
+    of Goliath's head and helmet outside the masks' boxes, and the skin kept the parts within
+    its reach of the first fit, so the starter's props showed holes and loose plates where
+    the scan has one sculpture."""
+    import trimesh
+    from scipy.spatial import cKDTree
+
+    if pruned is None or not meshes:
+        return meshes
+    V, T = pruned
+    centres = V[T].mean(1)
+    names = list(meshes)
+    dist = np.stack(
+        [cKDTree(np.asarray(meshes[n].vertices)).query(centres)[0] for n in names], 1
+    )
+    owner = dist.argmin(1)
+    keep = dist.min(1) < PROP_REACH
+    if figure is not None and len(figure):
+        keep &= cKDTree(np.asarray(figure)).query(centres)[0] > PROP_FIGURE
+    out = dict(meshes)
+    for k, name in enumerate(names):
+        rows = T[keep & (owner == k)]
+        if len(rows):
+            extra = trimesh.Trimesh(V, rows, process=False)
+            extra.remove_unreferenced_vertices()
+            out[name] = trimesh.util.concatenate([meshes[name], extra])
+    return out
+
+
+def export_props(
+    root, out_dir, names=None, props=None, shapes=None, complete=True
+) -> list:
     """Write the named props of a run's ``props.glb`` (default: every prop that is neither
     drapery nor hair) as ``prop_<slug>.ply`` in ``out_dir``, in the file's own frame (the
     masks' frame), for ``blender_pieces.py`` to rebuild closed. ``shapes`` (a config's
     ``prop_shapes``: prop name -> {"cut": a mask, "shapes": spheres and capsules}) takes the
     triangles inside ``cut`` out of that prop and adds the shapes, which the voxel remesh
     joins: a sword's hilt whose pommel the scan saw from one side and whose grip it never
-    saw inside the fist. Returns the paths written."""
+    saw inside the fist. ``complete`` gives each prop the pruned pieces nearest it
+    (:func:`complete_props`, away from the fitted skin of ``<root>/meshes``). Returns the paths
+    written."""
     import trimesh
 
     from opensculptboy.statues.scan import Mask
@@ -227,15 +307,33 @@ def export_props(root, out_dir, names=None, props=None, shapes=None) -> list:
     out_dir.mkdir(parents=True, exist_ok=True)
     written = []
     scene = trimesh.load(str(path), force="scene")
+    meshes = {
+        name: trimesh.Trimesh(
+            np.asarray(g.vertices), np.asarray(g.faces), process=False
+        )
+        for name, g in scene.geometry.items()
+        if roles.get(name, "support") not in ("drapery", "hair")
+    }
+    if complete:
+        fitted = pathlib.Path(root) / "meshes" / "fitted_level2.ply"
+        figure = (
+            np.asarray(trimesh.load(str(fitted), process=False).vertices)
+            if fitted.exists()
+            else None
+        )
+        meshes = complete_props(meshes, _pruned_triangles(folder), figure)
     for name, geometry in scene.geometry.items():
         if names is not None and name not in names:
             continue
         if names is None and roles.get(name, "support") in ("drapery", "hair"):
             continue
         target = out_dir / f"prop_{_slug(name)}.ply"
-        mesh = trimesh.Trimesh(
-            np.asarray(geometry.vertices), np.asarray(geometry.faces), process=False
-        )
+        if name in meshes:
+            mesh = meshes[name]
+        else:
+            mesh = trimesh.Trimesh(
+                np.asarray(geometry.vertices), np.asarray(geometry.faces), process=False
+            )
         spec = (shapes or {}).get(name)
         if spec:
             if spec.get("cut"):
@@ -343,7 +441,14 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
         sample = V[:: max(1, len(V) // 20000)]
         d, near = tree.query(sample)
         grounded = sample[:, 2].min() < floor + GROUND_REACH
-        if name in ROOT_PROPS or grounded:
+        chosen = (getattr(config, "prop_bones", None) or {}).get(name)
+        if chosen:
+            # the config's bone for this prop (locks that reach down the back still turn
+            # with the head)
+            if chosen not in labels:
+                raise ValueError(f"Unknown bone {chosen!r} for the prop {name!r}.")
+            bone = labels.index(chosen)
+        elif name in ROOT_PROPS or grounded:
             bone = labels.index("root")
         else:
             # the bone at the contact: the skin nearest the prop's closest points (a sword's

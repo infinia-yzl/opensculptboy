@@ -834,7 +834,8 @@ def covered_skin(
     and the toes of a foot set on a removed head). ``removed_grow`` widens the skin without
     data by removed pieces by that many rings, so that anny's posed foot blends into the
     scan's visible part over a wider band (the fill met the carved instep in a ledge).
-    ``no_data_regions`` (:class:`~opensculptboy.statues.scan.Mask` entries or their dicts) give
+    ``no_data_regions`` (:class:`~opensculptboy.statues.scan.Mask` entries or their dicts, in
+    the masks' frame) give
     no data on the detail levels to the first fit's level-0 vertices inside them: a foot whose
     toes the scan fuses with its base, or the band of a fist around a removed grip, which the
     fit pulled into the grip's tunnel. That skin grows by ``removed_grow`` rings in the
@@ -920,12 +921,16 @@ def covered_skin(
             )
             marked[rows] |= near & on_cut0 & (d0 < COVER_CUT)
     if no_data_regions:
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
         from opensculptboy.statues.scan import Mask
 
         excluded = excluded_vertices(model)[: len(V)]
+        # the regions are in the masks' frame (the scan's, glTF's: y up); the fit is in
+        # anny's (z up)
+        points = fitted0 @ GLTF_TO_ANNY
         for region in no_data_regions:
             mask = region if isinstance(region, Mask) else Mask.from_dict(dict(region))
-            marked_levels |= mask.inside(fitted0) & ~excluded
+            marked_levels |= mask.inside(points) & ~excluded
     path = folder / "appearance.json"
     appearance = json.loads(path.read_text(encoding="utf-8"))
     if marked_levels.any() and removed_grow > 0:
