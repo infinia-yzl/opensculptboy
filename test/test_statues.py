@@ -990,6 +990,18 @@ class TestChains(unittest.TestCase):
 
 
 class TestPosedHands(unittest.TestCase):
+    def test_a_finer_level_blends_every_row_between_the_hand_and_the_band(self):
+        from opensculptboy.fit.register import rest_masks
+
+        share = np.array([1.0, 1.0, 0.75, 0.25, 0.0, 0.0])
+        blend = np.array([0.0, 0.0, 0.25, 0.75, 0.25, 0.0])
+        pinned, band = rest_masks(share, blend)
+        np.testing.assert_array_equal(pinned, [1, 1, 0, 0, 0, 0])
+        # a row carried in part from the hand and from the band blends too
+        np.testing.assert_array_equal(band, [0, 0, 1, 1, 1, 0])
+        _, alone = rest_masks(share)
+        np.testing.assert_array_equal(alone, [0, 0, 1, 1, 0, 0])
+
     def test_pinned_rows_keep_anny_and_the_band_blends(self):
         from opensculptboy.fit.register import pin_rest_shape
 
@@ -1173,9 +1185,9 @@ class TestPosedHands(unittest.TestCase):
             min(sum(c) for c in report["hand.l"]["curl"].values()), 2 * CURLS[-1]
         )
 
-    # a known failure: the arm's solve brings the grasp onto the grip, but the fingers do not
-    # yet all wrap it (the index finger meets the grip's top, the little finger closes past
-    # its end); the grasp line from the library fist's loops is not yet measured
+    # a known failure: the arm's solve brings the grasp near the grip, but with the index
+    # finger up the grip the hand does not yet close round it as a statue's does (on David the
+    # wrist bends hard and a finger meets the guard or the collar)
     @unittest.expectedFailure
     def test_a_hand_holds_a_grip_in_a_power_grasp(self):
         import torch

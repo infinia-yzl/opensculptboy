@@ -3765,19 +3765,17 @@ def fit_levels(
                 )
             _log(options, f"level {subdiv}: {count} seen gaps closed")
         if options.rest_shape is not None:
-            band = None
+            blend = None
             if options.rest_blend is not None:
-                band = (
-                    np.asarray(
-                        topology.apply(np.asarray(options.rest_blend, np.float64))
-                    )
-                    > 0.5
+                blend = np.asarray(
+                    topology.apply(np.asarray(options.rest_blend, np.float64))
                 )
             share = np.asarray(
                 topology.apply(np.asarray(options.rest_shape, np.float64))
             )
+            pinned, band = rest_masks(share, blend)
             new, rows = pin_rest_shape(
-                offsets[subdiv], topology.triangles, share > 0.999, band
+                offsets[subdiv], topology.triangles, pinned, band
             )
             if len(rows):
                 offsets[subdiv] = new
@@ -4024,6 +4022,20 @@ def unfold(
             V[back] = reference.closest(V[back])[0]
         moved |= bad
     return V, int(moved.sum())
+
+
+def rest_masks(share: np.ndarray, blend: np.ndarray | None = None):
+    """The rows of a level that keep anny's own shape (``share``, the level-0 mask carried
+    to the level, all but 1) and the band that blends into them: every row the band
+    (``blend``) or the kept part reaches at all. A finer level's rows between the two
+    (carried in part from each) once kept their fitted offsets, which left a dashed crack
+    round the wrist."""
+    share = np.asarray(share, np.float64)
+    pinned = share > 0.999
+    band = (share > 1e-6) & ~pinned
+    if blend is not None:
+        band |= np.asarray(blend, np.float64) > 1e-6
+    return pinned, band & ~pinned
 
 
 def pin_rest_shape(offsets, triangles, pinned, band=None):

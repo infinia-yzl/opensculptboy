@@ -415,10 +415,14 @@ GRASP_ROOM = 0.02
 WRIST_LIMIT = 30.0
 IK_STEPS = 3000
 # the arm's solve: what each turn costs (per radian: the shoulder, the upper arm, the elbow,
-# each about three axes, the forearm's twist and the wrist's swing about two)
-REG_WEIGHTS = np.array([1.0] * 3 + [0.5] * 3 + [0.5] * 3 + [0.3] + [0.5] * 2)
-# the forearm's twists (degrees) the arm's solve starts from
-IK_TWISTS = (0.0, 90.0, -90.0, 180.0)
+# each about three axes, the forearm's twist and the wrist's swing about two; the wrist and
+# the forearm cost more, so that the arm, not the wrist, carries the hand to the grip)
+REG_WEIGHTS = np.array([1.0] * 3 + [0.5] * 3 + [0.5] * 3 + [1.0] + [1.5] * 2)
+# how hard the solve pulls the little finger's end down onto the guard's top (``low``; the
+# fist low on the grip); 0: anywhere on the grip's free length
+LOW_WEIGHT = 0.0
+# the forearm's twists (degrees) the arm's solve starts from, near its chain's pose
+IK_TWISTS = (0.0, 45.0, -45.0)
 # the largest turn (degrees) of a held prop about its tip and its largest shift (metres)
 HOLD_TURN = 3.0
 HOLD_SHIFT = 0.03
@@ -526,7 +530,8 @@ def _fist_loops(skin, fist, labels, strongest, side, ids, sign, radius, margin):
     the centres of the loops that the index finger and the little finger close round (each
     the circle through the finger's three joints and its tip), in the hand's frame from
     their knuckles, moved out from the palm as far as a grip of ``radius`` needs to clear
-    the palm by ``margin``. Returns the two points (2, 3) in the hand's frame."""
+    the open hand (palm and straight fingers but the thumb) by ``margin``, so that the
+    fingers close round it. Returns the two points (2, 3) in the hand's frame."""
     import torch
 
     with torch.no_grad():
@@ -542,22 +547,37 @@ def _fist_loops(skin, fist, labels, strongest, side, ids, sign, radius, margin):
             # a finger the fist leaves nearly straight closes round no loop: the default
             centre = J[ids[knuckle]] + LOOP_DEFAULT @ F
         centres.append(centre)
-    palm = X[
+    # the open hand (its fingers straight, as the closing starts) must clear the grip
+    opened = fist.clone()
+    for i, n in enumerate(labels):
+        if n.endswith(side) and n.startswith("finger"):
+            opened[0, i, :3, :3] = torch.eye(3, dtype=fist.dtype)
+    with torch.no_grad():
+        Y = skin(opened).numpy()
+    hand = Y[
         np.isin(
             strongest,
             [
                 i
                 for i, n in enumerate(labels)
-                if n.endswith(side) and n.startswith(("wrist", "metacarpal"))
+                if n.endswith(side)
+                and n.startswith(
+                    ("wrist", "metacarpal", "finger2", "finger3", "finger4", "finger5")
+                )
             ],
         )
     ]
     a, b = centres
-    ab = b - a
-    t = np.clip(((palm - a) @ ab) / (ab @ ab), 0.0, 1.0)
-    nearest = float(np.linalg.norm(palm - (a + t[:, None] * ab), axis=1).min())
+    for _ in range(8):
+        ab = b - a
+        # the grip runs on past the hand: its whole line must clear the hand
+        t = ((hand - a) @ ab) / (ab @ ab)
+        nearest = float(np.linalg.norm(hand - (a + t[:, None] * ab), axis=1).min())
+        push = radius + margin - nearest
+        if push <= 1e-4:
+            break
+        a, b = a + push * F[0], b + push * F[0]
     out = np.array([(a - J[ids["index"]]) @ F.T, (b - J[ids["little"]]) @ F.T])
-    out[:, 0] += max(0.0, radius + margin - nearest)
     return out
 
 
@@ -568,7 +588,8 @@ def _hold(skin, pose, labels, strongest, side, fingers, library, objects, margin
     index finger and little finger close round (:func:`_fist_loops`), as a power grip
     holds a handle across the palm, moved out from the palm as far as the grip needs; the
     index finger's end and the grasp's middle lie on the grip's free length
-    (:data:`GRASP_ROOM` above the guard and under the collar), either way up. The arm
+    (:data:`GRASP_ROOM` under the collar), the index finger up the grip towards the
+    pommel and the little finger just above the guard. The arm
     reaches it: a damped least-squares solve (Levenberg-Marquardt, as inverse kinematics
     solves a limb) of the shoulder's, the upper arm's and the elbow's turns, the forearm's
     twist (in its twist bone, lowerarm02, shared along the forearm, so that the wrist does
@@ -702,18 +723,20 @@ def _hold(skin, pose, labels, strongest, side, fingers, library, objects, margin
         for point in (top, bottom):
             q = point - a0
             out.append((q - (q @ up) * up) / 0.01)  # off the grip's axis
-        # the index finger's end and the grasp's middle within the grip's free length,
-        # either way up (the arm takes the way that suits it)
-        for point in (top, 0.5 * (top + bottom)):
-            t = (point - a0) @ up
-            out.append([max(0.0, floor - t, t - (ceiling - room)) / 0.01])
+        # the index finger's end up the grip (towards the pommel), the little finger's down
+        # (towards the guard), as a hand holds a sword point down; both on the grip's free
+        # length, the little finger's end just above the guard (low on the grip)
+        t_top, t_bottom = (top - a0) @ up, (bottom - a0) @ up
+        out.append([max(0.0, t_bottom - t_top) / 0.005])
+        out.append([max(0.0, t_top - (ceiling - room)) / 0.01])
+        out.append([max(0.0, floor - t_bottom) / 0.01])
+        out.append([(t_bottom - floor) / 0.01 * float(hold.get("low", LOW_WEIGHT))])
         out.append(REG_WEIGHTS * np.asarray(values))
         out.append([np.sqrt(30.0) * max(0.0, wrist_angle(W) - limit_rad)])
         return np.concatenate(out)
 
     # a damped least-squares solve (Levenberg-Marquardt, as inverse kinematics solves a limb)
-    # from the chain's pose with the forearm twisted four ways, as the grasp may need the
-    # hand turned over (the index finger up the grip); the best is kept
+    # from the chain's pose with the forearm twisted three ways near it; the best is kept
     from scipy.optimize import least_squares
 
     best = None
@@ -815,12 +838,14 @@ def _hold(skin, pose, labels, strongest, side, fingers, library, objects, margin
                     if not links[f][k].any():
                         continue
                     if float(signed_distance(Y[links[f][k]], moved).min()) < margin:
-                        # this phalanx touches: the joints that move it stop where they were
-                        for j in range(k + 1):
-                            if j in active[f]:
-                                scale[f][j] = before[f][j]
-                                frozen[f][j] = True
-                        break
+                        # this phalanx touches: the joints that move it and moved in this
+                        # step stop where they were, or, when none did (the skin by the
+                        # next joint bends with it), the nearest joint that moved; every
+                        # phalanx is checked
+                        stop = [j for j in ks if j <= k] or [min(ks)]
+                        for j in stop:
+                            scale[f][j] = before[f][j]
+                            frozen[f][j] = True
 
     # the thumb's opposition: as far as the library fist's, or back from it (away from the
     # palm, below zero) until the thumb clears the prop
