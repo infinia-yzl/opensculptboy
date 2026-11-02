@@ -363,7 +363,12 @@ def fit_statue(
         seconds["chains"] = time.perf_counter() - clock
     hands_report = {}
     if posed_hands:
-        from opensculptboy.statues.hands import add_stone_prop, hand_masks, pose_hands
+        from opensculptboy.statues.hands import (
+            add_stone_prop,
+            hand_masks,
+            move_prop,
+            pose_hands,
+        )
 
         character, hands_report = pose_hands(
             model,
@@ -392,6 +397,8 @@ def fit_statue(
         for chain, rep in hands_report.items():
             if rep.get("stone"):
                 add_stone_prop(folder, rep["stone"])
+            if rep.get("carry") and rep["carry"].get("prop"):
+                move_prop(folder, rep["carry"])
     result = fit_levels(
         reference, character, rotation, translation, detail, options, model, seconds
     )

@@ -1173,6 +1173,162 @@ class TestPosedHands(unittest.TestCase):
             min(sum(c) for c in report["hand.l"]["curl"].values()), 2 * CURLS[-1]
         )
 
+    # a known failure: the arm's solve brings the grasp onto the grip, but the fingers do not
+    # yet all wrap it (the index finger meets the grip's top, the little finger closes past
+    # its end); the grasp line from the library fist's loops is not yet measured
+    @unittest.expectedFailure
+    def test_a_hand_holds_a_grip_in_a_power_grasp(self):
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.statues.chains import _identity_pose, _Skinner
+        from opensculptboy.statues.hands import (
+            hand_bones,
+            move_object,
+            pose_hands,
+            signed_distance,
+        )
+
+        model = _model()
+        labels = list(model.bone_labels)
+        character = Character(name="rest")
+        R, t = np.eye(3), np.zeros(3)
+        skin = _Skinner(model, character, R, t)
+        with torch.no_grad():
+            skin(_identity_pose(model))
+        wrist = skin.joints.numpy()[labels.index("wrist.R")]
+        # a sword standing beside the hanging hand, its tip on the floor: the grip, a
+        # collar above it and a guard across its foot
+        elbow = skin.joints.numpy()[labels.index("lowerarm01.R")]
+        reach = (wrist - elbow) / np.linalg.norm(wrist - elbow)
+        a = wrist + 0.06 * reach - [0.0, 0.0, 0.05]
+        b = a + [0.0, 0.0, 0.1]
+        tip = a - [0.0, 0.0, 0.55]
+        to_masks = lambda p: (np.asarray(p) @ GLTF_TO_ANNY).tolist()  # noqa: E731
+        grip = {
+            "kind": "capsule",
+            "grip": True,
+            "start": to_masks(a),
+            "end": to_masks(b),
+            "radius": 0.012,
+        }
+        collar = {
+            "kind": "capsule",
+            "start": to_masks(b + [0, 0, 0.024]),
+            "end": to_masks(b + [0, 0, 0.03]),
+            "radius": 0.024,
+        }
+        guard = {
+            "kind": "capsule",
+            "start": to_masks(a + [-0.08, 0.0, 0.0]),
+            "end": to_masks(a + [0.08, 0.0, 0.0]),
+            "radius": 0.008,
+        }
+        spec = {
+            "objects": [grip, collar, guard],
+            "fingers": "mh_fight",
+            "hold": {"prop": "Sword", "tip": to_masks(tip)},
+        }
+        held, report = pose_hands(model, character, R, t, {"hand.r": spec})
+        rep = report["hand.r"]
+        self.assertEqual(rep["carry"]["prop"], "Sword")
+        # the arm brings the grasp onto the grip; the prop moves little
+        self.assertLess(max(rep["grasp_off_mm"]), 3.0, rep)
+        self.assertLessEqual(rep["tip_moved_mm"], 30.5, rep)
+        self.assertLessEqual(rep["prop_turn_deg"], 3.0 + 1e-6)
+        # the wrist stays near straight: the forearm's twist takes the turn
+        self.assertLess(rep["wrist_turn_deg"], 35.0, rep)
+        # each finger closes until it touches, and wraps round the grip
+        clearance = rep["clearance_mm"]
+        self.assertTrue(all(c >= 1.0 for c in clearance.values()), rep)
+        self.assertTrue(
+            all(clearance[f] < 6.0 for f in ("finger2", "finger3", "finger4")), rep
+        )
+        self.assertTrue(
+            all(rep["wrap_deg"][f] > 90 for f in ("finger2", "finger3", "finger4")), rep
+        )
+        # nothing of the prop passes into the hand
+        with torch.no_grad():
+            Y = skin(held.pose_parameters(model)).numpy()
+        weights = model.vertex_bone_weights.detach().numpy()
+        on = (
+            np.isin(model.vertex_bone_indices.numpy(), hand_bones(model, "hand.r"))
+            * weights
+        ).sum(1) > 0.5
+        moved = [move_object(o, rep["carry"]) for o in (grip, collar, guard)]
+        self.assertGreater(signed_distance(Y[on], moved).min(), 0.0, rep)
+
+    def test_a_fist_on_the_hip_comes_out_of_it(self):
+        import roma
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.statues.chains import _library_rotations, _Skinner
+        from opensculptboy.statues.hands import _clear_body
+
+        model = _model()
+        labels = list(model.bone_labels)
+        # the library's hands on the hips, the left upper arm turned in towards the body
+        pose = torch.as_tensor(
+            _library_rotations(model, "hands_on_hips"), dtype=torch.float64
+        )
+        full = torch.eye(4, dtype=torch.float64).repeat(1, len(labels), 1, 1)
+        full[0, :, :3, :3] = pose
+        character = Character(name="hips")
+        character.pose = Character.pose_from_parameters(model, full)
+        skin = _Skinner(model, character, np.eye(3), np.zeros(3))
+        weights = model.vertex_bone_weights.detach().numpy()
+        indices = model.vertex_bone_indices.numpy()
+        strongest = indices[np.arange(len(indices)), weights.argmax(1)]
+        report = None
+        for angle in (0.25, -0.25):
+            trial = full.clone()
+            arm = labels.index("upperarm01.L")
+            turn = torch.tensor([0.0, 0.0, angle], dtype=torch.float64)
+            trial[0, arm, :3, :3] = trial[0, arm, :3, :3] @ roma.rotvec_to_rotmat(turn)
+            out = _clear_body(skin, trial, labels, strongest, ".L", 0.002)
+            if report is None or out["inside_before"] > report["inside_before"]:
+                report = out
+        self.assertGreater(report["inside_before"], 0, report)
+        self.assertLess(report["inside_after"], report["inside_before"], report)
+        self.assertLessEqual(report["deepest_after_mm"], 1.0, report)
+
+    def test_a_carried_prop_moves_once(self):
+        import trimesh
+
+        from opensculptboy.statues.hands import move_prop
+
+        carry = {
+            "prop": "Sword",
+            "pivot": [0.0, 0.0, 0.0],
+            "rotation": [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+            "shift": [0.01, 0.0, 0.0],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            scene = trimesh.Scene()
+            for name, at in (("Sword", (0.0, 1.0, 0.0)), ("Head", (0.5, 0.0, 0.0))):
+                box = trimesh.creation.box(extents=(0.02, 0.02, 0.02))
+                box.apply_translation(at)
+                scene.add_geometry(box, node_name=name, geom_name=name)
+            scene.export(str(folder / "props.glb"))
+            (folder / "props.json").write_text(json.dumps({"props": []}), "utf-8")
+            move_prop(folder, carry)
+            move_prop(folder, carry)
+            loaded = trimesh.load(str(folder / "props.glb"), force="scene")
+            info = json.loads((folder / "props.json").read_text("utf-8"))
+            with self.assertRaises(ValueError):
+                move_prop(folder, {**carry, "prop": "Shield"})
+        # (0, 1, 0) turned about x to (0, 0, 1), then shifted: moved once, not twice
+        np.testing.assert_allclose(
+            loaded.geometry["Sword"].vertices.mean(0), [0.01, 0.0, 1.0], atol=1e-6
+        )
+        np.testing.assert_allclose(
+            loaded.geometry["Head"].vertices.mean(0), [0.5, 0.0, 0.0], atol=1e-6
+        )
+        self.assertEqual(info["carried"]["Sword"]["shift"], [0.01, 0.0, 0.0])
+
     def test_a_stone_joins_the_props(self):
         import trimesh
 
@@ -1491,6 +1647,117 @@ class TestRegionDistances(unittest.TestCase):
         self.assertEqual(result["vertices"], 190)
         self.assertAlmostEqual(result["outside"], 50 / 190, places=3)
         self.assertAlmostEqual(result["below"]["median"], 10.0, delta=0.2)
+
+
+def _wall(x, z0, z1, n=11, size=0.1):
+    """A vertical wall of n by n vertices in the plane x = ``x``, from z0 to z1 and over y
+    from 0 to ``size``, as triangles fine enough for closest-point searches by vertex."""
+    W, F = _grid(n, size)
+    W = np.c_[np.full(len(W), x), W[:, 1], z0 + W[:, 0] / size * (z1 - z0)]
+    return W, F
+
+
+@local_only("trimesh's rays need embreex (the viewer extra)")
+class TestFineLevelTechniques(unittest.TestCase):
+    """The detail levels' pairs along normals, the relaxation and the Taubin smoothing."""
+
+    def test_pairs_along_normals(self):
+        from opensculptboy.fit.register import Target
+
+        # a floor and a low wall beside the point: the wall is nearer, the floor straight below
+        V, T = _grid(11, 0.1)
+        wall, WF = _wall(0.0525, 0.001, 0.03)
+        target = Target(Reference(np.r_[V, wall], np.r_[T, WF + len(V)], {}))
+        point = np.array([[0.0495, 0.0455, 0.005]])
+        up = np.array([[0.0, 0.0, 1.0]])
+        _, _, near = target.closest(point)
+        self.assertAlmostEqual(float(near[0]), 0.003, places=6)
+        C, N, d, hit, off = target.along_normals(point, up, 0.02)
+        self.assertTrue(hit[0])
+        np.testing.assert_allclose(C[0], [0.0495, 0.0455, 0.0], atol=1e-9)
+        self.assertAlmostEqual(float(d[0]), 0.005, places=9)
+        self.assertGreater(abs(float(N[0, 2])), 0.99)
+        self.assertFalse(off[0])
+        # out of reach: no hit
+        self.assertFalse(target.along_normals(point, up, 0.004)[3][0])
+        # between two sheets 4 mm apart: the nearer one, or the middle with mean
+        upper = V + [0.0, 0.0, 0.004]
+        two = Target(Reference(np.r_[V, upper], np.r_[T, T + len(V)], {}))
+        point = np.array([[0.0455, 0.0455, 0.001]])
+        C = two.along_normals(point, up, 0.02)[0]
+        self.assertAlmostEqual(float(C[0, 2]), 0.0, places=9)
+        C, N, _, hit, _ = two.along_normals(point, up, 0.02, mean=0.005)
+        self.assertAlmostEqual(float(C[0, 2]), 0.002, places=9)
+        np.testing.assert_allclose(N[0], [0.0, 0.0, 1.0])
+
+    def test_nicp_takes_the_pairs_along_normals(self):
+        from opensculptboy.fit.register import nicp
+
+        # a patch 6 mm over a floor, 4 mm from a wall: closest points pull its edge sideways
+        V, T = _grid(11, 0.1)
+        floor, F = _grid(13, 0.12)
+        floor -= [0.0037, 0.0043, 0.0]  # rays meet no edge of the floor
+        wall, WF = _wall(0.104, 0.0, 0.03)
+        reference = Reference(np.r_[floor, wall], np.r_[F, WF + len(floor)], {})
+        start = V + [0.0, 0.0, 0.006]
+        weights = np.ones(len(V))
+        out = {}
+        for mode in ("closest", "normal"):
+            out[mode] = nicp(
+                start,
+                T,
+                reference,
+                weights,
+                stiffness=(1.0,),
+                iterations=2,
+                max_distance=0.02,
+                normal_threshold=-1.0,
+                reverse_weight=0.0,
+                correspondence=mode,
+            )
+        edge = np.isclose(V[:, 0], 0.1)
+        # along its normals the edge comes down onto the floor; the closest points drew it
+        # sideways toward the wall
+        self.assertLess(np.abs(out["normal"][edge, 2]).max(), 0.001)
+        self.assertLess(np.abs(out["normal"][edge, 0] - 0.1).max(), 0.0005)
+        self.assertGreater(
+            np.abs(out["closest"][edge, 0] - 0.1).max(),
+            np.abs(out["normal"][edge, 0] - 0.1).max(),
+        )
+        with self.assertRaises(ValueError):
+            nicp(start, T, reference, weights, stiffness=(1.0,), correspondence="ray")
+
+    def test_relaxation_opens_folds_and_keeps_the_carving(self):
+        from opensculptboy.fit.register import relax_surface, taubin_smooth
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        folded = V.copy()
+        # a vertex pulled across its neighbours along the surface folds the triangles round it
+        folded[220, :2] = V[222, :2] + 0.002
+
+        def flipped(X):
+            a, b, c = (X[T[:, k]] for k in range(3))
+            z = np.cross(b - a, c - a)[:, 2]
+            return int((np.sign(z) != np.sign(np.median(z))).sum())
+
+        self.assertGreater(flipped(folded), 0)
+        every = np.ones(len(V), bool)
+        out, count = relax_surface(folded, T, reference, every, every, 6)
+        self.assertGreater(count, 0)
+        self.assertEqual(flipped(out), 0)
+        # the vertices with data stay on the reference
+        np.testing.assert_allclose(out[:, 2], 0.0, atol=1e-9)
+        # without data, a bump of offsets is smoothed and keeps most of its volume
+        offsets = np.zeros((len(V), 3))
+        r = np.linalg.norm(V[:, :2] - 0.05, axis=1)
+        offsets[:, 2] = 0.002 * np.exp(-((r / 0.02) ** 2))
+        offsets[220, 2] += 0.003  # a spike
+        free = r < 0.04
+        smooth = taubin_smooth(offsets, T, free, 10)
+        self.assertLess(smooth[220, 2], offsets[220, 2] - 0.002)
+        self.assertGreater(smooth[free, 2].sum(), 0.8 * offsets[free, 2].sum())
+        np.testing.assert_allclose(smooth[~free], offsets[~free])
 
 
 class TestSolid(unittest.TestCase):

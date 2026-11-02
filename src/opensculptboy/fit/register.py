@@ -137,6 +137,19 @@ class FitOptions:
     detail_stiffness: tuple = (1.0, 0.3, 0.1, 0.03)
     nicp_iterations: int = 3
     nicp_max_distance: float = 0.02
+    # the pairs of the detail levels: "closest" (each vertex's closest point of the reference)
+    # or "normal" (the nearest hit of a ray along the vertex's own normal, outward or inward,
+    # within nicp_max_distance, and the closest point where neither ray hits), as ZBrush's
+    # Project All moves a surface onto another along its normals (Target.along_normals)
+    correspondence: str = "closest"
+    # with "normal": where both rays hit within this distance (metres), the pair is the middle
+    # of the two hits (Project All's Mean), as where two surfaces of the reference press
+    # together (fused fingers, a thigh against a buttock); 0: the nearer hit
+    correspondence_mean: float = 0.0
+    # rounds of tangential relaxation of the whole skin after each level's solve
+    # (relax_surface): the skin with data goes back onto the reference along its normals, and
+    # the offsets of the skin without data are smoothed (taubin_smooth); 0: none
+    relax_rounds: int = 0
     # the stiffness of the refinement on the outer ears, relative to the rest (ear_weights)
     ear_stiffness: float = 3.0
     # rounds of tangential relaxation of the outer ears after each refinement (0: none)
@@ -1268,6 +1281,62 @@ class Target:
         ear = self.anny_ear if rows is None else self.anny_ear[rows]
         return [(ear, self.split.ear), (~ear, self.split.head)]
 
+    def along_normals(self, points, normals, reach: float, mean: float = 0.0):
+        """
+        The pairs of the points along their normals, as ZBrush's Project All finds them (and
+        SculptForge's, which describes the technique): a ray from each point along its
+        normal, outward and inward, and the nearer hit within ``reach``; with ``mean`` > 0,
+        where both rays hit within ``mean``, the middle of the two hits, with the point's
+        own normal (the two surfaces there face each other). Returns the hits (N, 3), the
+        reference's normals there (N, 3), their distances (N,), a mask (N,) of the points
+        whose rays hit and a mask of those that met the reference's open border.
+        """
+        import trimesh
+
+        if getattr(self, "_rays", None) is None:
+            mesh = trimesh.Trimesh(
+                self.reference.vertices, self.reference.triangles, process=False
+            )
+            self._rays = (mesh, mesh.ray)
+        mesh, rays = self._rays
+        P = np.asarray(points, np.float64)
+        D = np.asarray(normals, np.float64)
+        n = len(P)
+        hits = np.zeros((2, n, 3))
+        dist = np.full((2, n), np.inf)
+        faces = np.full((2, n), -1, np.int64)
+        for k, sign in enumerate((1.0, -1.0)):
+            loc, ray, tri = rays.intersects_location(P, sign * D, multiple_hits=False)
+            if len(ray):
+                d = np.linalg.norm(loc - P[ray], axis=1)
+                keep = d <= reach
+                hits[k, ray[keep]] = loc[keep]
+                dist[k, ray[keep]] = d[keep]
+                faces[k, ray[keep]] = tri[keep]
+        nearer = np.argmin(dist, 0)
+        rows = np.arange(n)
+        C = hits[nearer, rows]
+        d = dist[nearer, rows]
+        tri = faces[nearer, rows]
+        hit = np.isfinite(d)
+        N = np.zeros((n, 3))
+        if hit.any():
+            corners = self.reference.triangles[tri[hit]]
+            bary = trimesh.triangles.points_to_barycentric(
+                self.reference.vertices[corners], C[hit]
+            )
+            N[hit] = np.einsum("nk, nkd -> nd", bary, self.normals[corners])
+            N[hit] /= np.maximum(np.linalg.norm(N[hit], axis=1, keepdims=True), 1e-12)
+        if mean > 0:
+            both = (dist < mean).all(0)
+            C[both] = 0.5 * (hits[0, both] + hits[1, both])
+            d[both] = np.linalg.norm(C[both] - P[both], axis=1)
+            N[both] = D[both]
+        off = np.zeros(n, bool)
+        if self.border is not None and hit.any():
+            off[hit] = self.border[self.reference.triangles[tri[hit]]].all(1)
+        return C, N, d, hit, off
+
     def closest(self, points: np.ndarray, rows=None, edge: bool = False):
         """
         Closest points, normals and distances of ``points``, the points of the fitted mesh's
@@ -1322,6 +1391,8 @@ def nicp(
     stiffness_scale: np.ndarray | None = None,
     reverse: str = "vertex",
     attachment_weight: float = 0.0,
+    correspondence: str = "closest",
+    correspondence_mean: float = 0.0,
 ) -> np.ndarray:
     """
     Non-rigid ICP of a mesh onto the reference: in each round, solve
@@ -1355,6 +1426,11 @@ def nicp(
     ears to the reference's ears alone and the rest to the rest, in both terms, and with
     ``attachment_weight`` pulls the border of anny's ears (their root) toward the closest
     points of the attachment line, with that share of the data weight.
+
+    With ``correspondence="normal"``, c_i is instead the nearest hit of a ray along the
+    vertex's normal, both ways, within ``max_distance`` (:meth:`Target.along_normals`, with
+    ``correspondence_mean``), and the closest point where neither ray hits; the outer ears
+    of a split reference keep their closest points.
     """
     import scipy.sparse
     import scipy.sparse.linalg
@@ -1382,6 +1458,17 @@ def nicp(
         for _ in range(iterations):
             C, N, d, off = target.closest(X, edge=True)
             normals = vertex_normals(X, triangles)
+            if correspondence == "normal":
+                Ch, Nh, dh, hit, offh = target.along_normals(
+                    X, normals, max_distance, correspondence_mean
+                )
+                if target.is_split:
+                    hit &= ~target.anny_ear
+                C[hit], N[hit], d[hit], off[hit] = Ch[hit], Nh[hit], dh[hit], offh[hit]
+            elif correspondence != "closest":
+                raise ValueError(
+                    f"correspondence is 'closest' or 'normal'; got {correspondence!r}."
+                )
             ok = (d < max_distance) & ((normals * N).sum(1) > normal_threshold) & ~off
             w = base * ok
             if border is not None and len(border):
@@ -3108,6 +3195,8 @@ def fit_levels(
             stiffness_scale=scale,
             reverse=options.reverse,
             attachment_weight=options.ear_attachment_weight if split else 0.0,
+            correspondence=options.correspondence if subdiv > 0 else "closest",
+            correspondence_mean=options.correspondence_mean,
         )
         if split is not None:
             region = anny_ear.copy()
@@ -3571,6 +3660,55 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {count} folded vertices untangled")
+        if options.relax_rounds > 0:
+            skin_rows = np.asarray(mask, bool).copy()
+            skin_rows &= ~(np.asarray(topology.apply(cavity0)) > 0.5)
+            skin_rows &= ~(np.asarray(topology.apply(zone_lips0)) > 0.5)
+            without = np.zeros(len(fitted), bool)
+            if _level_no_data(options) is not None:
+                without = np.asarray(topology.apply(_level_no_data(options))) > 0.5
+            fitted_new, count = relax_surface(
+                fitted,
+                topology.triangles,
+                target,
+                skin_rows & ~without,
+                skin_rows & ~without,
+                options.relax_rounds,
+            )
+            rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
+            offsets[subdiv] = offsets[subdiv].copy()
+            if len(rows):
+                fitted = fitted_new
+                offsets[subdiv][rows] = (
+                    R_.unpose(
+                        fitted[rows],
+                        w[rows],
+                        i[rows],
+                        transforms,
+                        rotation,
+                        translation,
+                    )
+                    - parametric[rows]
+                )
+            free = skin_rows & without
+            if free.any():
+                offsets[subdiv] = taubin_smooth(
+                    offsets[subdiv], topology.triangles, free, options.relax_rounds
+                )
+                rows = np.nonzero(free)[0]
+                fitted[rows] = R_.pose_vertices(
+                    (parametric + offsets[subdiv])[rows],
+                    w[rows],
+                    i[rows],
+                    transforms,
+                    rotation,
+                    translation,
+                )
+            _log(
+                options,
+                f"level {subdiv}: {count} vertices relaxed, {int(free.sum())} offsets "
+                "without data smoothed",
+            )
         if options.eyes_to_lids:
             fitted_new, count = eyes_to_lids(
                 model,
@@ -3756,6 +3894,85 @@ def relax_dents(
             break
         V[pit] = (A[pit] @ V) / count[pit, None]
     return V
+
+
+def relax_surface(
+    fitted: np.ndarray,
+    triangles: np.ndarray,
+    reference,
+    moving: np.ndarray,
+    data: np.ndarray,
+    rounds: int = 4,
+    reach: float = 0.003,
+    step: float = 0.5,
+) -> tuple[np.ndarray, int]:
+    """
+    The vertices (V, 3) relaxed along the surface, and the number moved: the Relax brush of
+    sculpting tools (Blender's and SculptForge's Relax), a tangential Laplacian smoothing.
+    Each round, each vertex of ``moving`` moves ``step`` of the way to the centroid of its
+    ring within its own tangent plane, which evens out the triangles and lets folded ones
+    open without flattening the form; then each vertex of ``data`` goes back onto the
+    reference along its normal (:meth:`Target.along_normals`, the nearer hit within
+    ``reach``; its closest point within ``reach`` where no ray hits), so that the carving
+    stays. ``reference`` is a :class:`Reference` or a :class:`Target`.
+    """
+    from opensculptboy.fit.reference import vertex_normals
+
+    target = reference if isinstance(reference, Target) else Target(reference)
+    V = np.asarray(fitted, np.float64).copy()
+    T = np.asarray(triangles)
+    moving = np.asarray(moving, bool)
+    data = np.asarray(data, bool) & moving
+    if not moving.any() or rounds <= 0:
+        return V, 0
+    A = _adjacency(len(V), T)
+    count = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
+    rows = np.nonzero(moving)[0]
+    back = np.nonzero(data)[0]
+    start = V.copy()
+    for _ in range(rounds):
+        normals = vertex_normals(V, T)
+        umbrella = (A[rows] @ V) / count[rows, None] - V[rows]
+        n = normals[rows]
+        umbrella -= (umbrella * n).sum(1, keepdims=True) * n
+        V[rows] += step * umbrella
+        if len(back):
+            normals = vertex_normals(V, T)
+            C, _, d, hit, _ = target.along_normals(V[back], normals[back], reach)
+            near_c, _, near_d = target.closest(V[back])
+            use = hit | (near_d < reach)
+            C = np.where(hit[:, None], C, near_c)
+            V[back[use]] = C[use]
+    moved = np.abs(V - start).max(1) > 0
+    return V, int(moved.sum())
+
+
+def taubin_smooth(
+    values: np.ndarray,
+    triangles: np.ndarray,
+    rows: np.ndarray,
+    rounds: int = 4,
+    lam: float = 0.5,
+    mu: float = -0.53,
+) -> np.ndarray:
+    """
+    The values (N, C) with the rows of ``rows`` smoothed without shrinking: Taubin's
+    lambda|mu smoothing (Taubin 1995, "A signal processing approach to fair surface
+    design"), uniform weights, each round a step of ``lam`` toward the ring's mean and one of
+    ``mu`` (negative, a little larger in size) away from it. The other rows hold.
+    """
+    out = np.array(values, np.float64, copy=True)
+    rows = np.asarray(rows, bool)
+    if not rows.any() or rounds <= 0:
+        return out
+    A = _adjacency(len(out), np.asarray(triangles))
+    count = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
+    idx = np.nonzero(rows)[0]
+    for _ in range(rounds):
+        for factor in (lam, mu):
+            ring = (A[idx] @ out) / count[idx, None]
+            out[idx] += factor * (ring - out[idx])
+    return out
 
 
 def unfold(
