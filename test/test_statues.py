@@ -1185,91 +1185,75 @@ class TestPosedHands(unittest.TestCase):
             min(sum(c) for c in report["hand.l"]["curl"].values()), 2 * CURLS[-1]
         )
 
-    # a known failure: the arm's solve brings the grasp near the grip, but with the index
-    # finger up the grip the hand does not yet close round it as a statue's does (on David the
-    # wrist bends hard and a finger meets the guard or the collar)
-    @unittest.expectedFailure
-    def test_a_hand_holds_a_grip_in_a_power_grasp(self):
+    def test_a_keyed_hand_takes_its_turns(self):
+        import roma
         import torch
 
         from opensculptboy.character import Character
         from opensculptboy.fit.handoff import GLTF_TO_ANNY
-        from opensculptboy.statues.chains import _identity_pose, _Skinner
-        from opensculptboy.statues.hands import (
-            hand_bones,
-            move_object,
-            pose_hands,
-            signed_distance,
+        from opensculptboy.statues.chains import (
+            _identity_pose,
+            _library_rotations,
+            _Skinner,
         )
+        from opensculptboy.statues.hands import KEY_FIST, key_hand, pose_hands
 
         model = _model()
         labels = list(model.bone_labels)
         character = Character(name="rest")
         R, t = np.eye(3), np.zeros(3)
+        key = {
+            "bones": {"wrist": [0.0, 20.0, 0.0], "finger1-1": [10.0, 30.0, 0.0]},
+            "fingers": {
+                "finger3": [60.0, 75.0, 40.0],
+                "finger1": [[10.0, 30.0, 0.0], 20, 0],
+            },
+        }
         skin = _Skinner(model, character, R, t)
         with torch.no_grad():
             skin(_identity_pose(model))
         wrist = skin.joints.numpy()[labels.index("wrist.R")]
-        # a sword standing beside the hanging hand, its tip on the floor: the grip, a
-        # collar above it and a guard across its foot
-        elbow = skin.joints.numpy()[labels.index("lowerarm01.R")]
-        reach = (wrist - elbow) / np.linalg.norm(wrist - elbow)
-        a = wrist + 0.06 * reach - [0.0, 0.0, 0.05]
-        b = a + [0.0, 0.0, 0.1]
-        tip = a - [0.0, 0.0, 0.55]
-        to_masks = lambda p: (np.asarray(p) @ GLTF_TO_ANNY).tolist()  # noqa: E731
         grip = {
             "kind": "capsule",
-            "grip": True,
-            "start": to_masks(a),
-            "end": to_masks(b),
+            "start": ((wrist + [0.0, -0.05, -0.1]) @ GLTF_TO_ANNY).tolist(),
+            "end": ((wrist + [0.0, -0.05, -0.02]) @ GLTF_TO_ANNY).tolist(),
             "radius": 0.012,
         }
-        collar = {
-            "kind": "capsule",
-            "start": to_masks(b + [0, 0, 0.024]),
-            "end": to_masks(b + [0, 0, 0.03]),
-            "radius": 0.024,
-        }
-        guard = {
-            "kind": "capsule",
-            "start": to_masks(a + [-0.08, 0.0, 0.0]),
-            "end": to_masks(a + [0.08, 0.0, 0.0]),
-            "radius": 0.008,
-        }
-        spec = {
-            "objects": [grip, collar, guard],
-            "fingers": "mh_fight",
-            "hold": {"prop": "Sword", "tip": to_masks(tip)},
-        }
-        held, report = pose_hands(model, character, R, t, {"hand.r": spec})
+        posed, report = pose_hands(
+            model, character, R, t, {"hand.r": {"key": key, "objects": [grip]}}
+        )
+        P = posed.pose_parameters(model)[0, :, :3, :3]
+
+        def degrees(name):
+            return np.degrees(roma.rotmat_to_rotvec(P[labels.index(name)]).numpy())
+
+        np.testing.assert_allclose(degrees("wrist.R"), [0.0, 20.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(degrees("finger1-1.R"), [10.0, 30.0, 0.0], atol=1e-4)
+        # each curl turns about the library fist's own axis for that joint, by its angle
+        library = _library_rotations(model, KEY_FIST)
+        for k, angle in zip((1, 2, 3), (60.0, 75.0, 40.0)):
+            b = labels.index(f"finger3-{k}.R")
+            v = degrees(f"finger3-{k}.R")
+            axis = roma.rotmat_to_rotvec(torch.as_tensor(library[b])).numpy()
+            self.assertAlmostEqual(np.linalg.norm(v), angle, places=3)
+            np.testing.assert_allclose(
+                v / angle, axis / np.linalg.norm(axis), atol=1e-6
+            )
+        # the other hand and the unkeyed fingers keep the card's pose
+        rest = _identity_pose(model)[0, :, :3, :3]
+        for name in ("finger2-1.R", "finger3-1.L", "wrist.L"):
+            np.testing.assert_allclose(P[labels.index(name)], rest[labels.index(name)])
         rep = report["hand.r"]
-        self.assertEqual(rep["carry"]["prop"], "Sword")
-        # the arm brings the grasp onto the grip; the prop moves little
-        self.assertLess(max(rep["grasp_off_mm"]), 3.0, rep)
-        self.assertLessEqual(rep["tip_moved_mm"], 30.5, rep)
-        self.assertLessEqual(rep["prop_turn_deg"], 3.0 + 1e-6)
-        # the wrist stays near straight: the forearm's twist takes the turn
-        self.assertLess(rep["wrist_turn_deg"], 35.0, rep)
-        # each finger closes until it touches, and wraps round the grip
-        clearance = rep["clearance_mm"]
-        self.assertTrue(all(c >= 1.0 for c in clearance.values()), rep)
-        self.assertTrue(
-            all(clearance[f] < 6.0 for f in ("finger2", "finger3", "finger4")), rep
+        self.assertEqual(rep["curl"], "key")
+        self.assertEqual(
+            sorted(rep["clearance_mm"]), [f"finger{k}" for k in range(1, 6)]
         )
-        self.assertTrue(
-            all(rep["wrap_deg"][f] > 90 for f in ("finger2", "finger3", "finger4")), rep
-        )
-        # nothing of the prop passes into the hand
-        with torch.no_grad():
-            Y = skin(held.pose_parameters(model)).numpy()
-        weights = model.vertex_bone_weights.detach().numpy()
-        on = (
-            np.isin(model.vertex_bone_indices.numpy(), hand_bones(model, "hand.r"))
-            * weights
-        ).sum(1) > 0.5
-        moved = [move_object(o, rep["carry"]) for o in (grip, collar, guard)]
-        self.assertGreater(signed_distance(Y[on], moved).min(), 0.0, rep)
+        with self.assertRaises(ValueError):
+            key_hand(model, P[None].clone(), "hand.r", {"bones": {"elbow": [0, 0, 0]}})
+        with self.assertRaises(ValueError):
+            key_hand(
+                model, P[None].clone(), "hand.r", {"fingers": {"finger6": [0, 0, 0]}}
+            )
 
     def test_a_fist_on_the_hip_comes_out_of_it(self):
         import roma
@@ -1306,40 +1290,51 @@ class TestPosedHands(unittest.TestCase):
         self.assertLess(report["inside_after"], report["inside_before"], report)
         self.assertLessEqual(report["deepest_after_mm"], 1.0, report)
 
-    def test_a_carried_prop_moves_once(self):
-        import trimesh
+    def test_a_stone_moves_with_its_hand_off_the_hip(self):
+        import roma
+        import torch
 
-        from opensculptboy.statues.hands import move_prop
+        from opensculptboy.character import Character
+        from opensculptboy.statues.chains import _library_rotations, _Skinner
+        from opensculptboy.statues.hands import _to_anny, pose_hands
 
-        carry = {
-            "prop": "Sword",
-            "pivot": [0.0, 0.0, 0.0],
-            "rotation": [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
-            "shift": [0.01, 0.0, 0.0],
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            folder = pathlib.Path(tmp)
-            scene = trimesh.Scene()
-            for name, at in (("Sword", (0.0, 1.0, 0.0)), ("Head", (0.5, 0.0, 0.0))):
-                box = trimesh.creation.box(extents=(0.02, 0.02, 0.02))
-                box.apply_translation(at)
-                scene.add_geometry(box, node_name=name, geom_name=name)
-            scene.export(str(folder / "props.glb"))
-            (folder / "props.json").write_text(json.dumps({"props": []}), "utf-8")
-            move_prop(folder, carry)
-            move_prop(folder, carry)
-            loaded = trimesh.load(str(folder / "props.glb"), force="scene")
-            info = json.loads((folder / "props.json").read_text("utf-8"))
-            with self.assertRaises(ValueError):
-                move_prop(folder, {**carry, "prop": "Shield"})
-        # (0, 1, 0) turned about x to (0, 0, 1), then shifted: moved once, not twice
-        np.testing.assert_allclose(
-            loaded.geometry["Sword"].vertices.mean(0), [0.01, 0.0, 1.0], atol=1e-6
+        model = _model()
+        labels = list(model.bone_labels)
+        full = torch.eye(4, dtype=torch.float64).repeat(1, len(labels), 1, 1)
+        full[0, :, :3, :3] = torch.as_tensor(
+            _library_rotations(model, "hands_on_hips"), dtype=torch.float64
         )
-        np.testing.assert_allclose(
-            loaded.geometry["Head"].vertices.mean(0), [0.5, 0.0, 0.0], atol=1e-6
+        arm = labels.index("upperarm01.L")
+        full[0, arm, :3, :3] = full[0, arm, :3, :3] @ roma.rotvec_to_rotmat(
+            torch.tensor([0.0, 0.0, 0.25], dtype=torch.float64)
         )
-        self.assertEqual(info["carried"]["Sword"]["shift"], [0.01, 0.0, 0.0])
+        character = Character(name="hips")
+        character.pose = Character.pose_from_parameters(model, full)
+        R, t = np.eye(3), np.zeros(3)
+        spec = {"stone": {"radii": [0.024, 0.019, 0.019]}, "curls": (0.0, 1.0)}
+        held = {}
+        for name, extra in (("still", {}), ("cleared", {"clear_body": 0.002})):
+            posed, report = pose_hands(
+                model, character, R, t, {"hand.l": {**spec, **extra}}
+            )
+            skin = _Skinner(model, posed, R, t)
+            with torch.no_grad():
+                skin(posed.pose_parameters(model))
+            J = skin.joints.numpy()
+            joints = [
+                labels.index(n)
+                for n in ("wrist.L", "finger2-1.L", "finger5-1.L", "finger3-3.L")
+            ]
+            centre = _to_anny(report["hand.l"]["stone"]["centre"])
+            held[name] = (
+                centre,
+                np.linalg.norm(J[joints] - centre, axis=1),
+                report["hand.l"],
+            )
+        # the arm moved the hand out of the hip, and the stone came with it, where the hand holds it
+        self.assertGreater(held["cleared"][2]["body"]["arm_turn_deg"], 0.0)
+        self.assertGreater(np.linalg.norm(held["cleared"][0] - held["still"][0]), 0.001)
+        np.testing.assert_allclose(held["cleared"][1], held["still"][1], atol=1e-5)
 
     def test_a_stone_joins_the_props(self):
         import trimesh

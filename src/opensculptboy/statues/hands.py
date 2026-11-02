@@ -11,9 +11,9 @@ scan) and by the curl of its fingers, which :func:`pose_hands` solves against th
 hand holds: each finger takes its library pose's curl (:data:`FIST`) scaled as far as it goes
 before it passes into an object, so that its tip touches a sword's grip or a stone without
 entering it. A hand that holds a stone gets the stone as a prop of its own
-(:func:`stone_mesh`). A hand that holds a prop's grip (``hold``) closes the other way round:
-its fist keeps a library pose that holds a rod, the prop moves so that its grip lies along
-the fist's channel (:func:`fist_channel`), and each finger opens until it clears the grip.
+(:func:`stone_mesh`). A hand whose grip the curl cannot find (a sword's grip with a finger
+over the guard) takes a keyed pose instead (``key``: :func:`key_hand`), its bones' turns set
+by hand as an animator keys them and checked by picture.
 :func:`hand_masks` gives the hand's vertices, which keep anny's shape, and a band of rings at
 the wrist, which blends the fitted forearm into the hand.
 
@@ -167,6 +167,74 @@ def place_stone(joints: dict, radii, gap: float = 0.02) -> dict:
     }
 
 
+# the library pose whose joints' turning axes a keyed finger's curl turns about
+KEY_FIST = "mh_fight"
+
+
+def key_hand(model, pose, chain: str, key: dict) -> None:
+    """Set a hand's pose as an animator keys it, in place on ``pose`` (1, B, 4, 4).
+
+    ``key["bones"]`` maps bones (without the side's suffix: ``"lowerarm02"``, ``"wrist"``,
+    ``"finger1-1"``) to their local turns, rotation vectors in degrees, which replace the
+    pose's. ``key["fingers"]`` maps a finger (``"finger2"``) to the curl of its three joints
+    in degrees, each about that joint's own bending axis (the axis of its turn in the library
+    pose :data:`KEY_FIST`); a joint's entry may instead be a rotation vector in degrees (the
+    thumb's opposition)."""
+    import roma
+    import torch
+
+    from opensculptboy.statues.chains import _library_rotations
+
+    side = "." + _side(chain)
+    labels = list(model.bone_labels)
+
+    def turn(v):
+        v = torch.as_tensor(np.radians(np.asarray(v, np.float64)), dtype=pose.dtype)
+        return roma.rotvec_to_rotmat(v)
+
+    for name, value in key.get("bones", {}).items():
+        if name + side not in labels:
+            raise ValueError(f"A keyed hand's bone {name!r} is not in the rig.")
+        pose[0, labels.index(name + side), :3, :3] = turn(value)
+    if key.get("fingers"):
+        library = _library_rotations(model, key.get("library", KEY_FIST))
+        for finger, joints in key["fingers"].items():
+            if finger not in FINGERS or len(joints) != 3:
+                raise ValueError(
+                    f"A keyed finger is one of {FINGERS} with three joints; got {finger!r}."
+                )
+            bones = [labels.index(f"{finger}-{k}{side}") for k in (1, 2, 3)]
+            axes = roma.rotmat_to_rotvec(torch.as_tensor(library[bones])).numpy()
+            norms = np.linalg.norm(axes, axis=1)
+            for k, (b, value) in enumerate(zip(bones, joints)):
+                if np.ndim(value) == 0:
+                    axis = axes[k] if norms[k] > 1e-3 else axes[int(np.argmax(norms))]
+                    value = float(value) * axis / np.linalg.norm(axis)
+                pose[0, b, :3, :3] = turn(value)
+
+
+def _kabsch(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
+    """The turn (3, 3) that best takes the points P (k, 3) to Q, both about the origin."""
+    U, _, Vt = np.linalg.svd(P.T @ Q)
+    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
+    return Vt.T @ D @ U.T
+
+
+def carry_with(o: dict, before: np.ndarray, after: np.ndarray) -> None:
+    """Move an object entry (masks' frame) in place with the rigid motion that best takes the
+    points ``before`` (k, 3, anny's frame) to ``after``: a stone with the hand that holds it."""
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
+    a, b = before.mean(0), after.mean(0)
+    R = _kabsch(before - a, after - b)
+    for k in ("centre", "start", "end"):
+        if k in o:
+            p = (_to_anny(o[k]) - a) @ R.T + b
+            o[k] = (p @ GLTF_TO_ANNY).round(6).tolist()
+    if "axis" in o:
+        o["axis"] = ((_to_anny(o["axis"]) @ R.T) @ GLTF_TO_ANNY).round(6).tolist()
+
+
 def pose_hands(model, character, rotation, translation, hands: dict, log=None):
     """
     The card with the fingers of each hand in ``hands`` (``{"hand.r": {"objects": [...],
@@ -177,11 +245,11 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
     curled pair of those within a millimetre of it); a hand that holds nothing takes the
     largest curl.
     A hand with a ``stone`` first gets the stone, placed in its palm with the fingers open
-    (:func:`place_stone`), among its objects. A hand with ``hold`` (``{"prop": "Sword",
-    "tip": [x, y, z]}``, and ``"fingers"`` a fist that holds a rod) holds the prop whose grip
-    is the capsule marked ``"grip": true`` among its objects, by :func:`_hold`. Returns the
-    card and a report per hand (the curl of each finger (root, outer joints), its clearance
-    in mm, and the stone).
+    (:func:`place_stone`), among its objects. A hand with ``key`` takes that pose instead of
+    the curl's (:func:`key_hand`). A hand with ``clear_body`` (metres) then moves out of the
+    body (:func:`_clear_body`), and its stone moves with it. Returns the card and a report
+    per hand (the curl of each finger (root, outer joints) or ``"key"``, its clearance in
+    mm, and the stone).
     """
     import roma
     import torch
@@ -238,27 +306,30 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
             stone["name"] = spec["stone"].get("name", "Stone")
             objects.append(stone)
         margin = float(spec.get("margin", MARGIN))
-        if spec.get("hold"):
-            report[chain] = _hold(
-                skin,
-                pose,
-                labels,
-                strongest,
-                side,
-                fingers,
-                library,
-                objects,
-                margin,
-                spec,
-            )
+        if spec.get("key"):
+            key_hand(model, pose, chain, spec["key"])
+            with torch.no_grad():
+                X = skin(pose).numpy()
+            report[chain] = {
+                "wrist_turn_deg": None,
+                "curl": "key",
+                "clearance_mm": {
+                    f: round(
+                        1000
+                        * float(
+                            signed_distance(X[np.isin(strongest, bones)], objects).min()
+                        ),
+                        2,
+                    )
+                    if objects
+                    else None
+                    for f, bones in fingers.items()
+                },
+                "stone": stone,
+            }
             if log:
-                r = report[chain]
                 log(
-                    f"hand {chain}: holds {r['carry']['prop']}, wrist {r['wrist_turn_deg']} "
-                    f"deg, arm {r['arm_turns_deg']}, grasp off {r['grasp_off_mm']} mm, "
-                    f"prop turn {r['prop_turn_deg']} deg, tip moved {r['tip_moved_mm']} mm, "
-                    f"curls {r['curl']}, "
-                    f"clearance (mm) {r['clearance_mm']}, wrap {r['wrap_deg']}"
+                    f"hand {chain}: keyed, clearance (mm) {report[chain]['clearance_mm']}"
                 )
             continue
         turn = None
@@ -325,12 +396,24 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
             "curl": {f: c[0] for f, c in chosen.items()},
             "clearance_mm": {f: c[1] for f, c in chosen.items()},
             "stone": stone,
-            "carry": None,
         }
         if spec.get("clear_body"):
+            hand = [
+                labels.index(n)
+                for n in labels
+                if n.endswith(side) and n.startswith(HAND_BONES)
+            ]
+            with torch.no_grad():
+                skin(pose)
+            before = skin.joints.numpy()[hand]
             report[chain]["body"] = _clear_body(
                 skin, pose, labels, strongest, side, float(spec["clear_body"])
             )
+            with torch.no_grad():
+                skin(pose)
+            if stone is not None:
+                # the stone in the palm goes where the hand goes
+                carry_with(stone, before, skin.joints.numpy()[hand])
         if log:
             log(
                 f"hand {chain}: curls {report[chain]['curl']}, clearance (mm) "
@@ -401,510 +484,6 @@ def _place_wrist(
         if c < best_cost:
             best, best_cost = coarse @ turn, c
     return best
-
-
-# a finger's loop in the library fist: the largest radius (metres) that counts as one, and
-# the place (in the hand's frame from the knuckle: towards the palm, towards the fingers,
-# across) taken for a finger without one
-LOOP_LARGEST = 0.04
-LOOP_DEFAULT = np.array([0.028, -0.016, 0.0])
-# the room (metres) between the hand and the guard or the collar
-GRASP_ROOM = 0.02
-# the wrist's largest turn from straight (degrees) before the arm's solve pays for it, and the
-# solve's steps
-WRIST_LIMIT = 30.0
-IK_STEPS = 3000
-# the arm's solve: what each turn costs (per radian: the shoulder, the upper arm, the elbow,
-# each about three axes, the forearm's twist and the wrist's swing about two; the wrist and
-# the forearm cost more, so that the arm, not the wrist, carries the hand to the grip)
-REG_WEIGHTS = np.array([1.0] * 3 + [0.5] * 3 + [0.5] * 3 + [1.0] + [1.5] * 2)
-# how hard the solve pulls the little finger's end down onto the guard's top (``low``; the
-# fist low on the grip); 0: anywhere on the grip's free length
-LOW_WEIGHT = 0.0
-# the forearm's twists (degrees) the arm's solve starts from, near its chain's pose
-IK_TWISTS = (0.0, 45.0, -45.0)
-# the largest turn (degrees) of a held prop about its tip and its largest shift (metres)
-HOLD_TURN = 3.0
-HOLD_SHIFT = 0.03
-# a holding hand's fingers close in steps of this share of the library fist's turns, up to
-# the largest share
-HOLD_STEP = 0.05
-HOLD_CURL_MAX = 1.6
-
-
-def _tip_rows(X, J, labels, strongest, side) -> dict:
-    """The vertex of each finger's tip: the farthest from its last joint among the vertices
-    of its last bone."""
-    out = {}
-    for f in FINGERS:
-        last = labels.index(f"{f}-3{side}")
-        rows = np.nonzero(strongest == last)[0]
-        out[f] = int(rows[np.argmax(np.linalg.norm(X[rows] - J[last], axis=1))])
-    return out
-
-
-def _rotation_between(u, v) -> np.ndarray:
-    """The smallest turn (3, 3) that takes the unit vector u to v."""
-    w = np.cross(u, v)
-    s, c = np.linalg.norm(w), float(u @ v)
-    if s < 1e-12:
-        return np.eye(3)
-    K = np.array([[0, -w[2], w[1]], [w[2], 0, -w[0]], [-w[1], w[0], 0]]) / s
-    angle = np.arctan2(s, c)
-    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * K @ K
-
-
-def _kabsch(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
-    """The turn (3, 3) that best takes the points P (k, 3) to Q, both about the origin."""
-    U, _, Vt = np.linalg.svd(P.T @ Q)
-    D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
-    return Vt.T @ D @ U.T
-
-
-def _turn_about(axis: np.ndarray, angle: float) -> np.ndarray:
-    """The turn (3, 3) by ``angle`` (radians) about ``axis``."""
-    k = np.asarray(axis, np.float64) / np.linalg.norm(axis)
-    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
-    return np.eye(3) + np.sin(angle) * K + (1.0 - np.cos(angle)) * K @ K
-
-
-def _local_axes(skin, pose, bone: int, followers) -> np.ndarray:
-    """The world directions (columns, 3 x 3) of a bone's own turning axes: three probe turns
-    about them show where each points, by the turn of the joints that follow the bone."""
-    import roma
-    import torch
-
-    with torch.no_grad():
-        skin(pose)
-    J0 = skin.joints.numpy()[followers]
-    head = skin.joints.numpy()[bone]
-    axes = []
-    for k in range(3):
-        probe = pose.clone()
-        e = torch.zeros(3, dtype=pose.dtype)
-        e[k] = 0.5
-        probe[0, bone, :3, :3] = pose[0, bone, :3, :3] @ roma.rotvec_to_rotmat(e)
-        with torch.no_grad():
-            skin(probe)
-        turn = _kabsch(J0 - head, skin.joints.numpy()[followers] - head)
-        axes.append(roma.rotmat_to_rotvec(torch.as_tensor(turn)).numpy())
-    U, _, Vt = np.linalg.svd(np.stack(axes, 1))
-    return U @ Vt
-
-
-def _circle(points: np.ndarray):
-    """The centre (3,) and radius of the circle that best fits points (k, 3), in the plane
-    that best fits them."""
-    c = points.mean(0)
-    _, _, vt = np.linalg.svd(points - c)
-    Q = np.c_[(points - c) @ vt[0], (points - c) @ vt[1]]
-    A = np.c_[2.0 * Q, np.ones(len(Q))]
-    x = np.linalg.lstsq(A, (Q**2).sum(1), rcond=None)[0]
-    radius = float(np.sqrt(max(x[2] + x[0] ** 2 + x[1] ** 2, 0.0)))
-    return c + x[0] * vt[0] + x[1] * vt[1], radius
-
-
-def _hand_frame(J, ids, sign):
-    """The hand's frame at its knuckles (rows: towards the palm, from the wrist to the
-    knuckles, from the index finger to the little finger), from its joints J."""
-    index, little, wrist = J[ids["index"]], J[ids["little"]], J[ids["wrist"]]
-    knuckles = (index + J[ids["middle"]] + J[ids["ring"]] + little) / 4.0
-    along = knuckles - wrist
-    across = little - index
-    normal = sign * np.cross(-across, along)
-    normal /= np.linalg.norm(normal)
-    along = along - (along @ normal) * normal
-    along /= np.linalg.norm(along)
-    return np.stack([normal, along, np.cross(normal, along)])
-
-
-def _grasp_points(J, ids, sign, local):
-    """The ends of a hand's power grasp: the points ``local`` ((2, 3), in the hand's frame,
-    :func:`_hand_frame`) from the index finger's and the little finger's knuckles."""
-    F = _hand_frame(J, ids, sign)
-    return J[ids["index"]] + local[0] @ F, J[ids["little"]] + local[1] @ F
-
-
-def _fist_loops(skin, fist, labels, strongest, side, ids, sign, radius, margin):
-    """Where a hand's power grasp holds a grip, from the library fist ``fist`` (a pose):
-    the centres of the loops that the index finger and the little finger close round (each
-    the circle through the finger's three joints and its tip), in the hand's frame from
-    their knuckles, moved out from the palm as far as a grip of ``radius`` needs to clear
-    the open hand (palm and straight fingers but the thumb) by ``margin``, so that the
-    fingers close round it. Returns the two points (2, 3) in the hand's frame."""
-    import torch
-
-    with torch.no_grad():
-        X = skin(fist).numpy()
-    J = skin.joints.numpy()
-    tips = _tip_rows(X, J, labels, strongest, side)
-    F = _hand_frame(J, ids, sign)
-    centres = []
-    for f, knuckle in (("finger2", "index"), ("finger5", "little")):
-        points = [J[labels.index(f"{f}-{k}{side}")] for k in (1, 2, 3)] + [X[tips[f]]]
-        centre, loop = _circle(np.array(points))
-        if not loop < LOOP_LARGEST:
-            # a finger the fist leaves nearly straight closes round no loop: the default
-            centre = J[ids[knuckle]] + LOOP_DEFAULT @ F
-        centres.append(centre)
-    # the open hand (its fingers straight, as the closing starts) must clear the grip
-    opened = fist.clone()
-    for i, n in enumerate(labels):
-        if n.endswith(side) and n.startswith("finger"):
-            opened[0, i, :3, :3] = torch.eye(3, dtype=fist.dtype)
-    with torch.no_grad():
-        Y = skin(opened).numpy()
-    hand = Y[
-        np.isin(
-            strongest,
-            [
-                i
-                for i, n in enumerate(labels)
-                if n.endswith(side)
-                and n.startswith(
-                    ("wrist", "metacarpal", "finger2", "finger3", "finger4", "finger5")
-                )
-            ],
-        )
-    ]
-    a, b = centres
-    for _ in range(8):
-        ab = b - a
-        # the grip runs on past the hand: its whole line must clear the hand
-        t = ((hand - a) @ ab) / (ab @ ab)
-        nearest = float(np.linalg.norm(hand - (a + t[:, None] * ab), axis=1).min())
-        push = radius + margin - nearest
-        if push <= 1e-4:
-            break
-        a, b = a + push * F[0], b + push * F[0]
-    out = np.array([(a - J[ids["index"]]) @ F.T, (b - J[ids["little"]]) @ F.T])
-    return out
-
-
-def _hold(skin, pose, labels, strongest, side, fingers, library, objects, margin, spec):
-    """A hand that holds a prop's grip in a power grasp.
-
-    The grasp: the grip runs through the loops that the library fist's (``spec["fingers"]``)
-    index finger and little finger close round (:func:`_fist_loops`), as a power grip
-    holds a handle across the palm, moved out from the palm as far as the grip needs; the
-    index finger's end and the grasp's middle lie on the grip's free length
-    (:data:`GRASP_ROOM` under the collar), the index finger up the grip towards the
-    pommel and the little finger just above the guard. The arm
-    reaches it: a damped least-squares solve (Levenberg-Marquardt, as inverse kinematics
-    solves a limb) of the shoulder's, the upper arm's and the elbow's turns, the forearm's
-    twist (in its twist bone, lowerarm02, shared along the forearm, so that the wrist does
-    not kink) and the wrist's swing, which brings the grasp's ends onto the grip's axis and
-    pays for moving away from the chain's pose and for a wrist turned more than
-    :data:`WRIST_LIMIT` degrees. The prop then turns about ``spec["hold"]["tip"]`` (up to
-    :data:`HOLD_TURN` degrees) and shifts (up to :data:`HOLD_SHIFT`) for the rest. The
-    fingers then close as GraspIt's AutoGrasp closes a hand, and the thumb opposes first.
-    ``pose`` takes the arm and the fingers. Returns the hand's report, whose ``carry`` moves
-    the prop (:func:`move_prop`)."""
-    import roma
-    import torch
-
-    from opensculptboy.fit.handoff import GLTF_TO_ANNY
-
-    M = GLTF_TO_ANNY
-    hold = spec["hold"]
-    grips = [o for o in objects if o.get("grip")]
-    if not grips:
-        raise ValueError("A hand that holds a prop needs a capsule marked 'grip'.")
-    grip = grips[0]
-    radius = float(grip["radius"])
-    a0, b0 = _to_anny(grip["start"]), _to_anny(grip["end"])
-    up = (b0 - a0) / np.linalg.norm(b0 - a0)
-    # the grasp's top under the lowest other object along the grip above its start (the
-    # collar), or at the grip's end
-    ceiling = np.linalg.norm(b0 - a0)
-    for o in objects:
-        if o is grip or o.get("kind") != "capsule":
-            continue
-        for key in ("start", "end"):
-            t = (_to_anny(o[key]) - a0) @ up
-            if (
-                0.0 < t < ceiling + 0.2
-                and np.linalg.norm((_to_anny(o[key]) - a0) - t * up) < 0.01
-            ):
-                ceiling = min(ceiling, t - float(o["radius"]))
-    room = float(hold.get("room", GRASP_ROOM))
-    # and above the guard: the highest other object across the grip near its start
-    floor = 0.0
-    for o in objects:
-        if o is grip or o.get("kind") != "capsule":
-            continue
-        s0, s1 = _to_anny(o["start"]), _to_anny(o["end"])
-        mid = 0.5 * (s0 + s1)
-        t = (mid - a0) @ up
-        across = np.linalg.norm((mid - a0) - t * up)
-        if abs(t) < 0.03 and across < 0.05:
-            floor = max(floor, t + float(o["radius"]) + room)
-    ids = {
-        "wrist": labels.index("wrist" + side),
-        "index": labels.index("finger2-1" + side),
-        "middle": labels.index("finger3-1" + side),
-        "ring": labels.index("finger4-1" + side),
-        "little": labels.index("finger5-1" + side),
-    }
-    # the palm's side: where the library fist's middle finger curls to
-    fist = pose.clone()
-    for bones in fingers.values():
-        fist[0, bones, :3, :3] = torch.as_tensor(library[bones], dtype=pose.dtype)
-    with torch.no_grad():
-        skin(fist)
-    Jf = skin.joints.numpy()
-    with torch.no_grad():
-        skin(pose)
-    J0 = skin.joints.numpy()
-    tip_curl = Jf[labels.index("finger3-3" + side)] - Jf[ids["middle"]]
-    normal0 = np.cross(
-        J0[ids["index"]] - J0[ids["little"]], J0[ids["middle"]] - J0[ids["wrist"]]
-    )
-    sign = 1.0 if tip_curl @ normal0 > 0 else -1.0
-    local = _fist_loops(skin, fist, labels, strongest, side, ids, sign, radius, margin)
-    # 2. the arm's solve, in world turns about each joint of the chain's pose (outer joints
-    # first, so that each inner turn carries the outer joints with it); a bone's own turn is
-    # the world turn seen in its own axes (_local_axes), which an inner turn does not change
-    names = ("shoulder01", "upperarm01", "lowerarm01", "lowerarm02", "wrist")
-    bone = {k: labels.index(k + side) for k in names if k + side in labels}
-    hand_joints = [
-        i
-        for i, n in enumerate(labels)
-        if n.endswith(side) and n.startswith(("metacarpal", "finger"))
-    ]
-    axes = {}
-    for k, i in bone.items():
-        followers = [j for j in [bone["wrist"]] + hand_joints if j != i]
-        axes[k] = _local_axes(skin, pose, i, followers)
-    with torch.no_grad():
-        skin(pose)
-    J0 = skin.joints.numpy()
-    head = {k: J0[i] for k, i in bone.items()}
-    forearm = head["wrist"] - head["lowerarm02"]
-    forearm /= np.linalg.norm(forearm)
-    hand_dir = J0[ids["middle"]] - head["wrist"]
-    hand_dir /= np.linalg.norm(hand_dir)
-    swing = np.linalg.svd(hand_dir[None])[2][1:]  # two world axes across the hand
-    rows = [ids["wrist"], ids["index"], ids["middle"], ids["ring"], ids["little"]]
-    points0 = J0[rows]
-    limit_rad = np.radians(float(hold.get("wrist_limit", WRIST_LIMIT)))
-    wrist_rest = pose[0, bone["wrist"], :3, :3].numpy()
-    free = [k for k in ("shoulder01", "upperarm01", "lowerarm01") if k in bone]
-
-    def rot(v):
-        angle = np.linalg.norm(v)
-        return np.eye(3) if angle < 1e-12 else _turn_about(v, angle)
-
-    def turns(values):
-        out = {k: rot(values[3 * n : 3 * n + 3]) for n, k in enumerate(free)}
-        out["lowerarm02"] = rot(values[9] * forearm)
-        out["wrist"] = rot(values[10:12] @ swing)
-        return out
-
-    def forward(values):
-        W = turns(values)
-        P = points0.copy()
-        P[1:] = (P[1:] - head["wrist"]) @ W["wrist"].T + head["wrist"]
-        for k in ("lowerarm02", "lowerarm01", "upperarm01", "shoulder01"):
-            if k in W:
-                P = (P - head[k]) @ W[k].T + head[k]
-        J = J0.copy()
-        J[rows] = P
-        return J, W
-
-    def wrist_angle(W):
-        local = wrist_rest @ (axes["wrist"].T @ W["wrist"] @ axes["wrist"])
-        return float(np.arccos(np.clip((np.trace(local) - 1.0) / 2.0, -1.0, 1.0)))
-
-    def residuals(values):
-        J, W = forward(values)
-        top, bottom = _grasp_points(J, ids, sign, local)
-        out = []
-        for point in (top, bottom):
-            q = point - a0
-            out.append((q - (q @ up) * up) / 0.01)  # off the grip's axis
-        # the index finger's end up the grip (towards the pommel), the little finger's down
-        # (towards the guard), as a hand holds a sword point down; both on the grip's free
-        # length, the little finger's end just above the guard (low on the grip)
-        t_top, t_bottom = (top - a0) @ up, (bottom - a0) @ up
-        out.append([max(0.0, t_bottom - t_top) / 0.005])
-        out.append([max(0.0, t_top - (ceiling - room)) / 0.01])
-        out.append([max(0.0, floor - t_bottom) / 0.01])
-        out.append([(t_bottom - floor) / 0.01 * float(hold.get("low", LOW_WEIGHT))])
-        out.append(REG_WEIGHTS * np.asarray(values))
-        out.append([np.sqrt(30.0) * max(0.0, wrist_angle(W) - limit_rad)])
-        return np.concatenate(out)
-
-    # a damped least-squares solve (Levenberg-Marquardt, as inverse kinematics solves a limb)
-    # from the chain's pose with the forearm twisted three ways near it; the best is kept
-    from scipy.optimize import least_squares
-
-    best = None
-    for start in IK_TWISTS:
-        x0 = np.zeros(12)
-        x0[9] = np.radians(start)
-        fit = least_squares(
-            residuals, x0, method="lm", max_nfev=int(hold.get("steps", IK_STEPS))
-        )
-        value = float((fit.fun**2).sum())
-        if best is None or value < best[0]:
-            best = (value, fit.x)
-    x = best[1]
-    W = turns(x)
-    for k, i in bone.items():
-        own = axes[k].T @ W[k] @ axes[k]
-        pose[0, i, :3, :3] = pose[0, i, :3, :3] @ torch.as_tensor(own, dtype=pose.dtype)
-    with torch.no_grad():
-        skin(pose)
-    J = skin.joints.numpy()
-    top, bottom = _grasp_points(J, ids, sign, local)
-    solved = forward(x)[0]
-    fk_error = float(np.abs(solved[rows] - J[rows]).max())
-    # 3. the prop turns about its tip, then shifts, for what the arm left
-    tip = _to_anny(hold["tip"]) if hold.get("tip") is not None else a0.copy()
-    middle = 0.5 * (top + bottom)
-    near = a0 + ((middle - a0) @ up) * up
-    turn = _rotation_between(
-        (near - tip) / np.linalg.norm(near - tip),
-        (middle - tip) / np.linalg.norm(middle - tip),
-    )
-    size = np.arccos(np.clip((np.trace(turn) - 1.0) / 2.0, -1.0, 1.0))
-    largest = np.radians(float(hold.get("turn", HOLD_TURN)))
-    if size > largest:
-        axis = roma.rotmat_to_rotvec(torch.as_tensor(turn)).numpy()
-        turn = roma.rotvec_to_rotmat(torch.as_tensor(axis / size * largest)).numpy()
-    a1 = tip + turn @ (a0 - tip)
-    u1 = turn @ up
-    near = a1 + ((middle - a1) @ u1) * u1
-    shift = middle - near
-    reach = float(hold.get("shift", HOLD_SHIFT))
-    if np.linalg.norm(shift) > reach:
-        shift *= reach / np.linalg.norm(shift)
-    carry = {
-        "prop": hold.get("prop"),
-        "pivot": (tip @ M).tolist(),
-        "rotation": (M.T @ turn @ M).tolist(),
-        "shift": (M.T @ shift).tolist(),
-    }
-    moved = [move_object(o, carry) for o in objects]
-    # 4. the fingers close as GraspIt's AutoGrasp closes a hand (Miller and Allen 2004): the
-    # joints of each finger turn together at the library fist's rates; when a phalanx comes
-    # within the margin of the prop, the step is taken back and its joint and those before
-    # it stop, and the joints after it go on. The thumb first opposes (its first joint
-    # alone, as far as the library fist's, or less until it clears the prop), then curls the
-    # same way.
-    rotvecs = {
-        f: roma.rotmat_to_rotvec(torch.as_tensor(library[bones], dtype=pose.dtype))
-        for f, bones in fingers.items()
-    }
-    step = float(hold.get("curl_step", HOLD_STEP))
-    curl_cap = float(hold.get("curl_max", HOLD_CURL_MAX))
-    scale = {f: [0.0, 0.0, 0.0] for f in FINGERS}
-    frozen = {f: [False, False, False] for f in FINGERS}
-    links = {f: [strongest == b for b in bones] for f, bones in fingers.items()}
-    rows = {f: np.isin(strongest, bones) for f, bones in fingers.items()}
-
-    def set_fingers(p):
-        for f, bones in fingers.items():
-            for k in range(3):
-                p[0, bones[k], :3, :3] = roma.rotvec_to_rotmat(
-                    scale[f][k] * rotvecs[f][k]
-                )
-        return p
-
-    def cap(f, k):
-        # the thumb opposes as far as the library fist does, no farther
-        return 1.0 if (f, k) == ("finger1", 0) else curl_cap
-
-    def close(active):
-        """Close the joints of ``active`` ({finger: [joint, ...]}) until each stops."""
-        while True:
-            moving = {
-                f: [k for k in ks if not frozen[f][k] and scale[f][k] < cap(f, k)]
-                for f, ks in active.items()
-            }
-            if not any(moving.values()):
-                return
-            before = {f: list(v) for f, v in scale.items()}
-            for f, ks in moving.items():
-                for k in ks:
-                    scale[f][k] = min(cap(f, k), scale[f][k] + step)
-            with torch.no_grad():
-                Y = skin(set_fingers(pose.clone())).numpy()
-            for f, ks in moving.items():
-                if not ks:
-                    continue
-                for k in range(3):
-                    if not links[f][k].any():
-                        continue
-                    if float(signed_distance(Y[links[f][k]], moved).min()) < margin:
-                        # this phalanx touches: the joints that move it and moved in this
-                        # step stop where they were, or, when none did (the skin by the
-                        # next joint bends with it), the nearest joint that moved; every
-                        # phalanx is checked
-                        stop = [j for j in ks if j <= k] or [min(ks)]
-                        for j in stop:
-                            scale[f][j] = before[f][j]
-                            frozen[f][j] = True
-
-    # the thumb's opposition: as far as the library fist's, or back from it (away from the
-    # palm, below zero) until the thumb clears the prop
-    thumb = links["finger1"]
-    thumb_rows = thumb[0] | thumb[1] | thumb[2]
-    for s in np.arange(1.0, -1.0001, -step):
-        scale["finger1"][0] = float(s)
-        with torch.no_grad():
-            Y = skin(set_fingers(pose.clone())).numpy()
-        if float(signed_distance(Y[thumb_rows], moved).min()) >= margin:
-            break
-    for f in FINGERS:
-        frozen[f] = [False, False, False] if f != "finger1" else [True, False, False]
-    close({f: ([1, 2] if f == "finger1" else [0, 1, 2]) for f in FINGERS})
-    set_fingers(pose)
-    with torch.no_grad():
-        Y = skin(pose).numpy()
-    clearance = {
-        f: round(1000 * float(signed_distance(Y[rows[f]], moved).min()), 2)
-        for f in FINGERS
-    }
-    J = skin.joints.numpy()
-    top, bottom = _grasp_points(J, ids, sign, local)
-    g = moved[objects.index(grip)]
-    ga, gb = _to_anny(g["start"]), _to_anny(g["end"])
-    gu = (gb - ga) / np.linalg.norm(gb - ga)
-
-    def off(p):
-        q = p - ga
-        return float(np.linalg.norm(q - (q @ gu) * gu))
-
-    wrist_turn = roma.rotmat_to_rotvec(pose[0, bone["wrist"], :3, :3]).norm()
-    x = torch.as_tensor(x)
-    moved_tip = move_object({"centre": (tip @ M).tolist()}, carry)["centre"]
-    return {
-        "wrist_turn_deg": round(float(np.degrees(float(wrist_turn))), 1),
-        "arm_turns_deg": {
-            k: round(float(np.degrees(np.linalg.norm(v))), 1)
-            for k, v in (
-                ("shoulder", x.detach()[0:3].numpy()),
-                ("upper arm", x.detach()[3:6].numpy()),
-                ("elbow", x.detach()[6:9].numpy()),
-                ("forearm twist", x.detach()[9:10].numpy()),
-                ("wrist swing", x.detach()[10:12].numpy()),
-            )
-        },
-        "grasp_off_mm": [round(1000 * off(top), 1), round(1000 * off(bottom), 1)],
-        "kinematics_mm": round(1000 * fk_error, 2),
-        "grasp_local_mm": np.round(1000 * local, 1).tolist(),
-        "curl": {f: tuple(round(v, 2) for v in scale[f]) for f in FINGERS},
-        "clearance_mm": clearance,
-        "stone": None,
-        "carry": carry,
-        "prop_turn_deg": round(float(np.degrees(min(size, largest))), 2),
-        "tip_moved_mm": round(
-            1000 * float(np.linalg.norm(_to_anny(moved_tip) - tip)), 1
-        ),
-        "wrap_deg": _wrap(skin, pose, labels, strongest, side, moved),
-    }
 
 
 # the arm's bones that may move a hand off the body, and the steps of that solve
@@ -995,86 +574,6 @@ def _clear_body(skin, pose, labels, strongest, side, margin):
         "deepest_after_mm": inside(X)[1],
         "arm_turn_deg": round(float(np.degrees(x.detach().norm())), 1),
     }
-
-
-def _wrap(skin, pose, labels, strongest, side, objects):
-    """How far each of the four fingers wraps round a grip (degrees about its axis, from
-    the finger's knuckle to its tip; past 180 the tip is beyond the grip's far side)."""
-    import torch
-
-    grip = next(o for o in objects if o.get("grip"))
-    a, b = _to_anny(grip["start"]), _to_anny(grip["end"])
-    axis = (b - a) / np.linalg.norm(b - a)
-    with torch.no_grad():
-        X = skin(pose).numpy()
-    J = skin.joints.numpy()
-    tips = _tip_rows(X, J, labels, strongest, side)
-    out = {}
-    for f in FINGERS[1:]:
-        points = [J[labels.index(f"{f}-{k}{side}")] for k in (1, 2, 3)] + [X[tips[f]]]
-        flat = [(p - a) - ((p - a) @ axis) * axis for p in points]
-        total = 0.0
-        for u, v in zip(flat, flat[1:]):
-            total += np.degrees(np.arctan2(np.cross(u, v) @ axis, u @ v))
-        out[f] = round(abs(float(total)), 1)
-    return out
-
-
-def move_object(o: dict, carry: dict) -> dict:
-    """A held object (masks' frame) moved with its prop: ``carry`` turns it by ``rotation``
-    round ``pivot`` and shifts it by ``shift``."""
-    R = np.asarray(carry["rotation"], np.float64)
-    pivot = np.asarray(carry["pivot"], np.float64)
-    shift = np.asarray(carry["shift"], np.float64)
-    moved = dict(o)
-    for key in ("start", "end", "centre"):
-        if key in o:
-            p = np.asarray(o[key], np.float64)
-            moved[key] = ((p - pivot) @ R.T + pivot + shift).tolist()
-    if "axis" in o:
-        moved["axis"] = (np.asarray(o["axis"], np.float64) @ R.T).tolist()
-    return moved
-
-
-def move_prop(folder, carry: dict) -> None:
-    """Move a carried prop (``carry["prop"]``, a name in a handoff's ``props.glb``) as
-    :func:`_hold` found it; the other props stay. ``props.json`` keeps the move under
-    ``carried``, and a later move first takes the earlier one back, so that a run on the
-    same handoff moves the prop from where the scan has it."""
-    import json
-    import pathlib
-
-    import trimesh
-
-    folder = pathlib.Path(folder)
-    path = folder / "props.glb"
-    info_path = folder / "props.json"
-    info = (
-        json.loads(info_path.read_text(encoding="utf-8")) if info_path.exists() else {}
-    )
-    scene = trimesh.load(str(path), force="scene")
-    name = carry["prop"]
-    if name not in scene.geometry:
-        raise ValueError(f"The carried prop {name!r} is not in {path}.")
-    earlier = info.get("carried", {}).get(name)
-    out = trimesh.Scene()
-    for n, g in scene.geometry.items():
-        if n == name:
-            g = g.copy()
-            V = np.asarray(g.vertices, np.float64)
-            if earlier:
-                R = np.asarray(earlier["rotation"], np.float64)
-                p = np.asarray(earlier["pivot"], np.float64)
-                V = (V - np.asarray(earlier["shift"], np.float64) - p) @ R + p
-            R = np.asarray(carry["rotation"], np.float64)
-            p = np.asarray(carry["pivot"], np.float64)
-            g.vertices = (V - p) @ R.T + p + np.asarray(carry["shift"], np.float64)
-        out.add_geometry(g, node_name=n, geom_name=n)
-    out.export(str(path))
-    info.setdefault("carried", {})[name] = {
-        k: carry[k] for k in ("prop", "pivot", "rotation", "shift")
-    }
-    info_path.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
 
 
 def add_stone_prop(folder, stone: dict, role: str = "support") -> None:
