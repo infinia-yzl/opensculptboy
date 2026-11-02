@@ -100,7 +100,8 @@ class StatueConfig:
     # masks (as in "masks") whose skin on the first fit takes no data on the detail levels
     no_data_regions: list = dataclasses.field(default_factory=list)
     # props rebuilt in part from shapes (opensculptboy.statues.starter.export_props): name ->
-    # {"cut": a mask, "shapes": spheres and capsules}
+    # {"cut": a mask or a list of masks, "keep": masks spared by the cut, "shapes": spheres and
+    # capsules}
     prop_shapes: dict = dataclasses.field(default_factory=dict)
     # the bone each named prop is bound to in a starter (default: the bone at its contact)
     prop_bones: dict = dataclasses.field(default_factory=dict)

@@ -282,14 +282,35 @@ def complete_props(meshes: dict, pruned, figure=None) -> dict:
     return out
 
 
+def cut_prop(mesh, cut, keep=None):
+    """A prop's mesh without the triangles whose corners all lie inside ``cut`` (a mask, or a
+    list of masks), but for those whose corners all lie inside one of ``keep`` (masks): the
+    scan's shards of a fist round a sword's grip go, its guard stays."""
+    import trimesh
+
+    from opensculptboy.statues.scan import Mask
+
+    V = np.asarray(mesh.vertices)
+    inside = np.zeros(len(V), bool)
+    for entry in [cut] if isinstance(cut, dict) else list(cut):
+        inside |= Mask.from_dict(dict(entry)).inside(V)
+    gone = inside[mesh.faces].all(1)
+    for entry in keep or []:
+        gone &= ~Mask.from_dict(dict(entry)).inside(V)[mesh.faces].all(1)
+    out = trimesh.Trimesh(V, np.asarray(mesh.faces)[~gone], process=False)
+    out.remove_unreferenced_vertices()
+    return out
+
+
 def export_props(
     root, out_dir, names=None, props=None, shapes=None, complete=True, far_skin=False
 ) -> list:
     """Write the named props of a run's ``props.glb`` (default: every prop that is neither
     drapery nor hair) as ``prop_<slug>.ply`` in ``out_dir``, in the file's own frame (the
     masks' frame), for ``blender_pieces.py`` to rebuild closed. ``shapes`` (a config's
-    ``prop_shapes``: prop name -> {"cut": a mask, "shapes": spheres and capsules}) takes the
-    triangles inside ``cut`` out of that prop and adds the shapes, which the voxel remesh
+    ``prop_shapes``: prop name -> {"cut": a mask or a list of masks, "keep": masks, "shapes":
+    spheres and capsules}) takes the triangles inside ``cut`` out of that prop, but for those
+    inside ``keep`` (:func:`cut_prop`), and adds the shapes, which the voxel remesh
     joins: a sword's hilt whose pommel the scan saw from one side and whose grip it never
     saw inside the fist. ``complete`` gives each prop the pruned pieces nearest it
     (:func:`complete_props`, away from the fitted skin of ``<root>/meshes``); ``far_skin``
@@ -297,8 +318,6 @@ def export_props(
     more than :data:`PROP_FIGURE` away, which on David put torn pieces of the body's own skin
     on the props (under a buttock). Returns the paths written."""
     import trimesh
-
-    from opensculptboy.statues.scan import Mask
 
     folder = pathlib.Path(props) if props else pathlib.Path(root) / "handoff"
     path = folder / "props.glb"
@@ -342,12 +361,7 @@ def export_props(
         spec = (shapes or {}).get(name)
         if spec:
             if spec.get("cut"):
-                cut = Mask.from_dict(dict(spec["cut"]))
-                inside = cut.inside(np.asarray(mesh.vertices))
-                mesh = trimesh.Trimesh(
-                    mesh.vertices, mesh.faces[~inside[mesh.faces].all(1)], process=False
-                )
-                mesh.remove_unreferenced_vertices()
+                mesh = cut_prop(mesh, spec["cut"], spec.get("keep"))
             mesh = trimesh.util.concatenate(
                 [mesh] + [shape_mesh(e) for e in spec.get("shapes", [])]
             )

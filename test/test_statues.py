@@ -1603,6 +1603,28 @@ class TestPropPieces(unittest.TestCase):
             self.assertEqual(len(T), 12 + 80)
             self.assertIsNone(_pruned_triangles(pathlib.Path(tmp) / "none"))
 
+    def test_a_cut_spares_what_it_keeps(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import cut_prop
+
+        # a bar along x (the guard) and a plate above it (a shard), both inside the cut
+        guard = trimesh.creation.box(extents=(0.2, 0.02, 0.02))
+        shard = trimesh.creation.box(extents=(0.03, 0.002, 0.03))
+        shard.apply_translation((0.0, 0.03, 0.0))
+        far = trimesh.creation.box(extents=(0.02, 0.02, 0.02))
+        far.apply_translation((0.0, -0.3, 0.0))
+        mesh = trimesh.util.concatenate([guard, shard, far])
+        cut = {"kind": "sphere", "centre": [0.0, 0.0, 0.0], "radius": 0.2}
+        keep = [
+            {"kind": "box", "centre": [0.0, 0.0, 0.0], "size": [0.25, 0.025, 0.025]}
+        ]
+        kept = cut_prop(mesh, [cut], keep)
+        self.assertEqual(len(kept.faces), len(guard.faces) + len(far.faces))
+        self.assertLess(kept.vertices[:, 1].max(), 0.02)
+        # without keep the guard goes too; a single mask works as a list of one
+        self.assertEqual(len(cut_prop(mesh, cut).faces), len(far.faces))
+
     def test_a_turned_piece_from_its_profile(self):
         from opensculptboy.statues.starter import shape_mesh
 
