@@ -1625,6 +1625,19 @@ class TestPropPieces(unittest.TestCase):
         # without keep the guard goes too; a single mask works as a list of one
         self.assertEqual(len(cut_prop(mesh, cut).faces), len(far.faces))
 
+    def test_a_box_shape_closes_a_cut_end(self):
+        from opensculptboy.statues.starter import shape_mesh
+
+        box = shape_mesh(
+            {"kind": "box", "centre": [0.1, 0.2, 0.3], "size": [0.02, 0.01, 0.06]}
+        )
+        self.assertTrue(box.is_watertight)
+        np.testing.assert_allclose(
+            box.bounds, [[0.09, 0.195, 0.27], [0.11, 0.205, 0.33]]
+        )
+        with self.assertRaises(ValueError):
+            shape_mesh({"kind": "half", "point": [0, 0, 0], "normal": [0, 1, 0]})
+
     def test_a_turned_piece_from_its_profile(self):
         from opensculptboy.statues.starter import shape_mesh
 

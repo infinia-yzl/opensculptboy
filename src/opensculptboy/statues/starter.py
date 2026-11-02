@@ -177,7 +177,7 @@ def statue_props(root, props=None) -> list:
 
 
 def shape_mesh(entry):
-    """A closed mesh of a sphere or capsule mask entry (a dict or a
+    """A closed mesh of a sphere, capsule or box mask entry (a dict or a
     :class:`~opensculptboy.statues.scan.Mask`), or of a ``"revolve"`` entry (``start``,
     ``end``: the axis; ``profile``: (distance along the axis from ``start``, radius) pairs in
     metres, the profile of a turned piece such as a pommel), in the masks' frame."""
@@ -219,7 +219,13 @@ def shape_mesh(entry):
         )
         mesh.apply_translation((a + b) / 2)
         return mesh
-    raise ValueError(f"A prop shape is a sphere or a capsule; got {mask.kind!r}.")
+    if mask.kind == "box":
+        mesh = trimesh.creation.box(extents=np.asarray(mask.size, np.float64))
+        mesh.apply_translation(np.asarray(mask.centre, np.float64))
+        return mesh
+    raise ValueError(
+        f"A prop shape is a sphere, a capsule, a box or a revolve; got {mask.kind!r}."
+    )
 
 
 # the pruned pieces (removed.glb's support_cut) join the prop nearest them within this
