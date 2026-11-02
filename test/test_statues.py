@@ -989,6 +989,236 @@ class TestChains(unittest.TestCase):
         )
 
 
+class TestPosedHands(unittest.TestCase):
+    def test_pinned_rows_keep_anny_and_the_band_blends(self):
+        from opensculptboy.fit.register import pin_rest_shape
+
+        # a strip of quads along x: rows 0..9, the offsets 1 cm, the last three pinned
+        n = 10
+        V = np.array([[x, y, 0.0] for x in range(n) for y in (0, 1)], float)
+        T = []
+        for x in range(n - 1):
+            a, b, c, d = 2 * x, 2 * x + 1, 2 * x + 2, 2 * x + 3
+            T += [[a, c, b], [b, c, d]]
+        offsets = np.full((len(V), 3), 0.01)
+        pinned = V[:, 0] >= 7
+        band = (V[:, 0] >= 4) & ~pinned
+        out, rows = pin_rest_shape(offsets, np.array(T), pinned, band)
+        self.assertTrue((out[pinned] == 0).all())
+        np.testing.assert_allclose(out[V[:, 0] < 4], 0.01)
+        # the band falls from the fitted offset to anny's shape step by step
+        steps = [out[V[:, 0] == x, 0].mean() for x in range(3, 8)]
+        self.assertTrue(all(a > b for a, b in zip(steps, steps[1:])))
+        self.assertEqual(set(rows.tolist()), set(np.nonzero(pinned | band)[0].tolist()))
+        same, none = pin_rest_shape(offsets, np.array(T), np.zeros(len(V), bool))
+        np.testing.assert_allclose(same, offsets)
+        self.assertEqual(len(none), 0)
+
+    def test_objects_stone_and_masks(self):
+        import trimesh
+
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.statues.hands import (
+            hand_masks,
+            signed_distance,
+            stone_mesh,
+        )
+
+        # objects in the masks' frame (y up), points in anny's (z up)
+        capsule = {
+            "kind": "capsule",
+            "start": [0, 0, 0],
+            "end": [0, 1, 0],
+            "radius": 0.1,
+        }
+        P = np.array([[0.3, 0.5, 0.0], [0.0, 0.5, 0.0]]) @ GLTF_TO_ANNY.T
+        np.testing.assert_allclose(signed_distance(P, [capsule]), [0.2, -0.1])
+        stone = {
+            "kind": "ellipsoid",
+            "centre": [0.0, 0.0, 0.0],
+            "radii": [0.03, 0.02, 0.02],
+            "axis": [1.0, 0.0, 0.0],
+        }
+        self.assertAlmostEqual(
+            float(signed_distance(np.array([[0.05, 0.0, 0.0]]), [stone])[0]),
+            0.02 * (0.05 / 0.03 - 1),
+        )
+        mesh = stone_mesh(stone)
+        self.assertTrue(mesh.is_watertight)
+        self.assertAlmostEqual(mesh.extents[0], 0.06, places=3)
+        with self.assertRaises(ValueError):
+            signed_distance(P, [{"kind": "box"}])
+        model = _model()
+        hand, band = hand_masks(model, "hand.r", 3)
+        self.assertGreater(hand.sum(), 500)
+        self.assertGreater(band.sum(), 0)
+        self.assertFalse((hand & band).any())
+        with self.assertRaises(ValueError):
+            hand_masks(model, "foot.r")
+        self.assertIsInstance(mesh, trimesh.Trimesh)
+
+    def test_fingers_close_on_a_grip_without_entering_it(self):
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.statues.chains import _identity_pose, _Skinner
+        from opensculptboy.statues.hands import (
+            CURLS,
+            hand_bones,
+            pose_hands,
+            signed_distance,
+        )
+
+        model = _model()
+        labels = list(model.bone_labels)
+        character = Character(name="rest")
+        R, t = np.eye(3), np.zeros(3)
+        QUICK = tuple(CURLS[::3]) + (CURLS[-1],)
+        skin = _Skinner(model, character, R, t)
+        with torch.no_grad():
+            skin(_identity_pose(model))
+        J = skin.joints.numpy()
+        index, little = J[labels.index("finger2-1.R")], J[labels.index("finger5-1.R")]
+        middle, wrist = J[labels.index("finger3-1.R")], J[labels.index("wrist.R")]
+        # a grip across the fingers' roots, on the side the fist's fingers curl to
+        normal = np.cross(index - little, middle - wrist)
+        normal /= np.linalg.norm(normal)
+        _, report0 = pose_hands(
+            model, character, R, t, {"hand.r": {"objects": [], "curls": QUICK}}
+        )
+        # the palm's side: where the library fist's middle finger goes
+        from opensculptboy.statues.chains import _library_rotations
+
+        fist = _library_rotations(model, "mh_boxing")
+        pose = _identity_pose(model).clone()
+        for b in hand_bones(model, "hand.r"):
+            if labels[b].startswith("finger"):
+                pose[0, b, :3, :3] = torch.as_tensor(fist[b], dtype=pose.dtype)
+        with torch.no_grad():
+            skin(pose)
+        tip = skin.joints.numpy()[labels.index("finger3-3.R")]
+        if (tip - middle) @ normal < 0:
+            normal = -normal
+        centre = middle + normal * 0.045 + (middle - wrist) * 0.2
+        a, b = centre + (index - little) * 1.5, centre - (index - little) * 1.5
+        grip = {
+            "kind": "capsule",
+            "start": (a @ GLTF_TO_ANNY).tolist(),
+            "end": (b @ GLTF_TO_ANNY).tolist(),
+            "radius": 0.012,
+        }
+        held, report = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.r": {"objects": [grip], "place": False, "curls": QUICK}},
+        )
+        # free, every finger takes the library's full curl and more; on the grip they stop
+        self.assertEqual(
+            min(report0["hand.r"]["curl"].values()), (CURLS[-1], CURLS[-1])
+        )
+        curls = report["hand.r"]["curl"]
+        self.assertTrue(
+            all(
+                sum(curls[f]) < 2 * CURLS[-1] for f in ("finger2", "finger3", "finger4")
+            )
+        )
+        self.assertTrue(all(c >= 0 for c in report["hand.r"]["clearance_mm"].values()))
+        with torch.no_grad():
+            X = skin(held.pose_parameters(model)).numpy()
+        weights = model.vertex_bone_weights.detach().numpy()
+        on = (
+            np.isin(model.vertex_bone_indices.numpy(), hand_bones(model, "hand.r"))
+            * weights
+        ).sum(1) > 0.5
+        self.assertGreater(signed_distance(X[on], [grip]).min(), 0.0)
+        self.assertIsNone(report["hand.r"]["wrist_turn_deg"])
+        # placed: the wrist turns the fist round the grip, and no finger enters it
+        _, placed = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {
+                "hand.r": {
+                    "objects": [grip],
+                    "reach": 20,
+                    "fine": [5, 5],
+                    "curls": QUICK,
+                }
+            },
+        )
+        self.assertIsNotNone(placed["hand.r"]["wrist_turn_deg"])
+        self.assertTrue(
+            all(c >= 0 for c in placed["hand.r"]["clearance_mm"].values()), placed
+        )
+        # a stone in the left palm: placed on the palm's side, the fingers stop on it
+        _, report = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.l": {"stone": {"radii": [0.024, 0.019, 0.019]}, "curls": QUICK}},
+        )
+        stone = report["hand.l"]["stone"]
+        self.assertEqual(stone["name"], "Stone")
+        self.assertEqual(stone["kind"], "ellipsoid")
+        self.assertTrue(
+            all(c >= 0 for c in report["hand.l"]["clearance_mm"].values()),
+            report["hand.l"],
+        )
+        self.assertLess(
+            min(sum(c) for c in report["hand.l"]["curl"].values()), 2 * CURLS[-1]
+        )
+
+    def test_a_stone_joins_the_props(self):
+        import trimesh
+
+        from opensculptboy.statues.hands import add_stone_prop
+
+        stone = {
+            "kind": "ellipsoid",
+            "centre": [0.1, 1.0, 0.0],
+            "radii": [0.024, 0.019, 0.019],
+            "axis": [1.0, 0.0, 0.0],
+            "name": "Stone",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            scene = trimesh.Scene()
+            scene.add_geometry(
+                trimesh.creation.box(), node_name="Sword", geom_name="Sword"
+            )
+            scene.export(str(folder / "props.glb"))
+            (folder / "props.json").write_text(
+                json.dumps({"props": [{"name": "Sword", "role": "support"}]}), "utf-8"
+            )
+            add_stone_prop(folder, stone)
+            add_stone_prop(folder, stone)
+            loaded = trimesh.load(str(folder / "props.glb"), force="scene")
+            info = json.loads((folder / "props.json").read_text("utf-8"))
+        self.assertEqual(sorted(loaded.geometry), ["Stone", "Sword"])
+        self.assertEqual([p["name"] for p in info["props"]], ["Sword", "Stone"])
+        np.testing.assert_allclose(
+            loaded.geometry["Stone"].vertices.mean(0), [0.1, 1.0, 0.0], atol=0.003
+        )
+
+    def test_posed_hands_need_their_chains(self):
+        from opensculptboy.statues.pipeline import StatueConfig
+
+        base = {"format": "opensculptboy.statue/1", "name": "s", "scan": "s.stl"}
+        hands = {"hand.l": {"stone": {"radii": [0.02, 0.02, 0.02]}}}
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({**base, "posed_hands": hands})
+        config = StatueConfig.from_dict(
+            {**base, "posed_hands": hands, "chains": ["hand.l"]}
+        )
+        self.assertEqual(config.posed_hands, hands)
+        self.assertEqual(StatueConfig.from_dict(base).posed_hands, {})
+
+
 class TestPieceRebuild(unittest.TestCase):
     def test_settings(self):
         from opensculptboy.statues.blender_pieces import DEFAULTS, PIECES, parse

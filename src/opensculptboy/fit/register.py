@@ -320,6 +320,12 @@ class FitOptions:
     # still poses the body by them (a foot by a removed piece, whose leg the scan still
     # shows)
     no_data_levels: np.ndarray | None = None
+    # vertices (V,) bool of the level-0 mesh that keep anny's own shape on every detail level
+    # (offsets of zero, a statue's hand posed as anny's; None: none)
+    rest_shape: np.ndarray | None = None
+    # and the vertices (V,) bool of the level-0 mesh around them that blend the fitted skin
+    # into them on every level (None: none)
+    rest_blend: np.ndarray | None = None
     # a solid figure (FitOptions.close_openings): the eyeballs' vertices within this angle
     # (degrees) of the forward direction take the carved eye, and the linings of the sockets
     # and the mouth and the rest of the eyeballs stay this far (metres) inside the reference
@@ -3620,6 +3626,33 @@ def fit_levels(
                     - parametric[rows]
                 )
             _log(options, f"level {subdiv}: {count} seen gaps closed")
+        if options.rest_shape is not None:
+            band = None
+            if options.rest_blend is not None:
+                band = (
+                    np.asarray(
+                        topology.apply(np.asarray(options.rest_blend, np.float64))
+                    )
+                    > 0.5
+                )
+            share = np.asarray(
+                topology.apply(np.asarray(options.rest_shape, np.float64))
+            )
+            new, rows = pin_rest_shape(
+                offsets[subdiv], topology.triangles, share > 0.999, band
+            )
+            if len(rows):
+                offsets[subdiv] = new
+                fitted = fitted.copy()
+                fitted[rows] = R_.pose_vertices(
+                    (parametric + offsets[subdiv])[rows],
+                    w[rows],
+                    i[rows],
+                    transforms,
+                    rotation,
+                    translation,
+                )
+            _log(options, f"level {subdiv}: {len(rows)} vertices in anny's own shape")
         errors[subdiv] = R_.surface_error(
             fitted, topology.triangles, reference, mask, seed=options.seed
         )
@@ -3776,6 +3809,25 @@ def unfold(
     return V, int(moved.sum())
 
 
+def pin_rest_shape(offsets, triangles, pinned, band=None):
+    """The offsets (N, 3) with the rows of ``pinned`` at zero (anny's own shape) and the rows
+    of ``band`` (not pinned) the harmonic extension of the others, so that the fitted skin
+    blends into the pinned part without a step; and the rows changed."""
+    from opensculptboy.fit.lips import harmonic_fill
+
+    pinned = np.asarray(pinned, bool)
+    out = np.array(offsets, dtype=np.float64, copy=True)
+    if not pinned.any():
+        return out, np.zeros(0, np.int64)
+    out[pinned] = 0.0
+    free = (
+        np.zeros(len(out), bool) if band is None else np.asarray(band, bool) & ~pinned
+    )
+    if free.any():
+        out = harmonic_fill(out, triangles, free)
+    return out, np.nonzero(pinned | free)[0]
+
+
 def _level_no_data(options):
     """The level-0 vertices (V,) float that take no data on the detail levels: no_data and
     no_data_levels together, or None."""
@@ -3893,9 +3945,9 @@ def eyes_to_lids(
         centre = posed[rows].mean(0)
         lining = min(
             linings,
-            key=lambda m: np.inf
-            if not m.any()
-            else np.linalg.norm(posed[m].mean(0) - centre),
+            key=lambda m: (
+                np.inf if not m.any() else np.linalg.norm(posed[m].mean(0) - centre)
+            ),
         )
         # the rim: the lining's vertices that share a triangle with the skin
         skin = ~lining & ~eye_any

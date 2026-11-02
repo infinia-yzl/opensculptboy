@@ -107,6 +107,10 @@ class StatueConfig:
     # export_props also gives the props the skin that the final fit leaves far away (default
     # off: on David it put torn pieces of the body's skin on the props)
     prop_far_skin: bool = False
+    # hands kept in anny's own shape, posed by their chains with the fingers curled round the
+    # objects they hold (opensculptboy.statues.hands): {"hand.r": {"objects": [...]},
+    # "hand.l": {"stone": {"radii": [...]}}}; their chains must be among "chains"
+    posed_hands: dict = dataclasses.field(default_factory=dict)
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)
@@ -154,6 +158,11 @@ class StatueConfig:
         unknown = set(config.fit) - options
         if unknown:
             raise ValueError(f"Unknown fit options {sorted(unknown)}.")
+        loose = set(config.posed_hands) - {c.lower() for c in config.chains}
+        if loose:
+            raise ValueError(
+                f"Posed hands {sorted(loose)} need their chains in 'chains'."
+            )
         return config
 
     @classmethod
@@ -509,6 +518,7 @@ def fit(
             chains=tuple(config.chains),
             chain_options=_chain_options(config, verbose) if config.chains else None,
             chain_hints=_chain_hints(config),
+            posed_hands=config.posed_hands or None,
         )
 
     saved = pathlib.Path(card).parent.parent / "stage1"

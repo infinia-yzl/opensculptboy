@@ -217,6 +217,7 @@ def fit_statue(
     chains: tuple = (),
     chain_options=None,
     chain_hints: dict | None = None,
+    posed_hands: dict | None = None,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
@@ -237,7 +238,12 @@ def fit_statue(
     are fitted one limb at a time after the parameters and before the detail levels
     (:func:`~opensculptboy.statues.chains.refine_chains`, with ``chain_options``); the
     result's ``chains`` holds their report; ``chain_hints`` maps bones of the chains to their
-    heads' places in the handoff's frame (Anny's). Returns the
+    heads' places in the handoff's frame (Anny's). ``posed_hands`` (``{"hand.r": {...}}``,
+    :mod:`opensculptboy.statues.hands`) keeps those hands in anny's own shape on every detail
+    level, their fingers curled round the objects they hold after the chains, with a band
+    of ``blend`` rings (default :data:`~opensculptboy.statues.hands.BLEND_RINGS`) at the wrist
+    that blends the forearm's fit into them; a hand's stone joins the handoff's props
+    (``props.glb``). The result's ``hands`` holds their report. Returns the
     :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -355,10 +361,42 @@ def fit_statue(
             hints=chain_hints,
         )
         seconds["chains"] = time.perf_counter() - clock
+    hands_report = {}
+    if posed_hands:
+        from opensculptboy.statues.hands import add_stone_prop, hand_masks, pose_hands
+
+        character, hands_report = pose_hands(
+            model,
+            character,
+            rotation,
+            translation,
+            posed_hands,
+            log=(lambda m: print(m, flush=True)) if options.verbose else None,
+        )
+        pinned = np.zeros(model.template_vertices.shape[-2], bool)
+        band = np.zeros_like(pinned)
+        for chain, spec in posed_hands.items():
+            hand, ring = hand_masks(model, chain, spec.get("blend", 4))
+            pinned |= hand
+            band |= ring
+        levels = band | pinned
+        if options.no_data_levels is not None:
+            levels |= np.asarray(options.no_data_levels, bool)
+        options = dataclasses.replace(
+            options,
+            rest_shape=pinned,
+            rest_blend=band,
+            no_data_levels=levels,
+            fill_no_data=True,
+        )
+        for chain, rep in hands_report.items():
+            if rep.get("stone"):
+                add_stone_prop(folder, rep["stone"])
     result = fit_levels(
         reference, character, rotation, translation, detail, options, model, seconds
     )
     result.chains = report
+    result.hands = hands_report
     return result
 
 
