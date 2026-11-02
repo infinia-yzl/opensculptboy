@@ -104,6 +104,9 @@ class StatueConfig:
     prop_shapes: dict = dataclasses.field(default_factory=dict)
     # the bone each named prop is bound to in a starter (default: the bone at its contact)
     prop_bones: dict = dataclasses.field(default_factory=dict)
+    # export_props also gives the props the skin that the final fit leaves far away (default
+    # off: on David it put torn pieces of the body's skin on the props)
+    prop_far_skin: bool = False
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)

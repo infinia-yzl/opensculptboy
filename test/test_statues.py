@@ -378,6 +378,7 @@ class TestPipeline(unittest.TestCase):
                 ],
                 "prop_shapes": {"Sword": {"shapes": []}},
                 "prop_bones": {"Locks": "head"},
+                "prop_far_skin": True,
             }
         )
         self.assertEqual(config.chains, ["hand.r"])
@@ -388,6 +389,8 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(config.prune_rim_keep, ["face", "feet"])
         self.assertEqual(config.prop_shapes, {"Sword": {"shapes": []}})
         self.assertEqual(config.prop_bones, {"Locks": "head"})
+        self.assertTrue(config.prop_far_skin)
+        self.assertFalse(StatueConfig.from_dict(base).prop_far_skin)
         grow = _removed_grow(config)
         self.assertEqual(grow["removed_grow"], 8)
         self.assertEqual(len(grow["no_data_regions"]), 1)
@@ -1179,6 +1182,33 @@ class TestPropPieces(unittest.TestCase):
         self.assertEqual(len(out["Head"].faces), len(head.faces) + 1)
         self.assertEqual(len(out["Base"].faces), len(base.faces) + 1)
         self.assertIs(complete_props({"Head": head}, None)["Head"], head)
+
+    def test_the_far_skin_joins_the_props_on_request(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import _pruned_triangles
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            cut = trimesh.Scene()
+            cut.add_geometry(
+                trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
+                node_name="support_cut",
+                geom_name="support_cut",
+            )
+            cut.export(str(folder / "removed.glb"))
+            skin = trimesh.Scene()
+            skin.add_geometry(
+                trimesh.creation.icosphere(subdivisions=1, radius=0.1),
+                node_name="statue",
+                geom_name="statue",
+            )
+            skin.export(str(folder / "replica.glb"))
+            _, T = _pruned_triangles(folder)
+            self.assertEqual(len(T), 12)
+            _, T = _pruned_triangles(folder, far_skin=True)
+            self.assertEqual(len(T), 12 + 80)
+            self.assertIsNone(_pruned_triangles(pathlib.Path(tmp) / "none"))
 
     def test_a_turned_piece_from_its_profile(self):
         from opensculptboy.statues.starter import shape_mesh

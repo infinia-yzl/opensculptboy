@@ -229,14 +229,17 @@ PROP_REACH = 0.05
 PROP_FIGURE = 0.012
 
 
-def _pruned_triangles(folder):
-    """The pruned pieces of a handoff's removed.glb and its skin (replica.glb's ``statue``
-    part: the parts of a prop within the pruning's reach of the first fit stayed there), as
-    (vertices, triangles) in the file's frame, or None."""
+def _pruned_triangles(folder, far_skin: bool = False):
+    """The pruned pieces of a handoff's removed.glb, and with ``far_skin`` its skin as well
+    (replica.glb's ``statue`` part: the parts of a prop within the pruning's reach of the
+    first fit stayed there), as (vertices, triangles) in the file's frame, or None."""
     import trimesh
 
+    sources = [("removed.glb", "support_cut")]
+    if far_skin:
+        sources.append(("replica.glb", "statue"))
     meshes = []
-    for name, keep in (("removed.glb", "support_cut"), ("replica.glb", "statue")):
+    for name, keep in sources:
         path = pathlib.Path(folder) / name
         if path.exists():
             scene = trimesh.load(str(path), force="scene")
@@ -280,7 +283,7 @@ def complete_props(meshes: dict, pruned, figure=None) -> dict:
 
 
 def export_props(
-    root, out_dir, names=None, props=None, shapes=None, complete=True
+    root, out_dir, names=None, props=None, shapes=None, complete=True, far_skin=False
 ) -> list:
     """Write the named props of a run's ``props.glb`` (default: every prop that is neither
     drapery nor hair) as ``prop_<slug>.ply`` in ``out_dir``, in the file's own frame (the
@@ -289,8 +292,10 @@ def export_props(
     triangles inside ``cut`` out of that prop and adds the shapes, which the voxel remesh
     joins: a sword's hilt whose pommel the scan saw from one side and whose grip it never
     saw inside the fist. ``complete`` gives each prop the pruned pieces nearest it
-    (:func:`complete_props`, away from the fitted skin of ``<root>/meshes``). Returns the paths
-    written."""
+    (:func:`complete_props`, away from the fitted skin of ``<root>/meshes``); ``far_skin``
+    (a config's ``prop_far_skin``) also gives it the scan's skin that the final fit leaves
+    more than :data:`PROP_FIGURE` away, which on David put torn pieces of the body's own skin
+    on the props (under a buttock). Returns the paths written."""
     import trimesh
 
     from opensculptboy.statues.scan import Mask
@@ -321,7 +326,7 @@ def export_props(
             if fitted.exists()
             else None
         )
-        meshes = complete_props(meshes, _pruned_triangles(folder), figure)
+        meshes = complete_props(meshes, _pruned_triangles(folder, far_skin), figure)
     for name, geometry in scene.geometry.items():
         if names is not None and name not in names:
             continue
