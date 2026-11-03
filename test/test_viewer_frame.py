@@ -160,7 +160,9 @@ class TestFramePage(unittest.TestCase):
             self.assertEqual(
                 tab.evaluate("() => __shell.ui.get().starter.note.problem"), "file"
             )
-            self.assertIn("Getting round the character", tab.locator(".welcome").inner_text())
+            self.assertIn(
+                "Getting round the character", tab.locator(".welcome").inner_text()
+            )
             self.assertTrue(
                 tab.locator(".welcome .welcome-starter a")
                 .get_attribute("href")
