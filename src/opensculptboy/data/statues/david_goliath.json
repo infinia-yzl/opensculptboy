@@ -1,0 +1,563 @@
+{
+  "format": "opensculptboy.statue/1",
+  "name": "david_goliath",
+  "title": "David with the head of Goliath",
+  "scan": "mk61rn229_smk17-kas2036-david-with-head-of-goliath-reprocess.stl",
+  "source": "https://open.smk.dk/artwork/image/KAS2036",
+  "licence": "PDM-1.0",
+  "credit": "SMK, National Gallery of Denmark: cast KAS2036, David with the head of Goliath",
+  "stature": 1.8,
+  "masks": [
+    {
+      "kind": "box",
+      "role": "support",
+      "name": "head of Goliath",
+      "centre": [
+        0.19,
+        0.09,
+        0.0
+      ],
+      "size": [
+        0.46,
+        0.2,
+        0.64
+      ],
+      "prop": "Head of Goliath"
+    },
+    {
+      "kind": "box",
+      "role": "support",
+      "name": "helmet of Goliath, beside the left foot",
+      "centre": [
+        0.045,
+        0.215,
+        0.0
+      ],
+      "size": [
+        0.17,
+        0.05,
+        0.64
+      ],
+      "prop": "Head of Goliath"
+    },
+    {
+      "kind": "box",
+      "role": "support",
+      "name": "helmet of Goliath, behind the left foot",
+      "centre": [
+        0.275,
+        0.212,
+        -0.2
+      ],
+      "size": [
+        0.29,
+        0.045,
+        0.24
+      ],
+      "prop": "Head of Goliath"
+    },
+    {
+      "kind": "box",
+      "role": "support",
+      "name": "base pieces beside the right foot",
+      "centre": [
+        -0.2625,
+        0.065,
+        0.0
+      ],
+      "size": [
+        0.195,
+        0.15,
+        0.6
+      ],
+      "prop": "Base"
+    },
+    {
+      "kind": "box",
+      "role": "support",
+      "name": "wing of Goliath's helmet",
+      "centre": [
+        -0.014,
+        0.485,
+        -0.103
+      ],
+      "size": [
+        0.088,
+        0.59,
+        0.195
+      ],
+      "prop": "Head of Goliath"
+    },
+    {
+      "kind": "capsule",
+      "role": "support",
+      "name": "sword blade, upper",
+      "start": [
+        -0.2981,
+        0.86,
+        0.1307
+      ],
+      "end": [
+        -0.1708,
+        0.4,
+        0.1134
+      ],
+      "radius": 0.035,
+      "prop": "Sword"
+    },
+    {
+      "kind": "capsule",
+      "role": "support",
+      "name": "sword blade, lower",
+      "start": [
+        -0.1708,
+        0.4,
+        0.1134
+      ],
+      "end": [
+        -0.1236,
+        0.23,
+        0.107
+      ],
+      "radius": 0.015,
+      "prop": "Sword"
+    },
+    {
+      "kind": "capsule",
+      "role": "support",
+      "name": "sword grip, in the right hand",
+      "start": [
+        -0.302,
+        0.885,
+        0.115
+      ],
+      "end": [
+        -0.345,
+        1.03,
+        0.118
+      ],
+      "radius": 0.013,
+      "prop": "Sword"
+    },
+    {
+      "kind": "sphere",
+      "role": "support",
+      "name": "sword pommel",
+      "centre": [
+        -0.349,
+        1.042,
+        0.118
+      ],
+      "radius": 0.042,
+      "prop": "Sword"
+    },
+    {
+      "kind": "capsule",
+      "role": "support",
+      "name": "sword cross-guard",
+      "start": [
+        -0.303,
+        0.888,
+        -0.005
+      ],
+      "end": [
+        -0.303,
+        0.888,
+        0.225
+      ],
+      "radius": 0.027,
+      "prop": "Sword"
+    },
+    {
+      "kind": "sphere",
+      "role": "support",
+      "name": "cross-guard's front end",
+      "centre": [
+        -0.3,
+        0.858,
+        0.195
+      ],
+      "radius": 0.033,
+      "prop": "Sword"
+    },
+    {
+      "kind": "sphere",
+      "role": "support",
+      "name": "cross-guard's back end",
+      "centre": [
+        -0.3,
+        0.875,
+        0.02
+      ],
+      "radius": 0.03,
+      "prop": "Sword"
+    },
+    {
+      "kind": "capsule",
+      "role": "support",
+      "name": "sword grip's collar, over the hand",
+      "start": [
+        -0.338,
+        0.972,
+        0.117
+      ],
+      "end": [
+        -0.347,
+        1.01,
+        0.118
+      ],
+      "radius": 0.02,
+      "prop": "Sword"
+    },
+    {
+      "kind": "half",
+      "role": "drapery",
+      "name": "hat",
+      "point": [
+        0.0,
+        1.645,
+        0.0
+      ],
+      "normal": "+y",
+      "prop": "Hat"
+    },
+    {
+      "kind": "box",
+      "role": "drapery",
+      "name": "brim of the hat, front",
+      "centre": [
+        0.0,
+        1.623,
+        0.28
+      ],
+      "size": [
+        0.6,
+        0.045,
+        0.24
+      ],
+      "prop": "Hat"
+    },
+    {
+      "kind": "cylinder",
+      "role": "drapery",
+      "name": "brim of the hat, around the head",
+      "start": [
+        -0.02,
+        1.6,
+        0.05
+      ],
+      "end": [
+        -0.02,
+        1.645,
+        0.05
+      ],
+      "radius": 0.11,
+      "outside": true,
+      "prop": "Hat"
+    },
+    {
+      "kind": "box",
+      "role": "drapery",
+      "name": "brim of the hat, its lower front lip",
+      "centre": [
+        0.0,
+        1.5775,
+        0.2835
+      ],
+      "size": [
+        0.6,
+        0.055,
+        0.123
+      ],
+      "prop": "Hat"
+    },
+    {
+      "kind": "box",
+      "role": "hair",
+      "name": "locks, the figure's right",
+      "centre": [
+        -0.129,
+        1.547,
+        0.025
+      ],
+      "size": [
+        0.082,
+        0.195,
+        0.21
+      ],
+      "prop": "Locks"
+    },
+    {
+      "kind": "box",
+      "role": "hair",
+      "name": "locks, the figure's left",
+      "centre": [
+        0.107,
+        1.547,
+        0.045
+      ],
+      "size": [
+        0.105,
+        0.195,
+        0.25
+      ],
+      "prop": "Locks"
+    },
+    {
+      "kind": "box",
+      "role": "hair",
+      "name": "locks, behind",
+      "centre": [
+        -0.005,
+        1.4772,
+        -0.062
+      ],
+      "size": [
+        0.33,
+        0.3344,
+        0.115
+      ],
+      "prop": "Locks"
+    },
+    {
+      "kind": "capsule",
+      "role": "skin",
+      "name": "right foot, given back to the figure",
+      "start": [
+        -0.105,
+        0.055,
+        -0.06
+      ],
+      "end": [
+        -0.115,
+        0.045,
+        0.12
+      ],
+      "radius": 0.045
+    }
+  ],
+  "lost": [],
+  "landmarks": {},
+  "front": [
+    -0.054,
+    -0.9985,
+    0.0
+  ],
+  "notes": "The hat's brim and the long hair defeat the front guess, so the front is given. Goliath's head, the helmet and the sword are supports, the hat is drapery and the locks are a hair piece, the locks behind down to where the hair meets the back; the joints come from MediaPipe on pictures of the scan. The sword's blade, grip, pommel and cross-guard are masked from their own geometry (the blade's axis by principal components of the removed blade, a sphere fitted to the pommel); a skin capsule gives the right foot back where the base's box reaches it; the skin that the boxes of Goliath's head and helmet took near the figure comes back with restore. prune_rim takes the marble that the masks and the pruning leave along their cuts (the lips of the web between the blade and the shin, the guard's ends in the fist), away from the face, the trunk, the head and the feet. The hands and feet are fitted one limb at a time (chains); the sole and the toes of the left foot on the removed head keep anny's shape (cover_removed: feet), blended into the carved ankle over 8 rings (removed_grow), and the right foot, whose toes the scan fuses with the base, is anny's posed foot as well (no_data_regions). cover_reach and near_locks of 45 mm bring the left cheek out to the locks. The scan saw the sword's guard, collar and pommel but not the grip inside the fist, so the starter's sword keeps the scanned blade and guard and turns the grip, the collar and the pommel to the scan's measured radii, with a core inside the guard (prop_shapes); the pruned parts of Goliath's head, the helmet and the base join their props (export_props). The brim's lower front lip goes to the hat, and the locks behind reach down to y 1.31 so that their ends hang as on the scan. The no-data regions (the right foot and the lower knuckles of the sword hand) are given in the masks' frame.",
+  "locks_face": true,
+  "cover_grow": 3,
+  "near_locks": 0.045,
+  "fit": {
+    "cover_reach": 0.045
+  },
+  "cover_removed": [
+    "feet"
+  ],
+  "chains": [
+    "hand.l",
+    "hand.r",
+    "foot.l",
+    "foot.r"
+  ],
+  "restore": 0.006,
+  "chain_options": {
+    "search": [
+      -60.0,
+      0.0,
+      60.0
+    ],
+    "keep": 3
+  },
+  "removed_grow": 8,
+  "prune_rim": [
+    0.01,
+    0.008
+  ],
+  "prune_rim_keep": [
+    "face",
+    "ears",
+    "torso",
+    "feet",
+    "neck",
+    "scalp"
+  ],
+  "no_data_regions": [
+    {
+      "kind": "capsule",
+      "name": "right foot, anny's posed foot",
+      "start": [
+        -0.105,
+        0.05,
+        -0.07
+      ],
+      "end": [
+        -0.12,
+        0.035,
+        0.15
+      ],
+      "radius": 0.06
+    },
+    {
+      "kind": "sphere",
+      "name": "lower knuckles by the guard",
+      "centre": [
+        -0.271,
+        0.934,
+        0.122
+      ],
+      "radius": 0.03
+    }
+  ],
+  "prop_shapes": {
+    "Sword": {
+      "cut": {
+        "kind": "cylinder",
+        "name": "the scanned hilt above the guard, torn where it met the fist",
+        "start": [
+          -0.312,
+          0.9185,
+          0.1156
+        ],
+        "end": [
+          -0.3737,
+          1.1245,
+          0.1196
+        ],
+        "radius": 0.05
+      },
+      "shapes": [
+        {
+          "kind": "revolve",
+          "name": "grip, collar and pommel, turned to the scan's measured radii",
+          "start": [
+            -0.302,
+            0.885,
+            0.115
+          ],
+          "end": [
+            -0.349,
+            1.042,
+            0.118
+          ],
+          "profile": [
+            [
+              0.0,
+              0.0125
+            ],
+            [
+              0.1,
+              0.0125
+            ],
+            [
+              0.105,
+              0.016
+            ],
+            [
+              0.11,
+              0.022
+            ],
+            [
+              0.115,
+              0.0255
+            ],
+            [
+              0.12,
+              0.0235
+            ],
+            [
+              0.125,
+              0.023
+            ],
+            [
+              0.13,
+              0.026
+            ],
+            [
+              0.135,
+              0.028
+            ],
+            [
+              0.14,
+              0.03
+            ],
+            [
+              0.145,
+              0.034
+            ],
+            [
+              0.15,
+              0.035
+            ],
+            [
+              0.155,
+              0.036
+            ],
+            [
+              0.16,
+              0.033
+            ],
+            [
+              0.165,
+              0.032
+            ],
+            [
+              0.17,
+              0.031
+            ],
+            [
+              0.175,
+              0.029
+            ],
+            [
+              0.18,
+              0.0265
+            ],
+            [
+              0.185,
+              0.0225
+            ],
+            [
+              0.19,
+              0.019
+            ],
+            [
+              0.195,
+              0.013
+            ],
+            [
+              0.2,
+              0.011
+            ],
+            [
+              0.205,
+              0.009
+            ],
+            [
+              0.21,
+              0.004
+            ]
+          ]
+        },
+        {
+          "kind": "capsule",
+          "name": "the guard's core inside its scanned surface",
+          "start": [
+            -0.303,
+            0.888,
+            0.03
+          ],
+          "end": [
+            -0.303,
+            0.888,
+            0.19
+          ],
+          "radius": 0.008
+        }
+      ]
+    }
+  },
+  "prop_bones": {
+    "Locks": "head",
+    "Hat": "head"
+  }
+}

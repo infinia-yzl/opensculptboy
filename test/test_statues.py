@@ -1,0 +1,2536 @@
+# OpenSculptBoy
+# Apache License, Version 2.0
+"""
+Checks of ``opensculptboy.statues`` on a synthetic statue scan (``test.statue_fixtures``):
+anny in contrapposto on a plinth, with a tree stump fused to the right leg and a lost left
+hand, in millimetres with +Y up and +X to the front. The conversion must find the up and front
+axes, cut the plinth off, scale the figure, take the masked stump out and write a handoff
+that the fit reads; the region measures must label every region and read zero on the figure
+itself.
+"""
+
+import json
+import pathlib
+import tempfile
+import unittest
+
+import numpy as np
+
+from opensculptboy.fit.handoff import GLTF_TO_ANNY, load_handoff
+from opensculptboy.fit.reference import Reference
+from opensculptboy.statues import Mask, scan_to_handoff
+from opensculptboy.statues.compare import (
+    STATUE_REGIONS,
+    region_distances,
+    statue_regions,
+)
+from opensculptboy.statues.scan import (
+    axis_vector,
+    frame_rotation,
+    guess_front,
+    guess_up,
+    plinth_top,
+)
+from test.markers import local_only
+from test.statue_fixtures import (
+    PLINTH,
+    _model,
+    landmarks_in_handoff,
+    stump_mask,
+    synthetic_statue,
+)
+
+
+class TestScanFrame(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.statue = synthetic_statue(0)
+
+    def test_up_and_front_are_found(self):
+        up, confidence = guess_up(self.statue["vertices"])
+        self.assertGreater(up @ self.statue["up"], 0.99)
+        self.assertGreater(confidence, 0.3)
+        front, score = guess_front(self.statue["vertices"], up)
+        angle = np.degrees(np.arccos(np.clip(front @ self.statue["front"], -1, 1)))
+        self.assertLess(angle, 15.0)
+        self.assertGreater(score, 0.05)
+
+    def test_frame_rotation(self):
+        R = frame_rotation("+y", "+x")
+        np.testing.assert_allclose(R @ [0, 1, 0], [0, 0, 1], atol=1e-12)
+        np.testing.assert_allclose(R @ [1, 0, 0], [0, -1, 0], atol=1e-12)
+        self.assertAlmostEqual(np.linalg.det(R), 1.0)
+        with self.assertRaises(ValueError):
+            frame_rotation("+z", "-z")
+        with self.assertRaises(ValueError):
+            axis_vector("up")
+
+    def test_plinth_top(self):
+        R = frame_rotation(self.statue["up"], self.statue["front"])
+        X = self.statue["vertices"] @ R.T / self.statue["units"]
+        top = plinth_top(X, self.statue["triangles"])
+        self.assertIsNotNone(top)
+        bottom = X[:, 2].min()
+        self.assertAlmostEqual(top - bottom, PLINTH[2], delta=0.003)
+        # a figure without a plinth has none
+        T = self.statue["triangles"]
+        figure = T[(X[T, 2] > top + 0.001).all(1)]
+        self.assertIsNone(plinth_top(X, figure))
+
+    def test_masks(self):
+        box = Mask.from_dict({"kind": "box", "centre": [0, 0, 0], "size": [2, 2, 2]})
+        self.assertTrue(box.inside(np.array([[0.9, -0.9, 0.0]]))[0])
+        self.assertFalse(box.inside(np.array([[1.1, 0.0, 0.0]]))[0])
+        half = Mask.from_dict({"kind": "half", "point": [0, 0, 1], "normal": "+z"})
+        self.assertEqual(
+            half.inside(np.array([[0, 0, 0.5], [0, 0, 1.5]])).tolist(), [False, True]
+        )
+        capsule = Mask.from_dict(
+            {"kind": "capsule", "start": [0, 0, 0], "end": [0, 0, 1], "radius": 0.1}
+        )
+        self.assertEqual(
+            capsule.inside(
+                np.array([[0.05, 0, 0.5], [0.15, 0, 0.5], [0, 0, 1.08]])
+            ).tolist(),
+            [True, False, True],
+        )
+        with self.assertRaises(ValueError):
+            Mask.from_dict({"kind": "box", "role": "pedestal"})
+
+
+class TestScanToHandoff(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.folder = pathlib.Path(cls.tmp.name)
+        cls.statue = synthetic_statue(0)
+        scan = (cls.statue["vertices"], cls.statue["triangles"])
+        # a first pass places the scan; the masks and landmarks are drawn on it
+        cls.preview = scan_to_handoff(scan, cls.folder / "preview")
+        cls.marks = landmarks_in_handoff(
+            cls.statue, cls.preview, ["nose_tip", "chin", "knee_l", "knee_r"]
+        )
+        cls.result = scan_to_handoff(
+            scan,
+            cls.folder / "handoff",
+            stature=1.8,
+            masks=[stump_mask(cls.statue, cls.preview)],
+            landmarks=cls.marks,
+            licence="CC0-1.0",
+            title="synthetic statue",
+        )
+        cls.handoff = load_handoff(cls.folder / "handoff")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_frame_and_scale(self):
+        self.assertGreater(self.result.up @ self.statue["up"], 0.99)
+        self.assertTrue(self.result.plinth)
+        skin = self.handoff.skin_parts()
+        self.assertEqual([p.name for p in skin], ["statue"])
+        V = skin[0].vertices
+        self.assertAlmostEqual(V[:, 2].max() - V[:, 2].min(), 1.8, delta=0.01)
+        self.assertGreater(V[:, 2].min(), -0.002)
+        # the figure faces -Y in anny's frame: the nose lies in front of the head's centre
+        nose = np.asarray(self.marks["nose_tip"]) @ GLTF_TO_ANNY.T
+        head = V[V[:, 2] > 1.6].mean(0)
+        self.assertLess(nose[1], head[1] - 0.05)
+
+    def test_masked_pieces_are_removed(self):
+        counts = self.result.triangles
+        self.assertGreater(counts.get("plinth", 0), 0)
+        self.assertGreater(counts.get("support", 0), 0)
+        V = self.handoff.skin_parts()[0].vertices
+        # nothing of the stump is left: no skin within its radius below its top
+        statue = self.statue
+        from test.statue_fixtures import STUMP, to_scan
+
+        (cx, cy), radius, height = STUMP
+        centre = self.result.to_anny(to_scan(statue, [[cx, cy, 0.0]]))[0]
+        r = radius * self.result.scale * statue["units"]
+        h = height * self.result.scale * statue["units"]
+        near = (np.hypot(V[:, 0] - centre[0], V[:, 1] - centre[1]) < 0.7 * r) & (
+            V[:, 2] < 0.9 * h
+        )
+        self.assertFalse(near.any())
+        self.assertTrue((self.folder / "handoff" / "removed.glb").exists())
+
+    def test_a_skin_mask_gives_a_prop_back(self):
+        # a later mask of role skin over the stump keeps it in the figure's skin
+        stump = stump_mask(self.statue, self.preview)
+        scan = (self.statue["vertices"], self.statue["triangles"])
+        with tempfile.TemporaryDirectory() as tmp:
+            kept = scan_to_handoff(
+                scan,
+                pathlib.Path(tmp) / "h",
+                stature=1.8,
+                masks=[stump, {**stump, "role": "skin", "prop": None}],
+            )
+            skin = load_handoff(pathlib.Path(tmp) / "h").skin_parts()[0]
+        self.assertEqual(kept.triangles.get("support", 0), 0)
+        self.assertEqual(
+            len(skin.triangles),
+            len(self.handoff.skin_parts()[0].triangles)
+            + self.result.triangles["support"],
+        )
+
+    def test_appearance_records_the_statue(self):
+        appearance = json.loads(
+            (self.folder / "handoff" / "appearance.json").read_text(encoding="utf-8")
+        )
+        section = appearance["statue"]
+        self.assertEqual(section["format"], "opensculptboy/statue-handoff@1")
+        self.assertEqual(section["licence"], "CC0-1.0")
+        # the transform carries the scan onto replica.glb's frame
+        t = section["transform"]
+        R, s, b = np.asarray(t["rotation"]), t["scale"], np.asarray(t["translation"])
+        top = self.statue["vertices"][
+            np.argmax(self.statue["vertices"] @ self.statue["up"])
+        ]
+        crown = appearance["landmarks"]["crown"]
+        np.testing.assert_allclose(s * R @ top + b, crown, atol=0.02)
+        self.assertIn("nose_tip", appearance["landmarks"])
+
+    def test_round_trip(self):
+        points = self.statue["vertices"][:50]
+        np.testing.assert_allclose(
+            self.result.to_scan(self.result.to_anny(points)), points, atol=1e-8
+        )
+
+    def test_reference_reads_the_landmarks(self):
+        reference = Reference.from_handoff(self.handoff)
+        self.assertFalse(reference.auto)
+        self.assertIn("crown", reference.landmarks)
+        self.assertIn("knee_l", reference.landmarks)
+
+    def test_drapery_and_hair_masks_become_parts(self):
+        scan = (self.statue["vertices"], self.statue["triangles"])
+        top = self.preview.to_anny(self.statue["vertices"]).max(0)[2]
+        hair = {
+            "kind": "half",
+            "role": "hair",
+            "point": [0.0, float(top) - 0.05, 0.0],
+            "normal": "+y",
+        }
+        drape = {
+            "kind": "sphere",
+            "role": "drapery",
+            "centre": [0.0, 1.05, 0.15],
+            "radius": 0.1,
+        }
+        result = scan_to_handoff(scan, self.folder / "parts", masks=[hair, drape])
+        handoff = load_handoff(self.folder / "parts")
+        roles = {p.role for p in handoff.parts}
+        self.assertIn("clothing", roles)
+        self.assertIn("hair", roles)
+        self.assertGreater(result.triangles["hair"], 0)
+
+
+class TestLostParts(unittest.TestCase):
+    def test_lost_mask(self):
+        from opensculptboy.fit.metrics import REGIONS, anny_regions
+        from opensculptboy.statues import lost_mask
+
+        model = _model()
+        rest = model.template_vertices.detach().double().numpy()
+        hand = lost_mask(model, ["hand.l"])
+        self.assertGreater(hand.sum(), 100)
+        # the figure's left is +X; the hand is the base mesh's left hand
+        self.assertTrue((rest[hand, 0] > 0).all())
+        regions = anny_regions(model)
+        self.assertGreater((regions[hand] == REGIONS.index("hands")).mean(), 0.9)
+        forearm = lost_mask(model, ["forearm.l"])
+        self.assertTrue((forearm | ~hand).all())  # the forearm's chain holds the hand
+        nose = lost_mask(model, ["nose"])
+        self.assertTrue(0 < nose.sum() < 400)
+        with self.assertRaises(ValueError):
+            lost_mask(model, ["tail.l"])
+
+    def test_fit_statue_leaves_lost_parts_without_data(self):
+        from unittest import mock
+
+        from opensculptboy.statues import fit_statue
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            scan_to_handoff(
+                (statue["vertices"], statue["triangles"]),
+                pathlib.Path(tmp) / "h",
+                lost=["hand.l"],
+            )
+            appearance = json.loads(
+                (pathlib.Path(tmp) / "h" / "appearance.json").read_text("utf-8")
+            )
+            self.assertEqual(appearance["statue"]["lost"], ["hand.l"])
+            with mock.patch("opensculptboy.fit.register.fit_reference") as fit:
+                fit_statue(pathlib.Path(tmp) / "h", detail=0)
+            options = fit.call_args.kwargs["options"]
+            self.assertGreater(np.asarray(options.no_data).sum(), 100)
+            self.assertTrue(options.fill_no_data)
+        with self.assertRaises(ValueError):
+            scan_to_handoff(
+                (statue["vertices"], statue["triangles"]), tmp, lost=["wing.l"]
+            )
+
+
+def trimesh_box(extents, centre):
+    import trimesh
+
+    box = trimesh.creation.box(extents=extents)
+    box.apply_translation(centre)
+    return box
+
+
+def _grid(n=11, size=0.1):
+    """A flat square patch of n by n vertices in the plane z = 0."""
+    x, y = np.meshgrid(np.linspace(0, size, n), np.linspace(0, size, n))
+    V = np.c_[x.ravel(), y.ravel(), np.zeros(n * n)]
+    T = []
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            T += [(a, a + 1, a + n + 1), (a, a + n + 1, a + n)]
+    return V, np.asarray(T)
+
+
+class TestStartPose(unittest.TestCase):
+    def test_library_start_finds_the_contrapposto(self):
+        from opensculptboy.statues.fit import library_start
+
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        reference = Reference.from_mesh(V, T, {"crown": V[np.argmax(V[:, 2])]})
+        name, rotations, scores = library_start(
+            _model(), reference, ["weight_shift", "hands_on_hips"]
+        )
+        self.assertEqual(name, "weight_shift")
+        self.assertEqual(rotations.shape, (len(_model().bone_labels), 3, 3))
+        self.assertLess(scores["weight_shift"], scores["rest"])
+
+
+class TestBorders(unittest.TestCase):
+    def test_open_border(self):
+        from opensculptboy.statues.fit import open_border
+
+        V, T = _grid()
+        edge = open_border(V, T, rings=0, reach=0.0)
+        self.assertEqual(edge.sum(), 40)  # the 4 * 10 vertices around the patch
+        self.assertEqual(open_border(V, T, rings=1, reach=0.0).sum(), 40 + 32)
+        # the grid is 1 cm apart: 12 mm reach one ring in from the border
+        self.assertEqual(open_border(V, T, rings=0, reach=0.012).sum(), 40 + 32)
+
+    def test_pairs_on_the_border_drop_out(self):
+        from opensculptboy.fit.register import Target
+        from opensculptboy.statues.fit import open_border
+
+        V, T = _grid()
+        reference = Reference.from_mesh(V, T, {"crown": [0.05, 0.05, 0.0]})
+        target = Target(reference, border=open_border(V, T, rings=0, reach=0.0))
+        points = np.array([[0.05, 0.05, 0.003], [0.12, 0.05, 0.001], [0.12, 0.05, 0.0]])
+        _, _, _, off = target.closest(points, edge=True)
+        # above the middle: kept; past the border along the surface: dropped
+        self.assertEqual(off.tolist(), [False, True, True])
+        plain = Target(reference)
+        self.assertFalse(plain.closest(points, edge=True)[3].any())
+
+
+class TestPipeline(unittest.TestCase):
+    def test_shipped_configs(self):
+        from opensculptboy.statues.pipeline import StatueConfig
+
+        folder = pathlib.Path(__file__).resolve().parents[1] / "src" / "opensculptboy"
+        configs = sorted((folder / "data" / "statues").glob("*.json"))
+        self.assertGreaterEqual(len(configs), 2)
+        for path in configs:
+            with self.subTest(path.name):
+                config = StatueConfig.load(path)
+                self.assertEqual(config.name, path.stem)
+                self.assertTrue(config.licence and config.source)
+                for mask in config.masks:
+                    Mask.from_dict({k: v for k, v in mask.items() if k != "frame"})
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({"name": "x", "scan": "x.stl", "colour": "red"})
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({"format": "other/1", "name": "x", "scan": "x.stl"})
+
+    def test_fit_options_in_a_config(self):
+        from opensculptboy.statues.pipeline import StatueConfig
+
+        base = {"format": "opensculptboy.statue/1", "name": "s", "scan": "s.stl"}
+        config = StatueConfig.from_dict({**base, "fit": {"close_lid": 0.004}})
+        self.assertEqual(config.fit, {"close_lid": 0.004})
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({**base, "fit": {"no_such_option": 1}})
+        config = StatueConfig.from_dict(
+            {
+                **base,
+                "chains": ["hand.r"],
+                "chain_options": {"rounds": 2},
+                "restore": 0.006,
+                "cover_removed": False,
+                "removed_grow": 8,
+                "prune_rim": [0.01, 0.008],
+                "prune_rim_keep": ["face", "feet"],
+                "no_data_regions": [
+                    {"kind": "sphere", "centre": [0, 0, 0], "radius": 0.1}
+                ],
+                "prop_shapes": {"Sword": {"shapes": []}},
+                "prop_bones": {"Locks": "head"},
+                "prop_far_skin": True,
+            }
+        )
+        self.assertEqual(config.chains, ["hand.r"])
+        self.assertFalse(config.cover_removed)
+        self.assertEqual(config.prune_rim, [0.01, 0.008])
+        from opensculptboy.statues.pipeline import _removed_grow
+
+        self.assertEqual(config.prune_rim_keep, ["face", "feet"])
+        self.assertEqual(config.prop_shapes, {"Sword": {"shapes": []}})
+        self.assertEqual(config.prop_bones, {"Locks": "head"})
+        self.assertTrue(config.prop_far_skin)
+        self.assertFalse(StatueConfig.from_dict(base).prop_far_skin)
+        grow = _removed_grow(config)
+        self.assertEqual(grow["removed_grow"], 8)
+        self.assertEqual(len(grow["no_data_regions"]), 1)
+        self.assertEqual(_removed_grow(StatueConfig.from_dict(base)), {})
+
+    def test_convert_and_preview_from_a_config(self):
+        import trimesh
+
+        from opensculptboy.statues.pipeline import StatueConfig, run_statue
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = pathlib.Path(tmp)
+            trimesh.Trimesh(
+                statue["vertices"], statue["triangles"], process=False
+            ).export(str(tmp / "statue.stl"))
+            config = StatueConfig.from_dict(
+                {
+                    "name": "synthetic",
+                    "scan": "statue.stl",
+                    "licence": "CC0-1.0",
+                    "lost": ["hand.l"],
+                    "landmarks": {
+                        "nose_tip": [0.0, 1.6, 0.3],
+                        "knee_l": [0.1, 0.5, 0.0],
+                    },
+                },
+            )
+            summary = run_statue(
+                config,
+                tmp / "out",
+                scans=tmp,
+                steps=("convert", "landmarks", "preview"),
+            )
+            root = tmp / "out" / "synthetic"
+            self.assertTrue(summary["frame"]["plinth"])
+            for picture in ("front", "side", "back", "figure_front", "figure_side"):
+                self.assertTrue((root / "preview" / f"{picture}.png").exists(), picture)
+            appearance = json.loads((root / "handoff" / "appearance.json").read_text())
+            self.assertEqual(appearance["statue"]["lost"], ["hand.l"])
+            # the nose hint lies in front of the face and snaps onto it; the knee stays
+            skin = load_handoff(root / "handoff").skin_parts()[0]
+            nose = np.asarray(appearance["landmarks"]["nose_tip"]) @ GLTF_TO_ANNY.T
+            gap = np.linalg.norm(skin.vertices - nose, axis=1).min()
+            self.assertLess(gap, 0.012)
+            self.assertEqual(appearance["landmarks"]["knee_l"], [0.1, 0.5, 0.0])
+            self.assertTrue((root / "summary.json").exists())
+
+
+@local_only("MediaPipe's pose and face models")
+class TestDetectedLandmarks(unittest.TestCase):
+    def test_joints_from_pictures(self):
+        from opensculptboy.statues.landmarks import detect_landmarks
+
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        found = detect_landmarks(V, T)
+        for name in ("knee_l", "knee_r", "elbow_l", "elbow_r", "ankle_l", "ankle_r"):
+            with self.subTest(name):
+                self.assertIn(name, found)
+                gap = np.linalg.norm(found[name] - statue["landmarks"][name])
+                self.assertLess(gap, 0.06)
+
+    def test_face_from_a_picture_of_the_head(self):
+        from opensculptboy.statues.landmarks import detect_face
+
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        pictures = {}
+        found = detect_face(V, T, pictures)
+        self.assertIn("face", pictures)
+        for name in ("eye_outer_l", "eye_inner_r", "mouth_corner_l", "nose_tip"):
+            with self.subTest(name):
+                self.assertIn(name, found)
+                gap = np.linalg.norm(found[name] - statue["landmarks"][name])
+                self.assertLess(gap, 0.015)
+        # the figure's left is +x
+        self.assertGreater(found["eye_outer_l"][0], found["eye_outer_r"][0])
+
+
+class TestPrune(unittest.TestCase):
+    def test_far_pieces_leave_the_skin(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import prune_far
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        # a prop 10 cm in front of the shins and a bun 6 cm over the crown
+        prop = trimesh.creation.box(extents=(0.05, 0.05, 0.3))
+        prop.apply_translation((0.0, -0.2, 0.3))
+        bun = trimesh.creation.icosphere(subdivisions=2, radius=0.03)
+        bun.apply_translation((0.0, 0.04, V[:, 2].max() + 0.06))
+        pieces = [(V, T), (prop.vertices, prop.faces), (bun.vertices, bun.faces)]
+        offsets = np.cumsum([0] + [len(p[0]) for p in pieces])
+        S = np.concatenate([np.asarray(p[0]) for p in pieces])
+        F = np.concatenate(
+            [np.asarray(p[1]) + offsets[k] for k, p in enumerate(pieces)]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = write_handoff(pathlib.Path(tmp) / "h", S, F, name="statue")
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            counts = prune_far(folder, result, model)
+            self.assertEqual(counts["support_cut"], len(prop.faces))
+            self.assertEqual(counts["hair_cut"], len(bun.faces))
+            self.assertEqual(counts["statue"], len(T))
+            handoff = load_handoff(folder)
+            self.assertEqual(sorted(p.role for p in handoff.parts), ["hair", "skin"])
+            self.assertTrue((pathlib.Path(folder) / "removed.glb").exists())
+
+    def test_the_rim_along_a_cut_leaves_the_skin(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import prune_far
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        V, T = synthetic_statue(0)["body"]
+        V = np.asarray(V, np.float64)
+        # a patch of a shin's skin raised 14 mm (the marble a blade left on the shin), with
+        # the removed blade beside it
+        from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+        regions = statue_regions(model)[: len(V)]
+        legs = np.nonzero(regions == STATUE_REGIONS.index("legs"))[0]
+        shin = legs[np.abs(V[legs, 2] - np.median(V[legs, 2])) < 0.02]
+        front = shin[np.argmin(V[shin, 1])]
+        patch = np.linalg.norm(V - V[front], axis=1) < 0.05
+        S = V.copy()
+        S[patch, 1] -= 0.014
+        blade = trimesh.creation.icosphere(subdivisions=3, radius=0.03)
+        blade.apply_translation(V[front] + (0.0, -0.05, 0.0))
+        raised = patch[T].all(1)
+        result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+        cases = (
+            (None, None, 0),
+            ((0.02, 0.008), None, 1),
+            ((0.02, 0.008), ["legs"], 0),
+        )
+        for rim, keep, expected in cases:
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = write_handoff(pathlib.Path(tmp) / "h", S, T, name="statue")
+                _write_removed(
+                    pathlib.Path(folder) / "removed.glb",
+                    np.asarray(blade.vertices),
+                    np.asarray(blade.faces),
+                    np.ones(len(blade.faces), np.int64),
+                    ["skin", "support"],
+                )
+                counts = prune_far(folder, result, model, rim=rim, rim_keep=keep)
+            if expected:
+                self.assertGreater(counts["support_cut"], 0)
+                self.assertLessEqual(
+                    counts["support_cut"], int((patch[T].any(1)).sum())
+                )
+                self.assertGreaterEqual(
+                    counts["statue"], len(T) - patch[T].any(1).sum()
+                )
+                self.assertGreater(raised.sum(), 0)
+            else:
+                self.assertEqual(counts["statue"], len(T))
+        # the cut of the pruning itself: the blade is still on the scan (no removed.glb) and
+        # goes as far skin, and the raised rim beside it goes too
+        S2 = np.concatenate([S, np.asarray(blade.vertices)])
+        T2 = np.concatenate([T, np.asarray(blade.faces) + len(S)])
+        for rim in (None, (0.02, 0.008)):
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = write_handoff(pathlib.Path(tmp) / "h", S2, T2, name="statue")
+                counts = prune_far(folder, result, model, rim=rim)
+            if rim is None:
+                self.assertEqual(counts["statue"], len(T))
+            else:
+                self.assertLess(counts["statue"], len(T))
+                self.assertGreaterEqual(
+                    counts["statue"], len(T) - patch[T].any(1).sum()
+                )
+
+    def test_a_hat_seats_on_the_skull(self):
+        import trimesh
+
+        from opensculptboy.statues.fit import open_border, seat_piece
+
+        skull = trimesh.creation.icosphere(4, radius=0.1)
+        hat = trimesh.creation.icosphere(4, radius=0.11)
+        keep = hat.triangles_center[:, 2] > 0.02
+        hat = trimesh.Trimesh(hat.vertices, hat.faces[keep])
+        hat.remove_unreferenced_vertices()
+        V, moved = seat_piece(hat.vertices, hat.faces, skull.vertices, skull.faces)
+        self.assertGreater(moved, 10)
+        radius = np.linalg.norm(V, axis=1)
+        rim = open_border(hat.vertices, hat.faces, rings=0, reach=0.0)
+        # the rim comes down onto the skull, just inside it; the crown stays
+        self.assertLess(np.abs(radius[rim] - 0.0995).max(), 0.001)
+        top = hat.vertices[:, 2] > 0.09
+        np.testing.assert_allclose(V[top], hat.vertices[top])
+
+    def test_shards_leave_a_piece(self):
+        import trimesh
+
+        from opensculptboy.statues.fit import trim_piece
+
+        skull = trimesh.creation.icosphere(4, radius=0.1)
+        hat = trimesh.creation.icosphere(4, radius=0.11)
+        keep = hat.triangles_center[:, 2] > 0.02
+        cap = trimesh.Trimesh(hat.vertices, hat.faces[keep])
+        cap.remove_unreferenced_vertices()
+        # a shard of the brow 1 cm inside the skull, and a crumb 3 cm off the cap
+        shard = trimesh.creation.box(extents=(0.03, 0.002, 0.01))
+        shard.apply_translation((0.0, -0.085, 0.0))
+        crumb = trimesh.creation.box(extents=(0.002, 0.002, 0.002))
+        crumb.apply_translation((0.0, 0.0, 0.14))
+        parts = [cap, shard, crumb]
+        base = np.cumsum([0] + [len(p.vertices) for p in parts[:-1]])
+        V = np.concatenate([p.vertices for p in parts])
+        T = np.concatenate([p.faces + b for p, b in zip(parts, base)])
+        out_V, out_T, dropped = trim_piece(V, T, skull.vertices, skull.faces, teeth=0)
+        self.assertEqual(len(out_T), len(cap.faces))
+        self.assertEqual(dropped, len(shard.faces) + len(crumb.faces))
+        self.assertEqual(len(out_V), len(cap.vertices))
+        self.assertGreater(np.linalg.norm(out_V, axis=1).min(), 0.105)
+
+    def test_skin_without_data_comes_out_to_the_locks(self):
+        from opensculptboy.fit.register import fill_to_cover
+
+        V, T = _grid(21, 0.1)
+        free = np.zeros(len(V), bool)
+        inner = (np.abs(V[:, 0] - 0.05) < 0.03) & (np.abs(V[:, 1] - 0.05) < 0.03)
+        free[inner] = True
+        # a lock 5 mm over the middle of the patch, and the grid's normals point up (+z)
+        P, PT = _grid(5, 0.02)
+        P = P + [0.04, 0.04, 0.005]
+        moved, out = fill_to_cover(V, T, free, (P, PT), reach=0.015, depth=0.001)
+        self.assertGreater(moved, 0)
+        middle = np.argmin(np.linalg.norm(V[:, :2] - 0.05, axis=1))
+        self.assertAlmostEqual(out[middle, 2], 0.004, places=6)
+        np.testing.assert_allclose(out[~free], V[~free])  # the skin with data stays
+        self.assertTrue((out[free, 2] >= -1e-12).all())
+        self.assertTrue((out[free, 2] <= 0.004 + 1e-9).all())
+        far = (P + [0.0, 0.0, 0.02], PT)
+        self.assertEqual(fill_to_cover(V, T, free, far, reach=0.015)[0], 0)
+
+    def test_strips_on_the_skin_leave_a_hat(self):
+        import trimesh
+
+        from opensculptboy.statues.fit import on_skin
+
+        skull = trimesh.creation.icosphere(4, radius=0.1)
+        # a strip of the brow 1 mm out on the skull, and a brim over it facing down
+        front = skull.triangles_center[:, 1] < -0.09
+        strip = trimesh.Trimesh(skull.vertices * 1.01, skull.faces[front])
+        strip.remove_unreferenced_vertices()
+        brim = trimesh.creation.annulus(r_min=0.1, r_max=0.15, height=0.002)
+        brim.apply_translation((0.0, 0.0, 0.05))
+        parts = [strip, brim]
+        base = np.cumsum([0] + [len(p.vertices) for p in parts[:-1]])
+        V = np.concatenate([p.vertices for p in parts])
+        T = np.concatenate([p.faces + b for p, b in zip(parts, base)])
+        flagged = on_skin(V, T, skull.vertices, skull.faces, 0.004)
+        self.assertTrue(flagged[: len(strip.faces)].all())
+        self.assertFalse(flagged[len(strip.faces) :].any())
+
+    def test_small_holes_fill(self):
+        from opensculptboy.statues.fit import fill_holes
+
+        V, T = _grid(11, 0.1)
+        # a hole of two triangles in the middle of the patch
+        hole = np.isin(np.arange(len(T)), [88, 89])
+        out_V, out_T, filled = fill_holes(V, T[~hole], perimeter=0.05)
+        self.assertEqual(filled, 1)
+        self.assertEqual(len(out_V), len(V) + 1)
+        a, b, c = (out_V[out_T[:, k]] for k in range(3))
+        z = np.cross(b - a, c - a)[:, 2]
+        self.assertTrue((z > 0).all())  # the fan turns as the patch does
+        # the patch's own border (40 cm) stays open
+        self.assertEqual(fill_holes(V, T, perimeter=0.05)[2], 0)
+
+    def test_teeth_leave_a_border(self):
+        from opensculptboy.statues.fit import trim_piece
+
+        V, T = _grid(11, 0.1)
+        # a tooth: one triangle on the edge with two open edges
+        V = np.vstack([V, [0.05, -0.01, 0.0]])
+        T = np.vstack([T, [5, 4, len(V) - 1]])
+        skin_V = V + [0.0, 0.0, -0.01]
+        out_V, out_T, dropped = trim_piece(V, T, skin_V, T, inside=None, keep=0.0)
+        # the tooth goes, and the two corners of the patch that hang by two open edges
+        self.assertEqual(dropped, 3)
+        self.assertEqual(len(out_T), len(T) - 3)
+        self.assertFalse((out_V[:, 1] < 0).any())
+
+    def test_feet_on_a_removed_piece_take_no_data(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import covered_skin
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        # the scan lacks the feet (cut 6 cm up), and a block stood where they were
+        cut = (V[T][:, :, 2] < V[:, 2].min() + 0.06).any(1)
+        block = trimesh.creation.box(extents=(0.5, 0.4, 0.05))
+        block.apply_translation((V[:, 0].mean(), V[:, 1].mean(), V[:, 2].min() + 0.02))
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(
+                write_handoff(pathlib.Path(tmp) / "h", V, T[~cut], name="statue")
+            )
+            _write_removed(
+                folder / "removed.glb",
+                np.asarray(block.vertices),
+                np.asarray(block.faces),
+                np.ones(len(block.faces), np.int64),
+                ["skin", "support"],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            count = covered_skin(folder, result, model)
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            covered = np.asarray(appearance["statue"]["covered_levels"])
+            self.assertEqual(appearance["statue"]["covered"], [])
+            self.assertGreater(count, 20)
+            self.assertLess(V[covered, 2].max(), V[:, 2].min() + 0.15)
+
+    def test_feet_by_a_removed_piece_keep_their_data_on_request(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import covered_skin
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        V, T = synthetic_statue(0)["body"]
+        cut = (V[T][:, :, 2] < V[:, 2].min() + 0.06).any(1)
+        block = trimesh.creation.box(extents=(0.5, 0.4, 0.05))
+        block.apply_translation((V[:, 0].mean(), V[:, 1].mean(), V[:, 2].min() + 0.02))
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(
+                write_handoff(pathlib.Path(tmp) / "h", V, T[~cut], name="statue")
+            )
+            _write_removed(
+                folder / "removed.glb",
+                np.asarray(block.vertices),
+                np.asarray(block.faces),
+                np.ones(len(block.faces), np.int64),
+                ["skin", "support"],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            self.assertEqual(
+                covered_skin(folder, result, model, cover_removed=False), 0
+            )
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            self.assertEqual(appearance["statue"]["covered_levels"], [])
+            # by region: the feet alone
+            from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+
+            self.assertGreater(
+                covered_skin(folder, result, model, cover_removed=("feet",)), 0
+            )
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            regions = statue_regions(model)[appearance["statue"]["covered_levels"]]
+            self.assertTrue((regions == STATUE_REGIONS.index("feet")).all())
+            # a region given no data: the skin of the first fit inside it, whatever lies by it
+            from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
+            hand = V[np.argmin(V[:, 0])]
+            # in the masks' frame (the scan's: y up), the fit in anny's (z up)
+            centre = hand @ GLTF_TO_ANNY
+            region = {"kind": "sphere", "centre": centre.tolist(), "radius": 0.04}
+            covered_skin(
+                folder,
+                result,
+                model,
+                cover_removed=False,
+                removed_grow=0,
+                no_data_regions=(region,),
+            )
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            inside = np.linalg.norm(V - hand, axis=1) < 0.04
+            self.assertGreater(len(appearance["statue"]["covered_levels"]), 0)
+            self.assertTrue(inside[appearance["statue"]["covered_levels"]].all())
+            # a wider blend: more rings of the feet without data, still the feet alone
+            narrow = len(appearance["statue"]["covered_levels"])
+            covered_skin(folder, result, model, cover_removed=("feet",), removed_grow=8)
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            wide = appearance["statue"]["covered_levels"]
+            self.assertGreater(len(wide), narrow)
+            self.assertTrue(
+                (statue_regions(model)[wide] == STATUE_REGIONS.index("feet")).all()
+            )
+
+    def test_skin_inside_a_coarse_mask_comes_back(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import restore_near
+        from opensculptboy.statues.handoff import _write_removed
+
+        model = _model()
+        V, T = synthetic_statue(0)["body"]
+        # a box round a prop took the feet with it; the prop stands 10 cm off the body
+        feet = (V[T][:, :, 2] < V[:, 2].min() + 0.06).any(1)
+        prop = trimesh.creation.box(extents=(0.05, 0.05, 0.05))
+        prop.apply_translation((0.0, -0.3, 0.1))
+        pieces = [(V, T[feet]), (np.asarray(prop.vertices), np.asarray(prop.faces))]
+        P = np.concatenate([p[0] for p in pieces])
+        F = np.concatenate([pieces[0][1], pieces[1][1] + len(V)])
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(
+                write_handoff(pathlib.Path(tmp) / "h", V, T[~feet], name="statue")
+            )
+            _write_removed(
+                folder / "removed.glb",
+                P,
+                F,
+                np.ones(len(F), np.int64),
+                ["skin", "support"],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            count = restore_near(folder, result, model)
+            # the feet's skin is back (the closed eyeballs and the cavities aside), the prop
+            # stays out
+            self.assertGreater(count, 0.9 * feet.sum())
+            self.assertLessEqual(count, feet.sum())
+            skin = load_handoff(folder).skin_parts()[0]
+            self.assertEqual(len(skin.triangles), (~feet).sum() + count)
+            removed = trimesh.load(str(folder / "removed.glb"), force="mesh")
+            self.assertGreaterEqual(len(removed.faces), len(prop.faces))
+            appearance = json.loads((folder / "appearance.json").read_text("utf-8"))
+            self.assertEqual(appearance["statue"]["restored"]["triangles"], count)
+
+    def test_a_covered_foot_keeps_the_start_pose(self):
+        from opensculptboy.statues.fit import held_feet
+
+        model = _model()
+        labels = list(model.bone_labels)
+        weights = model.vertex_bone_weights.detach().numpy()
+        indices = model.vertex_bone_indices.numpy()
+        left = [
+            i
+            for i, b in enumerate(labels)
+            if b == "foot.L" or (b.startswith("toe") and b.endswith(".L"))
+        ]
+        foot = (np.isin(indices, left) * weights).sum(1) > 0.5
+        covered = np.zeros(len(weights), bool)
+        self.assertEqual(held_feet(model, covered), ())
+        covered[foot] = True
+        held = held_feet(model, covered)
+        self.assertIn("foot.L", held)
+        self.assertNotIn("foot.R", held)
+        self.assertTrue(any(b.startswith("toe") for b in held))
+
+    def test_skull_under_a_hat_takes_no_data(self):
+        import types
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.fit import covered_skin, prune_far
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        top = V[:, 2].max()
+        cap = (V[T][:, :, 2] > top - 0.07).all(1)
+        # the cap of the skull as a hat 4 cm out: pruned to a hair piece, it covers the skull
+        centre = np.array([V[:, 0].mean(), V[V[:, 2] > top - 0.2, 1].mean(), top - 0.1])
+        hat = V.copy()
+        out = hat - centre
+        hat = centre + out * (1 + 0.04 / np.linalg.norm(out, axis=1))[:, None]
+        used = np.unique(T[cap])
+        remap = np.full(len(V), -1)
+        remap[used] = np.arange(len(used))
+        S = np.concatenate([V, hat[used]])
+        F = np.concatenate([T[~cap], remap[T[cap]] + len(V)])
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = write_handoff(pathlib.Path(tmp) / "h", S, F, name="statue")
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            prune_far(folder, result, model)
+            count = covered_skin(folder, result, model)
+            appearance = json.loads(
+                (pathlib.Path(folder) / "appearance.json").read_text("utf-8")
+            )
+            covered = np.asarray(appearance["statue"]["covered"])
+            self.assertEqual(count, len(covered))
+            self.assertIn(int(np.argmax(V[:, 2])), covered)
+            self.assertGreater(count, 30)
+            # the skin the scan keeps keeps its data, but along the hat's cut
+            self.assertLess(V[covered, 2].min(), top)
+            self.assertGreater(V[covered, 2].min(), top - 0.085)
+            below = V[:, 2] < top - 0.1
+            self.assertFalse(np.isin(np.nonzero(below)[0], covered).any())
+            # grown by two rings: more of the head, and nothing below the neck
+            grown = covered_skin(folder, result, model, grow=2)
+            self.assertGreater(grown, count)
+            wide = json.loads(
+                (pathlib.Path(folder) / "appearance.json").read_text("utf-8")
+            )["statue"]["covered"]
+            self.assertTrue(set(covered.tolist()) <= set(wide))
+            self.assertGreater(V[wide, 2].min(), top - 0.2)
+
+    def test_the_back_under_long_locks_takes_no_data(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+        from opensculptboy.statues.fit import covered_skin
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        regions = statue_regions(model)[: len(V)]
+        torso = regions == STATUE_REGIONS.index("torso")
+        neck = regions == STATUE_REGIONS.index("neck")
+        face = regions == STATUE_REGIONS.index("face")
+        # the back: away from the face, level with the torso's middle
+        front = V[face].mean(0) - V[torso].mean(0)
+        front[2] = 0.0
+        front /= np.linalg.norm(front)
+        side = (V - V[torso].mean(0)) @ front
+        neck_low = V[neck, 2].min()
+        # long locks over the back of the neck and the top of the back: the scan has no skin
+        # under them, and they lie 8 mm out over it
+        under = (side < -0.02) & (V[:, 2] > neck_low - 0.12) & (neck | torso)
+        cut = under[T].all(1)
+        normals = trimesh.Trimesh(V, T, process=False).vertex_normals
+        used = np.unique(T[cut])
+        remap = np.full(len(V), -1)
+        remap[used] = np.arange(len(used))
+        locks = V[used] + 0.008 * normals[used]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = write_handoff(
+                pathlib.Path(tmp) / "h",
+                V,
+                T[~cut],
+                name="statue",
+                parts=[("locks", locks, remap[T[cut]], "hair")],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            covered_skin(folder, result, model)
+            appearance = json.loads(
+                (pathlib.Path(folder) / "appearance.json").read_text("utf-8")
+            )
+        covered = np.zeros(len(V), bool)
+        covered[np.asarray(appearance["statue"]["covered"], np.int64)] = True
+        # the back under the locks is covered, inside its rim
+        inner = under & torso & (V[:, 2] > neck_low - 0.1) & (side < -0.04)
+        self.assertGreater(inner.sum(), 20)
+        self.assertGreater(covered[inner].mean(), 0.8)
+        # the torso the locks leave bare keeps its data: its front, and the back below them
+        self.assertFalse(covered[torso & (side > 0.0)].any())
+        self.assertFalse(covered[torso & (V[:, 2] < neck_low - 0.16)].any())
+
+
+class TestChains(unittest.TestCase):
+    def test_chain_bones_and_shapes(self):
+        from opensculptboy.statues.chains import chain_bones, chain_shapes
+
+        model = _model()
+        labels = list(model.bone_labels)
+        bones, anchors = chain_bones(model, "hand.l")
+        names = {labels[b] for b in bones}
+        self.assertIn("wrist.L", names)
+        self.assertIn("finger2-3.L", names)
+        self.assertFalse(any(n.endswith(".R") for n in names))
+        self.assertEqual([labels[b] for b in anchors], ["lowerarm01.L"])
+        bones, _ = chain_bones(model, "foot.r")
+        self.assertIn("toe1-1.R", {labels[b] for b in bones})
+        self.assertIn("l-hand-scale-incr", chain_shapes(model, "hand.l"))
+        self.assertIn("r-foot-trans-up", chain_shapes(model, "foot.r"))
+        with self.assertRaises(ValueError):
+            chain_bones(model, "tail.l")
+
+    def test_a_hand_closes_on_a_fist(self):
+        import anny.poses
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.statues.chains import (
+            ChainOptions,
+            chain_bones,
+            chain_vertices,
+            refine_chains,
+        )
+        from opensculptboy.statues.fit import parametric_vertices
+
+        model = _model()
+        bones, _ = chain_bones(model, "hand.l")
+        labels = list(model.bone_labels)
+        fingers = [b for b in bones if labels[b].startswith(("finger", "metacarpal"))]
+        fist = anny.poses.pose_parameters(model, "mh_boxing")["pose_parameters"]
+        pose = torch.eye(4, dtype=fist.dtype).repeat(1, len(labels), 1, 1)
+        pose[0, fingers] = fist[0, fingers]
+        with torch.no_grad():
+            target = model(pose_parameters=pose)["vertices"][0].double().numpy()
+        reference = Reference(target, model.faces.cpu().numpy())
+        character = Character(name="rest")
+        on_chain, _ = chain_vertices(model, "hand.l")
+        rotation, translation = np.eye(3), np.zeros(3)
+        import types
+
+        def error(c):
+            V = parametric_vertices(
+                types.SimpleNamespace(
+                    character=c, rotation=rotation, translation=translation
+                ),
+                model,
+            )
+            return np.linalg.norm(V[on_chain] - target[on_chain], axis=1).mean()
+
+        options = ChainOptions(
+            rounds=4, steps=15, trial_rounds=1, search=(0.0,), keep=2, shape=False
+        )
+        fitted, report = refine_chains(
+            model, reference, character, rotation, translation, ("hand.l",), options
+        )
+        self.assertIn("hand.l", report)
+        self.assertLess(error(fitted), 0.5 * error(character))
+        # the other hand stays at rest
+        self.assertFalse(
+            any(b.endswith(".R") for b in (fitted.pose or {}).get("bones", {}))
+        )
+        # a chain's starts can be named, and a start whose joint fit comes out worse stays
+        named = ChainOptions(
+            rounds=0,
+            trial_rounds=0,
+            search=(0.0,),
+            keep=1,
+            shape=False,
+            starts={"hand.l": ["mh_boxing/fingers"]},
+        )
+        _, report = refine_chains(
+            model, reference, character, rotation, translation, ("hand.l",), named
+        )
+        self.assertTrue(report["hand.l"]["start"].startswith("mh_boxing/fingers"))
+        self.assertEqual(
+            list(report["hand.l"]["trials_mm"]), [report["hand.l"]["start"]]
+        )
+
+
+class TestPosedHands(unittest.TestCase):
+    def test_a_finer_level_blends_every_row_between_the_hand_and_the_band(self):
+        from opensculptboy.fit.register import rest_masks
+
+        share = np.array([1.0, 1.0, 0.75, 0.25, 0.0, 0.0])
+        blend = np.array([0.0, 0.0, 0.25, 0.75, 0.25, 0.0])
+        pinned, band = rest_masks(share, blend)
+        np.testing.assert_array_equal(pinned, [1, 1, 0, 0, 0, 0])
+        # a row carried in part from the hand and from the band blends too
+        np.testing.assert_array_equal(band, [0, 0, 1, 1, 1, 0])
+        _, alone = rest_masks(share)
+        np.testing.assert_array_equal(alone, [0, 0, 1, 1, 0, 0])
+
+    def test_pinned_rows_keep_anny_and_the_band_blends(self):
+        from opensculptboy.fit.register import pin_rest_shape
+
+        # a strip of quads along x: rows 0..9, the offsets 1 cm, the last three pinned
+        n = 10
+        V = np.array([[x, y, 0.0] for x in range(n) for y in (0, 1)], float)
+        T = []
+        for x in range(n - 1):
+            a, b, c, d = 2 * x, 2 * x + 1, 2 * x + 2, 2 * x + 3
+            T += [[a, c, b], [b, c, d]]
+        offsets = np.full((len(V), 3), 0.01)
+        pinned = V[:, 0] >= 7
+        band = (V[:, 0] >= 4) & ~pinned
+        out, rows = pin_rest_shape(offsets, np.array(T), pinned, band)
+        self.assertTrue((out[pinned] == 0).all())
+        np.testing.assert_allclose(out[V[:, 0] < 4], 0.01)
+        # the band falls from the fitted offset to anny's shape step by step
+        steps = [out[V[:, 0] == x, 0].mean() for x in range(3, 8)]
+        self.assertTrue(all(a > b for a, b in zip(steps, steps[1:])))
+        self.assertEqual(set(rows.tolist()), set(np.nonzero(pinned | band)[0].tolist()))
+        same, none = pin_rest_shape(offsets, np.array(T), np.zeros(len(V), bool))
+        np.testing.assert_allclose(same, offsets)
+        self.assertEqual(len(none), 0)
+
+    def test_objects_stone_and_masks(self):
+        import trimesh
+
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.statues.hands import (
+            hand_masks,
+            signed_distance,
+            stone_mesh,
+        )
+
+        # objects in the masks' frame (y up), points in anny's (z up)
+        capsule = {
+            "kind": "capsule",
+            "start": [0, 0, 0],
+            "end": [0, 1, 0],
+            "radius": 0.1,
+        }
+        P = np.array([[0.3, 0.5, 0.0], [0.0, 0.5, 0.0]]) @ GLTF_TO_ANNY.T
+        np.testing.assert_allclose(signed_distance(P, [capsule]), [0.2, -0.1])
+        stone = {
+            "kind": "ellipsoid",
+            "centre": [0.0, 0.0, 0.0],
+            "radii": [0.03, 0.02, 0.02],
+            "axis": [1.0, 0.0, 0.0],
+        }
+        self.assertAlmostEqual(
+            float(signed_distance(np.array([[0.05, 0.0, 0.0]]), [stone])[0]),
+            0.02 * (0.05 / 0.03 - 1),
+        )
+        mesh = stone_mesh(stone)
+        self.assertTrue(mesh.is_watertight)
+        self.assertAlmostEqual(mesh.extents[0], 0.06, places=3)
+        with self.assertRaises(ValueError):
+            signed_distance(P, [{"kind": "box"}])
+        model = _model()
+        hand, band = hand_masks(model, "hand.r", 3)
+        self.assertGreater(hand.sum(), 500)
+        self.assertGreater(band.sum(), 0)
+        self.assertFalse((hand & band).any())
+        with self.assertRaises(ValueError):
+            hand_masks(model, "foot.r")
+        # an arm moved off the scan keeps anny's shape from the elbow down as well
+        arm, arm_band = hand_masks(model, "hand.r", 3, ("lowerarm",))
+        self.assertTrue((arm | ~hand).all())
+        self.assertGreater(arm.sum(), hand.sum() + 200)
+        self.assertFalse((arm & arm_band).any())
+        # with keep, the arm's vertices kept fitted leave the pin; the hand stays pinned
+        keep = np.zeros(len(arm), bool)
+        keep[np.nonzero(arm & ~hand)[0][:100]] = True
+        keep[np.nonzero(hand)[0][:10]] = True
+        part, _ = hand_masks(model, "hand.r", 3, ("lowerarm",), keep)
+        self.assertEqual(part.sum(), arm.sum() - 100)
+        self.assertTrue((part | ~hand).all())
+        self.assertIsInstance(mesh, trimesh.Trimesh)
+
+    def test_fingers_close_on_a_grip_without_entering_it(self):
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.statues.chains import _identity_pose, _Skinner
+        from opensculptboy.statues.hands import (
+            CURLS,
+            hand_bones,
+            pose_hands,
+            signed_distance,
+        )
+
+        model = _model()
+        labels = list(model.bone_labels)
+        character = Character(name="rest")
+        R, t = np.eye(3), np.zeros(3)
+        QUICK = tuple(CURLS[::3]) + (CURLS[-1],)
+        skin = _Skinner(model, character, R, t)
+        with torch.no_grad():
+            skin(_identity_pose(model))
+        J = skin.joints.numpy()
+        index, little = J[labels.index("finger2-1.R")], J[labels.index("finger5-1.R")]
+        middle, wrist = J[labels.index("finger3-1.R")], J[labels.index("wrist.R")]
+        # a grip across the fingers' roots, on the side the fist's fingers curl to
+        normal = np.cross(index - little, middle - wrist)
+        normal /= np.linalg.norm(normal)
+        _, report0 = pose_hands(
+            model, character, R, t, {"hand.r": {"objects": [], "curls": QUICK}}
+        )
+        # the palm's side: where the library fist's middle finger goes
+        from opensculptboy.statues.chains import _library_rotations
+
+        fist = _library_rotations(model, "mh_boxing")
+        pose = _identity_pose(model).clone()
+        for b in hand_bones(model, "hand.r"):
+            if labels[b].startswith("finger"):
+                pose[0, b, :3, :3] = torch.as_tensor(fist[b], dtype=pose.dtype)
+        with torch.no_grad():
+            skin(pose)
+        tip = skin.joints.numpy()[labels.index("finger3-3.R")]
+        if (tip - middle) @ normal < 0:
+            normal = -normal
+        centre = middle + normal * 0.045 + (middle - wrist) * 0.2
+        a, b = centre + (index - little) * 1.5, centre - (index - little) * 1.5
+        grip = {
+            "kind": "capsule",
+            "start": (a @ GLTF_TO_ANNY).tolist(),
+            "end": (b @ GLTF_TO_ANNY).tolist(),
+            "radius": 0.012,
+        }
+        held, report = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.r": {"objects": [grip], "place": False, "curls": QUICK}},
+        )
+        # free, every finger takes the library's full curl and more; on the grip they stop
+        self.assertEqual(
+            min(report0["hand.r"]["curl"].values()), (CURLS[-1], CURLS[-1])
+        )
+        curls = report["hand.r"]["curl"]
+        self.assertTrue(
+            all(
+                sum(curls[f]) < 2 * CURLS[-1] for f in ("finger2", "finger3", "finger4")
+            )
+        )
+        self.assertTrue(all(c >= 0 for c in report["hand.r"]["clearance_mm"].values()))
+        with torch.no_grad():
+            X = skin(held.pose_parameters(model)).numpy()
+        weights = model.vertex_bone_weights.detach().numpy()
+        on = (
+            np.isin(model.vertex_bone_indices.numpy(), hand_bones(model, "hand.r"))
+            * weights
+        ).sum(1) > 0.5
+        self.assertGreater(signed_distance(X[on], [grip]).min(), 0.0)
+        self.assertIsNone(report["hand.r"]["wrist_turn_deg"])
+        # placed: the wrist turns the fist round the grip, and no finger enters it
+        _, placed = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {
+                "hand.r": {
+                    "objects": [grip],
+                    "reach": 20,
+                    "fine": [5, 5],
+                    "curls": QUICK,
+                }
+            },
+        )
+        self.assertIsNotNone(placed["hand.r"]["wrist_turn_deg"])
+        self.assertTrue(
+            all(c >= 0 for c in placed["hand.r"]["clearance_mm"].values()), placed
+        )
+        # a stone in the left palm: placed on the palm's side, the fingers stop on it
+        _, report = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.l": {"stone": {"radii": [0.024, 0.019, 0.019]}, "curls": QUICK}},
+        )
+        stone = report["hand.l"]["stone"]
+        self.assertEqual(stone["name"], "Stone")
+        self.assertEqual(stone["kind"], "ellipsoid")
+        self.assertTrue(
+            all(c >= 0 for c in report["hand.l"]["clearance_mm"].values()),
+            report["hand.l"],
+        )
+        self.assertLess(
+            min(sum(c) for c in report["hand.l"]["curl"].values()), 2 * CURLS[-1]
+        )
+
+    def test_a_keyed_hand_takes_its_turns(self):
+        import roma
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.fit.handoff import GLTF_TO_ANNY
+        from opensculptboy.statues.chains import (
+            _identity_pose,
+            _library_rotations,
+            _Skinner,
+        )
+        from opensculptboy.statues.hands import KEY_FIST, key_hand, pose_hands
+
+        model = _model()
+        labels = list(model.bone_labels)
+        character = Character(name="rest")
+        R, t = np.eye(3), np.zeros(3)
+        key = {
+            "bones": {"wrist": [0.0, 20.0, 0.0], "finger1-1": [10.0, 30.0, 0.0]},
+            "fingers": {
+                "finger3": [60.0, 75.0, 40.0],
+                "finger1": [[10.0, 30.0, 0.0], 20, 0],
+            },
+        }
+        skin = _Skinner(model, character, R, t)
+        with torch.no_grad():
+            skin(_identity_pose(model))
+        wrist = skin.joints.numpy()[labels.index("wrist.R")]
+        grip = {
+            "kind": "capsule",
+            "start": ((wrist + [0.0, -0.05, -0.1]) @ GLTF_TO_ANNY).tolist(),
+            "end": ((wrist + [0.0, -0.05, -0.02]) @ GLTF_TO_ANNY).tolist(),
+            "radius": 0.012,
+        }
+        posed, report = pose_hands(
+            model, character, R, t, {"hand.r": {"key": key, "objects": [grip]}}
+        )
+        P = posed.pose_parameters(model)[0, :, :3, :3]
+
+        def degrees(name):
+            return np.degrees(roma.rotmat_to_rotvec(P[labels.index(name)]).numpy())
+
+        np.testing.assert_allclose(degrees("wrist.R"), [0.0, 20.0, 0.0], atol=1e-4)
+        np.testing.assert_allclose(degrees("finger1-1.R"), [10.0, 30.0, 0.0], atol=1e-4)
+        # each curl turns about the library fist's own axis for that joint, by its angle
+        library = _library_rotations(model, KEY_FIST)
+        for k, angle in zip((1, 2, 3), (60.0, 75.0, 40.0)):
+            b = labels.index(f"finger3-{k}.R")
+            v = degrees(f"finger3-{k}.R")
+            axis = roma.rotmat_to_rotvec(torch.as_tensor(library[b])).numpy()
+            self.assertAlmostEqual(np.linalg.norm(v), angle, places=3)
+            np.testing.assert_allclose(
+                v / angle, axis / np.linalg.norm(axis), atol=1e-6
+            )
+        # the other hand and the unkeyed fingers keep the card's pose
+        rest = _identity_pose(model)[0, :, :3, :3]
+        for name in ("finger2-1.R", "finger3-1.L", "wrist.L"):
+            np.testing.assert_allclose(P[labels.index(name)], rest[labels.index(name)])
+        rep = report["hand.r"]
+        self.assertEqual(rep["curl"], "key")
+        # a key's local changes (the hand chain's shape) go on the card
+        shaped, _ = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.r": {"key": {**key, "local_changes": {"r-hand-scale-incr": 0.4}}}},
+        )
+        self.assertEqual(shaped.local_changes["r-hand-scale-incr"], 0.4)
+        # a hand without a key sets its shape too (both hands the same size)
+        left, _ = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.l": {"local_changes": {"l-hand-scale-incr": 0.4}, "curls": (0.0,)}},
+        )
+        self.assertEqual(left.local_changes["l-hand-scale-incr"], 0.4)
+        # the fitted card's own clearances match those of the pose (the fit's check), and a
+        # key that carries other clearances is warned about
+        from opensculptboy.statues.hands import check_key, keyed_clearance
+
+        final = keyed_clearance(model, posed, R, t, "hand.r", [grip])
+        for f, c in rep["clearance_mm"].items():
+            self.assertAlmostEqual(final[f], c, delta=0.05)
+        self.assertIsNone(check_key(key, final))
+        self.assertTrue(check_key({**key, "clearance_mm": final}, final)["ok"])
+        moved = {f: c + 5.0 for f, c in final.items()}
+        with self.assertWarns(UserWarning):
+            off = check_key({**key, "clearance_mm": moved}, final)
+        self.assertFalse(off["ok"])
+        self.assertAlmostEqual(off["max_diff_mm"], 5.0, places=6)
+        # the fight pose closes the right fist only: the left hand keyed with the same curls
+        # takes the right's axes mirrored, and its fingers close as the right's mirror image
+        both = _identity_pose(model)
+        for chain in ("hand.r", "hand.l"):
+            key_hand(model, both, chain, {"fingers": {"finger3": [60.0, 75.0, 40.0]}})
+        for k in (1, 2, 3):
+            right = roma.rotmat_to_rotvec(
+                both[0, labels.index(f"finger3-{k}.R"), :3, :3]
+            )
+            left = roma.rotmat_to_rotvec(
+                both[0, labels.index(f"finger3-{k}.L"), :3, :3]
+            )
+            np.testing.assert_allclose(
+                left.numpy(), [1.0, -1.0, -1.0] * right.numpy(), atol=1e-6
+            )
+        with torch.no_grad():
+            skin(both)
+        J = skin.joints.numpy()
+        tips = [
+            J[labels.index(f"finger3-3{s}")] - J[labels.index(f"wrist{s}")]
+            for s in (".R", ".L")
+        ]
+        np.testing.assert_allclose(tips[1], [-1.0, 1.0, 1.0] * tips[0], atol=2e-3)
+        with self.assertRaises(ValueError):
+            key_hand(model, P[None].clone(), "hand.r", {"bones": {"elbow": [0, 0, 0]}})
+        with self.assertRaises(ValueError):
+            key_hand(
+                model, P[None].clone(), "hand.r", {"fingers": {"finger6": [0, 0, 0]}}
+            )
+
+    def test_hands_posed_after_the_fit_carry_its_offsets(self):
+        import roma
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.fit import residual as R_
+        from opensculptboy.fit.register import FitResult, _card_rest, repose_fit
+        from opensculptboy.statues.chains import _identity_pose
+        from opensculptboy.statues.hands import hand_bones
+
+        model = _model()
+        labels = list(model.bone_labels)
+        before = Character(name="rest")
+        rest0, transforms = _card_rest(model, before)
+        weights = model.vertex_bone_weights.detach().double().numpy()
+        indices = model.vertex_bone_indices.cpu().numpy()
+        rng = np.random.default_rng(0)
+        offsets = {0: rng.normal(0.0, 0.002, rest0.shape)}
+        R, t = np.eye(3), np.array([0.0, 0.0, 0.1])
+        posed0 = R_.pose_vertices(
+            rest0 + offsets[0], weights, indices, transforms, R, t
+        )
+        triangles = model.faces.cpu().numpy()
+        result = FitResult(
+            character=before,
+            rotation=R,
+            translation=t,
+            parametric_rest=rest0,
+            offsets=offsets,
+            errors={},
+            seconds={},
+            meshes={0: (posed0, triangles)},
+        )
+        # the right wrist turned by 40 degrees after the fit
+        pose = _identity_pose(model).clone()
+        wrist = labels.index("wrist.R")
+        pose[0, wrist, :3, :3] = roma.rotvec_to_rotmat(
+            torch.tensor([0.0, 0.0, np.radians(40.0)], dtype=pose.dtype)
+        )
+        after = Character(name="rest")
+        after.pose = Character.pose_from_parameters(model, pose)
+        moved = repose_fit(model, result, after)
+        self.assertIs(moved.character, after)
+        np.testing.assert_array_equal(moved.offsets[0], offsets[0])
+        V = moved.meshes[0][0]
+        hand = np.isin(
+            model.vertex_bone_indices.numpy()[:, 0], hand_bones(model, "hand.r")
+        )
+        on_hand = (weights * np.isin(indices, hand_bones(model, "hand.r"))).sum(1)
+        far = on_hand == 0
+        # the body away from the hand stays where the fit put it, offsets and all
+        np.testing.assert_allclose(V[far], posed0[far], atol=1e-9)
+        # the hand moves with its bones, carrying its offsets
+        self.assertGreater(np.linalg.norm(V[hand] - posed0[hand], axis=1).max(), 0.02)
+        _, transforms1 = _card_rest(model, after)
+        expected = R_.pose_vertices(
+            rest0 + offsets[0], weights, indices, transforms1, R, t
+        )
+        np.testing.assert_allclose(V, expected, atol=1e-9)
+
+    def test_a_fist_on_the_hip_comes_out_of_it(self):
+        import roma
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.statues.chains import _library_rotations, _Skinner
+        from opensculptboy.statues.hands import _clear_body
+
+        model = _model()
+        labels = list(model.bone_labels)
+        # the library's hands on the hips, the left upper arm turned in towards the body
+        pose = torch.as_tensor(
+            _library_rotations(model, "hands_on_hips"), dtype=torch.float64
+        )
+        full = torch.eye(4, dtype=torch.float64).repeat(1, len(labels), 1, 1)
+        full[0, :, :3, :3] = pose
+        character = Character(name="hips")
+        character.pose = Character.pose_from_parameters(model, full)
+        skin = _Skinner(model, character, np.eye(3), np.zeros(3))
+        weights = model.vertex_bone_weights.detach().numpy()
+        indices = model.vertex_bone_indices.numpy()
+        strongest = indices[np.arange(len(indices)), weights.argmax(1)]
+        report = None
+        for angle in (0.25, -0.25):
+            trial = full.clone()
+            arm = labels.index("upperarm01.L")
+            turn = torch.tensor([0.0, 0.0, angle], dtype=torch.float64)
+            trial[0, arm, :3, :3] = trial[0, arm, :3, :3] @ roma.rotvec_to_rotmat(turn)
+            out = _clear_body(skin, trial, labels, strongest, ".L", 0.002)
+            if report is None or out["inside_before"] > report["inside_before"]:
+                report = out
+        self.assertGreater(report["inside_before"], 0, report)
+        self.assertLess(report["inside_after"], report["inside_before"], report)
+        self.assertLessEqual(report["deepest_after_mm"], 1.0, report)
+        # the hand comes just off the body, no farther
+        self.assertLess(report["gap_after_mm"], 6.0, report)
+        self.assertLessEqual(report["share"], 1.0)
+
+    def test_a_stone_fits_the_hollow_of_a_fist(self):
+        import trimesh
+
+        from opensculptboy.statues.hands import _to_anny, cavity_stone
+
+        # a tube 4 cm long, its hollow 3 cm across along anny's x
+        tube = trimesh.creation.annulus(
+            r_min=0.015, r_max=0.025, height=0.04, sections=48
+        )
+        tube.apply_transform(
+            trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+        )
+        V, T = np.asarray(tube.vertices), np.asarray(tube.faces)
+        stone = cavity_stone(V, T, np.ones(len(V), bool))
+        self.assertEqual(stone["kind"], "ellipsoid")
+        np.testing.assert_allclose(_to_anny(stone["centre"]), 0.0, atol=0.0015)
+        self.assertGreater(abs(_to_anny(stone["axis"])[0]), 0.99)
+        # 1 mm off the skin, as long as the bounds allow (its ends out of the tube)
+        self.assertGreaterEqual(stone["clearance_mm"], 1.0)
+        self.assertAlmostEqual(stone["radii"][0], 0.0275, places=4)
+        self.assertGreater(stone["radii"][1], 0.0125)
+        self.assertLessEqual(stone["radii"][1], 0.014 + 1e-9)
+        # a solid ball encloses no hollow
+        ball = trimesh.creation.icosphere(3, radius=0.03)
+        self.assertIsNone(
+            cavity_stone(
+                np.asarray(ball.vertices),
+                np.asarray(ball.faces),
+                np.ones(len(ball.vertices), bool),
+            )
+        )
+
+    def test_a_keyed_fist_gets_its_stone_in_its_hollow(self):
+        from opensculptboy.character import Character
+        from opensculptboy.statues.hands import pose_hands
+
+        model = _model()
+        # a fist closed loosely enough to hold something
+        fist = {"finger1": [30.0, 40.0, 40.0]}
+        fist.update(
+            {
+                f: [60.0, 75.0, 50.0]
+                for f in ("finger2", "finger3", "finger4", "finger5")
+            }
+        )
+        _, report = pose_hands(
+            model,
+            Character(name="rest"),
+            np.eye(3),
+            np.zeros(3),
+            {
+                "hand.l": {
+                    "key": {"fingers": fist},
+                    "stone": {"radii": [0.02, 0.015, 0.015]},
+                }
+            },
+        )
+        rep = report["hand.l"]
+        stone = rep["stone"]
+        self.assertEqual(stone["name"], "Stone")
+        self.assertGreaterEqual(stone["clearance_mm"], 0.99)
+        self.assertGreaterEqual(2 * stone["radii"][0], 0.035 - 1e-9)
+        self.assertLessEqual(2 * stone["radii"][0], 0.055 + 1e-9)
+        # the fingers meet it: the hollow's walls lie about a millimetre off it
+        near = [c for c in rep["clearance_mm"].values() if c < 3.0]
+        self.assertGreaterEqual(len(near), 2)
+        self.assertGreaterEqual(min(rep["clearance_mm"].values()), 0.9)
+
+    def test_a_stone_moves_with_its_hand_off_the_hip(self):
+        import roma
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.statues.chains import _library_rotations, _Skinner
+        from opensculptboy.statues.hands import _to_anny, pose_hands
+
+        model = _model()
+        labels = list(model.bone_labels)
+        full = torch.eye(4, dtype=torch.float64).repeat(1, len(labels), 1, 1)
+        full[0, :, :3, :3] = torch.as_tensor(
+            _library_rotations(model, "hands_on_hips"), dtype=torch.float64
+        )
+        arm = labels.index("upperarm01.L")
+        full[0, arm, :3, :3] = full[0, arm, :3, :3] @ roma.rotvec_to_rotmat(
+            torch.tensor([0.0, 0.0, 0.25], dtype=torch.float64)
+        )
+        character = Character(name="hips")
+        character.pose = Character.pose_from_parameters(model, full)
+        R, t = np.eye(3), np.zeros(3)
+        spec = {"stone": {"radii": [0.024, 0.019, 0.019]}, "curls": (0.0, 1.0)}
+        held = {}
+        for name, extra in (("still", {}), ("cleared", {"clear_body": 0.002})):
+            posed, report = pose_hands(
+                model, character, R, t, {"hand.l": {**spec, **extra}}
+            )
+            skin = _Skinner(model, posed, R, t)
+            with torch.no_grad():
+                skin(posed.pose_parameters(model))
+            J = skin.joints.numpy()
+            joints = [
+                labels.index(n)
+                for n in ("wrist.L", "finger2-1.L", "finger5-1.L", "finger3-3.L")
+            ]
+            centre = _to_anny(report["hand.l"]["stone"]["centre"])
+            held[name] = (
+                centre,
+                np.linalg.norm(J[joints] - centre, axis=1),
+                report["hand.l"],
+            )
+        # the arm moved the hand out of the hip, and the stone came with it, where the hand holds it
+        self.assertGreater(held["cleared"][2]["body"]["arm_turn_deg"], 0.0)
+        self.assertGreater(np.linalg.norm(held["cleared"][0] - held["still"][0]), 0.001)
+        np.testing.assert_allclose(held["cleared"][1], held["still"][1], atol=1e-5)
+
+    def test_a_stone_joins_the_props(self):
+        import trimesh
+
+        from opensculptboy.statues.hands import add_stone_prop
+
+        stone = {
+            "kind": "ellipsoid",
+            "centre": [0.1, 1.0, 0.0],
+            "radii": [0.024, 0.019, 0.019],
+            "axis": [1.0, 0.0, 0.0],
+            "name": "Stone",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            scene = trimesh.Scene()
+            scene.add_geometry(
+                trimesh.creation.box(), node_name="Sword", geom_name="Sword"
+            )
+            scene.export(str(folder / "props.glb"))
+            (folder / "props.json").write_text(
+                json.dumps({"props": [{"name": "Sword", "role": "support"}]}), "utf-8"
+            )
+            add_stone_prop(folder, stone)
+            add_stone_prop(folder, stone)
+            loaded = trimesh.load(str(folder / "props.glb"), force="scene")
+            info = json.loads((folder / "props.json").read_text("utf-8"))
+        self.assertEqual(sorted(loaded.geometry), ["Stone", "Sword"])
+        self.assertEqual([p["name"] for p in info["props"]], ["Sword", "Stone"])
+        np.testing.assert_allclose(
+            loaded.geometry["Stone"].vertices.mean(0), [0.1, 1.0, 0.0], atol=0.003
+        )
+
+    def test_posed_hands_need_their_chains(self):
+        from opensculptboy.statues.pipeline import StatueConfig
+
+        base = {"format": "opensculptboy.statue/1", "name": "s", "scan": "s.stl"}
+        hands = {"hand.l": {"stone": {"radii": [0.02, 0.02, 0.02]}}}
+        with self.assertRaises(ValueError):
+            StatueConfig.from_dict({**base, "posed_hands": hands})
+        config = StatueConfig.from_dict(
+            {**base, "posed_hands": hands, "chains": ["hand.l"]}
+        )
+        self.assertEqual(config.posed_hands, hands)
+        self.assertEqual(StatueConfig.from_dict(base).posed_hands, {})
+        self.assertFalse(config.posed_hands_after_fit)
+        after = StatueConfig.from_dict(
+            {
+                **base,
+                "posed_hands": hands,
+                "chains": ["hand.l"],
+                "posed_hands_after_fit": True,
+            }
+        )
+        self.assertTrue(after.posed_hands_after_fit)
+
+
+class TestPieceRebuild(unittest.TestCase):
+    def test_settings(self):
+        from opensculptboy.statues.blender_pieces import DEFAULTS, PIECES, parse
+
+        mesh_dir, out_dir, settings = parse(["m", "o", "voxel=0.001", "hat=1000"])
+        self.assertEqual((mesh_dir, out_dir), ("m", "o"))
+        self.assertEqual(settings["voxel"], 0.001)
+        self.assertEqual(settings["hat"], 1000)
+        self.assertEqual(settings["locks"], DEFAULTS["locks"])
+        self.assertEqual(set(PIECES), {"hat", "locks"})
+        # a prop exported for the rebuild joins the pieces with the prop budget
+        from opensculptboy.statues.blender_pieces import pieces_in
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "prop_sword.ply").write_bytes(b"")
+            pieces, budgets = pieces_in(tmp, dict(DEFAULTS))
+        self.assertEqual(pieces["sword"], ["prop_sword.ply"])
+        self.assertEqual(budgets["sword"], DEFAULTS["prop"])
+        self.assertIn("hat", pieces)
+        with self.assertRaises(SystemExit):
+            parse(["m", "o", "colour=1"])
+        with self.assertRaises(SystemExit):
+            parse(["m"])
+
+
+class TestRebuiltPieces(unittest.TestCase):
+    def test_a_starter_takes_the_rebuilt_hat(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import statue_props
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "statue"
+            (root / "handoff").mkdir(parents=True)
+            (root / "pieces").mkdir()
+            scene = trimesh.Scene()
+            for name in ("Hat", "Sword"):
+                scene.add_geometry(
+                    trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
+                    node_name=name,
+                    geom_name=name,
+                )
+            scene.export(str(root / "handoff" / "props.glb"))
+            (root / "handoff" / "props.json").write_text(
+                json.dumps(
+                    {
+                        "props": [
+                            {"name": "Hat", "role": "drapery"},
+                            {"name": "Sword", "role": "support"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rebuilt = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+            rebuilt.export(str(root / "pieces" / "hat.ply"))
+            props = {name: (V, T, role) for name, V, T, role in statue_props(root)}
+        self.assertEqual(props["Hat"][2], "drapery")
+        self.assertEqual(len(props["Hat"][1]), len(rebuilt.faces))
+        self.assertEqual(len(props["Sword"][1]), 12)
+        # the sword exported, rebuilt (here: a sphere) and taken in its place
+        from opensculptboy.statues.starter import export_props
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "statue"
+            (root / "handoff").mkdir(parents=True)
+            scene = trimesh.Scene()
+            box = trimesh.creation.box(extents=(0.1, 0.2, 0.3))
+            box.apply_translation((0.5, 0.0, 0.0))
+            for name in ("Hat", "Sword"):
+                scene.add_geometry(box, node_name=name, geom_name=name)
+            scene.export(str(root / "handoff" / "props.glb"))
+            (root / "handoff" / "props.json").write_text(
+                json.dumps(
+                    {
+                        "props": [
+                            {"name": "Hat", "role": "drapery"},
+                            {"name": "Sword", "role": "support"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            written = export_props(root, root / "meshes")
+            self.assertEqual([p.name for p in written], ["prop_sword.ply"])
+            exported = trimesh.load(str(written[0]), process=False)
+            # the file's own frame: the props of statue_props come out the same
+            before = {n: V for n, V, T, r in statue_props(root)}
+            np.testing.assert_allclose(
+                np.sort(exported.vertices, 0), np.sort(box.vertices, 0), atol=1e-6
+            )
+            (root / "pieces").mkdir()
+            sphere = trimesh.creation.icosphere(subdivisions=2, radius=0.1)
+            sphere.export(str(root / "pieces" / "sword.ply"))
+            after = {n: (V, T) for n, V, T, r in statue_props(root)}
+            # the hilt from shapes: the top of the box cut, a pommel added
+            shapes = {
+                "Sword": {
+                    "cut": {"kind": "half", "point": [0, 0.05, 0], "normal": "+y"},
+                    "shapes": [
+                        {"kind": "sphere", "centre": [0.5, 0.2, 0.0], "radius": 0.05},
+                        {
+                            "kind": "capsule",
+                            "start": [0.5, 0.0, 0.0],
+                            "end": [0.5, 0.2, 0.0],
+                            "radius": 0.01,
+                        },
+                    ],
+                }
+            }
+            hilt = export_props(root, root / "hilt", shapes=shapes)[0]
+            hilt = trimesh.load(str(hilt), process=False)
+            self.assertAlmostEqual(hilt.vertices[:, 1].max(), 0.25, places=3)
+            plain = trimesh.load(str(written[0]), process=False)
+            self.assertLess((plain.vertices[:, 1] > 0.05).sum(), len(plain.vertices))
+            with self.assertRaises(ValueError):
+                export_props(
+                    root,
+                    root / "bad",
+                    shapes={
+                        "Sword": {"shapes": [{"kind": "box", "centre": [0, 0, 0]}]}
+                    },
+                )
+        self.assertEqual(len(after["Sword"][1]), len(sphere.faces))
+        self.assertEqual(len(after["Hat"][1]), 12)
+        self.assertEqual(len(before["Sword"]), len(after["Hat"][0]))
+
+    def test_one_piece_takes_the_place_of_the_hat_and_the_locks(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import (
+            PIECE_TRIANGLES,
+            UNION_ROLE,
+            statue_props,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "statue"
+            (root / "handoff").mkdir(parents=True)
+            (root / "pieces").mkdir()
+            scene = trimesh.Scene()
+            for name in ("Hat", "Locks", "Sword"):
+                scene.add_geometry(
+                    trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
+                    node_name=name,
+                    geom_name=name,
+                )
+            scene.export(str(root / "handoff" / "props.glb"))
+            roles = {"Hat": "drapery", "Locks": "hair", "Sword": "support"}
+            (root / "handoff" / "props.json").write_text(
+                json.dumps(
+                    {"props": [{"name": n, "role": r} for n, r in roles.items()]}
+                ),
+                encoding="utf-8",
+            )
+            # the separate pieces lose to the one piece
+            trimesh.creation.box(extents=(0.1, 0.1, 0.1)).export(
+                str(root / "pieces" / "hat.ply")
+            )
+            union = trimesh.creation.icosphere(subdivisions=3, radius=0.1)
+            union.export(str(root / "pieces" / "hat_locks.ply"))
+            props = {name: (V, T, role) for name, V, T, role in statue_props(root)}
+        self.assertEqual(sorted(props), ["Hat", "Sword"])
+        self.assertEqual(props["Hat"][2], UNION_ROLE)
+        self.assertEqual(len(props["Hat"][1]), len(union.faces))
+        self.assertEqual(
+            PIECE_TRIANGLES[UNION_ROLE],
+            PIECE_TRIANGLES["drapery"] + PIECE_TRIANGLES["hair"],
+        )
+
+
+class TestPropPieces(unittest.TestCase):
+    def test_pruned_pieces_join_the_nearest_prop(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import PROP_FIGURE, complete_props
+
+        head = trimesh.creation.box(extents=(0.2, 0.2, 0.2))
+        base = trimesh.creation.box(extents=(0.2, 0.2, 0.2))
+        base.apply_translation((1.0, 0.0, 0.0))
+        # four pruned triangles by the boxes' corners: by the head, by the base, by the
+        # figure (beside the head), far from both
+        centres = np.array(
+            [[0.12, 0.1, 0.1], [0.88, 0.1, 0.1], [0.1, -0.12, -0.1], [0.5, 0.6, 0.5]]
+        )
+        step = np.array([[0, 0, 0], [0.005, 0, 0], [0, 0.005, 0]])
+        V = np.concatenate([c + step for c in centres])
+        T = np.arange(12).reshape(4, 3)
+        figure = np.array([[0.1, -0.12 - PROP_FIGURE / 2, -0.1]])
+        out = complete_props({"Head": head, "Base": base}, (V, T), figure)
+        self.assertEqual(len(out["Head"].faces), len(head.faces) + 1)
+        self.assertEqual(len(out["Base"].faces), len(base.faces) + 1)
+        self.assertIs(complete_props({"Head": head}, None)["Head"], head)
+
+    def test_the_far_skin_joins_the_props_on_request(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import _pruned_triangles
+
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp)
+            cut = trimesh.Scene()
+            cut.add_geometry(
+                trimesh.creation.box(extents=(0.1, 0.1, 0.1)),
+                node_name="support_cut",
+                geom_name="support_cut",
+            )
+            cut.export(str(folder / "removed.glb"))
+            skin = trimesh.Scene()
+            skin.add_geometry(
+                trimesh.creation.icosphere(subdivisions=1, radius=0.1),
+                node_name="statue",
+                geom_name="statue",
+            )
+            skin.export(str(folder / "replica.glb"))
+            _, T = _pruned_triangles(folder)
+            self.assertEqual(len(T), 12)
+            _, T = _pruned_triangles(folder, far_skin=True)
+            self.assertEqual(len(T), 12 + 80)
+            self.assertIsNone(_pruned_triangles(pathlib.Path(tmp) / "none"))
+
+    def test_a_cut_spares_what_it_keeps(self):
+        import trimesh
+
+        from opensculptboy.statues.starter import cut_prop
+
+        # a bar along x (the guard) and a plate above it (a shard), both inside the cut
+        guard = trimesh.creation.box(extents=(0.2, 0.02, 0.02))
+        shard = trimesh.creation.box(extents=(0.03, 0.002, 0.03))
+        shard.apply_translation((0.0, 0.03, 0.0))
+        far = trimesh.creation.box(extents=(0.02, 0.02, 0.02))
+        far.apply_translation((0.0, -0.3, 0.0))
+        mesh = trimesh.util.concatenate([guard, shard, far])
+        cut = {"kind": "sphere", "centre": [0.0, 0.0, 0.0], "radius": 0.2}
+        keep = [
+            {"kind": "box", "centre": [0.0, 0.0, 0.0], "size": [0.25, 0.025, 0.025]}
+        ]
+        kept = cut_prop(mesh, [cut], keep)
+        self.assertEqual(len(kept.faces), len(guard.faces) + len(far.faces))
+        self.assertLess(kept.vertices[:, 1].max(), 0.02)
+        # without keep the guard goes too; a single mask works as a list of one
+        self.assertEqual(len(cut_prop(mesh, cut).faces), len(far.faces))
+
+    def test_a_box_shape_closes_a_cut_end(self):
+        from opensculptboy.statues.starter import shape_mesh
+
+        box = shape_mesh(
+            {"kind": "box", "centre": [0.1, 0.2, 0.3], "size": [0.02, 0.01, 0.06]}
+        )
+        self.assertTrue(box.is_watertight)
+        np.testing.assert_allclose(
+            box.bounds, [[0.09, 0.195, 0.27], [0.11, 0.205, 0.33]]
+        )
+        with self.assertRaises(ValueError):
+            shape_mesh({"kind": "half", "point": [0, 0, 0], "normal": [0, 1, 0]})
+        # a block tapering from a 2 x 6 cm section to a 3 x 7 cm one, 4 cm up
+        low = [[x, 0.0, z] for x in (-0.01, 0.01) for z in (-0.03, 0.03)]
+        high = [[x, 0.04, z] for x in (-0.015, 0.015) for z in (-0.035, 0.035)]
+        hull = shape_mesh({"kind": "hull", "points": low + high})
+        self.assertTrue(hull.is_watertight)
+        self.assertAlmostEqual(
+            hull.volume, 0.04 / 6 * (12e-4 + 4 * 16.25e-4 + 21e-4), 8
+        )
+        with self.assertRaises(ValueError):
+            shape_mesh({"kind": "hull", "points": low[:3]})
+
+    def test_a_turned_piece_from_its_profile(self):
+        from opensculptboy.statues.starter import shape_mesh
+
+        entry = {
+            "kind": "revolve",
+            "start": [0.0, 1.0, 0.0],
+            "end": [0.0, 2.0, 0.0],
+            "profile": [[0.0, 0.01], [0.05, 0.04], [0.1, 0.01]],
+        }
+        mesh = shape_mesh(entry)
+        self.assertTrue(mesh.is_watertight)
+        self.assertGreater(mesh.volume, 0)
+        np.testing.assert_allclose(mesh.bounds[:, 1], [1.0, 1.1], atol=1e-6)
+        self.assertAlmostEqual(mesh.bounds[1, 0], 0.04, places=3)
+        with self.assertRaises(ValueError):
+            shape_mesh({**entry, "profile": [[0.0, 0.01]]})
+
+
+class TestRegionDistances(unittest.TestCase):
+    def test_regions_and_zero_distance(self):
+        model = _model()
+        regions = statue_regions(model)
+        for k, name in enumerate(STATUE_REGIONS):
+            self.assertTrue((regions == k).any(), name)
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        result = region_distances(V, T, regions, V, T, samples=5000)
+        self.assertLess(result["all"]["forward"]["max"], 1e-6)
+        self.assertLess(result["all"]["reverse"]["p95"], 0.5)
+        # the scan's skin lacks the left hand: its vertices lie far from it
+        kept = T[statue["kept"]]
+        cut = region_distances(V, T, regions, V, kept, samples=5000)
+        self.assertGreater(cut["regions"]["hands"]["far"], 0.3)
+        self.assertLess(cut["regions"]["torso"]["far"], 0.01)
+
+    def test_under_cover(self):
+        import trimesh
+
+        from opensculptboy.statues.compare import under_cover
+
+        hat = trimesh.creation.icosphere(4, radius=0.1)
+        rng = np.random.default_rng(0)
+        d = rng.normal(size=(200, 3))
+        d /= np.linalg.norm(d, axis=1)[:, None]
+        skull = np.r_[d[:150] * 0.09, d[150:] * 0.11]
+        regions = np.full(200, STATUE_REGIONS.index("scalp"))
+        regions[:10] = STATUE_REGIONS.index("face")
+        result = under_cover(skull, regions, ("scalp",), hat.vertices, hat.faces)
+        self.assertEqual(result["vertices"], 190)
+        self.assertAlmostEqual(result["outside"], 50 / 190, places=3)
+        self.assertAlmostEqual(result["below"]["median"], 10.0, delta=0.2)
+
+
+def _wall(x, z0, z1, n=11, size=0.1):
+    """A vertical wall of n by n vertices in the plane x = ``x``, from z0 to z1 and over y
+    from 0 to ``size``, as triangles fine enough for closest-point searches by vertex."""
+    W, F = _grid(n, size)
+    W = np.c_[np.full(len(W), x), W[:, 1], z0 + W[:, 0] / size * (z1 - z0)]
+    return W, F
+
+
+@local_only("trimesh's rays need embreex (the viewer extra)")
+class TestFineLevelTechniques(unittest.TestCase):
+    """The detail levels' pairs along normals, the relaxation and the Taubin smoothing."""
+
+    def test_pairs_along_normals(self):
+        from opensculptboy.fit.register import Target
+
+        # a floor and a low wall beside the point: the wall is nearer, the floor straight below
+        V, T = _grid(11, 0.1)
+        wall, WF = _wall(0.0525, 0.001, 0.03)
+        target = Target(Reference(np.r_[V, wall], np.r_[T, WF + len(V)], {}))
+        point = np.array([[0.0495, 0.0455, 0.005]])
+        up = np.array([[0.0, 0.0, 1.0]])
+        _, _, near = target.closest(point)
+        self.assertAlmostEqual(float(near[0]), 0.003, places=6)
+        C, N, d, hit, off = target.along_normals(point, up, 0.02)
+        self.assertTrue(hit[0])
+        np.testing.assert_allclose(C[0], [0.0495, 0.0455, 0.0], atol=1e-9)
+        self.assertAlmostEqual(float(d[0]), 0.005, places=9)
+        self.assertGreater(abs(float(N[0, 2])), 0.99)
+        self.assertFalse(off[0])
+        # out of reach: no hit
+        self.assertFalse(target.along_normals(point, up, 0.004)[3][0])
+        # between two sheets 4 mm apart: the nearer one, or the middle with mean
+        upper = V + [0.0, 0.0, 0.004]
+        two = Target(Reference(np.r_[V, upper], np.r_[T, T + len(V)], {}))
+        point = np.array([[0.0455, 0.0455, 0.001]])
+        C = two.along_normals(point, up, 0.02)[0]
+        self.assertAlmostEqual(float(C[0, 2]), 0.0, places=9)
+        C, N, _, hit, _ = two.along_normals(point, up, 0.02, mean=0.005)
+        self.assertAlmostEqual(float(C[0, 2]), 0.002, places=9)
+        np.testing.assert_allclose(N[0], [0.0, 0.0, 1.0])
+
+    def test_nicp_takes_the_pairs_along_normals(self):
+        from opensculptboy.fit.register import nicp
+
+        # a patch 6 mm over a floor, 4 mm from a wall: closest points pull its edge sideways
+        V, T = _grid(11, 0.1)
+        floor, F = _grid(13, 0.12)
+        floor -= [0.0037, 0.0043, 0.0]  # rays meet no edge of the floor
+        wall, WF = _wall(0.104, 0.0, 0.03)
+        reference = Reference(np.r_[floor, wall], np.r_[F, WF + len(floor)], {})
+        start = V + [0.0, 0.0, 0.006]
+        weights = np.ones(len(V))
+        out = {}
+        for mode in ("closest", "normal"):
+            out[mode] = nicp(
+                start,
+                T,
+                reference,
+                weights,
+                stiffness=(1.0,),
+                iterations=2,
+                max_distance=0.02,
+                normal_threshold=-1.0,
+                reverse_weight=0.0,
+                correspondence=mode,
+            )
+        edge = np.isclose(V[:, 0], 0.1)
+        # along its normals the edge comes down onto the floor; the closest points drew it
+        # sideways toward the wall
+        self.assertLess(np.abs(out["normal"][edge, 2]).max(), 0.001)
+        self.assertLess(np.abs(out["normal"][edge, 0] - 0.1).max(), 0.0005)
+        self.assertGreater(
+            np.abs(out["closest"][edge, 0] - 0.1).max(),
+            np.abs(out["normal"][edge, 0] - 0.1).max(),
+        )
+        with self.assertRaises(ValueError):
+            nicp(start, T, reference, weights, stiffness=(1.0,), correspondence="ray")
+
+    def test_relaxation_opens_folds_and_keeps_the_carving(self):
+        from opensculptboy.fit.register import relax_surface, taubin_smooth
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        folded = V.copy()
+        # a vertex pulled across its neighbours along the surface folds the triangles round it
+        folded[220, :2] = V[222, :2] + 0.002
+
+        def flipped(X):
+            a, b, c = (X[T[:, k]] for k in range(3))
+            z = np.cross(b - a, c - a)[:, 2]
+            return int((np.sign(z) != np.sign(np.median(z))).sum())
+
+        self.assertGreater(flipped(folded), 0)
+        every = np.ones(len(V), bool)
+        out, count = relax_surface(folded, T, reference, every, every, 6)
+        self.assertGreater(count, 0)
+        self.assertEqual(flipped(out), 0)
+        # the vertices with data stay on the reference
+        np.testing.assert_allclose(out[:, 2], 0.0, atol=1e-9)
+        # without data, a bump of offsets is smoothed and keeps most of its volume
+        offsets = np.zeros((len(V), 3))
+        r = np.linalg.norm(V[:, :2] - 0.05, axis=1)
+        offsets[:, 2] = 0.002 * np.exp(-((r / 0.02) ** 2))
+        offsets[220, 2] += 0.003  # a spike
+        free = r < 0.04
+        smooth = taubin_smooth(offsets, T, free, 10)
+        self.assertLess(smooth[220, 2], offsets[220, 2] - 0.002)
+        self.assertGreater(smooth[free, 2].sum(), 0.8 * offsets[free, 2].sum())
+        np.testing.assert_allclose(smooth[~free], offsets[~free])
+
+
+class TestSolid(unittest.TestCase):
+    def test_meeting_line(self):
+        from opensculptboy.fit.lips import meeting_line
+
+        x = np.linspace(-0.02, 0.02, 21)
+        upper = np.c_[x, np.zeros_like(x), np.full_like(x, 0.002)]
+        lower = np.c_[x[2:] * 0.9, np.zeros(19), np.full(19, -0.002)]
+        line = meeting_line(upper, lower)
+        # the middle of the edges, where both span them
+        np.testing.assert_allclose(line.upper[:, 2], 0.0, atol=1e-12)
+        self.assertAlmostEqual(line.upper[0, 0], lower[:, 0].min())
+        self.assertLessEqual(line.upper[-1, 0], lower[:, 0].max() + 1e-12)
+        np.testing.assert_allclose(line.gap(), 0.0)
+
+        class Plane:  # a carved surface 1 mm in front of the lips
+            def closest(self, points):
+                p = np.asarray(points).copy()
+                p[:, 1] = -0.001
+                return p, None, np.abs(np.asarray(points)[:, 1] + 0.001)
+
+        snapped = meeting_line(upper, lower, Plane())
+        np.testing.assert_allclose(snapped.upper[:, 1], -0.001)
+        far = meeting_line(upper, lower, Plane(), snap=0.0005)
+        np.testing.assert_allclose(far.upper[:, 1], 0.0)
+        self.assertIsNone(meeting_line(upper[:1], lower))
+
+    def test_pits_relax(self):
+        from opensculptboy.fit.register import dents, relax_dents
+
+        from opensculptboy.fit.reference import vertex_normals
+
+        V, T = _grid(21, 0.1)
+        flat = V.copy()
+        # 2 mm behind the patch, by its normals
+        pit = -0.002 * np.sign(vertex_normals(flat, T)[220, 2])
+        V[220, 2] = pit  # a pit in the middle
+        # the reference: the flat patch, and a pit of its own one corner along
+        own = flat.copy()
+        own[66, 2] = pit
+        reference = Reference(own, T, {})
+        V[66, 2] = pit
+        self.assertGreater(dents(V, T)[220], 0.0015)
+        out = relax_dents(V, T, reference, np.ones(len(V), bool), 0.0005)
+        self.assertLess(abs(out[220, 2]), 0.0005)
+        self.assertEqual(out[66, 2], pit)  # the reference's own pit stays
+
+    def test_seen_gaps_close(self):
+        from opensculptboy.fit.register import close_seen
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        fitted = V.copy()
+        fitted[
+            [220, 66, 222], 2
+        ] = -0.01  # holes 1 cm deep: two by the opening, one far
+        free = np.ones(len(V), bool)
+        free[222] = False
+        centre = np.array([[0.05, 0.05, 0.0]])
+        out, count = close_seen(fitted, T, reference, centre, 0.015, free)
+        self.assertLess(abs(out[220, 2]), 0.001)  # brought up to just under the surface
+        self.assertLessEqual(out[220, 2], 0.0)
+        self.assertEqual(out[66, 2], -0.01)  # beyond the radius
+        self.assertEqual(out[222, 2], -0.01)  # held
+        self.assertGreater(count, 0)
+        np.testing.assert_allclose(out[:, 2].max(), 0.0, atol=1e-9)  # none comes out
+        np.testing.assert_allclose(out[:, :2], V[:, :2])
+        same, none = close_seen(V, T, reference, centre, 0.015)
+        self.assertEqual(none, 0)
+
+    def test_folds_untangle(self):
+        from opensculptboy.fit.register import unfold
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        folded = V.copy()
+        # a vertex pulled across its neighbours folds the triangles around it over
+        folded[220, :2] = V[222, :2] + 0.002
+        out, count = unfold(
+            folded, T, reference, np.ones(len(V), bool), np.ones(len(V), bool)
+        )
+        self.assertGreater(count, 0)
+        a, b, c = (out[T[:, k]] for k in range(3))
+        z = np.cross(b - a, c - a)[:, 2]
+        self.assertTrue((np.sign(z) == np.sign(z[0])).all())
+
+    def test_solid_statue_closes_its_openings(self):
+        from unittest import mock
+
+        from opensculptboy.statues import fit_statue
+        from opensculptboy.statues.fit import SOLID_LIP_SHIFT, SOLID_REACH
+
+        from opensculptboy.statues.fit import held_openings
+
+        held = held_openings(_model())
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            scan_to_handoff(
+                (statue["vertices"], statue["triangles"]), pathlib.Path(tmp) / "h"
+            )
+            for solid in (True, False):
+                with mock.patch("opensculptboy.fit.register.fit_reference") as fit:
+                    fit_statue(
+                        pathlib.Path(tmp) / "h", detail=0, solid=solid, start_pose=None
+                    )
+                options = fit.call_args.kwargs["options"]
+                self.assertEqual(options.close_openings, SOLID_REACH if solid else 0)
+                if solid:
+                    self.assertEqual(options.lip_seal_max_shift, SOLID_LIP_SHIFT)
+                else:
+                    # anny's working face: the openings' rings take no data, unsealed
+                    self.assertTrue(options.lip_seal_self)
+                    self.assertTrue(options.fill_no_data)
+                    self.assertTrue(options.no_data[held].all())
+
+    def test_eyes_follow_their_lids(self):
+        from opensculptboy.detail import detail_topology
+        from opensculptboy.export.vrm_tables import eyeball_vertices
+        from opensculptboy.fit.register import eyes_to_lids
+
+        model = _model()
+        topology = detail_topology(model, 0)
+        posed = model.template_vertices.detach().double().numpy().reshape(-1, 3)
+        eye = np.zeros(len(posed), bool)
+        for rows in eyeball_vertices(model).values():
+            eye[rows] = True
+        # the face grew by a fifth and left the eyeballs where they were
+        fitted = posed * 1.2
+        fitted[eye] = posed[eye]
+        out, moved = eyes_to_lids(model, topology, fitted, posed)
+        self.assertEqual(moved, 2)
+        np.testing.assert_allclose(out[eye], posed[eye] * 1.2, atol=1e-9)
+        np.testing.assert_allclose(out[~eye], fitted[~eye])
+        hugged, _ = eyes_to_lids(model, topology, fitted, posed, hug=0.001)
+        self.assertGreater(np.abs(hugged[~eye] - fitted[~eye]).max(), 0.0)
+        np.testing.assert_allclose(hugged[eye], out[eye])
+
+    def test_working_face_holds_the_openings(self):
+        from opensculptboy.fit.register import cavity_vertices
+        from opensculptboy.statues.fit import held_openings
+
+        model = _model()
+        lining = cavity_vertices(model)
+        narrow = held_openings(model, 1, 1)
+        wide = held_openings(model, 3, 3)
+        self.assertTrue(narrow[lining].all())
+        self.assertTrue(wide[narrow].all())
+        self.assertGreater(wide.sum(), narrow.sum() + 50)
+        V = model.template_vertices.detach().double().numpy().reshape(-1, 3)
+        head = V[lining].mean(0)
+        # the face's openings alone: nothing below the chin
+        self.assertLess(np.linalg.norm(V[wide] - head, axis=1).max(), 0.12)
+        eyes_only = held_openings(model, 3, 0)
+        self.assertLess(eyes_only.sum(), wide.sum())
+
+    def test_each_hand_is_posed_before_or_after_the_fit(self):
+        import types
+        from unittest import mock
+
+        from opensculptboy import Character
+        from opensculptboy.statues import fit_statue
+        from opensculptboy.statues.fit import stage1_dict
+
+        card = Character(name="kouros")
+        data = json.loads(
+            json.dumps(
+                stage1_dict(
+                    types.SimpleNamespace(
+                        character=card, rotation=np.eye(3), translation=np.zeros(3)
+                    )
+                )
+            )
+        )
+        calls = []
+
+        def posing(model, character, rotation, translation, hands, log=None):
+            calls.append(sorted(hands))
+            return character, {c: {"stone": None} for c in hands}
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp) / "kouros" / "handoff"
+            scan_to_handoff((statue["vertices"], statue["triangles"]), folder)
+            fitted = types.SimpleNamespace(character=card)
+            with (
+                mock.patch(
+                    "opensculptboy.fit.register.fit_levels", return_value=fitted
+                ),
+                mock.patch(
+                    "opensculptboy.statues.hands.pose_hands", side_effect=posing
+                ),
+                mock.patch(
+                    "opensculptboy.fit.register.repose_fit", return_value=fitted
+                ) as repose,
+            ):
+                result = fit_statue(
+                    folder,
+                    detail=1,
+                    stage1=data,
+                    posed_hands={"hand.r": {"after_fit": False}, "hand.l": {}},
+                    hands_after_fit=True,
+                )
+        # the right hand before the fit, the left after it on the fitted card
+        self.assertEqual(calls, [["hand.r"], ["hand.l"]])
+        self.assertTrue(repose.called)
+        self.assertEqual(sorted(result.hands), ["hand.l", "hand.r"])
+
+    def test_stage1_runs_the_levels_alone(self):
+        import types
+        from unittest import mock
+
+        from opensculptboy import Character
+        from opensculptboy.statues import fit_statue
+        from opensculptboy.statues.fit import stage1_dict, stage1_from
+        from opensculptboy.statues.pipeline import StatueConfig, fit
+
+        card = Character(name="kouros", phenotype={"height": 0.7})
+        earlier = types.SimpleNamespace(
+            character=card, rotation=np.eye(3), translation=np.array([0.0, 0.1, 0.0])
+        )
+        data = json.loads(json.dumps(stage1_dict(earlier)))
+        back, rotation, translation = stage1_from(data)
+        self.assertEqual(back.phenotype, card.phenotype)
+        np.testing.assert_allclose(translation, [0.0, 0.1, 0.0])
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp) / "kouros" / "handoff"
+            scan_to_handoff((statue["vertices"], statue["triangles"]), folder)
+            with (
+                mock.patch("opensculptboy.fit.register.fit_levels") as levels,
+                mock.patch("opensculptboy.fit.register.fit_reference") as full,
+            ):
+                fit_statue(folder, detail=1, stage1=data)
+            self.assertFalse(full.called)
+            self.assertEqual(levels.call_args.args[1].phenotype, card.phenotype)
+            self.assertEqual(levels.call_args.args[4], 1)
+            # the pipeline's fit saves both stages, and a run from them runs the levels alone
+            config = StatueConfig.from_dict(
+                {
+                    "format": "opensculptboy.statue/1",
+                    "name": "kouros",
+                    "scan": "k.stl",
+                    "prune": False,
+                }
+            )
+            result = types.SimpleNamespace(
+                character=card,
+                rotation=np.eye(3),
+                translation=np.zeros(3),
+                write=lambda path: None,
+            )
+            cardpath = pathlib.Path(tmp) / "kouros" / "card" / "kouros.json"
+            with mock.patch(
+                "opensculptboy.statues.fit.fit_statue", return_value=result
+            ) as run:
+                fit(config, folder, cardpath)
+                saved = pathlib.Path(tmp) / "kouros" / "stage1"
+                self.assertTrue((saved / "main.json").exists())
+                self.assertIsNone(run.call_args.kwargs["stage1"])
+                other = pathlib.Path(tmp) / "other" / "card" / "kouros.json"
+                # the later run's own result (its chains solved again) differs from the
+                # stage it started from, and its stage 1 holds that result
+                later = Character(name="kouros", phenotype={"height": 0.4})
+                run.return_value = types.SimpleNamespace(
+                    character=later,
+                    rotation=np.eye(3),
+                    translation=np.zeros(3),
+                    write=lambda path: None,
+                )
+                fit(config, folder, other, stage1=saved)
+                self.assertEqual(
+                    run.call_args.kwargs["stage1"]["character"]["phenotype"],
+                    card.to_dict()["phenotype"],
+                )
+                written = json.loads(
+                    (pathlib.Path(tmp) / "other" / "stage1" / "main.json").read_text()
+                )
+                self.assertEqual(
+                    written["character"]["phenotype"], later.to_dict()["phenotype"]
+                )
+                source = json.loads((saved / "main.json").read_text())
+                self.assertEqual(
+                    source["character"]["phenotype"], card.to_dict()["phenotype"]
+                )
+            # a run from before the stage-1 files gives them from its card
+            from opensculptboy.statues.pipeline import stage1_from_card
+
+            data = card.to_dict()
+            data["schema"] = 2
+            data["detail"] = {
+                "levels": [],
+                "fit": {
+                    "placement": {
+                        "rotation": np.eye(3).tolist(),
+                        "translation": [0.0, 0.0, 0.2],
+                    }
+                },
+            }
+            old = pathlib.Path(tmp) / "old"
+            (old / "card").mkdir(parents=True)
+            (old / "card" / "kouros.json").write_text(json.dumps(data))
+            got = stage1_from_card(old)
+            self.assertEqual(got["translation"], [0.0, 0.0, 0.2])
+            self.assertNotIn("detail", got["character"])
+
+
+class TestStarter(unittest.TestCase):
+    def test_starter_zip(self):
+        import zipfile
+
+        import trimesh
+
+        from opensculptboy.statues.pipeline import StatueConfig
+        from opensculptboy.statues.starter import build_starter
+
+        config = StatueConfig.from_dict(
+            {
+                "format": "opensculptboy.statue/1",
+                "name": "kouros",
+                "scan": "kouros.stl",
+                "title": "Kouros",
+                "licence": "PDM-1.0",
+                "credit": "A museum: cast 1",
+                "source": "https://example.org/kouros",
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "kouros"
+            (root / "card").mkdir(parents=True)
+            (root / "meshes").mkdir()
+            card = {
+                "schema": 2,
+                "name": "kouros",
+                "rig": "anny",
+                "topology": "anny",
+                "detail": {
+                    "levels": [
+                        {"subdiv": k, "offsets": f"kouros.detail{k}.safetensors"}
+                        for k in (0, 1, 2)
+                    ],
+                    "fit": {"seconds": {}},
+                },
+            }
+            (root / "card" / "kouros.json").write_text(json.dumps(card))
+            for k in (0, 1, 2):
+                (root / "card" / f"kouros.detail{k}.safetensors").write_bytes(
+                    bytes([k]) * 100
+                )
+            box = trimesh.creation.box(extents=(0.4, 0.3, 1.8))
+            box.export(str(root / "meshes" / "fitted_level1.ply"))
+            out = pathlib.Path(tmp) / "starters" / "kouros.zip"
+            result = build_starter(root, config, out, levels=(0, 1))
+            self.assertEqual(result["levels"], [0, 1])
+            with zipfile.ZipFile(out) as z:
+                names = set(z.namelist())
+                written = json.loads(z.read("character.json"))
+            self.assertEqual(
+                names,
+                {
+                    "character.json",
+                    "kouros.detail0.safetensors",
+                    "kouros.detail1.safetensors",
+                    "thumbnail.png",
+                },
+            )
+            self.assertEqual(written["schema"], 5)
+            self.assertEqual(written["name"], "Kouros")
+            self.assertEqual(written["look"]["skin"]["stone"], "carrara")
+            self.assertEqual(written["look"]["hair"]["style"], "bald")
+            reference = written["detail"]["fit"]["reference"]
+            self.assertEqual(reference["licence"], "PDM-1.0")
+            self.assertEqual(reference["credit"], "A museum: cast 1")
+            self.assertEqual(len(written["detail"]["levels"]), 2)
+            self.assertTrue(out.with_suffix(".png").exists())
+            light = json.loads(out.with_suffix(".light.json").read_text("utf-8"))
+            self.assertNotIn("levels", light.get("detail", {}))
+            self.assertEqual(light["detail"]["fit"]["reference"]["licence"], "PDM-1.0")
+            self.assertEqual(light["look"]["skin"]["stone"], "carrara")
+
+    def test_props_become_rigid_packages(self):
+        from opensculptboy.character import Character
+        from opensculptboy.fit.register import _card_rest
+        from opensculptboy.statues.handoff import _write_props
+        from opensculptboy.statues.pipeline import StatueConfig
+        from opensculptboy.statues.starter import prop_packages, starter_card
+        from opensculptboy.wearables.format import read_wearable
+
+        model = _model()
+        V, _ = _card_rest(model, Character())
+        config = StatueConfig.from_dict(
+            {
+                "format": "opensculptboy.statue/1",
+                "name": "kouros",
+                "scan": "kouros.stl",
+                "licence": "PDM-1.0",
+            }
+        )
+        # a staff beside the right hand and a slab under the feet, in the handoff's frame
+        labels = list(model.bone_labels)
+        hand = V[
+            (model.vertex_bone_indices.numpy() == labels.index("wrist.R")).any(1)
+        ].mean(0)
+        staff = trimesh_box((0.03, 0.03, 0.4), hand + [0.0, 0.0, -0.1])
+        slab = trimesh_box((0.6, 0.5, 0.05), [0.0, 0.0, V[:, 2].min() - 0.03])
+        pieces = [staff, slab]
+        A = np.concatenate([p.vertices for p in pieces])
+        F = np.concatenate([pieces[0].faces, pieces[1].faces + len(staff.vertices)])
+        prop = np.r_[np.zeros(len(staff.faces), int), np.ones(len(slab.faces), int)]
+        card = {
+            "schema": 4,
+            "name": "kouros",
+            "rig": "anny",
+            "topology": "anny",
+            "detail": {
+                "levels": [],
+                "fit": {
+                    "placement": {
+                        "rotation": np.eye(3).tolist(),
+                        "translation": [0, 0, 0],
+                    }
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "kouros"
+            (root / "handoff").mkdir(parents=True)
+            (root / "card").mkdir()
+            _write_props(root / "handoff" / "props.glb", A, F, prop, ["Staff", "Base"])
+            made = prop_packages(
+                root,
+                starter_card(card, config),
+                config,
+                pathlib.Path(tmp) / "out",
+                log=lambda m: None,
+            )
+            self.assertEqual([e["label"] for e in made], ["Staff", "Base"])
+            self.assertEqual(made[1]["bone"], "root")
+            self.assertIn(".R", made[0]["bone"])
+            # a prop bound to the bone the config names
+            config.prop_bones = {"Staff": "head"}
+            made = prop_packages(
+                root,
+                starter_card(card, config),
+                config,
+                pathlib.Path(tmp) / "out2",
+                log=lambda m: None,
+            )
+            self.assertEqual(made[0]["bone"], "head")
+            config.prop_bones = {"Staff": "no-such-bone"}
+            with self.assertRaises(ValueError):
+                prop_packages(
+                    root,
+                    starter_card(card, config),
+                    config,
+                    pathlib.Path(tmp) / "out3",
+                    log=lambda m: None,
+                )
+            for e in made:
+                wearable = read_wearable(pathlib.Path(tmp) / "out" / e["file"])
+                self.assertEqual(wearable.slot, "prop")
+
+
+if __name__ == "__main__":
+    unittest.main()

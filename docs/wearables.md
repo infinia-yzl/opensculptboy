@@ -35,7 +35,7 @@ A package is three files with one name:
 | `format` | `opensculptboy.wearable/1` |
 | `name`, `label` | the package's name and the name to show |
 | `description`, `tags` | one line about the piece, and free words for it ("shirt", "long sleeves", "linen") |
-| `slot` | `head`, `face`, `neck`, `torso`, `arms`, `hands`, `legs`, `feet`, `cloak`, `under` or `accessory` |
+| `slot` | `head`, `face`, `neck`, `torso`, `arms`, `hands`, `legs`, `feet`, `cloak`, `under`, `accessory` or `prop` (a piece beside the character, such as a statue's base or sword) |
 | `layer` | 0 (skin) to 100 (outermost), as in MakeHuman's z-depth: underwear 10, legs 30, torso 50, headgear 60, cloaks 80 |
 | `provenance` | `public` or `private` (see "Provenance") |
 | `licence` | `{spdx, declared, author, source, design_source, attribution}`, as the tools found or were given it; `spdx` is null when no licence is known, and the exports carry each `attribution` line as a credit |
@@ -84,7 +84,7 @@ An outfit may also hold a `description`, `tags` and the `source` outfit file it 
 
 A piece is named by its reference: `<outfit>/<piece>` for a piece of an outfit, the bare id for a loose piece. A bare id also names the piece of that id in the worn outfit, so `--hide cape` hides `travel/cape`. The export resolves what shows in this order: the worn outfit's pieces as the card enables them, the enabled loose pieces, the card's overrides, then `--hide` and `--show`.
 
-- **Slot replacement.** A piece shown from another outfit, and a loose piece, replace the pieces of the same slot that come from elsewhere. Pieces of `accessory` never replace.
+- **Slot replacement.** A piece shown from another outfit, and a loose piece, replace the pieces of the same slot that come from elsewhere. Pieces of `accessory` and `prop` never replace.
 - **Hides rules.** While piece A shows, the groups that its `hides` rules name are hidden on piece B. Hiding A shows them again. A rule names a piece of its own outfit by its id and a piece of another outfit by `<outfit>/<piece>`. A piece whose every group the shown pieces hide does not show: the files leave it out, the summaries mark it `shown: false` with its hidden groups, and its own rules hide nothing (underwear that trousers hide whole).
 
 ## Files

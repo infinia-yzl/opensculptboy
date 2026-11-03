@@ -188,7 +188,7 @@ def add_pieces(
     Put packages on a card: into ``outfit`` (created when missing, with ``label``), or as
     loose pieces (without ``outfit``, or with ``loose``). A piece takes the package's name as
     its id. A piece of that id with another file is an error unless ``replace``; ``replace``
-    also takes out the pieces of the same slot in the same place (``accessory`` pieces only
+    also takes out the pieces of the same slot in the same place (``accessory`` and ``prop`` pieces only
     by id) with their overrides. ``activate`` makes ``outfit`` the worn outfit.
     """
     path, before = _read_card(card)
@@ -258,7 +258,7 @@ def add_pieces(
         ref = f"{outfit}/{pid}" if outfit is not None else pid
         rel = _relative(json_path, path)
         new = {id_key: pid, "file": rel, "enabled": True}
-        if replace and wearable.slot != "accessory":
+        if replace and wearable.slot not in ("accessory", "prop"):
             for other in list(pieces):
                 oid = piece_id(other)
                 if oid != pid and _slot_of(path, other["file"]) == wearable.slot:
@@ -269,7 +269,7 @@ def add_pieces(
             clash = [
                 piece_id(e)
                 for e in pieces
-                if wearable.slot != "accessory"
+                if wearable.slot not in ("accessory", "prop")
                 and _slot_of(path, e["file"]) == wearable.slot
             ]
             if clash:

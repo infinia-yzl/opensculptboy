@@ -30,6 +30,9 @@ PRIVATE = "private"
 PROVENANCES = (PUBLIC, PRIVATE)
 SLOTS = ("head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloak")
 SLOTS += ("under", "accessory")
+# a piece that stands beside the character (a statue's base, a sword, a tree stump): like an
+# accessory it replaces nothing, and it covers no skin
+SLOTS += ("prop",)
 METHODS = ("surface", "rigid")
 BODIES = ("anny-template", "card", "reference")
 LICENCE_KEYS = (

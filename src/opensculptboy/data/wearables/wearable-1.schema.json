@@ -11,7 +11,7 @@
     "label": {"type": "string"},
     "description": {"type": "string", "pattern": "^[^\\n]*$", "description": "one line about the piece"},
     "tags": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true},
-    "slot": {"enum": ["head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloak", "under", "accessory"]},
+    "slot": {"enum": ["head", "face", "neck", "torso", "arms", "hands", "legs", "feet", "cloak", "under", "accessory", "prop"]},
     "layer": {"type": "integer", "minimum": 0, "maximum": 100},
     "provenance": {"enum": ["public", "private"]},
     "licence": {
