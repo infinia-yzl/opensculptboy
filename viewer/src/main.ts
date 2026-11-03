@@ -28,7 +28,8 @@ import { Hair } from './hair/gpu.ts';
 import { COLLIDERS, fitColliders } from './hair/colliders.ts';
 import { STRAND_VS } from './hair/glsl.ts';
 import { initUI } from './ui/index.ts';
-import { Retargeter, adjustHead, cardBones, quaternions, rotation, type M3, type RestBody, type V3 } from './pose_from_image.ts';
+import { Retargeter, adjustHead, quaternions, type M3, type RestBody, type V3 } from './pose_from_image.ts';
+import { cardBonesRef, cardTurns, referenceDifference, refToPage } from './pose_reference.ts';
 import { detect as detectPicture } from './picture.ts';
 import { gunzipSync } from 'fflate';
 import { silhouetteSvg } from './flat.ts';
@@ -924,19 +925,24 @@ function initBody(meta: any, B: any, geo: any) {
     const o4 = i16('face_offsets'), n = o4.length / 4, offsets = new Int16Array(n * 3);
     for (let i = 0; i < n; i++) { offsets[i * 3] = o4[i * 4]; offsets[i * 3 + 1] = o4[i * 4 + 1]; offsets[i * 3 + 2] = o4[i * 4 + 2]; }
     face = { tables: sm.face, lmTemplate: f32('face_lm_template'), lmBlend: f32('face_lm_blend'), ids: u32('face_ids'), offsets,
-      boneDeltas: f32('face_bones'), prior: B.face_prior ? f32('face_prior') : undefined };
+      boneDeltas: f32('face_bones'), prior: B.face_prior ? f32('face_prior') : undefined,
+      turns: B.face_turn_index ? { index: u32('face_turn_index'), values: f32('face_turn_values') } : undefined };
   }
   // MakeHuman's local changes: sparse offsets on the coarse body (records of x, y, z and a pad) and bone-head deltas
   let local: LocalData | undefined;
   if (sm.local && B.local_offsets) {
     const o4 = i16('local_offsets'), n = o4.length / 4, offsets = new Int16Array(n * 3);
     for (let i = 0; i < n; i++) { offsets[i * 3] = o4[i * 4]; offsets[i * 3 + 1] = o4[i * 4 + 1]; offsets[i * 3 + 2] = o4[i * 4 + 2]; }
-    local = { tables: sm.local, ids: u32('local_ids'), offsets, boneDeltas: f32('local_bones') };
+    local = { tables: sm.local, ids: u32('local_ids'), offsets, boneDeltas: f32('local_bones'),
+      turns: B.local_turn_index ? { index: u32('local_turn_index'), values: f32('local_turn_values') } : undefined };
   }
   const bufs = {
     template: f32('coarse_template'), components,
     projection: f32('shape_projection').subarray(0, sm.components * sm.blend_shapes),
     jointTemplate: f32('joint_template'), jointBlend: f32('joint_blend'),
+    // the bones' rest orientations as Anny finds them, for a card's local-ref pose (pose_reference.ts)
+    turns: B.turn_template ? { template: f32('turn_template'), reference: f32('turn_reference'),
+      blend: { index: u32('turn_index'), values: f32('turn_values') }, rootIdentity: !!sm.turns?.root_identity } : undefined,
     quads: u32('coarse_quads'), rows, detail: detailRaw, relief,
     index: geo.index.array, rest: at.rest.array, nsmooth: at.nsmooth.array.slice(), coarseSkin: B.coarse_skin.data, face,
     // the copies of the fine vertices on the seams of anny's atlas, and MakeHuman's local changes
@@ -2136,7 +2142,7 @@ function poseCard() {
   return {
     schema: 1, name: L.name || 'character', rig: 'anny', topology: 'anny', phenotypes: 'all',
     phenotype: { ...L.phenotype }, local_changes: {}, face_shapes: { ...L.face }, facial_actions: {},
-    pose: { bones: cardBones(MOTION.q, RIG.bones.map((b: any) => b.name), ANNY_TO_PAGE), root: [0, 0, 0] },
+    pose: { bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: [0, 0, 0] },
   };
 }
 // the coarse body skinned by a pose (rotations q, root offset), in the page's frame
@@ -3276,21 +3282,23 @@ function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
   c.label = label;
   for (let i = 0; i < nb * 4; i++) MOTION.Q[c.start * nb * 4 + i] = Math.round(Math.max(-1, Math.min(1, q[i] ?? (i % 4 === 3 ? 1 : 0))) * 32767);
 }
-// the still pose of a character card (opensculptboy.Character.pose: each bone's turn relative to its parent as a
-// quaternion in anny's frame, the inverse of cardBones), as a pose clip 'card:<name>' of the page's motion; null for a
-// card without one. Bones that the page's rig lacks are left out.
+// the still pose of a character card (opensculptboy.Character.pose: each bone's local-ref turn relative to its parent as
+// a quaternion in anny's frame, the inverse of cardBonesRef), as a pose clip 'card:<name>' of the page's motion; null for
+// a card without one. Bones that the page's rig lacks are left out.
 function cardPose(card: any): string | null {
   const bones = card?.pose?.bones;
   if (!bones || typeof bones !== 'object' || !Object.keys(bones).length || !RIG.ready || !MOTION.nb) return null;
-  const nb = MOTION.nb, q = new Float32Array(nb * 4), names: string[] = RIG.bones.map((b: any) => b.name);
-  for (let i = 0; i < nb; i++) q[i * 4 + 3] = 1;
-  for (const [bone, v] of Object.entries<any>(bones)) {
-    const i = names.indexOf(bone);
-    if (i < 0 || i >= nb || !Array.isArray(v) || v.length !== 4 || !v.every(Number.isFinite)) continue;
-    const n = Math.hypot(v[0], v[1], v[2], v[3]);
-    if (!n) continue;
-    q.set(quaternions([rotation(v.map((x: number) => x / n))], ANNY_TO_PAGE), i * 4);
+  const nb = MOTION.nb, names: string[] = RIG.bones.map((b: any) => b.name);
+  // the card's local-ref turns as the page's rotations, with the turns of the body shown (pose_reference.ts): every bone
+  // takes one, as local-ref's zero is Anny's reference pose
+  const D = cardTurns(bones, names), C = BODY.anny.restTurns();
+  const R = C ? refToPage(D, C, RIG.parents) : D;
+  const ref = card?.pose?.reference;
+  if (C && ref && typeof ref === 'object') {
+    const off = referenceDifference(ref, C, names);
+    if (off > 0.1) console.warn(`The card's bone turns differ from the page's by ${off.toFixed(2)} degrees; its pose shows a little off.`);
   }
+  const q = quaternions(R.slice(0, nb), ANNY_TO_PAGE);
   const name = 'card:' + (card.name || 'character');
   writePoseFrame(name, card.name ? `${card.name}'s pose` : "The card's pose", q);
   return name;

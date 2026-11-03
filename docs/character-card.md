@@ -30,7 +30,7 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `local_changes` | MakeHuman's local changes, -1 to 1 |
 | `face_shapes` | the 103 face shapes and 10 detail shapes ([Body model](body-model.md)) |
 | `facial_actions` | the 52 ARKit facial actions, 0 to 1 |
-| `pose` | a still pose: `"bones"` maps bone names to unit quaternions (x, y, z, w) relative to the parent, and `"root"` moves the root bone (metres); an empty pose is the rest pose |
+| `pose` | a still pose in Anny's `local-ref` parameters: `"bones"` maps bone names to unit quaternions (x, y, z, w) relative to the parent, measured from Anny's reference pose (each bone's frame at its reference orientation), and `"root"` moves the root bone (metres); an empty pose is the reference pose; `"reference"` (optional, written by Python for the card's body) holds each bone's turn from its rest orientation to its reference orientation, which the web viewer compares with the turns it finds itself ([Viewer](viewer.md#pose-cards)) |
 | `detail` | the detail layer of a fitted character |
 | `material` | the skin, eyes, teeth, inner mouth and tiers |
 | `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`, with optional `description`, `tags`, `source` and per-piece `overrides`, `hides` and `springs`) and the one worn ([Wearables](wearables.md)) |

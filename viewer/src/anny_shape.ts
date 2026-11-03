@@ -179,6 +179,7 @@ export interface FaceData {
   offsets: Int16Array;        // (total, 3) offsets in steps of tables.step
   boneDeltas: Float32Array;   // (rows, bones, 3) bone-head deltas of each row on tables.bones
   prior?: Float32Array;       // (A, 2, F, rank) low-rank factors of the face-shape distribution
+  turns?: TurnRows;           // the rows' blend of the bones' rest-orientation matrices
 }
 
 // scale of each group (anny's Anny._face_shape_scales) for the phenotype coefficients c
@@ -221,6 +222,7 @@ export interface SparseRows {
   ids: Uint32Array;           // coarse vertex of each sparse offset
   offsets: Int16Array;        // (total, 3) offsets in steps of tables.step
   boneDeltas: Float32Array;   // (rows, bones, 3) bone-head deltas of each row on tables.bones
+  turns?: TurnRows;           // the rows' blend of the bones' rest-orientation matrices
 }
 
 // ------------------------------------------------------------------ local changes (MakeHuman's modifiers)
@@ -322,6 +324,111 @@ export function sampleFace(face: FaceData, values: Record<string, number>, rando
     for (let k = 0; k < R; k++) s += spread * factor[f * R + k] * z[k];
     const [lo, hi] = face.tables.ranges[f];
     out[f] = Math.min(hi, Math.max(lo, s));
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------ rest orientations
+// Anny's "cached" bone orientation (anny.models.rigged_model._get_cached_rest_model): each bone's cross-covariance
+// matrix is a template plus the blend rows weighted by the same coefficients as the vertices (the phenotype's, the
+// face shapes' and the local changes'), and the bone's rest orientation is its special Procrustes solution (the
+// rotation nearest to it, roma.special_procrustes). The reference orientations are the zero of Anny's local-ref
+// pose; a bone's turn C = reference rest^T converts a local-ref pose into the page's (pose_reference.ts). All in
+// Anny's axes, 3 x 3 matrices row-major.
+
+export interface TurnRows { index: Uint32Array; values: Float32Array }   // (row, bone) pairs, and 9 values each
+export interface TurnData { template: Float32Array; reference: Float32Array; blend: TurnRows; rootIdentity: boolean }
+
+// add weighted blend rows to the matrices M (bones * 9)
+export function addTurnRows(rows: TurnRows, weights: ArrayLike<number>, M: Float64Array) {
+  const I = rows.index, V = rows.values, n = I.length / 2;
+  for (let e = 0; e < n; e++) {
+    const w = weights[I[e * 2]];
+    if (!w) continue;
+    const o = I[e * 2 + 1] * 9, v = e * 9;
+    for (let k = 0; k < 9; k++) M[o + k] += w * V[v + k];
+  }
+}
+
+// the eigenvectors (columns of V, row-major) and eigenvalues of a symmetric 3 x 3 matrix, by Jacobi rotations
+function symmetricEigen(A: Float64Array): { values: number[]; V: Float64Array } {
+  const a = Float64Array.from(A), V = new Float64Array([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  for (let sweep = 0; sweep < 50; sweep++) {
+    const off = a[1] * a[1] + a[2] * a[2] + a[5] * a[5];
+    if (off < 1e-30) break;
+    for (const [p, q] of [[0, 1], [0, 2], [1, 2]]) {
+      const apq = a[p * 3 + q];
+      if (Math.abs(apq) < 1e-300) continue;
+      const theta = (a[q * 3 + q] - a[p * 3 + p]) / (2 * apq);
+      const t = Math.sign(theta || 1) / (Math.abs(theta) + Math.sqrt(theta * theta + 1));
+      const c = 1 / Math.sqrt(t * t + 1), s = t * c;
+      for (let k = 0; k < 3; k++) {   // A <- J^T A J
+        const akp = a[k * 3 + p], akq = a[k * 3 + q];
+        a[k * 3 + p] = c * akp - s * akq; a[k * 3 + q] = s * akp + c * akq;
+      }
+      for (let k = 0; k < 3; k++) {
+        const apk = a[p * 3 + k], aqk = a[q * 3 + k];
+        a[p * 3 + k] = c * apk - s * aqk; a[q * 3 + k] = s * apk + c * aqk;
+      }
+      for (let k = 0; k < 3; k++) {
+        const vkp = V[k * 3 + p], vkq = V[k * 3 + q];
+        V[k * 3 + p] = c * vkp - s * vkq; V[k * 3 + q] = s * vkp + c * vkq;
+      }
+    }
+  }
+  return { values: [a[0], a[4], a[8]], V };
+}
+
+// the rotation nearest to M (row-major 9 at offset o) into out at offset oo: U diag(1, 1, det(U V^T)) V^T from the SVD
+// M = U S V^T, as roma.special_procrustes
+export function specialProcrustes(M: ArrayLike<number>, o: number, out: Float64Array, oo: number) {
+  const m = (r: number, c: number) => M[o + r * 3 + c];
+  const A = new Float64Array(9);   // M^T M
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+    let s = 0;
+    for (let k = 0; k < 3; k++) s += m(k, i) * m(k, j);
+    A[i * 3 + j] = s;
+  }
+  const { values, V } = symmetricEigen(A);
+  const order = [0, 1, 2].sort((x, y) => values[y] - values[x]);
+  const col = (j: number) => [V[order[j]], V[3 + order[j]], V[6 + order[j]]];
+  const v1 = col(0), v2c = col(1);
+  const Mv = (v: number[]) => [0, 1, 2].map((r) => m(r, 0) * v[0] + m(r, 1) * v[1] + m(r, 2) * v[2]);
+  const unit = (v: number[]) => { const n = Math.hypot(v[0], v[1], v[2]) || 1; return v.map((x) => x / n); };
+  const cross = (a: number[], b: number[]) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  // V with det 1, U = M V / S on the two largest singular values, the third from the cross product: R = U V^T is then
+  // the special Procrustes solution whatever the sign of the smallest singular value
+  let v2 = unit(v2c.map((x, k) => x - dot(v2c, v1) * v1[k]));
+  const v3 = cross(v1, v2);
+  const u1 = unit(Mv(v1));
+  let u2 = Mv(v2);
+  u2 = unit(u2.map((x, k) => x - dot(u2, u1) * u1[k]));
+  const u3 = cross(u1, u2);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out[oo + r * 3 + c] = u1[r] * v1[c] + u2[r] * v2[c] + u3[r] * v3[c];
+}
+
+// each bone's rest orientation (bones * 9) for the phenotype coefficients c and further weighted rows (the face shapes'
+// and the local changes')
+export function restOrientations(data: TurnData, c: ArrayLike<number>, extra: [TurnRows | undefined, ArrayLike<number> | null][] = []): Float64Array {
+  const nb = data.template.length / 9, M = Float64Array.from(data.template), out = new Float64Array(nb * 9);
+  addTurnRows(data.blend, c, M);
+  for (const [rows, w] of extra) if (rows && w) addTurnRows(rows, w, M);
+  for (let b = 0; b < nb; b++) specialProcrustes(M, b * 9, out, b * 9);
+  if (data.rootIdentity) out.set([1, 0, 0, 0, 1, 0, 0, 0, 1], 0);
+  return out;
+}
+
+// each bone's turn C = reference rest^T (bones * 9): local-ref D = C_parent R C^T for the page's rotation R
+export function referenceTurns(data: TurnData, rest: Float64Array): Float64Array {
+  const nb = rest.length / 9, F = data.reference, out = new Float64Array(nb * 9);
+  for (let b = 0; b < nb; b++) {
+    const o = b * 9;
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+      let s = 0;
+      for (let k = 0; k < 3; k++) s += F[o + r * 3 + k] * rest[o + c * 3 + k];
+      out[o + r * 3 + c] = s;
+    }
   }
   return out;
 }
