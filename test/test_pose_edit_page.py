@@ -408,6 +408,59 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertEqual(want - pressed, set())
             browser.close()
 
+    def test_saved_hand_on_another_character(self):
+        """A hand pose saved in the library applies to another character: the statue's right hand
+        made a fist and saved, then Anny's default body opened and the pose applied to its right
+        hand alone (DESIGN-0013, P4)."""
+        from playwright.sync_api import sync_playwright
+
+        folder = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        page_dir = folder / "page"
+        page_dir.mkdir()
+        servers, url = served(page_dir, {})
+        self.addCleanup(stop, servers)
+        hand = lambda r, side: {  # noqa: E731
+            name: rot
+            for name, rot in zip(r["labels"], r["rotations"])
+            if name.endswith("." + side) and name.startswith(("finger", "metacarpal"))
+        }
+        with sync_playwright() as p:
+            browser, tab = open_tab(p, url + "?base", 1920, 1080)
+            open_statue(tab, folder)
+            edit_on(tab)
+            tab.evaluate(
+                "() => { const e = window.__poseEdit; e.restPose(); e.setSection('hands'); "
+                "e.setHandSide('R'); e.applyPreset('fist'); e.savePose('Fist hand'); }"
+            )
+            settle(tab)
+            fist = hand(report(tab), "R")
+            self.assertTrue(any(abs(v[0] - 1) > 0.05 for v in fist.values()))
+
+            # another character: Anny's default body, the library kept in the browser
+            tab.goto(url + "?base")
+            tab.wait_for_function("() => window.__ready && !!window.__shell")
+            tab.evaluate("() => __shell.actions.openMode('pose')")
+            tab.wait_for_function("() => !!window.__poseEdit")
+            press_in_view(tab, "Tab")
+            tab.wait_for_function("() => window.poseEditReport().state.on")
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            settle(tab)
+            left0 = hand(report(tab), "L")
+            poses = report(tab)["state"]["poses"]
+            saved = [q for q in poses if q["label"] == "Fist hand"]
+            self.assertEqual(len(saved), 1)
+            tab.evaluate(
+                "(id) => window.__poseEdit.applyPose(id, 'hand.R')", saved[0]["id"]
+            )
+            settle(tab)
+            r = report(tab)
+            for name, rot in hand(r, "R").items():
+                np.testing.assert_allclose(rot, fist[name], atol=1e-5, err_msg=name)
+            for name, rot in hand(r, "L").items():
+                np.testing.assert_allclose(rot, left0[name], atol=1e-9, err_msg=name)
+            browser.close()
+
 
 if __name__ == "__main__":
     unittest.main()
