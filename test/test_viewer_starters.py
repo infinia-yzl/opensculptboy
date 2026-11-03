@@ -204,13 +204,13 @@ class TestStarterPackages(unittest.TestCase):
             self.assertEqual(tab.evaluate("() => window.__look().name"), "Baseline")
             self.assertIsNone(tab.evaluate("() => window.wearStats()?.card || null"))
             welcome = tab.locator(".welcome")
-            self.assertIn("Meet the studio", welcome.inner_text())
+            self.assertIn("Getting round the character", welcome.inner_text())
             self.assertEqual(
                 welcome.locator(".welcome-starter a").get_attribute("href"),
                 PINS["download"] + "doryphoros.zip",
             )
             # the New screen: the two statues, Doryphoros first, then the blank body; the missing package is tagged
-            tab.keyboard.press("n")
+            tab.locator("button[aria-label='New character']").click()
             tab.wait_for_function(
                 "() => document.querySelector(\"[data-starter='david_goliath']\")?.dataset.package"
             )

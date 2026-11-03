@@ -160,7 +160,7 @@ class TestFramePage(unittest.TestCase):
             self.assertEqual(
                 tab.evaluate("() => __shell.ui.get().starter.note.problem"), "file"
             )
-            self.assertIn("Meet the studio", tab.locator(".welcome").inner_text())
+            self.assertIn("Getting round the character", tab.locator(".welcome").inner_text())
             self.assertTrue(
                 tab.locator(".welcome .welcome-starter a")
                 .get_attribute("href")
@@ -191,9 +191,9 @@ class TestFramePage(unittest.TestCase):
             self.assertEqual(
                 tab.eval_on_selector_all(
                     "nav[aria-label='Modes'] .osb-hint",
-                    "(h) => h.map((x) => x.textContent).join('')",
+                    "(h) => h.map((x) => x.textContent)",
                 ),
-                "CDXPSE",
+                ["Shift 1", "Shift 2", "Shift 3", "Shift 4", "Shift 5", "Ctrl Shift E"],
             )
             self.assertTrue(tab.locator("#sec-body").is_visible())
             self.assertTrue(tab.locator(".welcome").is_visible())
@@ -353,7 +353,7 @@ class TestFramePage(unittest.TestCase):
             # the New screen: the two statues, Doryphoros first, and the blank body; a statue whose package the page
             # cannot read gives its note with the download link, and the blank body starts at once
             tab.mouse.click(900, 450)
-            tab.keyboard.press("n")
+            tab.locator("button[aria-label='New character']").click()
             tab.wait_for_function(
                 "() => document.querySelectorAll('[data-starter]').length === 3"
             )
@@ -382,7 +382,7 @@ class TestFramePage(unittest.TestCase):
                 self.assertIn(word, panel)
             tab.locator(".osb-identity").click()
             # View > Settings: the AI providers
-            tab.locator("[aria-label='View menu']").click()
+            tab.locator("[data-menu='more']").click()
             tab.locator("[data-slot='settings']").click()
             tab.wait_for_function("() => __shell.ui.get().tool === 'settings'")
             self.assertTrue(tab.locator("#sec-settings").is_visible())

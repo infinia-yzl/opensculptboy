@@ -69,14 +69,34 @@ export function cameraNav(app: App): CameraNav {
   controls.maxPolarAngle = (90 - TILT_LO) * DEG;
   controls.minDistance = 0.01;
   const lastT = new THREE.Vector3().copy(controls.target);
+  let pivotLabel = 'the figure';
   const off = new THREE.Vector3(), sph = new THREE.Spherical();
   let filmPx = 0, filmGoal = 0, lastAspect = 0;
   let railT = 0;
   const changeFns = new Set<() => void>();
-  const changed = () => { for (const f of changeFns) f(); };
+  const changed = () => { for (const f of changeFns) f(); cutCheck(); };
   const userMove = () => { V.lit = ''; if (!V.userMoved) { V.userMoved = true; N.onView(); } };
   const emitStart = () => { controls.dispatchEvent({ type: 'start' }); document.body.classList.add('interacted'); };
   const emitChange = () => { controls.dispatchEvent({ type: 'change' }); app.resetAccum(); changed(); };
+  // the automatic cut-away: when the pivot lies on a part (a double-click, a framing) and the body stands between it and
+  // the camera more than 5 cm before it, the skin nearer than that opens (DESIGN-0014, "The camera model")
+  let cutAt = 0, cutR = 0, cutLater: any = 0;
+  function cutCheck(force = false) {
+    const now = performance.now();
+    if (!force && now - cutAt < 80) { clearTimeout(cutLater); cutLater = setTimeout(() => cutCheck(true), 90); return; }
+    cutAt = now;
+    let r = 0;
+    if (pivotLabel !== 'the figure' && pivotLabel !== 'the face') {
+      const toP = controls.target.clone().sub(camera.position), dp = toP.length();
+      const hit = app.bodyRay(camera.position, toP.normalize());
+      if (hit && hit.distance < dp - 0.05) r = dp - 0.05;
+    }
+    if (Math.abs(r - cutR) < 1e-4) return;
+    cutR = r; display.cutAway = r > 0;
+    app.setCut(r);
+    if (r > 0) setStatus('cut', [{ text: 'Cut away to show the pivot' }, { keys: 'Home', text: 'the whole figure' }], { priority: PRIORITY.hover - 5 });
+    else clearStatus('cut');
+  }
 
   // ---------------------------------------------------------------- the view history
   const back: View[] = [], fwd: View[] = [];
@@ -204,7 +224,7 @@ export function cameraNav(app: App): CameraNav {
   // ---------------------------------------------------------------- the gestures of the pointer
   let gest: { kind: CameraGesture | 'none'; x: number; y: number; theta0: number; phi0: number; ax: number; ay: number; depth: number; moved: boolean } =
     { kind: 'none', x: 0, y: 0, theta0: 0, phi0: 0, ax: 0, ay: 0, depth: 1, moved: false };
-  let lastWheel = 0, startView: View | null = null, pivotLabel = 'the figure';
+  let lastWheel = 0, startView: View | null = null;
   const pivotDot = h('div.pivot-dot', { 'aria-hidden': 'true', hidden: true });
   function paintPivot() {
     const s = toScreen(controls.target);
@@ -419,12 +439,13 @@ export function cameraNav(app: App): CameraNav {
       goTo(fwd.pop()!);
       return true;
     },
-    isolate(objs) { display.isolated = objs && objs.length ? objs : null; app.resetAccum(); changed(); },
+    isolate(objs) { display.isolated = objs && objs.length ? objs : null; app.setXray(display.xray, display.isolated); changed(); },
     isolated: () => display.isolated,
-    xray(on) { if (display.xray === on) return; display.xray = on; app.resetAccum(); changed(); },
+    xray(on) { if (display.xray === on) return; display.xray = on; app.setXray(on, display.isolated); changed(); },
     xrayOn: () => display.xray,
     rayAt,
     toScreen,
+    turn(dYaw, dTilt = 0) { if (app.turntable()) app.setTurntable(false); around(dYaw * DEG, -dTilt * DEG); userMove(); },
     state(): CameraState {
       off.copy(camera.position).sub(controls.target); sph.setFromVector3(off);
       return {

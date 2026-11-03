@@ -123,6 +123,13 @@ export interface App {
   groundY(): number;
   // the first point of the posed body that a ray meets (page frame), or null
   bodyRay(origin: THREE.Vector3, dir: THREE.Vector3): { point: THREE.Vector3; distance: number } | null;
+  // the studio's X-ray (the body and the worn pieces see-through) and isolation (everything else faint)
+  setXray(on: boolean, isolated: THREE.Object3D[] | null): void;
+  // hide some bones' skin, or turn the skin of every other bone faint (the rig's names)
+  setParts(hidden: string[] | null, faintBut: string[] | null): void;
+  // the cut-away: the body's skin nearer the camera than this distance leaves the picture (0: none)
+  setCut(radius: number): void;
+  bodyMeshes(): { body: THREE.Object3D | null; all: THREE.Object3D[] };
   figure(): { lo: THREE.Vector3; hi: THREE.Vector3; top: number; head: THREE.Vector3; joints: { name: string; p: THREE.Vector3 }[] };
   // the framings ('body', 'upper', 'face') at the view's yaw, and the state that the navigation shares with main.ts
   flyTo(name: string): void;

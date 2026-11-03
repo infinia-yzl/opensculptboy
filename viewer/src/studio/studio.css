@@ -106,3 +106,96 @@ dialog.cmd::backdrop { background: var(--scrim); }
 .help-or { color: var(--text-faint); }
 .help-mouse { color: var(--text); }
 .help-foot { padding: 0 var(--space-6) var(--space-5); margin: 0; }
+
+/* ------------------------------------------------------------ the body compass (artboard 3k) */
+.compass {
+  position: fixed; z-index: 9; right: var(--space-2); bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); width: 104px; height: 108px;
+  border-radius: var(--radius-s); display: grid; place-items: end center; transition: right var(--duration-move) var(--ease-standard);
+  --cmp-left: #1f9e8f; --cmp-right: #e07a2e;
+}
+body.tool-open .compass { right: calc(var(--insp-w) + var(--space-4)); }
+body[data-width="phone"] .compass { display: none; }
+.compass::after {
+  content: attr(data-angle); position: absolute; right: 0; bottom: calc(100% + 8px); white-space: nowrap; pointer-events: none; opacity: 0;
+  font: 500 12px/16px var(--font-sans); color: var(--tip-text); background: var(--tip); padding: 4px 8px; border-radius: var(--radius-s); box-shadow: var(--shadow-tip);
+  transition: opacity var(--duration-tip) var(--ease-standard);
+}
+.compass:hover::after { opacity: 1; transition-delay: var(--duration-tip-wait); }
+.compass-home { position: absolute; left: 4px; top: 4px; min-width: 28px; min-height: 28px; }
+.compass-fig { cursor: pointer; touch-action: none; }
+.compass-fig line { stroke-width: 5; stroke-linecap: round; }
+.cmp-C { stroke: var(--text-muted); }
+.cmp-L { stroke: var(--cmp-left); }
+.cmp-R { stroke: var(--cmp-right); }
+.cmp-head { fill: var(--panel); stroke: var(--text-muted); stroke-width: 2.5; }
+.compass-fig .cmp-nose { stroke: var(--text); stroke-width: 3; }
+.cmp-floor { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+.compass-fig .cmp-tick { stroke: var(--text-muted); stroke-width: 2; }
+.cmp-lab { font: 700 11px/1 var(--font-sans); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.cmp-lab-L { fill: var(--cmp-left); }
+.cmp-lab-R { fill: var(--cmp-right); }
+
+/* ------------------------------------------------------------ Create's sections on 1 to 4: the digit at the tab's corner */
+.osb-panel-tabs [role="tab"] { position: relative; }
+.osb-panel-tabs [role="tab"] > .osb-hint { display: inline-block; position: absolute; top: 3px; right: 4px; margin: 0; padding: 0; min-width: 0; border: 0; font-size: 10px; line-height: 12px; color: var(--text-faint); }
+
+/* ------------------------------------------------------------ the status line's lit part (the tour's step) */
+.status-part.status-lit { outline: 1.5px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-s); color: var(--text); }
+
+/* ------------------------------------------------------------ mouse pictures */
+.mouse-pic .mouse-body { fill: var(--panel); stroke: var(--text); stroke-width: 2.4; }
+.mouse-pic .mouse-line { fill: none; stroke: var(--text); stroke-width: 2; }
+.mouse-pic .mouse-wheel { fill: var(--panel); stroke: var(--text); stroke-width: 2; }
+.mouse-pic .mouse-lit { fill: var(--accent); }
+
+/* ------------------------------------------------------------ the first-run card (artboard 3i) */
+.welcome.first-run { width: 420px; padding: var(--space-5) var(--space-6) var(--space-5); gap: var(--space-4); }
+.first-run-head { display: flex; align-items: center; justify-content: space-between; }
+.first-run-head .welcome-title { font: 600 16px/24px var(--font-display); letter-spacing: 0.06em; }
+.first-run .welcome-x { position: static; }
+.first-run-tiles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
+.first-run-tile { display: grid; justify-items: center; align-content: start; gap: 2px; min-height: 132px; padding: var(--space-3) var(--space-2); text-align: center;
+  background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-s); font-size: 13px; line-height: 18px; color: var(--text-muted); }
+.first-run-tile b { margin-top: var(--space-2); color: var(--text); font-weight: 600; }
+.first-run-pic { display: flex; align-items: center; justify-content: center; gap: 4px; height: 52px; }
+.first-run-pic .osb-key { font-size: 14px; line-height: 20px; padding: 2px 8px; }
+.first-run-foot { display: flex; align-items: center; justify-content: space-between; }
+.first-run-foot .osb-note { margin: 0; }
+
+/* ------------------------------------------------------------ the tour (artboards 3g and 3h) */
+.tour-prompt {
+  position: fixed; z-index: 16; left: calc(var(--inset-l, 0px) + 88px); top: calc(var(--top-h) + var(--space-4)); width: 400px; box-sizing: border-box;
+  display: flex; gap: var(--space-4); padding: var(--space-5); border-radius: var(--radius-m); box-shadow: var(--shadow-pop); animation: osb-pop var(--duration-toast) var(--ease-spring) both;
+}
+.tour-prompt h2 { font: 600 15px/22px var(--font-display); letter-spacing: 0.04em; }
+.tour-prompt p { margin: 4px 0 var(--space-3); font-size: 13px; line-height: 20px; }
+.tour-prompt-pic { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); }
+.tour-never { background: none; border: 0; padding: 0 4px; cursor: pointer; font: inherit; font-size: 13px; }
+.tour-card {
+  position: fixed; z-index: 16; right: calc(var(--inset-r, 0px) + var(--space-8)); top: 35vh; width: 420px; box-sizing: border-box; display: grid; gap: var(--space-4);
+  padding: var(--space-5) var(--space-6); border-radius: var(--radius-m); box-shadow: var(--shadow-pop);
+}
+.tour-head { display: flex; justify-content: space-between; align-items: center; }
+.tour-head h2 { margin: 0; }
+.tour-now { display: flex; gap: var(--space-5); align-items: center; padding-bottom: var(--space-4); border-bottom: 1px solid var(--line); }
+.tour-now p { margin: 0; font-size: 16px; line-height: 24px; color: var(--text); }
+.tour-pic { display: grid; place-items: center; flex: none; width: 84px; height: 104px; background: var(--raised-2); border-radius: var(--radius-s); gap: 4px; grid-auto-flow: column; }
+.tour-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; line-height: 20px; }
+.tour-steps li { display: grid; grid-template-columns: 16px 1fr auto; gap: 10px; align-items: center; color: var(--text-muted); }
+.tour-steps li[data-state="now"] { color: var(--text); font-weight: 600; }
+.tour-steps code { font: 500 12px/16px var(--font-mono); color: var(--text-muted); }
+.tour-dot { display: grid; place-items: center; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--text-faint); color: var(--on-accent); }
+.tour-steps li[data-state="now"] .tour-dot { background: var(--accent); border-color: var(--accent); }
+.tour-steps li[data-state="done"] .tour-dot { background: var(--good); border-color: var(--good); }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; }
+.tour-foot .osb-note { margin: 0; font-size: 13px; }
+.tour-path { position: fixed; left: calc(var(--inset-l, 0px) + 120px); top: 58vh; pointer-events: none; overflow: visible; }
+.tour-path path { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 6; }
+.tour-path .tour-arrow { fill: var(--accent); stroke: none; }
+body.shot .tour-card, body.shot .tour-prompt { display: none !important; }
+
+/* ------------------------------------------------------------ targets of 24 px at least (WCAG 2.5.8) */
+.hr-thumb::before { content: ""; position: absolute; inset: -7px; }
+.hr-tick { min-height: 24px; }
+.osb-sl-reset { width: 24px; height: 24px; }
+.help-search, .search-input.osb-input, .osb-search input { min-height: 28px; }

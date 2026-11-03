@@ -173,6 +173,8 @@ export function commandList(): CommandList {
     if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(rows.length - 1, sel + 1); render(); list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); render(); list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }); }
     else if (e.key === 'Enter') { e.preventDefault(); run(sel); }
+    // Esc closes the list at once (a search field would clear itself first)
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dlg.close(); }
   });
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
   return {

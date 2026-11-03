@@ -298,7 +298,12 @@ function buildEnvironment(preset, keyOnly = false) {
 }
 
 // ------------------------------------------------------------------ shared uniforms
+// the studio's parts by bone (shading.ts PART_GLSL): a texel per bone, 0 shown, 1 hidden, 2 faint
+const PART_DATA = new Uint8Array(512);
+const PART_TEX = new THREE.DataTexture(PART_DATA, 512, 1, THREE.RedFormat, THREE.UnsignedByteType);
+PART_TEX.needsUpdate = true;
 const U = {
+  uPartTex: { value: PART_TEX }, uPartOn: { value: 0 }, uCut: { value: 0 },
   uKeyDir: { value: new THREE.Vector3() }, uKeyColor: { value: new THREE.Vector3() }, uKeyTan: { value: 0.2 },
   uRimDir: { value: new THREE.Vector3() }, uRimColor: { value: new THREE.Vector3() },
   uSH: { value: Array.from({ length: 9 }, () => new THREE.Vector3()) },
@@ -2917,8 +2922,47 @@ function stage(name: string, fn: () => void) {
   gl.endQuery(PROFILE.ext.TIME_ELAPSED_EXT);
   PROFILE.pending.push([name, q]);
 }
+// the studio's X-ray and isolation (studio/camera.ts): the body, its eyes, the worn pieces and the hair drawn
+// see-through at a constant alpha over what lies behind them, without writing depth, so that what they hide shows
+// (the other hand, a point behind the hip); an isolated set keeps its own look while the rest turns faint
+const XRAY = { on: false, isolated: null as Set<any> | null, alpha: 0.3, faint: 0.12 };
+function xrayInto(m: any, alpha: number) {
+  if (!m) return;
+  if (Array.isArray(m)) { for (const x of m) xrayInto(x, alpha); return; }
+  const ud = m.userData;
+  if (!ud.xrayKeep) ud.xrayKeep = { blending: m.blending, transparent: m.transparent, depthWrite: m.depthWrite, blendSrc: m.blendSrc, blendDst: m.blendDst, blendAlpha: m.blendAlpha };
+  const k = ud.xrayKeep;
+  if (alpha >= 1) { Object.assign(m, k); return; }
+  Object.assign(m, { blending: THREE.CustomBlending, transparent: true, depthWrite: false, blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor, blendAlpha: alpha });
+}
+function syncXray() {
+  const objs = [...opaque, ...hairObjs];
+  for (const o of objs) {
+    let a = 1;
+    if (XRAY.isolated && !XRAY.isolated.has(o)) a = XRAY.faint;
+    else if (XRAY.on) a = XRAY.alpha;
+    if (o.userData.xrayAlpha === a && o.userData.xrayMat === o.material) continue;
+    o.userData.xrayAlpha = a; o.userData.xrayMat = o.material;
+    xrayInto(o.material, a);
+  }
+}
+// hide some bones' skin, or turn everything but some bones faint (names of the rig; null shows the whole body)
+function setParts(hidden: string[] | null, faintBut: string[] | null) {
+  PART_DATA.fill(0);
+  const names = RIG.bones ? RIG.bones.map((b: any) => b.name) : [];
+  if (faintBut && faintBut.length) { const keep = new Set(faintBut); names.forEach((n: string, i: number) => { if (!keep.has(n)) PART_DATA[i] = 2; }); }
+  if (hidden) { const hid = new Set(hidden); names.forEach((n: string, i: number) => { if (hid.has(n)) PART_DATA[i] = 1; }); }
+  U.uPartOn.value = PART_DATA.some((v) => v) ? 1 : 0;
+  PART_TEX.needsUpdate = true;
+  resetAccum();
+}
+function setXray(on: boolean, isolated: any[] | null) {
+  XRAY.on = on; XRAY.isolated = isolated && isolated.length ? new Set(isolated) : null;
+  syncXray(); resetAccum();
+}
 function renderPass() {
   const t0 = performance.now();
+  syncXray();
   HOOKS.passBegin();
   gpuBegin();
   // a change of scale starts the accumulation again (without counting as a move)
@@ -3551,6 +3595,10 @@ const APP: any = {
   groundY: () => GROUND_Y,
   figure: () => FIG,
   bodyRay: (o: any, d: any) => bodyRay(o, d),
+  setXray: (on: boolean, isolated: any[] | null) => setXray(on, isolated),
+  setParts: (hidden: string[] | null, faintBut: string[] | null) => setParts(hidden, faintBut),
+  setCut: (r: number) => { if (U.uCut.value !== r) { U.uCut.value = r; resetAccum(); } },
+  bodyMeshes: () => ({ body: BODY_MESH, all: [...opaque, ...hairObjs] }),
   flyTo: (name: string) => flyTo(name),
   currentFrame: () => currentFrame,
   view: VIEW,

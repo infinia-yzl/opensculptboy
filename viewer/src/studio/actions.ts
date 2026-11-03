@@ -129,11 +129,17 @@ export function liveAction(a: ActionDef): boolean {
   return scopeLive(a.scope || 'global') && (!a.when || !!a.when());
 }
 
+// listeners of every action that runs (the tour ticks its steps from them)
+const runListeners = new Set<(id: string) => void>();
+export function onActionRun(fn: (id: string) => void): () => void { runListeners.add(fn); return () => { runListeners.delete(fn); }; }
+const ran = (id: string) => { for (const f of runListeners) f(id); };
+
 // run an action by its id (a button, the command list, a ring menu); false when it is not live or did nothing
 export function runAction(id: string, ctx: Partial<RunCtx> = {}): boolean {
   const a = ACTIONS.get(id);
   if (!a || !a.run) return false;
   const r = a.run({ event: null, chord: '', shift: false, ctrl: false, alt: false, ...ctx });
+  if (r !== false) ran(id);
   return r !== false;
 }
 
@@ -269,6 +275,7 @@ export function dispatchKey(e: KeyboardEvent, o: DispatchOpts = {}): string | nu
     if (c.a.when && !c.a.when()) { if (c.a.hint && !hinted) hinted = c.a; continue; }
     const ctx: RunCtx = { event: e, chord: c.chord, shift: e.shiftKey, ctrl: e.ctrlKey || (isMac() && e.metaKey), alt: e.altKey };
     if (c.a.run!(ctx) === false) { if (c.a.hint && !hinted) hinted = c.a; continue; }
+    ran(c.a.id);
     return c.a.id;
   }
   if (hinted && o.hint) { o.hint(hinted.hint!); return hinted.id; }
@@ -277,6 +284,12 @@ export function dispatchKey(e: KeyboardEvent, o: DispatchOpts = {}): string | nu
 
 // ------------------------------------------------------------------ the help, the command list, the Ctrl overlay
 export interface HelpRow { id: string; keys: string[]; mouse: string[]; label: string; group: string; tier: Tier; mode: string | null; ids: string[] }
+// the text of an action's row in the help: the row's own text, given on any of its actions
+export function rowLabelOf(a: ActionDef): string {
+  if (!a.row) return a.label;
+  for (const b of ACTIONS.values()) if (b.row === a.row && b.rowLabel) return b.rowLabel;
+  return a.label;
+}
 // the help's rows: one per action, or one per shared row
 export function helpRows(): HelpRow[] {
   const rows = new Map<string, HelpRow>();
@@ -286,7 +299,7 @@ export function helpRows(): HelpRow[] {
     const mode = a.mode ?? modeOfScope(a.scope || 'global');
     const r = rows.get(id);
     if (r) { r.keys.push(...(a.keys || [])); r.mouse.push(...(a.mouse || [])); r.ids.push(a.id); continue; }
-    rows.set(id, { id, keys: [...(a.keys || [])], mouse: [...(a.mouse || [])], label: a.row ? (a.rowLabel || a.label) : a.label, group: a.group, tier: a.tier, mode, ids: [a.id] });
+    rows.set(id, { id, keys: [...(a.keys || [])], mouse: [...(a.mouse || [])], label: rowLabelOf(a), group: a.group, tier: a.tier, mode, ids: [a.id] });
   }
   return [...rows.values()];
 }

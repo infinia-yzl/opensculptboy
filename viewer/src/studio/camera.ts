@@ -54,6 +54,8 @@ export interface StudioCamera {
   rayAt(clientX: number, clientY: number): THREE.Ray;
   // a world point on the canvas (client pixels), and its depth from the camera
   toScreen(p: Vec3Like): { x: number; y: number; depth: number };
+  // turn round the pivot by degrees (yaw toward the figure's left, tilt up), at once
+  turn(dYaw: number, dTilt?: number): void;
   state(): CameraState;
   // called after every change of the view (a turn, a move, a zoom, a flight's frame) and of the display (X-ray, isolate)
   onChange(fn: () => void): () => void;
@@ -67,6 +69,7 @@ const stub: StudioCamera = {
   isolate: noop, isolated: () => null, xray: noop, xrayOn: () => false,
   rayAt: () => ({ origin: { x: 0, y: 0, z: 0 }, direction: { x: 0, y: 0, z: -1 } } as any),
   toScreen: () => ({ x: 0, y: 0, depth: 0 }),
+  turn: noop,
   state: () => ({ yaw: 0, tilt: 0, distance: 1, pivot: [0, 0, 0], position: [0, 0, 1], back: 0, forward: 0, xray: false, isolated: false, cutAway: false, flying: false }),
   onChange: () => noop,
 };

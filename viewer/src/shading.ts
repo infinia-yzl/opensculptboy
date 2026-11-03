@@ -275,6 +275,30 @@ vec3 coveredPosition() {
   return FACE_P - FACE_N * (0.004 * max(max(c.x, c.y), max(c.z, c.w)));
 }`;
 
+// the studio's parts by bone (H, Shift+H, Alt+H and / of the key map): a texel per bone, 0 shown, 1 hidden, 2 faint;
+// a vertex takes the state of the bone that moves it most
+export const PART_GLSL = /* glsl */`
+uniform highp sampler2D uPartTex; uniform float uPartOn;
+varying float vPart;
+float partState() {
+#ifdef USE_SKINNING
+  if (uPartOn < 0.5) return 0.0;
+  float b = skinIndex.x, w = skinWeight.x;
+  if (skinWeight.y > w) { w = skinWeight.y; b = skinIndex.y; }
+  if (skinWeight.z > w) { w = skinWeight.z; b = skinIndex.z; }
+  if (skinWeight.w > w) { w = skinWeight.w; b = skinIndex.w; }
+#ifdef SKIN8
+  if (skinWeight2.x > w) { w = skinWeight2.x; b = skinIndex2.x; }
+  if (skinWeight2.y > w) { w = skinWeight2.y; b = skinIndex2.y; }
+  if (skinWeight2.z > w) { w = skinWeight2.z; b = skinIndex2.z; }
+  if (skinWeight2.w > w) { w = skinWeight2.w; b = skinIndex2.w; }
+#endif
+  return floor(texelFetch(uPartTex, ivec2(int(b + 0.5), 0), 0).r * 255.0 + 0.5);
+#else
+  return 0.0;
+#endif
+}`;
+
 export const SKIN_VS = /* glsl */`
 ${SKIN_GLSL}
 ${HEAD_OUT_GLSL}
@@ -300,9 +324,11 @@ attribute vec4 cardUV;
 varying vec2 vCardUV; varying float vCardTile; varying float vCardHide;
 #endif
 ${COVER_GLSL}
+${PART_GLSL}
 void main() {
   mat4 S = skinMat();
   mat3 M = mat3(modelMatrix) * mat3(S);
+  vPart = partState();
 #ifdef CARD_SKIN
   vCardUV = cardUV.xy; vCardTile = cardUV.z; vCardHide = cardUV.w;
 #endif
@@ -377,7 +403,7 @@ uniform float uTrans; uniform float uFuzz; uniform float uUnd;
 uniform vec3 uSkinTint; uniform vec3 uScalpCol; uniform vec3 uScalp0; uniform float uMelanin;
 uniform vec4 uKnA[28]; uniform vec4 uKnB[28];
 uniform vec4 uEyeL; uniform vec4 uEyeR;
-varying float vHairMass;
+varying float vHairMass; varying float vPart; uniform float uCut;
 varying vec3 vWPos; varying vec3 vN; varying vec3 vNs; varying vec3 vAlb; varying vec3 vObj; varying vec4 vA; varying vec4 vB; varying vec4 vC; varying vec4 vD; varying vec3 vAx;
 varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying vec3 vHOut;
 #ifdef CARD_SKIN
@@ -495,6 +521,12 @@ vec3 knuckles(vec3 p, vec3 N, inout float cavK) {
   return normalize(N + dn);
 }
 void main() {
+  // the studio's hidden parts leave the picture, and the parts outside an isolated one turn faint: a screen-door that
+  // the page's accumulation of jittered frames averages into a see-through skin
+  if (vPart > 0.5) { if (vPart < 1.5 || ign(gl_FragCoord.xy) > 0.18) discard; }
+  // the cut-away: when the body hides the pivot, the skin nearer the camera than the pivot's surroundings opens, with a
+  // soft edge of a centimetre
+  if (uCut > 0.0) { float dc = distance(vWPos, cameraPosition); if (dc < uCut - 0.01 || (dc < uCut && ign(gl_FragCoord.xy + 3.0) > (dc - uCut + 0.01) / 0.01)) discard; }
   vec3 N = normalize(vN);
   vec3 Ns = normalize(vNs);
   vec3 V = normalize(cameraPosition - vWPos);

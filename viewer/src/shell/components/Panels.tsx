@@ -9,6 +9,7 @@
 import { useRef } from 'react';
 import { MODES, SECTIONS, TOOLS, type ModeId } from '../../ui/shortcuts.ts';
 import { keyLine } from '../../studio/actions.ts';
+import { ControlsPanel } from '../../studio/ControlsPanel.tsx';
 import { useShell } from '../context.ts';
 import { useUI } from '../hooks.ts';
 import { actions, ui } from '../state.ts';
@@ -124,12 +125,12 @@ export function ModePanel() {
 export function ToolPanel() {
   const { legacy } = useShell();
   const tool = useUI((s) => s.tool);
-  const T = tool === 'settings' ? { label: 'Settings' } : TOOLS.find((t) => t.id === tool);
+  const T = tool === 'settings' ? { label: 'Settings' } : tool === 'controls' ? { label: 'Controls' } : TOOLS.find((t) => t.id === tool);
   return (
     <aside id="insp-right" className="osb-panel osb-glass insp tool-panel" data-tool={tool || ''} aria-labelledby="tool-title" hidden={!tool}>
       <header className="osb-panel-head">
         <h2 className="osb-title" id="tool-title">{T?.label || ''}</h2>
-        <span className="osb-panel-note">{tool === 'rig' ? 'The skeleton and the skin weights' : tool === 'scene' ? 'Lights, quality and frame rate' : tool === 'settings' ? 'AI providers' : ''}</span>
+        <span className="osb-panel-note">{tool === 'rig' ? 'The skeleton and the skin weights' : tool === 'scene' ? 'Lights, quality and frame rate' : tool === 'settings' ? 'AI providers' : tool === 'controls' ? 'The mouse, the keys and the targets' : ''}</span>
         <Tip label="Close the panel" keys="Esc" side="left">
           <button type="button" className="osb-ib insp-x" aria-label="Close the tool panel (Esc)" onClick={() => actions.closeTool()}><Icon name="close" size={16} /></button>
         </Tip>
@@ -138,6 +139,7 @@ export function ToolPanel() {
         <DomSlot el={legacy.sections.rig} id="rig" shown={tool === 'rig'} />
         <DomSlot el={legacy.sections.scene} id="scene" shown={tool === 'scene'} />
         <SettingsSection shown={tool === 'settings'} />
+        <ControlsPanel shown={tool === 'controls'} />
       </div>
     </aside>
   );

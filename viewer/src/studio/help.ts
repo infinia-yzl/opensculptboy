@@ -85,6 +85,12 @@ export function helpSheet(): Help {
     empty.hidden = any;
   }
   search.addEventListener('input', render);
+  // Esc in the search: clears a query, else closes the help
+  search.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault(); e.stopPropagation();
+    if (search.value) { search.value = ''; render(); } else dlg.close();
+  });
   close.addEventListener('click', () => dlg.close());
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
   dlg.addEventListener('close', () => { search.value = ''; });
