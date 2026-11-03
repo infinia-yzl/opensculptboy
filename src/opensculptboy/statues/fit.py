@@ -414,8 +414,14 @@ def fit_statue(
         if spec.get("key") and spec.get("objects"):
             from opensculptboy.statues.hands import check_key, keyed_clearance
 
+            # on the card's own placement: the finer levels place the body again
             final = keyed_clearance(
-                model, result.character, rotation, translation, chain, spec["objects"]
+                model,
+                result.character,
+                result.rotation,
+                result.translation,
+                chain,
+                spec["objects"],
             )
             hands_report[chain]["clearance_final_mm"] = final
             hands_report[chain]["key_check"] = check_key(spec["key"], final)

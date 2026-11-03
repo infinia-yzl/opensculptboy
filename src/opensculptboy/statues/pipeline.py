@@ -573,6 +573,17 @@ def fit(
             for item in stage1.iterdir():
                 (saved / item.name).write_bytes(item.read_bytes())
         result = run(config.detail, main)
+        # the run's own stage 1: its chains are solved again from the earlier stage, so the
+        # copy of the earlier main.json would not hold this run's pose and hands
+        (saved / "main.json").write_text(
+            json.dumps(stage1_dict(result)) + "\n", encoding="utf-8"
+        )
+        if verbose:
+            print(
+                f"stage 1 written anew from this run (from {stage1}"
+                + (", its chains solved again)" if config.chains else ")"),
+                flush=True,
+            )
     else:
         saved.mkdir(parents=True, exist_ok=True)
         if config.prune:

@@ -1257,6 +1257,15 @@ class TestPosedHands(unittest.TestCase):
             np.testing.assert_allclose(P[labels.index(name)], rest[labels.index(name)])
         rep = report["hand.r"]
         self.assertEqual(rep["curl"], "key")
+        # a key's local changes (the hand chain's shape) go on the card
+        shaped, _ = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.r": {"key": {**key, "local_changes": {"r-hand-scale-incr": 0.4}}}},
+        )
+        self.assertEqual(shaped.local_changes["r-hand-scale-incr"], 0.4)
         # the fitted card's own clearances match those of the pose (the fit's check), and a
         # key that carries other clearances is warned about
         from opensculptboy.statues.hands import check_key, keyed_clearance
@@ -2042,13 +2051,29 @@ class TestSolid(unittest.TestCase):
                 self.assertTrue((saved / "main.json").exists())
                 self.assertIsNone(run.call_args.kwargs["stage1"])
                 other = pathlib.Path(tmp) / "other" / "card" / "kouros.json"
+                # the later run's own result (its chains solved again) differs from the
+                # stage it started from, and its stage 1 holds that result
+                later = Character(name="kouros", phenotype={"height": 0.4})
+                run.return_value = types.SimpleNamespace(
+                    character=later,
+                    rotation=np.eye(3),
+                    translation=np.zeros(3),
+                    write=lambda path: None,
+                )
                 fit(config, folder, other, stage1=saved)
                 self.assertEqual(
                     run.call_args.kwargs["stage1"]["character"]["phenotype"],
                     card.to_dict()["phenotype"],
                 )
-                self.assertTrue(
-                    (pathlib.Path(tmp) / "other" / "stage1" / "main.json").exists()
+                written = json.loads(
+                    (pathlib.Path(tmp) / "other" / "stage1" / "main.json").read_text()
+                )
+                self.assertEqual(
+                    written["character"]["phenotype"], later.to_dict()["phenotype"]
+                )
+                source = json.loads((saved / "main.json").read_text())
+                self.assertEqual(
+                    source["character"]["phenotype"], card.to_dict()["phenotype"]
                 )
             # a run from before the stage-1 files gives them from its card
             from opensculptboy.statues.pipeline import stage1_from_card

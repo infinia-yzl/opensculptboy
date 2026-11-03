@@ -190,7 +190,8 @@ def key_hand(model, pose, chain: str, key: dict) -> None:
     pose's. ``key["fingers"]`` maps a finger (``"finger2"``) to the curl of its three joints
     in degrees, each about that joint's own bending axis (the axis of its turn in the library
     pose :data:`KEY_FIST`); a joint's entry may instead be a rotation vector in degrees (the
-    thumb's opposition)."""
+    thumb's opposition). A key's ``local_changes`` (the hand chain's, such as
+    ``"r-hand-scale-incr"``) are set on the card by :func:`pose_hands`."""
     import roma
     import torch
 
@@ -333,6 +334,15 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
     )
 
     character = Character.from_dict(character.to_dict())
+    # a keyed hand keeps the shape it was keyed with (the hand chain's local changes, which
+    # a later chain solve fits again), so that its fingers lie where the key put them
+    for spec in hands.values():
+        changes = (spec.get("key") or {}).get("local_changes")
+        if changes:
+            character.local_changes = {
+                **character.local_changes,
+                **{k: float(v) for k, v in changes.items()},
+            }
     labels = list(model.bone_labels)
     pose = character.pose_parameters(model)
     pose = (_identity_pose(model) if pose is None else pose).detach().clone()
