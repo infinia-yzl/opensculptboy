@@ -24,7 +24,11 @@ export interface DrawCluster { x: number; y: number; title: string; line: string
 export interface DrawPin { x: number; y: number; label: string }
 export interface DrawBalance { centre: [number, number]; mark: [number, number]; polygon: [number, number][]; inside: boolean }
 export interface DrawMagnifier { cx: number; cy: number; r: number; zoom: number; point?: { x: number; y: number; number: number; state: DrawPoint['state'] } }
+export interface DrawStroke { d: string; colour: string; width: number; dash?: string; opacity?: number }
+export interface DrawTag { x: number; y: number; text: string; colour: string }
+export interface DrawJoint { x: number; y: number; selected: boolean; hovered: boolean; side: 'L' | 'R' | '' }
 export interface Frame {
+  strokes?: DrawStroke[]; tags?: DrawTag[]; joints?: DrawJoint[];
   points: DrawPoint[]; anny: DrawAnny[]; labels: DrawLabel[]; clusters: DrawCluster[]; pins: DrawPin[]; balance: DrawBalance | null;
   magnifier: DrawMagnifier | null; scale: number;
 }
@@ -61,6 +65,19 @@ export class PointLayer {
     const s = f.scale;
     // the balance mark under everything
     if (f.balance) this.balance(g, f.balance);
+    // the joints' rings (the Joints tool) under the points
+    for (const j of f.joints || []) {
+      const r = (j.selected ? 9 : 7) * s * (j.hovered ? 4 / 3 : 1), col = j.side === 'L' ? '#2a9d8f' : j.side === 'R' ? '#e07a2f' : '#f2efe9';
+      el('circle', { cx: j.x, cy: j.y, r: r + 1.5, fill: 'none', stroke: COLOURS.outline, 'stroke-width': 4.5 }, g);
+      el('circle', { cx: j.x, cy: j.y, r, fill: j.selected ? '#ffffff' : 'none', 'fill-opacity': 0.25, stroke: j.selected ? COLOURS.selected : col, 'stroke-width': 2.4 }, g);
+    }
+    // the dial of the selected joint: its rings and their ranges
+    for (const k of f.strokes || []) {
+      el('path', { d: k.d, fill: 'none', stroke: COLOURS.outline, 'stroke-width': k.width + 2.5, 'stroke-opacity': 0.55 * (k.opacity ?? 1), 'stroke-linecap': 'round',
+        ...(k.dash ? { 'stroke-dasharray': k.dash } : {}) }, g);
+      el('path', { d: k.d, fill: 'none', stroke: k.colour, 'stroke-width': k.width, 'stroke-opacity': k.opacity ?? 1, 'stroke-linecap': 'round',
+        ...(k.dash ? { 'stroke-dasharray': k.dash } : {}) }, g);
+    }
     // Anny's points and their lines to their places
     for (const a of f.anny) {
       if (a.line) {
@@ -81,6 +98,14 @@ export class PointLayer {
     const box = document.createDocumentFragment();
     for (const c of f.clusters) box.appendChild(this.tag(c.x, c.y, c.title, c.line, 'right'));
     for (const l of f.labels) box.appendChild(this.tag(l.x, l.y, l.title, l.line, l.side || 'right'));
+    for (const t of f.tags || []) {
+      const d = document.createElement('div');
+      d.className = 'osb-glass pose-ring-tag';
+      Object.assign(d.style, { position: 'absolute', left: `${t.x}px`, top: `${t.y}px`, transform: 'translate(-50%, -50%)' });
+      const i = document.createElement('i'); i.style.background = t.colour; d.appendChild(i);
+      d.appendChild(document.createTextNode(t.text));
+      box.appendChild(d);
+    }
     this.html.replaceChildren(box);
   }
 

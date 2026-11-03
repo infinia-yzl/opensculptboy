@@ -10,7 +10,10 @@
 import { useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { editStore, PIN_PARTS, poseEditor, type EditState, type PointInfo } from '../../pose_edit/editor.ts';
-import { BodyMap, HandMap } from '../../pose_edit/maps.tsx';
+import { BodyMap, HandMap, JointMap } from '../../pose_edit/maps.tsx';
+import { AXES } from '../../pose_edit/joints.ts';
+import { FINGER_LABELS, PRESETS } from '../../pose_edit/hands.ts';
+import { SECTIONS } from '../../pose_edit/editor.ts';
 import { runAction } from '../../studio/actions.ts';
 import { Fold, Note, Seg, Switch, TextButton } from '../components/controls.tsx';
 import { Icon } from '../components/ui/icon.tsx';
@@ -20,18 +23,29 @@ import { useShell } from '../context.ts';
 export function useEditState(): EditState { return useSyncExternalStore(editStore.subscribe, editStore.get, editStore.get); }
 
 const pct = (v: number) => Math.round(v * 100);
+const TAB_ICONS = ['focus', 'bones', 'hand', 'move', 'save'];
+// the Limbs and Library tools arrive with phases 3 and 4
+function LimbsPanel(_: { st: EditState }) { return <div className="osb-section"><Note>Hand and foot handles arrive in the next step.</Note></div>; }
+function LibraryPanel(_: { st: EditState }) { return <div className="osb-section"><Note>The pose library arrives in a later step.</Note></div>; }
 
 // a plain range with its number, for the editor's own values (they change with the store, not with the look)
-function Range({ id, label, value, min, max, step, ends, unit, onInput, onStart, onEnd }: { id: string; label: string; value: number; min: number; max: number; step: number;
-  ends?: [string, string]; unit?: string; onInput: (v: number) => void; onStart?: () => void; onEnd?: () => void }) {
+function Range({ id, label, value, min, max, step, ends, unit, onInput, onStart, onEnd, colour, limits, onReset }: { id: string; label: string; value: number; min: number; max: number;
+  step: number; ends?: [string, string]; unit?: string; onInput: (v: number) => void; onStart?: () => void; onEnd?: () => void; colour?: string; limits?: [number, number];
+  onReset?: () => void }) {
   const [v, setV] = useState<number | null>(null);
   const shown = v ?? value;
   return (
     <div className="pe-range" data-id={id}>
-      <div className="pe-range-head"><label htmlFor={'pe-' + id}>{label}</label><span className="pe-range-num">{Number.isInteger(step) ? shown : shown.toFixed(1)}{unit ? ' ' + unit : ''}</span></div>
-      <input id={'pe-' + id} className="pe-range-input" type="range" min={min} max={max} step={step} value={shown}
-        onPointerDown={() => onStart?.()} onInput={(e) => { const x = parseFloat((e.target as HTMLInputElement).value); setV(x); onInput(x); }}
-        onChange={() => { setV(null); onEnd?.(); }} onPointerUp={() => { setV(null); onEnd?.(); }} />
+      <div className="pe-range-head"><label htmlFor={'pe-' + id}>{colour ? <i className="pe-slider-axis" style={{ background: colour }} /> : null}{label}</label>
+        <span className="pe-range-num">{onReset ? <button type="button" className="osb-ib pe-reset" aria-label={`Reset ${label}`} onClick={onReset}><Icon name="undoSmall" size={14} /></button> : null}
+          <input type="number" className="pe-num" aria-label={label} step={step} value={Number(shown.toFixed(step < 1 ? 1 : 0))}
+            onChange={(e) => { const x = parseFloat(e.target.value); if (isFinite(x)) { onStart?.(); onInput(Math.min(max, Math.max(min, x))); onEnd?.(); } }} />{unit ? ' ' + unit : ''}</span></div>
+      <div className="pe-range-track">
+        <input id={'pe-' + id} className={'pe-range-input' + (limits && (shown < limits[0] || shown > limits[1]) ? ' is-out' : '')} type="range" min={min} max={max} step={step} value={shown}
+          onPointerDown={() => onStart?.()} onInput={(e) => { const x = parseFloat((e.target as HTMLInputElement).value); setV(x); onInput(x); }}
+          onChange={() => { setV(null); onEnd?.(); }} onPointerUp={() => { setV(null); onEnd?.(); }} />
+        {limits ? limits.map((l, i) => <span key={i} className="pe-range-limit" style={{ left: `calc(${(l - min) / (max - min) * 100}% - 1px)` }} aria-hidden="true" />) : null}
+      </div>
       {ends ? <div className="pe-range-ends"><span>{ends[0]}</span><span>{ends[1]}</span></div> : null}
     </div>
   );
@@ -184,6 +198,131 @@ function DepthInset({ p }: { p: PointInfo }) {
     </aside>, document.body);
 }
 
+// the Joints tool (artboard 2a): the body map of joints, the selected joint's Bend, Twist and Side-Side, the range
+// switch and the resets
+function JointsPanel({ st }: { st: EditState }) {
+  const ed = poseEditor()!, jv = st.jv;
+  const started = useState({ on: false })[0];
+  const start = (label: string) => { if (!started.on) { (ed as any).record(label); started.on = true; } };
+  const end = () => { started.on = false; };
+  const ENDS: [string, string][] = [['Down', 'Up'], ['Back', 'Forward'], ['In', 'Out']];
+  return (
+    <div className="osb-section pe-joints">
+      <h3 className="osb-eyebrow">Body map <span className="osb-eyebrow-val">{st.joint ? '' : 'Pick a joint'}</span></h3>
+      <JointMap selected={st.joint} onPick={(l) => ed.selectJoint(l)} />
+      {jv ? <>
+        <h3 className="osb-eyebrow pe-eyebrow">Joint <span className="osb-eyebrow-val">{jv.joint}</span></h3>
+        <p className="pe-point-name">{jv.name}</p>
+        {[0, 2, 1].map((k) => jv.dofs[k] ? (
+          <Range key={jv.label + k} id={'axis' + k} label={AXES[k].label + ' (°)'} colour={AXES[k].colour} value={jv.value[k]}
+            min={Math.min(-180, Math.floor(jv.lo[k] - 20))} max={Math.max(180, Math.ceil(jv.hi[k] + 20))} step={1} ends={ENDS[k]} limits={[jv.lo[k], jv.hi[k]]}
+            onStart={() => start(AXES[k].label)} onEnd={end} onInput={(v) => ed.setJointValue(k, v, false)}
+            onReset={() => ed.setJointValue(k, 0)} />
+        ) : null)}
+        <Switch label="Keep within the joint's range" on={st.limits} onChange={(on) => ed.setLimits(on)} />
+        <div className="btn-row">
+          <Tip action="pose.reset-joint" label="Reset the joint"><button type="button" className="tb osb-btn" onClick={() => ed.resetJoint(false)}><Icon name="reset" size={16} /><span>Reset the joint</span></button></Tip>
+          <Tip label="Reset the whole limb" keys="Shift+Alt+R"><button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.resetJoint(true)}><Icon name="reset" size={16} /><span>Reset the limb</span></button></Tip>
+        </div>
+      </> : <Note>Click a joint on the map or on the figure. Its rings show at the joint: drag a ring to turn it, or press R and move the mouse.</Note>}
+    </div>
+  );
+}
+
+// a small picture of a hand shape for the presets: the fingers as strokes bent by their curl
+function HandIcon({ curl, spread }: { curl: number[]; spread: number }) {
+  const base: [number, number][] = [[10, 26], [14, 16], [18, 14], [22, 15], [26, 17]];
+  return (
+    <svg viewBox="0 0 36 36" aria-hidden="true">
+      <path d="M9 34 L9 24 Q9 18 15 18 L25 18 Q29 18 29 23 L29 34 Z" fill="var(--raised-2)" stroke="currentColor" strokeWidth="1" />
+      {base.map(([x, y], k) => {
+        const len = k === 0 ? 9 : 12 - Math.abs(k - 2.4) * 1.2, a = (k === 0 ? -130 : -90 + (k - 2.5) * 9 * spread) * Math.PI / 180, c = Math.max(0, Math.min(1, curl[k]));
+        const ex = x + Math.cos(a) * len * (1 - 0.75 * c), ey = y + Math.sin(a) * len * (1 - 0.75 * c);
+        return <line key={k} x1={x} y1={y} x2={ex} y2={ey} stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />;
+      })}
+    </svg>
+  );
+}
+
+// the gesture pad (artboard 2b): four presets at its corners, a point dragged between them
+function GesturePad({ st }: { st: EditState }) {
+  const ed = poseEditor()!;
+  const [corners, setCorners] = useState(['open', 'pointing', 'fist', 'pinch']);
+  const [at, setAt] = useState<[number, number] | null>(null);
+  const all = [...PRESETS, ...st.userPresets];
+  const shapeOf = (id: string) => (all.find((p) => p.id === id) || PRESETS[0]).shape;
+  const move = (e: React.PointerEvent<HTMLDivElement>, first: boolean) => {
+    const r = e.currentTarget.getBoundingClientRect(), u = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), v = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+    setAt([u, v]);
+    ed.blendPad(corners.map(shapeOf), u, v, first);
+  };
+  return <>
+    <h3 className="osb-eyebrow pe-eyebrow">Gesture pad</h3>
+    <div className="pe-pad" role="slider" aria-label="Blend of four hand presets" aria-valuetext={at ? `${Math.round(at[0] * 100)} %, ${Math.round(at[1] * 100)} %` : 'Not used'} tabIndex={0}
+      onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); move(e, true); }} onPointerMove={(e) => { if (e.buttons) move(e, false); }}>
+      {corners.map((c, i) => (
+        <select key={i} className="pe-pad-corner" aria-label={`Corner ${i + 1}`} value={c} onPointerDown={(e) => e.stopPropagation()}
+          style={{ [i % 2 ? 'right' : 'left']: 4, [i < 2 ? 'top' : 'bottom']: 4 } as any} onChange={(e) => { const n = corners.slice(); n[i] = e.target.value; setCorners(n); }}>
+          {all.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+        </select>
+      ))}
+      {at ? <span className="pe-pad-dot" style={{ left: `${at[0] * 100}%`, top: `${at[1] * 100}%` }} /> : null}
+    </div>
+    <Note>Drag between the four hands at the corners. Each corner takes any preset.</Note>
+  </>;
+}
+
+// the Hands tool (artboard 2b): Fist, Spread, Thumb, Relax; each finger's Curl, with its spread behind a fold; the
+// presets, the gesture pad, and Copy to the other hand
+function HandsPanel({ st }: { st: EditState }) {
+  const ed = poseEditor()!, h = st.handShape, side = st.handSide;
+  const started = useState({ on: false })[0];
+  const start = (label: string) => { if (!started.on) { (ed as any).record(label); started.on = true; } };
+  const end = () => { started.on = false; };
+  const pct = (x: number) => Math.round(x * 100);
+  const [name, setName] = useState('');
+  return (
+    <div className="osb-section pe-hands">
+      <div className="pe-hand-head"><p className="pe-point-name">{side === 'R' ? 'Right hand' : 'Left hand'}</p>
+        <Seg label="The hand" items={[{ value: 'L', label: 'Left' }, { value: 'R', label: 'Right' }]} value={side} onPick={(v) => ed.setHandSide(v as 'L' | 'R')} /></div>
+      <h3 className="osb-eyebrow pe-eyebrow">Whole hand</h3>
+      <Range key={side + 'fist' + st.version} id="fist" label="Fist" unit="%" value={pct(h.fist)} min={-10} max={110} step={1} ends={['Open', 'Closed']}
+        onStart={() => start('Fist')} onEnd={end} onInput={(v) => ed.setHand('fist', 0, v / 100, false)} />
+      <Range key={side + 'spread' + st.version} id="spread" label="Spread" unit="%" value={pct(h.spread)} min={-100} max={100} step={1} ends={['Together', 'Apart']}
+        onStart={() => start('Spread')} onEnd={end} onInput={(v) => ed.setHand('spread', 0, v / 100, false)} />
+      <Range key={side + 'thumb' + st.version} id="thumb" label="Thumb" unit="%" value={pct(h.thumb)} min={-20} max={110} step={1} ends={['Beside', 'Across the palm']}
+        onStart={() => start('Thumb')} onEnd={end} onInput={(v) => ed.setHand('thumb', 0, v / 100, false)} />
+      <div className="pe-fingers">
+        {FINGER_LABELS.map((label, k) => (
+          <Fold key={k} title={label} count={`Curl ${pct(h.curl[k])} %`} className="pe-fold">
+            <Range key={side + 'curl' + k + st.version} id={'curl' + k} label="Curl" unit="%" value={pct(h.curl[k])} min={-20} max={120} step={1} ends={['Straight', 'Bent']}
+              onStart={() => start('Curl')} onEnd={end} onInput={(v) => ed.setHand('curl', k, v / 100, false)} />
+            {k > 0 ? <Range key={side + 'fs' + k + st.version} id={'fspread' + k} label="Spread" unit="%" value={pct((ed as any).fingerSpread?.(k) ?? 0)} min={-100} max={100} step={1}
+              ends={['Together', 'Apart']} onStart={() => start('Spread')} onEnd={end} onInput={(v) => ed.setHand('fspread', k, v / 100, false)} /> : null}
+          </Fold>
+        ))}
+      </div>
+      <h3 className="osb-eyebrow pe-eyebrow">Presets</h3>
+      <div className="pe-presets" role="group" aria-label="Hand presets">
+        {[...PRESETS, ...st.userPresets].map((p) => (
+          <button key={p.id} type="button" className="pe-preset" aria-pressed={st.preset === p.id} onClick={() => ed.applyPreset(p.id)}>
+            <HandIcon curl={p.shape.curl} spread={p.shape.spread} /><span>{p.label}</span></button>
+        ))}
+      </div>
+      <div className="pe-save-hand">
+        <input type="text" className="osb-input" placeholder="A name for this hand" aria-label="A name for this hand" value={name} onChange={(e) => setName(e.target.value)} />
+        <TextButton label="Save this hand" icon="plus" disabled={!name.trim()} onClick={() => { ed.saveHandPreset(name.trim()); setName(''); }} />
+      </div>
+      <GesturePad st={st} />
+      <div className="btn-row">
+        <TextButton label="Relax" icon="reset" quiet onClick={() => ed.relax()} />
+        <Tip label={`Copy to the ${side === 'R' ? 'left' : 'right'} hand`} desc="The hand's pose mirrored onto the other hand"><button type="button" className="tb osb-btn" onClick={() => ed.copyHand()}>
+          <Icon name="copy" size={16} /><span>Copy to the {side === 'R' ? 'left' : 'right'} hand</span></button></Tip>
+      </div>
+    </div>
+  );
+}
+
 export function PoseEditSection() {
   const st = useEditState(), ed = poseEditor();
   const { legacy } = useShell();
@@ -193,6 +332,14 @@ export function PoseEditSection() {
   return (
     <div className="pose-edit">
       <ViewTools st={st} />
+      <div className="pe-tabs" role="tablist" aria-label="Posing tools">
+        {SECTIONS.map((t, i) => (
+          <Tip key={t.id} action={`pose.tool.${i + 1}`}><button type="button" role="tab" className="pe-tab" aria-selected={st.section === t.id} onClick={() => runAction(`pose.tool.${i + 1}`)}>
+            <Icon name={TAB_ICONS[i]} size={18} /><span>{t.label}</span><span className="pe-tab-key" aria-hidden="true">{i + 1}</span></button></Tip>
+        ))}
+      </div>
+      {st.section === 'joints' ? <JointsPanel st={st} /> : st.section === 'hands' ? <HandsPanel st={st} /> : st.section === 'limbs' ? <LimbsPanel st={st} />
+        : st.section === 'library' ? <LibraryPanel st={st} /> : <>
       {st.point && st.point.depth > 0 ? <DepthInset p={st.point} /> : null}
       <ScanBlock st={st} />
       <div className="osb-section pe-points">
@@ -232,6 +379,7 @@ export function PoseEditSection() {
       </div>
       {st.point ? <div className="osb-section"><PointPanel p={st.point} st={st} /></div> : null}
       {!hand ? <div className="osb-section pe-contact"><ContactFolds st={st} /></div> : null}
+      </>}
       <div className="pe-foot">
         {hand ? <TextButton label="Reset the hand" icon="reset" quiet onClick={() => { const s = st.selected || `wrist.${hand}`; ed.resetPoint(s, true); }} />
           : st.counts.placed || st.counts.look ? <TextButton label="Place again" icon="sparkle" quiet disabled={!st.scan.available} onClick={() => ed.placeAll()} /> : <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />}

@@ -31,6 +31,9 @@ import { handAxes, type V3 } from './problem.ts';
 import { ghostOf, readScan, type ScanMesh } from './scan.ts';
 import { EditSession, PIN_WEIGHT, type Pin, type Target } from './session.ts';
 import { ScanView, type ScanLook } from './view3d.ts';
+import { AXES, BODY_JOINTS, Joints, jointName, type JointValues } from './joints.ts';
+import { FINGERS, HandControls, PRESETS, RELAXED, copyMirrored, mirrorPose, type HandShape } from './hands.ts';
+import { transforms, coordinatesOf, rotationOf, expRotation, mul3 } from './problem.ts';
 
 export type Tool = 'select' | 'move' | 'turn';
 export type Section = 'points' | 'joints' | 'hands' | 'limbs' | 'library';
@@ -63,6 +66,16 @@ export interface EditState {
   props: string[];
   balance: { shown: boolean; inside: boolean | null; margin: number | null };
   undo: string; redo: string;
+  // the joints and the hands (phase 2)
+  joint: string | null;              // the selected bone's label
+  jv: JointValues | null;
+  limits: boolean;
+  handSide: 'L' | 'R';
+  handShape: HandShape & { fist: number; thumb: number };
+  preset: string | null;
+  userPresets: { id: string; label: string; shape: HandShape }[];
+  grip_report: { finger: string; clearance: number; inside: boolean }[];
+  clip: string;                      // what Ctrl+C took
   version: number;
 }
 
@@ -72,7 +85,16 @@ const init = (): EditState => ({
   selected: null, hand: null, filter: 'all', counts: { placed: 0, look: 0, off: 0, total: POINTS.length }, looks: [], point: null,
   hands: { L: [], R: [] }, body: [], dragging: false, magnifier: true, behind: true, pins: [], pinDraft: null, grip: null, squeeze: 1, props: [],
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
+  joint: null, jv: null, limits: true, handSide: 'R', handShape: { curl: [0, 0, 0, 0, 0], spread: 0, fist: 0, thumb: 0 }, preset: null, userPresets: loadPresets(),
+  grip_report: [], clip: '',
 });
+
+// the user's own hand presets, in this browser
+const PRESET_KEY = 'osb.handPresets';
+function loadPresets(): { id: string; label: string; shape: HandShape }[] {
+  try { const v = JSON.parse(localStorage.getItem(PRESET_KEY) || '[]'); return Array.isArray(v) ? v.filter((x) => x && x.shape && Array.isArray(x.shape.curl)) : []; } catch { return []; }
+}
+function savePresets(list: { id: string; label: string; shape: HandShape }[]) { try { localStorage.setItem(PRESET_KEY, JSON.stringify(list)); } catch { /* kept for this visit */ } }
 
 export const editStore = createStore<EditState>(init());
 
@@ -133,7 +155,13 @@ export class PoseEditor {
       const t = s.targets.get(point.name);
       if (t) { const a = s.positions([POINT_BY_NAME.get(point.name)!]).get(point.name)!; point = { ...point, distance: 1000 * Math.hypot(a[0] - t.position[0], a[1] - t.position[1], a[2] - t.position[2]) }; }
     }
+    const jl = patch.joint !== undefined ? patch.joint : st.joint;
+    const J = s ? this.joints() : null, jb = jl && J ? J.bone(jl) : undefined;
+    const jv = J && jb !== undefined && s ? J.values(jb, s.rotations) : null;
+    const side = patch.handSide || st.handSide, H = s ? this.hands() : null;
+    const hs = H && s ? { ...H.shape(s.rotations, side), fist: H.fist(s.rotations, side), thumb: H.thumb(s.rotations, side) } : st.handShape;
     editStore.set({
+      jv, handShape: hs,
       counts, looks: all.filter((p) => p.state === 'look'), point,
       hands: { R: handPoints('R').map(info), L: handPoints('L').map(info) }, body: POINTS.filter((p) => p.group === 'body').map(info),
       pins: (s?.pins || []).map((q) => ({ name: q.name })), undo: s?.undoStack.at(-1)?.label || '', redo: s?.redoStack.at(-1)?.label || '',
@@ -232,7 +260,13 @@ export class PoseEditor {
   }
 
   setTool(tool: Tool) { this.publish({ tool }); this.statusIdle(); }
-  setSection(section: Section) { this.publish({ section }); }
+  setSection(section: Section) {
+    const st = editStore.get();
+    const tool: Tool = section === 'joints' ? 'turn' : section === 'points' && st.tool === 'turn' ? 'select' : st.tool;
+    if (section === 'hands' && st.selected) { const p = POINT_BY_NAME.get(st.selected); if (p && p.group !== 'body') this.publish({ handSide: p.side as 'L' | 'R' }); }
+    this.publish({ section, tool });
+    this.statusIdle();
+  }
 
   // ---------------------------------------------------------------- the pose
   private poseChanged() {
@@ -733,6 +767,245 @@ export class PoseEditor {
     await save();
   }
 
+  // ---------------------------------------------------------------- joints (phase 2)
+  private jointsCache: { rig: any; joints: Joints; hands: HandControls } | null = null;
+  joints(): Joints {
+    const S = this.session!;
+    if (!this.jointsCache || this.jointsCache.rig !== S.rig) { const j = new Joints(S.rig); this.jointsCache = { rig: S.rig, joints: j, hands: new HandControls(j) }; }
+    return this.jointsCache.joints;
+  }
+  hands(): HandControls { this.joints(); return this.jointsCache!.hands; }
+
+  selectJoint(label: string | null) {
+    this.publish({ joint: label, selected: null });
+    if (!label) { setSelection(null); this.statusIdle(); return; }
+    const J = this.joints(), b = J.bone(label);
+    if (b === undefined) return;
+    const n = jointName(label);
+    setSelection({ label: n.name, bones: [label], frame: (step) => this.jointFraming(b, step) });
+    const c = this.jointCentre(b);
+    if (c) { const w = this.frames.toWorld(c); cam().setPivot({ x: w[0], y: w[1], z: w[2] }, { history: false }); }
+    setStatus('pose-edit', [{ text: n.name }, { keys: 'Drag a ring', text: 'turn the joint', shift: { keys: 'Drag a ring', text: 'turn finely' } }, { keys: 'Ctrl', text: 'snap to 5°' },
+      { keys: 'R', text: 'turn by keys' }, { keys: 'Alt+R', text: 'reset' }], { priority: PRIORITY.tool });
+  }
+  // F's steps from a joint: the bone, its limb, the whole figure
+  private jointFraming(b: number, step: number) {
+    const S = this.session!, J = this.joints();
+    const list = step === 0 ? [b, ...S.rig.labels.map((_, i) => i).filter((i) => S.rig.parents[i] === b)] : step === 1 ? J.limbOf(b) : null;
+    if (!list) return null;
+    const pts = list.map((i) => this.jointCentre(i)).filter(Boolean).map((c) => { const w = this.frames.toWorld(c!); return { x: w[0], y: w[1], z: w[2] }; });
+    if (pts.length === 1) { const p = pts[0], r = 0.06; return { box: { min: { x: p.x - r, y: p.y - r, z: p.z - r }, max: { x: p.x + r, y: p.y + r, z: p.z + r } }, label: jointName(S.rig.labels[b]).name }; }
+    return { box: pts, label: jointName(S.rig.labels[b]).name };
+  }
+  // a bone's posed head (card frame)
+  jointCentre(b: number): V3 | null {
+    const S = this.session;
+    if (!S) return null;
+    const K = transforms(S.rig, S.rotations), h = S.rig.heads[b], F = S.rig.frame;
+    const x = [0, 1, 2].map((r) => K.R[b * 9 + r * 3] * h[0] + K.R[b * 9 + r * 3 + 1] * h[1] + K.R[b * 9 + r * 3 + 2] * h[2] + K.t[b * 3 + r]);
+    return [0, 1, 2].map((r) => F[r][0] * x[0] + F[r][1] * x[1] + F[r][2] * x[2] + F[r][3]) as V3;
+  }
+  // a joint's axes in the card frame (the columns of the parent's posed turn times the joint frame), bend, side, twist
+  private jointAxes(b: number): V3[] {
+    const S = this.session!, J = this.joints(), f = J.frames.get(b)!, K = transforms(S.rig, S.rotations), p = S.rig.parents[b], F = S.rig.frame;
+    return [0, 1, 2].map((k) => {
+      const a = [f.axes[0][k] * f.sign[k], f.axes[1][k] * f.sign[k], f.axes[2][k] * f.sign[k]];
+      const w = [0, 1, 2].map((r) => K.R[p * 9 + r * 3] * a[0] + K.R[p * 9 + r * 3 + 1] * a[1] + K.R[p * 9 + r * 3 + 2] * a[2]);
+      return [0, 1, 2].map((r) => F[r][0] * w[0] + F[r][1] * w[1] + F[r][2] * w[2]) as V3;
+    });
+  }
+
+  private change(label: string, fn: (R: number[][]) => void, record = true) {
+    const S = this.session;
+    if (!S) return;
+    if (record) this.record(label);
+    fn(S.rotations);
+    this.poseChanged();
+    this.publish();
+  }
+
+  // a value of the selected joint (degrees): Bend 0, Side-Side 1, Twist 2
+  setJointValue(axis: number, deg: number, record = true) {
+    const st = editStore.get(), J = this.session ? this.joints() : null, b = st.joint && J ? J.bone(st.joint) : undefined;
+    if (b === undefined || !J) return;
+    this.change(AXES[axis].label, (R) => J.set(R, b, axis, deg, st.limits), record);
+  }
+  // Alt+R: the joint back to its reference turn (Shift: the whole limb)
+  resetJoint(whole = false): boolean {
+    const st = editStore.get(), J = this.session ? this.joints() : null, b = st.joint && J ? J.bone(st.joint) : undefined;
+    if (b === undefined || !J) return false;
+    this.change(whole ? 'Reset the limb' : 'Reset the joint', (R) => { for (const x of whole ? J.limbOf(b) : [b]) J.reset(R, x); });
+    return true;
+  }
+  setLimits(on: boolean) { this.publish({ limits: on }); }
+
+  // a free turn of the selected joint about a card-frame axis by an angle (radians), kept within the ranges
+  private turnJoint(axisCard: V3, angle: number) {
+    const st = editStore.get(), S = this.session!, J = this.joints(), b = J.bone(st.joint!)!, f = J.frames.get(b)!;
+    const K = transforms(S.rig, S.rotations), p = S.rig.parents[b], F = S.rig.frame;
+    // the axis in the parent's frame of the turns: Kp^T Rr^T a
+    const ar = [0, 1, 2].map((c) => F[0][c] * axisCard[0] + F[1][c] * axisCard[1] + F[2][c] * axisCard[2]);
+    const ap = [0, 1, 2].map((c) => K.R[p * 9 + c] * ar[0] + K.R[p * 9 + 3 + c] * ar[1] + K.R[p * 9 + 6 + c] * ar[2]);
+    const Q = expRotation(ap.map((x) => x * angle));
+    let D = mul3(Q, S.rotations[b]);
+    if (st.limits) {
+      const c = coordinatesOf(f, D);
+      for (let k = 0; k < 3; k++) c[k] = f.dofs[k] || k === 2 ? Math.min(Math.max(c[k], f.lo[k]), f.hi[k]) : c[k];
+      D = rotationOf(f, c);
+    }
+    S.rotations[b] = D;
+  }
+
+  // ---------------------------------------------------------------- hands (phase 2)
+  setHandSide(side: 'L' | 'R') { this.publish({ handSide: side }); }
+  setHand(kind: 'fist' | 'spread' | 'thumb' | 'curl' | 'fspread', k: number, v: number, record = true) {
+    const H = this.hands(), side = editStore.get().handSide;
+    this.change(kind === 'curl' ? `Curl of the ${FINGERS[k]}` : kind === 'fspread' ? `Spread of the ${FINGERS[k]}` : kind[0].toUpperCase() + kind.slice(1), (R) => {
+      if (kind === 'fist') H.setFist(R, side, v); else if (kind === 'spread') H.setHandSpread(R, side, v); else if (kind === 'thumb') H.setThumb(R, side, v);
+      else if (kind === 'curl') H.setCurl(R, side, k, v); else H.setSpread(R, side, k, v);
+    }, record);
+    this.publish({ preset: null });
+  }
+  applyShape(shape: HandShape, label: string, id: string | null = null, record = true) {
+    const H = this.hands(), side = editStore.get().handSide;
+    this.change(label, (R) => H.apply(R, side, shape), record);
+    this.publish({ preset: id });
+  }
+  applyPreset(id: string) {
+    const p = [...PRESETS, ...editStore.get().userPresets].find((x) => x.id === id);
+    if (p) this.applyShape(p.shape, `Hand: ${p.label}`, id);
+  }
+  relax() { this.applyShape(RELAXED, 'Relax', 'relaxed'); }
+  // the gesture pad: the hand blended between four corner shapes at (u, v); a drag is one step of the history
+  blendPad(corners: HandShape[], u: number, v: number, first: boolean) {
+    this.applyShape(HandControls.blend(corners, u, v), 'Gesture pad', null, first);
+  }
+  fingerSpread(k: number): number { const S = this.session; return S ? this.hands().spread(S.rotations, editStore.get().handSide, k) : 0; }
+  saveHandPreset(label: string) {
+    const st = editStore.get(), shape = { curl: st.handShape.curl.slice(), spread: st.handShape.spread };
+    const list = [...st.userPresets, { id: 'user-' + Date.now().toString(36), label, shape }];
+    savePresets(list);
+    this.publish({ userPresets: list });
+  }
+
+  // M: the whole pose mirrored
+  mirror(): boolean {
+    const S = this.session;
+    if (!S) return false;
+    this.change('Mirror the pose', (R) => { const M = mirrorPose(S.rig, R, this.host.root()); for (let i = 0; i < R.length; i++) R[i] = M[i]; });
+    return true;
+  }
+  // the selected hand's pose onto the other hand
+  copyHand(): boolean {
+    const S = this.session;
+    if (!S) return false;
+    const side = editStore.get().handSide;
+    this.change(`Copy to the ${side === 'R' ? 'left' : 'right'} hand`, (R) => copyMirrored(S.rig, R, this.hands().handBones(side)));
+    return true;
+  }
+  // Ctrl+C, Ctrl+V and Ctrl+Shift+V: the selected limb's or hand's pose
+  private clipboard: { bones: number[]; rotations: number[][]; label: string } | null = null;
+  private selectedBones(): { bones: number[]; label: string } | null {
+    const st = editStore.get(), S = this.session;
+    if (!S) return null;
+    if (st.section === 'hands') return { bones: this.hands().handBones(st.handSide), label: st.handSide === 'R' ? 'the right hand' : 'the left hand' };
+    if (st.joint) { const J = this.joints(), b = J.bone(st.joint)!; return { bones: J.limbOf(b), label: jointName(st.joint).name }; }
+    const p = st.selected ? POINT_BY_NAME.get(st.selected) : null;
+    if (p && p.group !== 'body') return { bones: this.hands().handBones(p.side as 'L' | 'R'), label: p.side === 'R' ? 'the right hand' : 'the left hand' };
+    return null;
+  }
+  copyPose(): boolean {
+    const sel = this.selectedBones(), S = this.session;
+    if (!sel || !S) return false;
+    this.clipboard = { bones: sel.bones, rotations: sel.bones.map((b) => S.rotations[b].slice()), label: sel.label };
+    this.publish({ clip: sel.label });
+    this.host.toast(`Copied the pose of ${sel.label}`);
+    return true;
+  }
+  pastePose(mirrored = false): boolean {
+    const c = this.clipboard, S = this.session;
+    if (!c || !S) return false;
+    this.change(mirrored ? 'Paste mirrored' : 'Paste', (R) => {
+      if (!mirrored) { c.bones.forEach((b, i) => { R[b] = c.rotations[i].slice(); }); return; }
+      // onto the other side: the copied turns reflected onto the mirror bones, the copied bones left as they are
+      const tmp = R.map((r) => r.slice());
+      c.bones.forEach((b, i) => { tmp[b] = c.rotations[i].slice(); });
+      for (const o of copyMirrored(S.rig, tmp, c.bones)) R[o] = tmp[o];
+    });
+    return true;
+  }
+
+  // R: the selected joint turns with the mouse about the view's axis until a click or Enter (Blender's R); X, Y or Z
+  // takes the bend, the side or the twist ring instead; Esc or a right-click puts it back
+  private turning: { before: any; off: () => void; axis: number | null; cx: number; cy: number; last: number } | null = null;
+  startTurn(): boolean {
+    const st = editStore.get(), S = this.session;
+    if (!S || !st.joint || this.turning) return false;
+    const J = this.joints(), b = J.bone(st.joint)!, c = this.jointCentre(b);
+    if (!c) return false;
+    const sc = cam().toScreen(this.v3(this.frames.toWorld(c)));
+    const before = S.snapshot();
+    let first = true;
+    const move = (e: PointerEvent) => {
+      const a = Math.atan2(e.clientY - sc.y, e.clientX - sc.x);
+      if (first) { this.turning!.last = a; first = false; return; }
+      let d = a - this.turning!.last; if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI;
+      this.turning!.last = a;
+      d *= e.shiftKey ? 0.25 : 1;
+      const T = this.turning!;
+      if (T.axis === null) {
+        const cp = this.host.camera.position, w = this.frames.toWorld(c), view = this.frames.dirToCard([w[0] - cp.x, w[1] - cp.y, w[2] - cp.z]);
+        this.turnJoint(view, d);
+      } else {
+        const v = this.joints().values(b, S.rotations)!;
+        const ax = this.jointAxes(b)[T.axis], cp = this.host.camera.position, w = this.frames.toWorld(c);
+        const toCam = this.frames.dirToCard([cp.x - w[0], cp.y - w[1], cp.z - w[2]]), facing = ax[0] * toCam[0] + ax[1] * toCam[1] + ax[2] * toCam[2] > 0 ? -1 : 1;
+        J.set(S.rotations, b, T.axis, v.value[T.axis] + facing * d * 180 / Math.PI, editStore.get().limits);
+      }
+      this.poseChanged();
+    };
+    const down = (e: PointerEvent) => { e.preventDefault(); e.stopImmediatePropagation(); if (e.button === 2) this.cancelTurn(); else this.confirmTurn(); };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerdown', down, true);
+    this.turning = { before, axis: null, cx: sc.x, cy: sc.y, last: 0, off: () => { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerdown', down, true); } };
+    setStatus('pose-edit-turn', [{ text: `Turning ${jointName(st.joint).name}` }, { keys: 'X', text: 'bend' }, { keys: 'Y', text: 'side' }, { keys: 'Z', text: 'twist' },
+      { keys: 'Enter', text: 'confirm' }, { keys: 'Esc', text: 'cancel' }], { priority: PRIORITY.drag });
+    return true;
+  }
+  turnAxis(axis: number): boolean { if (!this.turning) return false; this.turning.axis = this.turning.axis === axis ? null : axis; return true; }
+  confirmTurn(): boolean {
+    const T = this.turning, S = this.session;
+    if (!T || !S) return false;
+    T.off(); this.turning = null; clearStatus('pose-edit-turn');
+    S.undoStack.push({ label: 'Turn the joint', snap: T.before }); S.redoStack.length = 0;
+    this.publish();
+    return true;
+  }
+  cancelTurn(): boolean {
+    const T = this.turning, S = this.session;
+    if (!T || !S) return false;
+    T.off(); this.turning = null; clearStatus('pose-edit-turn');
+    S.restore(T.before);
+    this.publish();
+    return true;
+  }
+
+  // the bone under a point of the canvas: the strongest bone of the nearest skin vertex to the body's first hit
+  private boneAt(x: number, y: number): string | null {
+    const S = this.session;
+    if (!S) return null;
+    const ray = cam().rayAt(x, y), hit = this.host.bodyRay(ray.origin, ray.direction);
+    if (!hit) return null;
+    const p = this.frames.fromWorld([hit.point.x, hit.point.y, hit.point.z]), body = this.skinnedBody(), V = body.vertices(S.rotations);
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < body.n; i++) { const d = (V[i * 3] - p[0]) ** 2 + (V[i * 3 + 1] - p[1]) ** 2 + (V[i * 3 + 2] - p[2]) ** 2; if (d < bd) { bd = d; best = i; } }
+    if (best < 0) return null;
+    // a bone outside the range table selects its nearest ancestor in it
+    const J = this.joints();
+    for (let b = body.strongest[best]; b >= 0; b = S.rig.parents[b]) if (J.has(b)) return S.rig.labels[b];
+    return null;
+  }
+
   // ---------------------------------------------------------------- drawing
   private v3(a: ArrayLike<number>) { return { x: a[0], y: a[1], z: a[2] }; }
 
@@ -808,6 +1081,9 @@ export class PoseEditor {
       f.clusters.push({ x: Math.max(...xs.map((a) => a.x)), y: xs.reduce((s, a) => s + a.y, 0) / xs.length, title: `${side === 'R' ? 'Right' : 'Left'} hand: 21 points`,
         line: !placed ? 'Not placed yet' : look ? `${look} need${look === 1 ? 's' : ''} a look` : 'All placed' });
     }
+    // the joints (the Joints tool and the Turn tool) and the dial of the selected joint
+    if (st.section === 'joints' || st.tool === 'turn') { f.points = f.points.filter((q) => q.selected); f.anny = []; f.clusters = []; this.drawJoints(f, st); }
+    else { this.jointScreens = []; this.dial = null; }
     // the label of the selected or hovered point
     const lab = this.hovered || st.selected;
     if (lab && this.screen.has(lab)) {
@@ -835,6 +1111,117 @@ export class PoseEditor {
         point: { x: this.magAt.cx + v.x * half, y: this.magAt.cy - v.y * half, number: POINT_BY_NAME.get(this.drag.name)!.number, state: 'placed' } };
     }
     this.layer!.draw(f);
+  }
+
+  private jointScreens: { label: string; x: number; y: number }[] = [];
+  private dial: { b: number; cx: number; cy: number; outer: number; rings: { k: number; pts: [number, number][] }[] } | null = null;
+  private hoverJoint: string | null = null;
+  private hoverRing: number | null = null;
+
+  private drawJoints(f: Frame, st: EditState) {
+    const S = this.session!, J = this.joints(), toS = (x: V3) => cam().toScreen(this.v3(this.frames.toWorld(x)));
+    const labels = new Set(BODY_JOINTS.map((j) => j.label));
+    // the finger joints of a hand when the camera is close to it
+    for (const side of ['L', 'R'] as const) for (let k = 1; k <= 5; k++) for (let j = 1; j <= 3; j++) labels.add(`finger${k}-${j}.${side}`);
+    this.jointScreens = [];
+    f.joints = [];
+    for (const l of labels) {
+      const b = J.bone(l);
+      if (b === undefined) continue;
+      const c = this.jointCentre(b)!, s = toS(c);
+      if (s.depth <= 0) continue;
+      const finger = l.startsWith('finger');
+      if (finger) {
+        // only where the fingers stand apart on screen
+        const p = J.bone(l.replace(/-\d/, '-1'))!, tip = this.jointCentre(J.bone(l.replace(/-\d/, '-3'))!)!, ps = toS(this.jointCentre(p)!), ts = toS(tip);
+        if (Math.hypot(ps.x - ts.x, ps.y - ts.y) < 40) continue;
+      }
+      this.jointScreens.push({ label: l, x: s.x, y: s.y });
+      f.joints.push({ x: s.x, y: s.y, selected: l === st.joint, hovered: l === this.hoverJoint, side: l.endsWith('.L') ? 'L' : l.endsWith('.R') ? 'R' : '' });
+    }
+    this.dial = null;
+    if (!st.joint) return;
+    const b = J.bone(st.joint);
+    if (b === undefined || !J.has(b)) return;
+    const c = this.jointCentre(b)!, sc = toS(c), cam3 = this.host.camera, H = this.host.canvas.clientHeight || 800;
+    const R0 = 74 * f.scale, rw = R0 * sc.depth * 2 * Math.tan((cam3.fov * Math.PI / 180) / 2) / H;
+    const axes = this.jointAxes(b), jv = J.values(b, S.rotations)!;
+    const strokes: any[] = [], tags: any[] = [], rings: { k: number; pts: [number, number][] }[] = [];
+    axes.forEach((a, k) => {
+      if (!jv.dofs[k]) return;
+      // two directions square to the axis; the first along the bone where it can be
+      const ref = Math.abs(a[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+      let u = [a[1] * ref[2] - a[2] * ref[1], a[2] * ref[0] - a[0] * ref[2], a[0] * ref[1] - a[1] * ref[0]];
+      const lu = Math.hypot(u[0], u[1], u[2]); u = u.map((x) => x / lu);
+      const v = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]];
+      const r = rw * (1 - 0.12 * k);
+      const at = (t: number): [number, number] => { const p: V3 = [0, 1, 2].map((i) => c[i] + r * (Math.cos(t) * u[i] + Math.sin(t) * v[i])) as V3; const q = toS(p); return [q.x, q.y]; };
+      const pts: [number, number][] = [];
+      for (let i = 0; i <= 72; i++) pts.push(at(i / 72 * 2 * Math.PI));
+      rings.push({ k, pts });
+      const d = 'M' + pts.map((p) => p.map((x) => x.toFixed(1)).join(' ')).join(' L');
+      const hot = this.hoverRing === k || this.ringDrag?.k === k;
+      strokes.push({ d, colour: AXES[k].colour, width: hot ? 3 : 1.8, opacity: 0.95 });
+      // the range: a thick arc from the low end to the high end, the present value at angle 0
+      const DEGR = Math.PI / 180, lo = (jv.lo[k] - jv.value[k]) * DEGR, hi = (jv.hi[k] - jv.value[k]) * DEGR;
+      if (st.limits && hi - lo < 2 * Math.PI - 1e-3) {
+        const arc: [number, number][] = [];
+        for (let i = 0; i <= 48; i++) arc.push(at(lo + (hi - lo) * i / 48));
+        strokes.push({ d: 'M' + arc.map((p) => p.map((x) => x.toFixed(1)).join(' ')).join(' L'), colour: AXES[k].colour, width: 6, opacity: 0.85 });
+      }
+      const tp = at(Math.PI / 4 + k * 0.6);
+      tags.push({ x: tp[0] + 34, y: tp[1], text: `${AXES[k].label} ${Math.round(jv.value[k])}°`, colour: AXES[k].colour });
+    });
+    // the outer ring: a free turn
+    const outer = R0 + 22 * f.scale;
+    let od = '';
+    for (let i = 0; i <= 96; i++) { const t = i / 96 * 2 * Math.PI; od += (i ? ' L' : 'M') + (sc.x + outer * Math.cos(t)).toFixed(1) + ' ' + (sc.y + outer * Math.sin(t)).toFixed(1); }
+    strokes.unshift({ d: od, colour: '#c9c2b7', width: this.hoverRing === 3 ? 2.6 : 1.4, dash: '4 4', opacity: 0.9 });
+    tags.push({ x: sc.x - outer - 60, y: sc.y + outer * 0.55, text: 'Outer ring: free turn', colour: '#9e968a' });
+    f.strokes = strokes; f.tags = tags;
+    this.dial = { b, cx: sc.x, cy: sc.y, outer, rings };
+  }
+
+  private ringDrag: { k: number; before: any; last: number; value: number; snapped: number } | null = null;
+  private hitRing(p: PointerInfo): number | null {
+    const D = this.dial;
+    if (!D) return null;
+    let best: number | null = null, bd = 9 * settings.targetScale();
+    for (const r of D.rings) {
+      for (let i = 1; i < r.pts.length; i++) {
+        const [ax, ay] = r.pts[i - 1], [bx, by] = r.pts[i], dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1;
+        const t = Math.min(1, Math.max(0, ((p.x - ax) * dx + (p.y - ay) * dy) / l2)), d = Math.hypot(p.x - ax - t * dx, p.y - ay - t * dy);
+        if (d < bd) { bd = d; best = r.k; }
+      }
+    }
+    if (best === null && Math.abs(Math.hypot(p.x - D.cx, p.y - D.cy) - D.outer) < 9 * settings.targetScale()) best = 3;
+    return best;
+  }
+  private ringDragMove(p: PointerInfo, d: DragInfo) {
+    const D = this.dial, R = this.ringDrag, S = this.session;
+    if (!D || !R || !S) return;
+    const J = this.joints(), b = D.b;
+    if (R.k === 3) {
+      // the outer ring: an arcball turn about the axis square to the drag and the view
+      const cp = this.host.camera.position, c = this.jointCentre(b)!, w = this.frames.toWorld(c);
+      const view = this.frames.dirToCard([w[0] - cp.x, w[1] - cp.y, w[2] - cp.z]);
+      const cm = this.host.camera.matrixWorld.elements, right = this.frames.dirToCard([cm[0], cm[1], cm[2]]), up = this.frames.dirToCard([cm[4], cm[5], cm[6]]);
+      const mv = [right[0] * d.ddx - up[0] * d.ddy, right[1] * d.ddx - up[1] * d.ddy, right[2] * d.ddx - up[2] * d.ddy];
+      const ax = [mv[1] * view[2] - mv[2] * view[1], mv[2] * view[0] - mv[0] * view[2], mv[0] * view[1] - mv[1] * view[0]], l = Math.hypot(ax[0], ax[1], ax[2]);
+      if (l < 1e-9) return;
+      this.turnJoint([ax[0] / l, ax[1] / l, ax[2] / l] as V3, -Math.hypot(d.ddx, d.ddy) * d.scale / D.outer);
+    } else {
+      const a = Math.atan2(p.y - D.cy, p.x - D.cx);
+      let da = a - R.last; if (da > Math.PI) da -= 2 * Math.PI; if (da < -Math.PI) da += 2 * Math.PI;
+      R.last = a;
+      const ax = this.jointAxes(b)[R.k], cp = this.host.camera.position, w = this.frames.toWorld(this.jointCentre(b)!);
+      const toCam = this.frames.dirToCard([cp.x - w[0], cp.y - w[1], cp.z - w[2]]), facing = ax[0] * toCam[0] + ax[1] * toCam[1] + ax[2] * toCam[2] > 0 ? -1 : 1;
+      R.value += facing * da * 180 / Math.PI * d.scale;
+      const v = d.snap ? Math.round(R.value / 5) * 5 : R.value;
+      J.set(S.rotations, b, R.k, v, editStore.get().limits);
+    }
+    this.poseChanged();
+    this.dirty = true;
   }
 
   // ---------------------------------------------------------------- picking
@@ -871,9 +1258,10 @@ export class PoseEditor {
       },
       cursor: 'pointer',
     };
-    this.offs.push(registerPicker({ id: 'pose-points-select', priority: 10, enabled: () => editStore.get().on && editStore.get().tool !== 'move', ...common }));
+    const pointsOn = () => { const st = editStore.get(); return st.on && st.section !== 'joints' && st.section !== 'hands' && st.tool !== 'turn'; };
+    this.offs.push(registerPicker({ id: 'pose-points-select', priority: 10, enabled: () => pointsOn() && editStore.get().tool !== 'move', ...common }));
     this.offs.push(registerPicker({
-      id: 'pose-points-move', priority: 10, enabled: () => editStore.get().on && editStore.get().tool === 'move', ...common,
+      id: 'pose-points-move', priority: 10, enabled: () => pointsOn() && editStore.get().tool === 'move', ...common,
       onDown: (h: PickHit) => { if (!this.bvh) return false; this.select(h.item as string); return true; },
       onDrag: (h: PickHit, p: PointerInfo, d: DragInfo) => {
         if (!this.drag) this.beginDrag(h.item as string, d.x0, d.y0);
@@ -885,6 +1273,35 @@ export class PoseEditor {
       cursor: 'grab',
     }));
   }
+  private registerJointPickers() {
+    const jointsOn = () => { const st = editStore.get(); return st.on && (st.section === 'joints' || st.tool === 'turn'); };
+    this.offs.push(registerPicker({
+      id: 'pose-rings', priority: 30, enabled: () => jointsOn() && !!editStore.get().joint,
+      hit: (p) => { const k = this.hitRing(p); return k === null ? null : { item: k, distPx: 0, label: k === 3 ? 'Free turn' : AXES[k].label }; },
+      onDown: (h) => { const st = editStore.get(), J = this.joints(), b = J.bone(st.joint!)!, v = J.values(b, this.session!.rotations)!;
+        this.ringDrag = { k: h.item as number, before: this.session!.snapshot(), last: 0, value: (h.item as number) < 3 ? v.value[h.item as number] : 0, snapped: 0 };
+        return true; },
+      onDrag: (_h, p, d) => {
+        const R = this.ringDrag; if (!R) return;
+        if (R.last === 0 && this.dial) R.last = Math.atan2(d.y0 - this.dial.cy, d.x0 - this.dial.cx);
+        this.ringDragMove(p, d);
+      },
+      onUp: () => { const R = this.ringDrag, S = this.session; this.ringDrag = null; if (R && S) { S.undoStack.push({ label: R.k === 3 ? 'Free turn' : AXES[R.k].label, snap: R.before }); S.redoStack.length = 0; } this.publish(); },
+      onCancel: () => { const R = this.ringDrag, S = this.session; this.ringDrag = null; if (R && S) S.restore(R.before); this.publish(); },
+      onHover: (h) => { this.hoverRing = h ? (h.item as number) : null; this.dirty = true; },
+      cursor: 'grab',
+    }));
+    this.offs.push(registerPicker({
+      id: 'pose-joints', priority: 5, enabled: jointsOn,
+      hit: (p) => this.jointScreens.map((j) => ({ item: j.label, distPx: Math.max(0, Math.hypot(j.x - p.x, j.y - p.y) - 8), label: jointName(j.label).name }))
+        .filter((h) => h.distPx <= p.radius),
+      onClick: (h) => this.selectJoint(h.item as string),
+      onHover: (h) => { this.hoverJoint = h ? (h.item as string) : null; this.dirty = true; },
+      onBackground: (p) => { const l = this.boneAt(p.x, p.y); this.selectJoint(l); },
+      cursor: 'pointer',
+    }));
+  }
+
   private isClustered(side: 'L' | 'R'): boolean {
     const xs = handPoints(side).map((p) => this.screen.get(p.name)).filter(Boolean) as { x: number; y: number }[];
     if (!xs.length) return false;
@@ -928,6 +1345,8 @@ export class PoseEditor {
     defineScope({ id: 'pose-edit', parent: 'pose', active: () => editStore.get().on });
     defineScope({ id: 'pose-select', parent: 'pose-edit', active: () => !!editStore.get().selected });
     defineScope({ id: 'pose-grab', parent: 'pose-edit', active: () => !!this.grab, rank: 90 });
+    defineScope({ id: 'pose-joint', parent: 'pose-edit', active: () => !!editStore.get().joint && (editStore.get().section === 'joints' || editStore.get().tool === 'turn') });
+    defineScope({ id: 'pose-turn', parent: 'pose-edit', active: () => !!this.turning, rank: 90 });
     const sel = () => editStore.get().selected;
     const tool = (t: Tool, label: string, key: string, desc: string, live = true): ActionDef => ({
       id: 'pose.tool.' + t, label, desc, keys: [key], group: 'Posing tools', tier: 'frequent', scope: 'pose-edit', place: 'Pose › Edit, the view\'s tools',
@@ -938,7 +1357,7 @@ export class PoseEditor {
         scope: 'pose', when: () => viewFocused() && ui.get().width !== 'phone', place: 'Pose › Edit', checked: () => editStore.get().on, run: () => { this.setOn(!editStore.get().on); } },
       tool('select', 'Select tool', 'Q', 'Clicks select; a drag on the background turns the camera'),
       tool('move', 'Move tool', 'W', 'Drags move points on the scan'),
-      tool('turn', 'Turn tool', 'E', 'Drags turn a joint\'s rings', false),
+      tool('turn', 'Turn tool', 'E', 'Drags turn a joint\'s rings'),
       ...SECTIONS.map((s, i): ActionDef => ({ id: `pose.tool.${i + 1}`, label: s.label, desc: `Pose Edit: ${s.label.toLowerCase()}`, keys: [String(i + 1)], group: 'Posing tools',
         tier: 'occasional', scope: 'pose-edit', checked: () => editStore.get().section === s.id, run: () => this.setSection(s.id) })),
       { id: 'pose.grab', label: 'Grab the point', desc: 'The selected point follows the mouse until a click or Enter', keys: ['G'], group: 'Points', tier: 'frequent',
@@ -976,6 +1395,22 @@ export class PoseEditor {
       { id: 'pose.scan-solid', label: 'Scan solid', desc: 'The scan lit and solid beside the figure', group: 'Display', tier: 'occasional', scope: 'pose-edit', menu: 'display',
         menuLabel: 'Scan solid', checked: () => editStore.get().scan.look === 'solid' && editStore.get().scan.shown,
         run: () => { if (!this.scan) return false; this.setScanLook({ look: 'solid', shown: true }); } },
+      { id: 'pose.turn-keys', label: 'Turn the joint', desc: 'The joint turns with the mouse until a click or Enter; X, Y or Z keep to one ring', keys: ['R'], group: 'Joints',
+        tier: 'frequent', scope: 'pose-joint', run: () => this.startTurn() },
+      { id: 'pose.turn-bend', label: 'Turn on the bend ring', keys: ['X'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.turnAxis(0) },
+      { id: 'pose.turn-side', label: 'Turn on the side ring', keys: ['Y'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.turnAxis(1) },
+      { id: 'pose.turn-twist', label: 'Turn on the twist ring', keys: ['Z'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.turnAxis(2) },
+      { id: 'pose.turn-confirm', label: 'Confirm the turn', keys: ['Enter'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.confirmTurn() },
+      { id: 'pose.turn-cancel', label: 'Cancel the turn', keys: ['Escape'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.cancelTurn() },
+      { id: 'pose.reset-joint', label: 'Reset the joint', desc: 'The joint back to its rest turn (Shift: the whole limb)', keys: ['Alt+R', 'Shift+Alt+R'], group: 'Joints',
+        tier: 'frequent', scope: 'pose-joint', run: (c) => this.resetJoint(c.shift) },
+      { id: 'pose.clear-joint', label: 'Clear the joint', keys: ['Escape'], group: 'Joints', tier: 'constant', scope: 'pose-joint', help: false, run: () => { this.selectJoint(null); } },
+      { id: 'pose.mirror', label: 'Mirror the pose', desc: 'The whole pose to the other side', keys: ['M'], group: 'Joints', tier: 'occasional', scope: 'pose-edit', run: () => this.mirror() },
+      { id: 'pose.copy', label: 'Copy the pose', desc: 'The selected hand\'s or limb\'s pose', keys: ['Ctrl+C'], group: 'Joints', tier: 'occasional', scope: 'pose-edit',
+        hint: 'Select a hand or a joint first', run: () => this.copyPose() },
+      { id: 'pose.paste', label: 'Paste the pose', keys: ['Ctrl+V'], group: 'Joints', tier: 'occasional', scope: 'pose-edit', hint: 'Copy a pose first (Ctrl+C)', run: () => this.pastePose(false) },
+      { id: 'pose.paste-mirrored', label: 'Paste mirrored', desc: 'The copied pose onto the other side', keys: ['Ctrl+Shift+V'], group: 'Joints', tier: 'occasional',
+        scope: 'pose-edit', hint: 'Copy a pose first (Ctrl+C)', run: () => this.pastePose(true) },
       { id: 'pose.undo', label: 'Undo the pose edit', keys: ['Ctrl+Z'], group: 'History', tier: 'constant', scope: 'pose-edit', help: false, run: () => this.undo() },
       { id: 'pose.redo', label: 'Redo the pose edit', keys: ['Ctrl+Shift+Z', 'Ctrl+Y'], group: 'History', tier: 'constant', scope: 'pose-edit', help: false, run: () => this.redo() },
       { id: 'pose.place', label: 'Place points', desc: 'Every point on the scan, from the fitted character', group: 'Points', tier: 'occasional', scope: 'pose-edit', place: 'Pose › Edit',
@@ -983,6 +1418,7 @@ export class PoseEditor {
     ];
     registerActions(list);
     this.registerPickers();
+    this.registerJointPickers();
     // the pickers stay registered; enabled() keeps them out while Edit is off
     this.offs = [];
   }

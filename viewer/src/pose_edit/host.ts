@@ -46,6 +46,8 @@ export interface PoseHost {
   props(): { name: string; positions: Float32Array; indices: Uint32Array }[];
   // the pose shown as a card's pose (opensculptboy.Character.pose: each bone's turn relative to its parent in Anny's frame)
   cardPose(): { bones: Record<string, number[]>; root: number[] };
+  // the first point of the posed body under a ray (page frame), or null
+  bodyRay(origin: THREE.Vector3, dir: THREE.Vector3): { point: THREE.Vector3; distance: number } | null;
   // a toast
   toast(text: string): void;
 }

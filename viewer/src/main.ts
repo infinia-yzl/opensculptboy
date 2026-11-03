@@ -3556,6 +3556,7 @@ const POSE_HOST: PoseHost = {
   onFrame: (fn) => { POSE_EDIT.frame = fn; },
   props: () => shownProps(),
   toast: (text) => toast(text),
+  bodyRay: (o, d) => bodyRay(o, d),
   cardPose: () => ({ bones: cardBones(MOTION.q, RIG.bones.map((b: any) => b.name), ANNY_TO_PAGE), root: [0, 0, 0] }),
 };
 registerPoseHost(POSE_HOST);

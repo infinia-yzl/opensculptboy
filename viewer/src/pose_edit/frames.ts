@@ -94,6 +94,14 @@ export class Frames {
     const l = Math.hypot(v[0], v[1], v[2]) || 1;
     return [v[0] / l, v[1] / l, v[2] / l];
   }
+  // a direction of the card frame -> the world
+  dirToWorld(v: ArrayLike<number>): number[] {
+    const R = this.host.frame().rotation, M = this.host.holder().elements;
+    const p = [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];
+    const w = [M[0] * p[0] + M[4] * p[1] + M[8] * p[2], M[1] * p[0] + M[5] * p[1] + M[9] * p[2], M[2] * p[0] + M[6] * p[1] + M[10] * p[2]];
+    const l = Math.hypot(w[0], w[1], w[2]) || 1;
+    return [w[0] / l, w[1] / l, w[2] / l];
+  }
   // the 4 x 4 matrix (three.js, column-major elements) that takes the card frame to the world
   cardToWorld(THREE: any): any {
     const f = this.host.frame(), s = f.scale, R = f.rotation, l = this.host.lift(), r = this.host.rootOffset(), h = this.rootHead();

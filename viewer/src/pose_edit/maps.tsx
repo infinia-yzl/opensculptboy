@@ -8,6 +8,7 @@
 // and the right side orange as in the Rig view. Hovering a point lights its place in the view; a click selects it.
 
 import type { PointInfo } from './editor.ts';
+import { BODY_JOINTS, jointName } from './joints.ts';
 
 const SIDE = { L: '#2a9d8f', R: '#e07a2f' };
 const COL = { placed: '#2f6fd6', look: '#f0a030', off: '#9e968a', unplaced: '#9e968a', selected: '#d4ae52', outline: '#1d1b19' };
@@ -98,6 +99,35 @@ export function BodyMap({ points, hands, selected, onPick, onHover, onHand }: { 
         );
       })}
       {points.map((p) => { const at = BODY[p.name]; return at ? <Mark key={p.name} x={at[0]} y={at[1]} p={p} r={11} selected={p.name === selected} onPick={onPick} onHover={onHover} /> : null; })}
+    </svg>
+  );
+}
+
+// the joints of the body (artboard 2a): the middle grey, the left side teal and the right side orange
+export function JointMap({ selected, onPick }: { selected: string | null; onPick: (label: string) => void }) {
+  return (
+    <svg className="pose-map body-map joint-map" viewBox="0 0 220 324" role="group" aria-label="The body's joints, the figure seen from the front">
+      <g aria-hidden="true" fill="var(--raised-2)" stroke="var(--line-strong)" strokeWidth={1}>
+        <ellipse cx={110} cy={30} rx={18} ry={22} />
+        <path d="M82 66 Q110 58 138 66 L136 160 Q110 176 84 160 Z" />
+        <path d="M84 72 L58 132 L48 180" fill="none" strokeWidth={14} strokeLinecap="round" stroke="var(--raised-2)" />
+        <path d="M136 72 L162 132 L172 180" fill="none" strokeWidth={14} strokeLinecap="round" stroke="var(--raised-2)" />
+        <path d="M92 168 L88 236 L86 298" fill="none" strokeWidth={16} strokeLinecap="round" stroke="var(--raised-2)" />
+        <path d="M128 168 L132 236 L134 298" fill="none" strokeWidth={16} strokeLinecap="round" stroke="var(--raised-2)" />
+      </g>
+      <text x={20} y={318} fontSize={11} fill={SIDE.R} fontWeight={600}>R</text>
+      <text x={194} y={318} fontSize={11} fill={SIDE.L} fontWeight={600}>L</text>
+      {BODY_JOINTS.map((j) => {
+        const side = j.label.endsWith('.L') ? 'L' : j.label.endsWith('.R') ? 'R' : '';
+        const fill = side ? SIDE[side as 'L' | 'R'] : '#5b554d', sel = j.label === selected, [x, y] = j.at;
+        return (
+          <g key={j.label} className="map-joint" data-joint={j.label} role="button" tabIndex={-1} aria-label={jointName(j.label).name} onClick={() => onPick(j.label)} style={{ cursor: 'pointer' }}>
+            <circle cx={x} cy={y} r={14} fill="transparent" />
+            {sel ? <circle cx={x} cy={y} r={11} fill="none" stroke={COL.selected} strokeWidth={3} /> : null}
+            <circle cx={x} cy={y} r={7.5} fill={fill} stroke={COL.outline} strokeWidth={1.5} />
+          </g>
+        );
+      })}
     </svg>
   );
 }
