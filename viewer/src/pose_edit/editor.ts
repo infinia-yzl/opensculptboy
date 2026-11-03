@@ -977,6 +977,8 @@ export class PoseEditor {
     if (st.joint) { const J = this.joints(), b = J.bone(st.joint)!; return { bones: J.limbOf(b), label: jointName(st.joint).name }; }
     const p = st.selected ? POINT_BY_NAME.get(st.selected) : null;
     if (p && p.group !== 'body') return { bones: this.hands().handBones(p.side as 'L' | 'R'), label: p.side === 'R' ? 'the right hand' : 'the left hand' };
+    // a hand selected from its cluster or the body map
+    if (st.hand) return { bones: this.hands().handBones(st.hand), label: st.hand === 'R' ? 'the right hand' : 'the left hand' };
     return null;
   }
   copyPose(): boolean {
