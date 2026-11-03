@@ -21,7 +21,7 @@ export function StatusLine() {
   const heldName = s.held ? s.held[0].toUpperCase() + s.held.slice(1) : '';
   return (
     <>
-      <div className="osb-glass status-line" role="status" aria-live="polite" aria-label="What the mouse does now" data-held={s.held || undefined}>
+      <div className="osb-glass status-line" aria-live="off" aria-label="What the mouse does now" data-held={s.held || undefined}>
         {s.held ? <span className="status-held"><kbd className="osb-key">{heldName}</kbd> held</span> : null}
         {s.lead ? <span className="status-part status-lead">{s.lead}</span> : null}
         {s.parts.map((p, i) => <Part key={i} p={p} lit={!!s.lit && p.keys === s.lit} />)}

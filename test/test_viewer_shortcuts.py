@@ -399,6 +399,8 @@ class TestShortcutsPage(unittest.TestCase):
             tab.mouse.dblclick(hip["x"], hip["y"])
             settle()
             piv = tab.evaluate("() => window.__studio.cam().pivot")
+            # and comes in to working distance (0.8 m)
+            self.assertLess(tab.evaluate("() => window.__studio.cam().distance"), 0.81)
             self.assertLess(
                 sum((a - b) ** 2 for a, b in zip(piv, hit[:3])) ** 0.5, 0.01
             )
