@@ -78,6 +78,7 @@ def _card(twists=None, shared=False):
     X = positions(rig, R, use)
     Rp, t = _placement()
     card = character.to_dict()
+    card["schema"] = 5
     card["detail"] = {
         "levels": [],
         "fit": {

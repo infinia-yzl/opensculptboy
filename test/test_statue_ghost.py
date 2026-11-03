@@ -215,7 +215,7 @@ class TestGhost(unittest.TestCase):
         )
 
     def test_a_reduced_mesh_keeps_its_shape(self):
-        from scipy.spatial import cKDTree
+        import trimesh
 
         from opensculptboy.statues.ghost import reduce
 
@@ -223,8 +223,9 @@ class TestGhost(unittest.TestCase):
         W, U = reduce(V, T, 3000)
         self.assertLessEqual(len(U), 3100)
         self.assertEqual(len(np.unique(U)), len(W))
-        d, _ = cKDTree(W).query(V)
-        self.assertLess(np.median(d), 0.01)
+        full, reduced = trimesh.Trimesh(V, T), trimesh.Trimesh(W, U)
+        self.assertTrue(reduced.is_watertight)
+        self.assertAlmostEqual(reduced.volume / full.volume, 1.0, delta=0.02)
 
     def test_a_starter_zip_takes_its_ghost(self):
         import trimesh

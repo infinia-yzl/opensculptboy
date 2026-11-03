@@ -272,7 +272,9 @@ def apply_card(
         }
     if hands:
         fields = {k: v for k, v in card.items() if k != "look"}
-        fields["schema"] = min(int(fields.get("schema", 4)), 4)
+        # the card without its look block, in the schema that holds a detail layer and a
+        # wardrobe
+        fields["schema"] = 4
         character = Character.from_dict(fields)
         if model is None:
             from opensculptboy.fit.register import fit_model
