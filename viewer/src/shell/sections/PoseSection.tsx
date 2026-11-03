@@ -7,15 +7,22 @@
 // changes with the motion (the bus's motion events); the timeline's time and thumb paint through refs on the bus's
 // tick, a tenth of a second apart, so a playing clip renders nothing in React.
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useShell } from '../context.ts';
 import { useBus } from '../hooks.ts';
 import { Slider } from '../components/Slider.tsx';
 import { Chip, Fold, Note, Row, Search, Seg, Sub, Switch, TextButton } from '../components/controls.tsx';
 import { Icon } from '../components/ui/icon.tsx';
+import { Tip } from '../components/ui/tooltip.tsx';
+import { installPoseEditor, poseEditor } from '../../pose_edit/editor.ts';
+import { poseHost } from '../../pose_edit/host.ts';
+import { PoseEditSection, useEditState } from './PoseEditSection.tsx';
 
 export function PoseSection({ shown }: { shown: boolean }) {
   const { app, legacy } = useShell();
+  // the pose editor (pose_edit/editor.ts) registers its keys once the page's renderer is there
+  useEffect(() => { const h = poseHost(); if (h) installPoseEditor(h); }, []);
+  const edit = useEditState();
   const clips = app.clips();
   const loops = clips.filter((c) => c.kind === 'loop'), poses = clips.filter((c) => c.kind === 'pose');
   const groups = [...new Set(poses.map((c) => c.group || 'Poses'))];
@@ -68,6 +75,16 @@ export function PoseSection({ shown }: { shown: boolean }) {
   const hosted = legacy.hosted;
   return (
     <section id="sec-pose" className="sec osb-section-stack" role="tabpanel" aria-labelledby="tab-pose" hidden={!shown}>
+      <div className="osb-subtabs pose-subtabs" role="tablist" aria-label="Pose">
+        <button type="button" role="tab" className="osb-subtab" aria-selected={!edit.on} onClick={() => poseEditor()?.setOn(false)}>Library</button>
+        <Tip action="pose.edit"><button type="button" role="tab" className="osb-subtab" aria-selected={edit.on} onClick={() => poseEditor()?.setOn(true)}>
+          Edit<kbd className="osb-key">Tab</kbd></button></Tip>
+      </div>
+      {edit.on ? <PoseEditSection /> : PoseLibrary()}
+    </section>
+  );
+  function PoseLibrary() {
+    return (<>
       <div className="osb-section">
         <h3 className="osb-eyebrow">Animations <span className="osb-eyebrow-val">{cur ? cur.label + (m.loop && !m.playing ? ' · paused' : '') : ''}</span></h3>
         <div className="chips osb-chips" role="group" aria-label="Animations">
@@ -130,6 +147,6 @@ export function PoseSection({ shown }: { shown: boolean }) {
           <Note>Corrective shapes from a soft-tissue simulation keep the volume of the shoulders, elbows, hips and knees as they bend. Switch them off to compare with plain skinning.</Note>
         </div>
       ) : null}
-    </section>
-  );
+    </>);
+  }
 }

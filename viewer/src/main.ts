@@ -42,6 +42,8 @@ import { stoneOf, stoneRoughness } from './stones.ts';
 import { withLookBlock } from './card/file.ts';
 import { DEFAULT_STARTER } from './starters.ts';
 import { groundShift } from './ground.ts';
+import { registerPoseHost, type PoseHost } from './pose_edit/host.ts';
+import { toast } from './ui/toast.ts';
 
 const qs = new URLSearchParams(location.search);
 const DEG = Math.PI / 180;
@@ -1479,16 +1481,19 @@ void main() {
   return OVL.rt;
 }
 function drawOverlay() {
-  if (!skeletonShown() || !SKEL.scene) return;
+  const skel = skeletonShown() && !!SKEL.scene;
+  if (!skel && !POSE_EDIT.overlay) return;
   const rt = overlayTarget();
   renderer.autoClear = false;
   renderer.setRenderTarget(rt); renderer.setClearColor(0x000000, 0); renderer.clear();
-  if (WEIGHTS.on && WEIGHTS.scene) {
+  if (skel && WEIGHTS.on && WEIGHTS.scene) {
     for (const e of WEIGHTS.eyes) { e.mesh.matrix.copy(e.src.matrix); e.mesh.matrixWorldNeedsUpdate = true; }
     renderer.render(WEIGHTS.scene, camera);
     renderer.clearDepth();
   }
-  renderer.render(SKEL.scene, camera);
+  if (skel) renderer.render(SKEL.scene, camera);
+  // the pose editor's scan and magnifier (pose_edit/view3d.ts)
+  if (POSE_EDIT.overlay) { renderer.clearDepth(); POSE_EDIT.overlay(rt); renderer.setClearColor(0x000000, 0); }
   renderer.setRenderTarget(null);
   OVL.mat.uniforms.tOvl.value = rt.texture;
   quadMesh.material = OVL.mat; renderer.render(quadScene, quadCam);
@@ -3039,6 +3044,7 @@ function animate() {
   const jsMs = performance.now() - now;
   if (DYN.rendered) { PERF.frames++; PERF.jsMs += jsMs; }
   updatePerf(now);
+  POSE_EDIT.frame?.();
   HOOKS.frame(now, rawDt, DYN.rendered, jsMs);
 }
 window.addEventListener('resize', () => {
@@ -3485,6 +3491,75 @@ const SHEET_HOST = {
 };
 
 // ------------------------------------------------------------------ what the interface sees of the renderer
+// ------------------------------------------------------------------ the pose editor's host (pose_edit/host.ts)
+// The editor (DESIGN-0013) reads the rig, the coarse body and the card, shows its edited pose at once as the clip
+// 'edit' (the root keeps its offset: an edit never grounds the figure again), and draws its scan over the picture.
+const POSE_EDIT: { overlay: ((rt: any) => void) | null; frame: (() => void) | null } = { overlay: null, frame: null };
+function setEditPose(q: Float32Array, label = 'Edited pose') {
+  if (!RIG.ready || !MOTION.nb) return;
+  writePoseFrame('edit', label, q);
+  const c = MOTION.byName.edit;
+  if (MOTION.cur !== c) { MOTION.cur = c; MOTION.t = 0; MOTION.playing = false; HOOKS.motion(); }
+  MOTION.fade = 1;
+  MOTION.q.set(q);
+  RIG.bones.forEach((b: any, i: number) => b.quaternion.set(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]));
+  turnHead();
+  placeRoot();
+  poseChanged();
+  shadowsDirty = true; resetAccum();
+}
+// the shown props, skinned by the pose (page frame, before the holder's turn)
+function shownProps() {
+  if (!WEAR?.pieces.length || !RIG.ready) return [];
+  const M = poseMatrices(MOTION.q, MOTION.rootOff), H = RIG.holder.matrixWorld.elements;
+  return WEAR.pieces.filter((p: any) => p.wearable.slot === 'prop').map((p: any) => {
+    const V = p.vertices, J = p.joints, W = p.weights, n = V.length / 3, out = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const x = V[i * 3], y = V[i * 3 + 1], z = V[i * 3 + 2];
+      let a = 0, b = 0, c = 0, sum = 0;
+      for (let k = 0; k < 4; k++) {
+        const w = W[i * 4 + k]; if (!w) continue;
+        const m = J[i * 4 + k] * 16;
+        a += w * (M[m] * x + M[m + 4] * y + M[m + 8] * z + M[m + 12]); b += w * (M[m + 1] * x + M[m + 5] * y + M[m + 9] * z + M[m + 13]);
+        c += w * (M[m + 2] * x + M[m + 6] * y + M[m + 10] * z + M[m + 14]); sum += w;
+      }
+      if (sum > 0) { a /= sum; b /= sum; c /= sum; }
+      out[i * 3] = H[0] * a + H[4] * b + H[8] * c + H[12]; out[i * 3 + 1] = H[1] * a + H[5] * b + H[9] * c + H[13]; out[i * 3 + 2] = H[2] * a + H[6] * b + H[10] * c + H[14];
+    }
+    return { name: p.ref, positions: out, indices: Uint32Array.from(p.wearable.garment.triangles) };
+  });
+}
+const POSE_HOST: PoseHost = {
+  THREE, renderer, camera, canvas,
+  ready: () => RIG.ready && BODY.ready && !!MOTION.nb,
+  bones: () => RIG.bones.map((b: any) => b.name),
+  parents: () => Array.from(RIG.parents),
+  restHeads: () => RIG.heads.map((h: number[]) => h.slice()),
+  root: () => RIG.root,
+  frame: () => { const fr = BODY.anny.meta.shape.frame; return { scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset }; },
+  lift: () => BODY.anny.floorShift || 0,
+  rootOffset: () => MOTION.rootOff.slice(),
+  holder: () => { RIG.holder.updateMatrixWorld(true); return RIG.holder.matrixWorld.clone(); },
+  pose: () => Float32Array.from(MOTION.q),
+  setPose: (q, label) => setEditPose(q, label),
+  body: () => ({ coarse: BODY.anny.coarse, skin: BODY.anny.coarseSkin, nBody: BODY.anny.nBody, quads: BODY.anny.quads }),
+  annyRows: () => { const b = (window as any).__BUFFERS?.card_coarse; return b ? new Uint32Array(b.data.buffer.slice(b.data.byteOffset, b.data.byteOffset + b.data.byteLength)) : null; },
+  card: () => {
+    if (!WEAR?.loaded) return null;
+    const w: any = WEAR, folder = w.cardPath && w.cardPath.includes('/') ? w.cardPath.slice(0, w.cardPath.lastIndexOf('/')) : '';
+    return { card: w.card, source: w.source, bytes: (rel: string) => w.files.bytes(rel, folder) };
+  },
+  setOverlay: (draw) => { POSE_EDIT.overlay = draw; redisplay(); },
+  overlayTarget: () => overlayTarget(),
+  sceneDepth: () => ({ texture: sceneRT?.depthTexture || null, uvScale: sssU.uUvScale.value }),
+  redraw: () => redisplay(),
+  onFrame: (fn) => { POSE_EDIT.frame = fn; },
+  props: () => shownProps(),
+  toast: (text) => toast(text),
+  cardPose: () => ({ bones: cardBones(MOTION.q, RIG.bones.map((b: any) => b.name), ANNY_TO_PAGE), root: [0, 0, 0] }),
+};
+registerPoseHost(POSE_HOST);
+
 const APP: any = {
   THREE, renderer, camera, controls, canvas, shot: SHOT, small: isSmall, qs,
   look: () => currentLook,
