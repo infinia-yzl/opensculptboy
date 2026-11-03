@@ -335,9 +335,13 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
 
     character = Character.from_dict(character.to_dict())
     # a keyed hand keeps the shape it was keyed with (the hand chain's local changes, which
-    # a later chain solve fits again), so that its fingers lie where the key put them
+    # a later chain solve fits again), so that its fingers lie where the key put them; any
+    # hand may set its shape (``local_changes``), so that both hands match
     for spec in hands.values():
-        changes = (spec.get("key") or {}).get("local_changes")
+        changes = {
+            **((spec.get("key") or {}).get("local_changes") or {}),
+            **(spec.get("local_changes") or {}),
+        }
         if changes:
             character.local_changes = {
                 **character.local_changes,

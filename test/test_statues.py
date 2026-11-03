@@ -1266,6 +1266,15 @@ class TestPosedHands(unittest.TestCase):
             {"hand.r": {"key": {**key, "local_changes": {"r-hand-scale-incr": 0.4}}}},
         )
         self.assertEqual(shaped.local_changes["r-hand-scale-incr"], 0.4)
+        # a hand without a key sets its shape too (both hands the same size)
+        left, _ = pose_hands(
+            model,
+            character,
+            R,
+            t,
+            {"hand.l": {"local_changes": {"l-hand-scale-incr": 0.4}, "curls": (0.0,)}},
+        )
+        self.assertEqual(left.local_changes["l-hand-scale-incr"], 0.4)
         # the fitted card's own clearances match those of the pose (the fit's check), and a
         # key that carries other clearances is warned about
         from opensculptboy.statues.hands import check_key, keyed_clearance
