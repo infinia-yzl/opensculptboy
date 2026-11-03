@@ -10,6 +10,7 @@ X-ray turns every mesh see-through; with every bone hidden, and with the cut-awa
 the figure, the picture above the floor matches the picture with every mesh switched off.
 """
 
+import os
 import pathlib
 import shutil
 import tempfile
@@ -106,6 +107,12 @@ class TestStudioDisplayPage(unittest.TestCase):
             # every bone hidden: the body, the pieces on their bones, the eyes and the hair leave the picture
             tab.evaluate("() => window.__studio.parts(window.__studio.bones(), null)")
             hidden = picture(tab)
+            out = os.environ.get("STUDIO_DISPLAY_OUT")
+            if out:
+                for n, a in (("full", full), ("empty", empty), ("hidden", hidden)):
+                    Image.fromarray(a.astype(np.uint8)).save(
+                        os.path.join(out, n + ".png")
+                    )
             tab.evaluate("() => window.__studio.parts(null, null)")
             self.assertLess(np.abs(hidden[top] - empty[top]).max(), 12, "hidden")
             self.assertLess(np.abs(hidden[top] - empty[top]).mean(), 0.3, "hidden")
