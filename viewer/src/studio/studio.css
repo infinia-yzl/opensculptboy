@@ -38,7 +38,7 @@ body.shot .status-line, body.shot .pivot-dot, body.shot .compass, body.shot .hel
 
 /* ------------------------------------------------------------ the pivot dot while the camera turns (artboard 3k) */
 .pivot-dot {
-  position: fixed; z-index: 8; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; border-radius: 50%;
+  position: fixed; z-index: 8; box-sizing: border-box; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; border-radius: 50%;
   border: 2px solid #fff; box-shadow: 0 0 0 1.5px #1d1b19, inset 0 0 0 1.5px #1d1b19; background: transparent;
 }
 .pivot-dot::before, .pivot-dot::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 0 1px #1d1b19; }
@@ -199,3 +199,7 @@ body.shot .tour-card, body.shot .tour-prompt { display: none !important; }
 .hr-tick { min-height: 24px; }
 .osb-sl-reset { width: 24px; height: 24px; }
 .help-search, .search-input.osb-input, .osb-search input { min-height: 28px; }
+.floor-mark { position: absolute; left: 7px; top: 7px; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.floor-mark path { fill: none; stroke: #fff; stroke-opacity: 0.55; stroke-width: 1.5; }
+.floor-mark .floor-tick { stroke-width: 3; stroke-opacity: 0.8; }
+:root[data-theme="light"] .floor-mark path { stroke: #2a2622; }

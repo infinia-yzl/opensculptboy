@@ -252,6 +252,7 @@ export interface DispatchOpts {
   typing?: boolean;                 // a text field has the focus
   dialog?: boolean;                 // a dialog or menu is open
   hint?: (text: string) => void;    // shows an action's hint when it had nothing to act on
+  only?: string;                    // only the actions of this scope (a modal grab takes every key)
 }
 // the action a key press runs: the live actions of its chords, deepest scope first; returns the action's id, or null
 // when no action took the key (the page then leaves the key to the browser)
@@ -262,6 +263,7 @@ export function dispatchKey(e: KeyboardEvent, o: DispatchOpts = {}): string | nu
   chords.forEach((chord, order) => {
     for (const a of ACTIONS.values()) {
       if (!a.run || !a.keys?.includes(chord)) continue;
+      if (o.only && (a.scope || 'global') !== o.only) continue;
       if (o.typing && !a.inText) continue;
       if (o.dialog && !a.inDialog) continue;
       if (e.repeat && !a.repeat) continue;

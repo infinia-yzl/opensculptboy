@@ -17,6 +17,7 @@ import {
 import { registerKeymap } from '../src/studio/keymap.ts';
 import { ui } from '../src/shell/state.ts';
 import { setSelection } from '../src/studio/selection.ts';
+import { startModal, modalActive } from '../src/studio/modal.ts';
 
 // ------------------------------------------------------------------ the chords of a key press
 const cases = [
@@ -149,7 +150,7 @@ assert.equal(press('f', 'KeyF').id, 'view.frame');
 assert.equal(press('`', 'Backquote').id, 'view.menu');
 assert.deepEqual(ran, ['ring:view']);
 assert.equal(press('z', 'KeyZ', { altKey: true }).id, 'display.xray');
-assert.equal(press('?', 'Slash', { shiftKey: true }).id, 'help.keys');
+assert.equal(press('?', 'Slash', { shiftKey: true }).id, 'help.keys-q');
 assert.equal(press('F1', 'F1').id, 'help.keys');
 assert.equal(press('k', 'KeyK', { ctrlKey: true }).id, 'help.commands');
 assert.equal(press('z', 'KeyZ', { ctrlKey: true }).id, 'edit.undo');
@@ -172,6 +173,19 @@ setSelection(null);
 // Space with no animation playing says so
 assert.equal(dispatchKey({ key: ' ', code: 'Space' }, { hint: (t) => { hint = t; } }), 'motion.play');
 assert.equal(hint, 'No animation is playing');
+
+// ------------------------------------------------------------------ a modal grab takes the keys: an axis, a typed value, Enter
+globalThis.addEventListener ??= () => {}; globalThis.removeEventListener ??= () => {};
+const seen = [];
+startModal({ kind: 'grab', label: 'Point 22', update: (v) => { seen.push([v.axis, v.local, v.typed]); return ''; }, confirm: () => seen.push('ok'), cancel: () => seen.push('back') }, { x: 0, y: 0 });
+assert.ok(modalActive());
+for (const [key, code] of [['x', 'KeyX'], ['x', 'KeyX'], ['3', 'Digit3'], ['.', 'Period'], ['5', 'Digit5']]) assert.ok(dispatchKey({ key, code }, { only: 'modal' }), key);
+assert.equal(dispatchKey({ key: 'f', code: 'KeyF' }, { only: 'modal' }), null);   // F means nothing during a grab
+assert.equal(dispatchKey({ key: 'Enter', code: 'Enter' }, { only: 'modal' }), 'modal.confirm');
+assert.ok(!modalActive());
+assert.deepEqual(seen.at(-1), 'ok');
+assert.deepEqual(seen.at(-2), ['x', true, 3.5]);
+assert.deepEqual(conflicts(), []);
 
 // ------------------------------------------------------------------ menus, the command list and the Ctrl overlay
 assert.deepEqual(menuItems('view').map((a) => a.menuLabel || a.label), ['Top', 'Face', 'Right', 'Right hand', 'Three-quarter', 'Front', 'Full figure', 'Left hand', 'Left', 'Back']);

@@ -79,6 +79,7 @@ export function registerKeymap(d: KeymapDeps): () => void {
     { id: 'mouse.move', label: 'Move the view', mouse: ['Middle-drag'], group: 'Mouse', tier: 'constant' },
     { id: 'mouse.zoom', label: 'Zoom to the pointer', mouse: ['Wheel'], group: 'Mouse', tier: 'constant' },
     { id: 'mouse.zoomdrag', label: 'Zoom by dragging', mouse: ['Alt+Right-drag'], group: 'Mouse', tier: 'frequent' },
+    { id: 'mouse.fly', label: 'Fly: W and S forward and back, A and D sideways, E and Q up and down, the wheel for the speed', mouse: ['Right-hold'], group: 'Mouse', tier: 'occasional' },
     { id: 'mouse.click', label: 'Select', mouse: ['Click'], group: 'Mouse', tier: 'constant' },
     { id: 'mouse.dbl', label: 'Turn round this spot', mouse: ['Double-click'], group: 'Mouse', tier: 'frequent' },
     { id: 'mouse.right', label: 'Cancel a drag, or open the menu', mouse: ['Right-click'], group: 'Held keys', tier: 'frequent' },
@@ -194,7 +195,10 @@ export function registerKeymap(d: KeymapDeps): () => void {
     // ---------------------------------------------------------------- help
     { id: 'help.commands', label: 'Command list', desc: 'Every action by name, with its key', keys: ['F3', 'Ctrl+K'], group: 'Help', tier: 'rare', inText: true, place: 'The top bar',
       icon: 'search', run: () => d.commands() },
-    { id: 'help.keys', label: 'This help', desc: 'The keys and the mouse by use and by mode', keys: ['F1', '?'], group: 'Help', tier: 'rare', place: 'The top bar', icon: 'help', run: () => d.help() },
+    // F1 works in a text field too; ? types itself there
+    { id: 'help.keys', label: 'This help', desc: 'The keys and the mouse by use and by mode', keys: ['F1'], group: 'Help', tier: 'rare', place: 'The top bar', icon: 'help',
+      inText: true, row: 'help.keys', rowLabel: 'This help', run: () => d.help() },
+    { id: 'help.keys-q', label: 'This help', keys: ['?'], group: 'Help', tier: 'rare', row: 'help.keys', command: false, run: () => d.help() },
     { id: 'help.escape', label: 'Close the menu or the panel', keys: ['Escape'], group: 'Help', tier: 'constant', help: false, command: false, run: () => d.escape() },
   ];
   offs.push(registerActions(A));

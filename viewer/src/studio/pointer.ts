@@ -142,6 +142,15 @@ function dragInfo(e: PointerEvent, x0: number, y0: number, lx: number, ly: numbe
 function setCursor(c: string) { if (canvasEl && canvasEl.style.cursor !== c) canvasEl.style.cursor = c; }
 function cursorOf(pk: Picker, h: PickHit) { return h.cursor || (typeof pk.cursor === 'function' ? pk.cursor(h) : pk.cursor) || 'pointer'; }
 
+// a right button held without a move becomes the camera's right-hold (fly) when a fly key goes down
+export function promoteRight(): boolean {
+  if (g.kind !== 'right' || !driver) return false;
+  const { x0, y0, id } = g;
+  g = { kind: 'camera', x0, y0, id, moved: true, button: 2 };
+  driver.begin('right', { clientX: x0, clientY: y0, shiftKey: false, altKey: false } as PointerEvent, { x: x0, y: y0 });
+  setCursor(driver.cursor());
+  return true;
+}
 // cancel the gesture in progress: a picker's drag puts its item back; the camera stops where it is
 export function cancelGesture(): boolean {
   if (g.kind === 'drag' || g.kind === 'press') {

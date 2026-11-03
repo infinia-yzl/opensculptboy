@@ -33,6 +33,7 @@ import { allActions, dispatchKey, onActionRun } from '../studio/actions.ts';
 import { cam } from '../studio/camera.ts';
 import { setSelection } from '../studio/selection.ts';
 import { statusText } from '../studio/status.ts';
+import { modalActive } from '../studio/modal.ts';
 import { offerTour, startTour } from '../studio/Onboarding.tsx';
 import { settings } from '../studio/settings.ts';
 import { helpSheet } from '../studio/help.ts';
@@ -373,8 +374,10 @@ export function initUI(app: App): UI {
     if (rings.isOpen()) return;
     // the interface shows a key's panel before the next frame
     let id: string | null = null;
-    flushSync(() => { id = dispatchKey(e, { typing: isTyping, dialog: dialogOpen(), hint: (text) => toast(text) }); });
-    if (id) e.preventDefault();
+    // a grab or a turn (studio/modal.ts) takes every key while it lasts
+    const modal = modalActive();
+    flushSync(() => { id = dispatchKey(e, { typing: isTyping, dialog: dialogOpen(), hint: (text) => toast(text), only: modal ? 'modal' : undefined }); });
+    if (id || modal) e.preventDefault();
   });
   // Alt+← and Alt+→ would leave the page with unsaved edits; Ctrl+wheel would zoom the page over the view
   addEventListener('keydown', (e) => { if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !typing(e)) e.preventDefault(); }, true);

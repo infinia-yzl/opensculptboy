@@ -135,6 +135,7 @@ EFFECTS = {
     "display.menu": lambda a, b: b["ring"],
     "display.xray": lambda a, b: b["cam"]["xray"] != a["cam"]["xray"],
     "help.keys": lambda a, b: b["help"],
+    "help.keys-q": lambda a, b: b["help"],
     "help.commands": lambda a, b: b["cmd"],
     "file.open": lambda a, b: b["open"],
     "panel.left": lambda a, b: b["left"] != a["left"],
@@ -218,13 +219,23 @@ class TestShortcutsPage(unittest.TestCase):
                 (after["mode"], after["sub"], after["tool"]),
             )
             # a text field keeps every key, and Esc leaves it
-            tab.evaluate("() => window.__shell.actions.openMode('sheet')")
-            field = tab.locator("#sec-sheet input.cs-input").first
+            # (a slider's value box of the Body section)
+            tab.evaluate("() => window.__shell.actions.openMode('create', 'body')")
+            field = tab.locator("#sec-body .osb-sl-num").first
             field.click()
-            tab.keyboard.type("Fz1")
-            self.assertEqual(field.input_value(), "Fz1")
-            self.assertEqual(state()["mode"], "sheet")
+            c0 = tab.evaluate("() => window.__studio.cam()")
+            tab.keyboard.press("Control+KeyA")
+            tab.keyboard.type("F1z")
+            self.assertEqual(field.input_value(), "F1z")
+            self.assertEqual(state()["mode"], "create")
+            self.assertEqual(
+                tab.evaluate("() => window.__studio.cam()")["back"], c0["back"]
+            )
             tab.keyboard.press("Escape")
+            self.assertNotEqual(
+                tab.evaluate("() => document.activeElement.className"), "osb-sl-num"
+            )
+            tab.keyboard.press("Shift+Digit1")
             tab.keyboard.press("Shift+Digit1")
             self.assertEqual(state()["mode"], "create")
 
