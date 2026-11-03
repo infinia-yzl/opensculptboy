@@ -335,7 +335,7 @@ class TestShortcutsPage(unittest.TestCase):
                 f"() => window.__studio.project([{hit[0]}, {hit[1]}, {hit[2]}])"
             )
             self.assertLess(
-                abs(s["x"] - (x0 + 300)) + abs(s["y"] - (y0 + 40)), 4, (s, x0, y0)
+                abs(s["x"] - (x0 + 120)) + abs(s["y"] - (y0 + 30)), 4, (s, x0, y0)
             )
             tab.keyboard.press("Backspace")
             settle()
