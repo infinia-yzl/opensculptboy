@@ -97,6 +97,9 @@ class TestPoseEditPage(unittest.TestCase):
 
             rig, rest, truth = open_statue(tab, folder)
             edit_on(tab)
+            # the synthetic scan's pose is a little away from Anny's rest pose; the page starts from its own clip
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            settle(tab)
             r = report(tab)
             self.assertEqual(r["state"]["counts"]["placed"], 0)
             shot("1a_edit_on")
