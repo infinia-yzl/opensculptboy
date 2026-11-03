@@ -79,6 +79,8 @@ const STEPS: Step[] = [
 type TourMode = 'off' | 'prompt' | 'tour';
 let setMode: ((m: TourMode) => void) | null = null;
 export function startTour() { setMode?.('tour'); }
+// the prompt, as the first opening of Edit shows it (the posing editor may call it; the review pictures do)
+export function offerTour() { setMode?.('prompt'); }
 
 export function Tour() {
   const [mode, set] = useState<TourMode>('off');

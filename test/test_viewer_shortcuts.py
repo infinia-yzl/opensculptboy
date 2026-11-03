@@ -218,7 +218,7 @@ class TestShortcutsPage(unittest.TestCase):
                 (after["mode"], after["sub"], after["tool"]),
             )
             # a text field keeps every key, and Esc leaves it
-            tab.keyboard.press("Shift+Digit5")
+            tab.evaluate("() => window.__shell.actions.openMode('sheet')")
             field = tab.locator("#sec-sheet input.cs-input").first
             field.click()
             tab.keyboard.type("Fz1")

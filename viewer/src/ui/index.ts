@@ -33,6 +33,7 @@ import { allActions, dispatchKey, onActionRun } from '../studio/actions.ts';
 import { cam } from '../studio/camera.ts';
 import { setSelection } from '../studio/selection.ts';
 import { statusText } from '../studio/status.ts';
+import { offerTour, startTour } from '../studio/Onboarding.tsx';
 import { settings } from '../studio/settings.ts';
 import { helpSheet } from '../studio/help.ts';
 import { registerKeymap } from '../studio/keymap.ts';
@@ -343,6 +344,7 @@ export function initUI(app: App): UI {
     hand: (side: string) => app.figure().joints.filter((j) => j.name.endsWith('.' + side) && /^(finger|wrist|metacarpal)/.test(j.name)).map((j) => { const s = cam().toScreen(j.p); return [s.x, s.y]; }),
     bodyRay: (x: number, y: number) => { const r = cam().rayAt(x, y); const h = app.bodyRay(r.origin, r.direction); return h ? [h.point.x, h.point.y, h.point.z, h.distance] : null; },
     free: () => ({ freeW: app.view.freeW, freeH: app.view.freeH }),
+    tour: () => startTour(), offerTour: () => offerTour(),
   };
   // the height rail after the interface, so the focus reaches it after the top bar, the panel and the view bar
   document.body.append(nav.rail);
