@@ -261,6 +261,11 @@ class FitOptions:
     # "vertex" (the nearest fitted vertex of each reference vertex) or "surface" (its closest
     # point on the fitted triangles, spread over their corners); see nicp
     reverse: str = "vertex"
+    # with reverse "vertex": a reference vertex pulls only when its nearest vertex of the
+    # whole fitted mesh takes data (False: the nearest vertex with data, wherever the skin
+    # around it has none, which drags the border of a region without data into it: piles of
+    # vertices and long triangles where the reference shows a part that has no data)
+    reverse_own: bool = False
     # the normal agreement of the correspondences on the outer ears (ear_weights over 0.5),
     # where the front and the back of a thin rim face apart
     ear_normal_threshold: float = 0.2
@@ -1393,6 +1398,7 @@ def nicp(
     attachment_weight: float = 0.0,
     correspondence: str = "closest",
     correspondence_mean: float = 0.0,
+    reverse_own: bool = False,
 ) -> np.ndarray:
     """
     Non-rigid ICP of a mesh onto the reference: in each round, solve
@@ -1409,7 +1415,11 @@ def nicp(
 
     The reverse term (``reverse="vertex"``) pulls each vertex that is the nearest of some
     reference vertices to their mean, with weight ``reverse_weight`` (a number, or one per
-    vertex) times its data weight.
+    vertex) times its data weight. With ``reverse_own``, a reference vertex pulls only when
+    its nearest vertex of the whole mesh takes data, so that the reference beside skin
+    without data leaves the border of that skin where it is (as non-rigid ICP drops the
+    pairs that land on a masked or border part: B. Amberg, S. Romdhani and T. Vetter,
+    "Optimal step nonrigid ICP algorithms for surface registration", CVPR 2007).
     ``reverse="surface"`` (experimental) instead pulls the fitted surface onto the reference's
     vertices: each reference
     vertex p_j within ``max_distance`` of the surface, whose normal agrees with the surface's
@@ -1477,7 +1487,13 @@ def nicp(
                 )
             if reverse == "vertex":
                 r, P = _reverse_pairs(
-                    X, normals, kept, target, max_distance, reverse_normal_threshold
+                    X,
+                    normals,
+                    kept,
+                    target,
+                    max_distance,
+                    reverse_normal_threshold,
+                    own=reverse_own,
                 )
                 r = reverse_weight * base * r
                 rhs = w[:, None] * C + r[:, None] * P + anchor * start + smooth
@@ -1974,9 +1990,13 @@ def repair_folds(
     return X, first or 0
 
 
-def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
+def _reverse_pairs(
+    X, normals, kept, reference, max_distance, normal_threshold, own: bool = False
+):
     """For each vertex of ``X``: 1 when it is the nearest vertex (of ``kept``) of reference
-    vertices within ``max_distance`` with agreeing normals, else 0, and their mean. A split
+    vertices within ``max_distance`` with agreeing normals, else 0, and their mean; with
+    ``own``, only the reference vertices whose nearest vertex of all of ``X`` is in ``kept``
+    count. A split
     :class:`Target` pairs the reference's ears with anny's ears alone and the rest with the
     rest, so that the head behind a standing ear never pulls the back of anny's ear, nor the
     ear the head."""
@@ -1991,7 +2011,7 @@ def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
             (reference.split.head, kept[~ear[kept]]),
         ):
             h, m = _reverse_pairs(
-                X, normals, rows, part, max_distance, normal_threshold
+                X, normals, rows, part, max_distance, normal_threshold, own
             )
             hit += h
             mean += h[:, None] * m
@@ -2005,6 +2025,10 @@ def _reverse_pairs(X, normals, kept, reference, max_distance, normal_threshold):
     ok = (d < max_distance) & (
         (normals[rows] * reference.normals).sum(1) > normal_threshold
     )
+    if own:
+        member = np.zeros(len(X), bool)
+        member[kept] = True
+        ok &= member[cKDTree(X).query(reference.vertices)[1]]
     skip = getattr(reference, "skip_reverse", None)
     if skip is not None:
         ok &= ~skip
@@ -3221,6 +3245,7 @@ def fit_levels(
             attachment_weight=options.ear_attachment_weight if split else 0.0,
             correspondence=options.correspondence if subdiv > 0 else "closest",
             correspondence_mean=options.correspondence_mean,
+            reverse_own=options.reverse_own,
         )
         if split is not None:
             region = anny_ear.copy()

@@ -11,7 +11,12 @@ The statue commands, each printing one JSON result:
   found, the triangles per role and the landmarks in the handoff's frame.
 - ``python -m opensculptboy.statues starter CONFIG --run DIR --out starters/ID.zip``: a fitted
   statue (the run folder of ``run``) as a finished starter of the web viewer (see
-  :mod:`opensculptboy.statues.starter`).
+  :mod:`opensculptboy.statues.starter`), with its light scan ``scan.glb`` (``--ghost``).
+- ``python -m opensculptboy.statues ghost STARTER.zip --handoff DIR``: the light scan of a
+  starter's figure put into an existing starter zip (see :mod:`opensculptboy.statues.ghost`).
+- ``python -m opensculptboy.statues apply-card CARD CONFIG --out CONFIG``: a card saved in the
+  studio applied to its statue's config: its points as ``reference_points``, its hand poses as
+  ``posed_hands`` keys (see :mod:`opensculptboy.statues.card_config`).
 """
 
 from __future__ import annotations
@@ -29,6 +34,12 @@ def main(argv=None) -> int:
         return run(words[1:])
     if words[:1] == ["starter"]:
         return starter(words[1:])
+    if words[:1] == ["ghost"]:
+        return ghost(words[1:])
+    if words[:1] == ["apply-card"]:
+        from opensculptboy.statues.card_config import main as apply_card
+
+        return apply_card(words[1:])
     if words[:1] == ["convert"]:
         words = words[1:]
     return convert(words)
@@ -178,6 +189,13 @@ def starter(argv) -> int:
     parser.add_argument(
         "--variant", help="the variant of the run (<run>/<name>.<variant>)"
     )
+    parser.add_argument(
+        "--ghost",
+        type=int,
+        default=None,
+        metavar="TRIANGLES",
+        help="the light scan's triangles (default 300000; 0 leaves it out)",
+    )
     args = parser.parse_args(argv)
     import pathlib
 
@@ -196,6 +214,35 @@ def starter(argv) -> int:
         args.thumbnail,
         props=args.props,
         with_props=not args.no_props,
+        ghost=args.ghost,
+        log=lambda m: print(m, file=sys.stderr),
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def ghost(argv) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m opensculptboy.statues ghost",
+        description="Put the light scan of a starter's figure (scan.glb, the studio's "
+        "ghost) into an existing starter zip, from the run's handoff.",
+    )
+    parser.add_argument("zip", help="the starter zip")
+    parser.add_argument(
+        "--handoff", required=True, help="the run's handoff folder (with replica.glb)"
+    )
+    parser.add_argument("--out", help="the zip to write (default: the zip itself)")
+    parser.add_argument(
+        "--triangles", type=int, default=None, help="the triangles (default 300000)"
+    )
+    args = parser.parse_args(argv)
+    from opensculptboy.statues.ghost import TRIANGLES, add_ghost
+
+    result = add_ghost(
+        args.zip,
+        args.handoff,
+        args.out,
+        args.triangles or TRIANGLES,
         log=lambda m: print(m, file=sys.stderr),
     )
     print(json.dumps(result, indent=2))

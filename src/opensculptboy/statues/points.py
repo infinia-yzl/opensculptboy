@@ -7,6 +7,10 @@ The config maps a solve's chain (``"arm.r"``: the arm and its hand; ``"hand.l"``
 see :func:`opensculptboy.posing.point_solve.chain_bones`) to the points placed for it: each
 point's ``name`` in the stored set (:mod:`opensculptboy.posing.reference_points`), its
 ``position`` in the masks' frame (the scan's, y up), and optionally ``on`` and ``weight``.
+A chain's list may also hold contact pins (entries with a ``kind``): the stored point
+``name`` held on a ``"point"`` (``target``) or on a ``"plane"`` (``point`` and ``normal``), in
+the same frame, with an optional ``weight`` (the solve's pins,
+:func:`opensculptboy.posing.point_solve.solve`).
 :func:`solve_on_pose` turns the chain's bones of a fitted card so that Anny's points meet
 them (:func:`opensculptboy.posing.point_solve.solve`); a posed hand's points pose that hand
 in :func:`opensculptboy.statues.hands.pose_hands`, before the fit or after it as the hand
@@ -34,6 +38,16 @@ def check(reference_points: dict) -> None:
         for e in entries:
             if e.get("name") not in names:
                 raise ValueError(f"Unknown reference point {e.get('name')!r}.")
+            if "kind" in e:
+                needs = {"point": ("target",), "plane": ("point", "normal")}.get(
+                    e["kind"]
+                )
+                if needs is None:
+                    raise ValueError(f"A pin is a point or a plane; got {e['kind']!r}.")
+                for k in needs:
+                    if len(e.get(k, ())) != 3:
+                        raise ValueError(f"The pin on {e['name']!r} needs its {k!r}.")
+                continue
             if len(e.get("position", ())) != 3:
                 raise ValueError(f"The reference point {e['name']!r} needs a position.")
 
@@ -42,16 +56,18 @@ def in_anny(reference_points: dict) -> dict:
     """The points with their positions in Anny's frame (from the masks' frame)."""
     from opensculptboy.fit.handoff import GLTF_TO_ANNY
 
+    def turned(e):
+        return {
+            **e,
+            **{
+                k: (np.asarray(e[k], np.float64) @ GLTF_TO_ANNY.T).tolist()
+                for k in ("position", "target", "point", "normal")
+                if k in e
+            },
+        }
+
     return {
-        chain: [
-            {
-                **e,
-                "position": (
-                    np.asarray(e["position"], np.float64) @ GLTF_TO_ANNY.T
-                ).tolist(),
-            }
-            for e in entries
-        ]
+        chain: [turned(e) for e in entries]
         for chain, entries in (reference_points or {}).items()
     }
 
@@ -59,16 +75,28 @@ def in_anny(reference_points: dict) -> dict:
 def solve_on_pose(model, character, rotation, translation, pose, chain, entries):
     """Solve a chain's bones on Anny's pose parameters ``pose`` (1, B, 4, 4) of a card placed
     by ``rotation`` and ``translation`` so that its reference points meet ``entries`` (Anny's
-    frame). Returns the rotations (B, 3, 3) and a report: each point's distance (mm), the
-    steps and the points that were off."""
+    frame), and the entries that are pins to theirs. Returns the rotations (B, 3, 3) and a
+    report: each point's distance (mm), each pin's (mm), the steps and the points that were
+    off."""
     from opensculptboy.posing.point_solve import solve
     from opensculptboy.posing.pose_rig import PoseRig
     from opensculptboy.posing.reference_points import influences_of, load_points
 
     rig, R = PoseRig.from_card(model, character, rotation, translation, pose=pose)
     by_name = {p["name"]: p for p in load_points()}
+    pin_entries = [e for e in entries if "kind" in e]
+    entries = [e for e in entries if "kind" not in e]
+    pins = []
+    if pin_entries:
+        pin_influences = influences_of(rig, [by_name[e["name"]] for e in pin_entries])
+        for f, e in zip(pin_influences, pin_entries):
+            pin = {"influence": f, "kind": e["kind"]}
+            for k in ("target", "point", "normal", "weight"):
+                if k in e:
+                    pin[k] = e[k]
+            pins.append(pin)
     stored = [by_name[e["name"]] for e in entries]
-    influences = influences_of(rig, stored)
+    influences = influences_of(rig, stored) if stored else []
     points = [
         {
             "influence": f,
@@ -79,10 +107,11 @@ def solve_on_pose(model, character, rotation, translation, pose, chain, entries)
         }
         for f, e, p in zip(influences, entries, stored)
     ]
-    result = solve(rig, R, points, [chain])
+    result = solve(rig, R, points, [chain], pins=pins)
     report = {
         "chain": chain,
         "distance_mm": {e["name"]: d for e, d in zip(entries, result.residual_mm)},
+        "pins_mm": {e["name"]: d for e, d in zip(pin_entries, result.pins_mm)},
         "iterations": result.iterations,
         "off": [e["name"] for e in entries if not e.get("on", True)],
     }

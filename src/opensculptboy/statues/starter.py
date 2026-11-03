@@ -5,6 +5,7 @@ A fitted statue as a finished starter of the web viewer's New screen: one ``.zip
 page (``starters/<id>.zip``) that the page opens through its Open path.
 
 The zip holds the statue's card as ``character.json`` with the detail files it names, the
+figure's light scan as ``scan.glb`` (the studio's ghost, :mod:`opensculptboy.statues.ghost`), the
 statue's props as wearable packages of the slot ``prop`` (:func:`prop_packages`: the base, a
 tree stump, a sword, a hat, locks, cut from the scan by the config's masks and bound rigidly
 to the nearest bone, so that the viewer's wardrobe shows and hides each), and
@@ -545,6 +546,8 @@ def light_card(card: dict, config) -> dict:
     out.pop("outfits", None)
     out.pop("active_outfit", None)
     if reference:
+        # the light card travels without the package's files, the ghost among them
+        reference = {k: v for k, v in reference.items() if k != "ghost"}
         # the credit has no field of its own outside the detail layer: a detail block
         # without levels carries it
         out["detail"] = {"fit": {"reference": reference}}
@@ -560,6 +563,7 @@ def build_starter(
     picture=None,
     props=None,
     with_props: bool = True,
+    ghost: int | None = None,
     log=print,
 ) -> dict:
     """
@@ -567,7 +571,10 @@ def build_starter(
     ``<out>/<name>/`` of :func:`~opensculptboy.statues.pipeline.run_statue`, with
     ``card/<name>.json`` and its detail files): the card (:func:`starter_card`) with the
     detail ``levels``, the statue's props (:func:`prop_packages`, from ``props`` or the
-    run's handoff) worn in the outfit ``statue``, other package files ``pieces`` and
+    run's handoff) worn in the outfit ``statue``, other package files ``pieces``, the light
+    scan ``scan.glb`` of about ``ghost`` triangles (:mod:`opensculptboy.statues.ghost`;
+    default :data:`~opensculptboy.statues.ghost.TRIANGLES`, 0 for none) where the run's
+    handoff has its ``replica.glb``, and
     ``thumbnail.png`` (``picture``, a PNG file, or a drawing of the finest fitted level),
     and the light card beside it (``<out stem>.light.json``). Returns the entries and their
     sizes in bytes.
@@ -603,6 +610,14 @@ def build_starter(
                 }
             ]
             card["active_outfit"] = OUTFIT
+    scan = None
+    replica = root / "handoff" / "replica.glb"
+    if ghost != 0 and replica.exists():
+        from opensculptboy.statues.ghost import FILE, TRIANGLES, build_ghost
+
+        data, entry = build_ghost(replica.parent, card, ghost or TRIANGLES, log=log)
+        card["detail"]["fit"]["reference"]["ghost"] = entry
+        scan = (FILE, data)
     if picture is not None:
         png = pathlib.Path(picture).read_bytes()
     else:
@@ -627,6 +642,8 @@ def build_starter(
     out.parent.mkdir(parents=True, exist_ok=True)
     entries = {"character.json": (json.dumps(card, indent=2) + "\n").encode("utf-8")}
     entries.update(files)
+    if scan:
+        entries[scan[0]] = scan[1]
     entries["thumbnail.png"] = png
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for name, data in entries.items():
@@ -642,6 +659,7 @@ def build_starter(
         "entries": {name: len(data) for name, data in entries.items()},
         "levels": [int(e["subdiv"]) for e in card["detail"]["levels"]],
         "props": [{k: e[k] for k in ("label", "bone", "file")} for e in made],
+        "ghost": card["detail"]["fit"]["reference"].get("ghost"),
         "light": str(light),
         "light_bytes": light.stat().st_size,
     }
