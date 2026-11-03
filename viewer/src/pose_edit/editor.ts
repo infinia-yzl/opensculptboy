@@ -1685,8 +1685,11 @@ export function editorReport(ed: PoseEditor) {
     const t = S?.targets.get(p.name), a = anny.get(p.name), s = (ed as any).screen.get(p.name);
     let onScan: number | null = null;
     if (t && ed.bvh) { const q = ed.bvh.closest(t.surface || t.position); onScan = q ? q.distance : null; }
+    // how far Anny's own point lies from the scan (the ghost's offset there), within 20 cm
+    let annyGap: number | null = null;
+    if (a && ed.bvh) { const q = ed.bvh.closest(a, 0.2); annyGap = q ? q.distance : null; }
     pts[p.name] = { number: p.number, target: t ? t.position : null, on: t ? t.on : null, confidence: t ? t.confidence : null, depth: t ? t.depth_mm : 0,
-      placed: t ? t.placed : null, anny: a || null, screen: s || null, visible: (ed as any).visible.get(p.name) ?? null, onScan };
+      placed: t ? t.placed : null, anny: a || null, screen: s || null, visible: (ed as any).visible.get(p.name) ?? null, onScan, annyGap };
   }
   return { state: { ...editStore.get(), hands: undefined, body: undefined }, points: pts, rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
     labels: S ? S.rig.labels : [] };
