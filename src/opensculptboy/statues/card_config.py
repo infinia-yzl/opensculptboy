@@ -37,8 +37,9 @@ summed and given back by the table's shares (0.4, 0.5, 0.1), so that a turn keye
 does not kink the forearm halfway. The bones' twist axes differ a little, so the shared
 twist alone moves the hand; the posing solve then turns those bones again in its own
 parameters (each bone's bend and side, and the group's twist by its shares), without the
-ranges, until the hand's 21 points come back to where the card has them, as close as those bones can bring them. A pose that the page's solve
-made has those shares already and stays as it is.
+ranges, until the hand's 21 points come back to where the card has them, as close as those
+bones can bring them. A pose that the page's solve made has those shares already and stays
+as it is.
 
 The turns are local: the hand lands where the card shows it when the run that the config
 rebuilds starts from the same fit as the card (``run --from`` the starter's run).
