@@ -192,8 +192,11 @@ class TestPoseEditPage(unittest.TestCase):
             )
 
             # the wheel during a drag pushes the point 1 mm a notch; Page Down 1 mm more; Page Up pulls it out
-            tip = report(tab)["points"]["middle_tip.R"]["screen"]
+            # the selection turns the view round the point, so its place on the screen is read after it
             tab.locator(".hand-map [data-name='middle_tip.R']").click()
+            tab.wait_for_timeout(400)
+            settle(tab)
+            tip = report(tab)["points"]["middle_tip.R"]["screen"]
             tab.mouse.move(tip["x"], tip["y"])
             tab.mouse.down()
             tab.mouse.move(tip["x"] + 5, tip["y"])
