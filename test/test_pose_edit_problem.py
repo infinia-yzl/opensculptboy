@@ -99,7 +99,12 @@ class TestPageProblem(unittest.TestCase):
         }
         cases = [
             {"chains": ["arm.r"], "limits": True, "pins": False, "solve": True},
-            {"chains": ["arm.r", "leg.l"], "limits": False, "pins": True, "solve": True},
+            {
+                "chains": ["arm.r", "leg.l"],
+                "limits": False,
+                "pins": True,
+                "solve": True,
+            },
             {"chains": ["hand.r"], "limits": True, "pins": False, "solve": False},
         ]
         with tempfile.TemporaryDirectory() as tmp:
@@ -139,11 +144,15 @@ class TestPageProblem(unittest.TestCase):
             )
         # each case's problem, field by field, and the page's solve of it against Python's
         inputs = [
-            {**p, "influence": f}
-            for p, f in zip(points, influences_of(rig, use))
+            {**p, "influence": f} for p, f in zip(points, influences_of(rig, use))
         ]
         pin_in = [
-            {**q, "influence": influences_of(rig, [stored["wrist.R"], stored["toe.L"]])[i]}
+            {
+                **q,
+                "influence": influences_of(rig, [stored["wrist.R"], stored["toe.L"]])[
+                    i
+                ],
+            }
             for i, q in enumerate(pins)
         ]
         for case, page in zip(cases, out["cases"]):

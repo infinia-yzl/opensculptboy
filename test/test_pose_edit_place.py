@@ -50,7 +50,10 @@ def _case(rig, rotations, points, scan, triangles):
             "vertices": V.tolist(),
             "parts": [part_of(rig.labels[b]) for b in strongest],
         },
-        "scan": {"vertices": np.asarray(scan).tolist(), "triangles": np.asarray(triangles).tolist()},
+        "scan": {
+            "vertices": np.asarray(scan).tolist(),
+            "triangles": np.asarray(triangles).tolist(),
+        },
     }
 
 
@@ -81,7 +84,12 @@ class TestPagePlacement(unittest.TestCase):
         wave = 0.006 + 0.03 * (np.sin(40 * V[:, 2]) > 0.95)
         cases = [
             (fist, points_of(["hand.r"]), V + 0.002 * N, rig.faces),
-            (fist, load_points(), V - wave[:, None] * N, rig.faces[~left_hand[rig.faces].any(1)]),
+            (
+                fist,
+                load_points(),
+                V - wave[:, None] * N,
+                rig.faces[~left_hand[rig.faces].any(1)],
+            ),
         ]
         inputs = [_case(rig, *c) for c in cases]
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,7 +108,11 @@ class TestPagePlacement(unittest.TestCase):
                     self.assertAlmostEqual(e["confidence"], p["confidence"], delta=2e-4)
                     # a closest point on an edge or a corner of the scan has several triangles; the two pick
                     # different ones (Python's in its tree's order), so their normals' marks may differ there
-                    marks = ("distance", "fused") if e["method"] == "closest" else ("distance", "normals", "fused")
+                    marks = (
+                        ("distance", "fused")
+                        if e["method"] == "closest"
+                        else ("distance", "normals", "fused")
+                    )
                     for k in marks:
                         self.assertAlmostEqual(e["marks"][k], p["marks"][k], delta=2e-4)
                     methods.add(e["method"])
