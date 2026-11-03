@@ -25,6 +25,8 @@ const TABLE = {
   taichi: 'person-simple-tai-chi', run: 'person-simple-run', continue: 'arrow-counter-clockwise', model: 'cube-transparent', character: 'user-circle', eye: 'eye',
   compass: 'compass', display: 'circle-half', xray: 'intersect-square', ghost: 'ghost', eyeOff: 'eye-slash', home: 'house', cube: 'cube',
   cursor: 'cursor', move: 'arrows-out-cardinal', rotate: 'arrow-clockwise', grab: 'hand-grabbing', mouse: 'mouse',
+  // the pose editor's
+  pin: 'push-pin', chevronLeft: 'caret-left', sparkle: 'sparkle', arrowDown: 'arrow-line-down', hand: 'hand-palm',
 };
 const dir = path.join(here, 'node_modules', '@phosphor-icons', 'core', 'assets', 'light');
 const lines = Object.entries(TABLE).map(([name, ph]) => {
