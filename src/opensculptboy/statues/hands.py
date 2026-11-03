@@ -213,6 +213,41 @@ def key_hand(model, pose, chain: str, key: dict) -> None:
                 pose[0, b, :3, :3] = turn(value)
 
 
+# how far (mm) a keyed finger's clearance on the fit's own pose may differ from the key's
+KEY_TOLERANCE = 1.0
+
+
+def check_key(key: dict, clearance: dict) -> dict | None:
+    """Compare a keyed hand's clearances (mm, per finger) on the fit's own pose with those
+    the key was set with (``key["clearance_mm"]``, from the probe that chose it): a key set
+    on one arm pose and applied to another puts the fingers elsewhere. Warns when one
+    differs by more than ``key["tolerance_mm"]`` (default :data:`KEY_TOLERANCE`). Returns
+    the largest difference and whether it is within the tolerance, or None for a key
+    without clearances."""
+    import warnings
+
+    expected = key.get("clearance_mm")
+    if not expected:
+        return None
+    diffs = {
+        f: abs(float(clearance[f]) - float(v))
+        for f, v in expected.items()
+        if clearance.get(f) is not None
+    }
+    worst = max(diffs.values()) if diffs else 0.0
+    tolerance = float(key.get("tolerance_mm", KEY_TOLERANCE))
+    ok = worst <= tolerance
+    if not ok:
+        far = {f: round(d, 2) for f, d in diffs.items() if d > tolerance}
+        warnings.warn(
+            f"A keyed hand's fingers lie elsewhere than when the key was set: clearance "
+            f"differs by {far} mm (more than {tolerance} mm); the arm's pose differs from "
+            "the key's.",
+            stacklevel=2,
+        )
+    return {"max_diff_mm": round(worst, 2), "ok": ok}
+
+
 def _kabsch(P: np.ndarray, Q: np.ndarray) -> np.ndarray:
     """The turn (3, 3) that best takes the points P (k, 3) to Q, both about the origin."""
     U, _, Vt = np.linalg.svd(P.T @ Q)
@@ -327,9 +362,13 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
                 },
                 "stone": stone,
             }
+            report[chain]["key_check"] = check_key(
+                spec["key"], report[chain]["clearance_mm"]
+            )
             if log:
                 log(
-                    f"hand {chain}: keyed, clearance (mm) {report[chain]['clearance_mm']}"
+                    f"hand {chain}: keyed, clearance (mm) "
+                    f"{report[chain]['clearance_mm']}, check {report[chain]['key_check']}"
                 )
             continue
         turn = None

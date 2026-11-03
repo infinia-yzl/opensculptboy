@@ -1245,6 +1245,23 @@ class TestPosedHands(unittest.TestCase):
             np.testing.assert_allclose(P[labels.index(name)], rest[labels.index(name)])
         rep = report["hand.r"]
         self.assertEqual(rep["curl"], "key")
+        self.assertIsNone(rep["key_check"])
+        # a key that carries the clearances it was set with is checked against the pose's
+        same = {**key, "clearance_mm": dict(rep["clearance_mm"])}
+        _, checked = pose_hands(
+            model, character, R, t, {"hand.r": {"key": same, "objects": [grip]}}
+        )
+        self.assertTrue(checked["hand.r"]["key_check"]["ok"])
+        moved = {
+            **key,
+            "clearance_mm": {f: c + 5.0 for f, c in rep["clearance_mm"].items()},
+        }
+        with self.assertWarns(UserWarning):
+            _, off = pose_hands(
+                model, character, R, t, {"hand.r": {"key": moved, "objects": [grip]}}
+            )
+        self.assertFalse(off["hand.r"]["key_check"]["ok"])
+        self.assertAlmostEqual(off["hand.r"]["key_check"]["max_diff_mm"], 5.0, places=6)
         self.assertEqual(
             sorted(rep["clearance_mm"]), [f"finger{k}" for k in range(1, 6)]
         )
@@ -1637,6 +1654,16 @@ class TestPropPieces(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             shape_mesh({"kind": "half", "point": [0, 0, 0], "normal": [0, 1, 0]})
+        # a block tapering from a 2 x 6 cm section to a 3 x 7 cm one, 4 cm up
+        low = [[x, 0.0, z] for x in (-0.01, 0.01) for z in (-0.03, 0.03)]
+        high = [[x, 0.04, z] for x in (-0.015, 0.015) for z in (-0.035, 0.035)]
+        hull = shape_mesh({"kind": "hull", "points": low + high})
+        self.assertTrue(hull.is_watertight)
+        self.assertAlmostEqual(
+            hull.volume, 0.04 / 6 * (12e-4 + 4 * 16.25e-4 + 21e-4), 8
+        )
+        with self.assertRaises(ValueError):
+            shape_mesh({"kind": "hull", "points": low[:3]})
 
     def test_a_turned_piece_from_its_profile(self):
         from opensculptboy.statues.starter import shape_mesh

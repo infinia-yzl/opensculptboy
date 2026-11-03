@@ -178,13 +178,20 @@ def statue_props(root, props=None) -> list:
 
 def shape_mesh(entry):
     """A closed mesh of a sphere, capsule or box mask entry (a dict or a
-    :class:`~opensculptboy.statues.scan.Mask`), or of a ``"revolve"`` entry (``start``,
+    :class:`~opensculptboy.statues.scan.Mask`), of a ``"hull"`` entry (``points``: their
+    convex hull, for a block that tapers from one section into another with bevelled
+    edges, as a sword's ricasso flows into its blade), or of a ``"revolve"`` entry (``start``,
     ``end``: the axis; ``profile``: (distance along the axis from ``start``, radius) pairs in
     metres, the profile of a turned piece such as a pommel), in the masks' frame."""
     import trimesh
 
     from opensculptboy.statues.scan import Mask
 
+    if isinstance(entry, dict) and entry.get("kind") == "hull":
+        points = np.asarray(entry["points"], np.float64)
+        if points.ndim != 2 or points.shape[1] != 3 or len(points) < 4:
+            raise ValueError("A hull shape is a list of at least four points.")
+        return trimesh.convex.convex_hull(points)
     if isinstance(entry, dict) and entry.get("kind") == "revolve":
         a = np.asarray(entry["start"], np.float64)
         b = np.asarray(entry["end"], np.float64)
