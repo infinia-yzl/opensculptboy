@@ -48,8 +48,13 @@ def open_statue(tab, folder):
     from test.pose_edit_fixtures import points_statue
 
     files, rig, rest, truth = points_statue(folder)
-    tab.evaluate(DROP, {f.name: base64.b64encode(f.read_bytes()).decode() for f in files})
-    tab.wait_for_function("() => window.wearStats && window.wearStats() && window.wearStats().card === 'Points statue'", timeout=120000)
+    tab.evaluate(
+        DROP, {f.name: base64.b64encode(f.read_bytes()).decode() for f in files}
+    )
+    tab.wait_for_function(
+        "() => window.wearStats && window.wearStats() && window.wearStats().card === 'Points statue'",
+        timeout=120000,
+    )
     tab.evaluate("() => __shell.actions.openMode('pose')")
     tab.wait_for_function("() => !!window.__poseEdit")
     return rig, rest, truth
@@ -57,7 +62,10 @@ def open_statue(tab, folder):
 
 def edit_on(tab):
     press_in_view(tab, "Tab")
-    tab.wait_for_function("() => window.poseEditReport().state.on && window.poseEditReport().state.scan.available", timeout=60000)
+    tab.wait_for_function(
+        "() => window.poseEditReport().state.on && window.poseEditReport().state.scan.available",
+        timeout=60000,
+    )
 
 
 def settle(tab, frames=4):
@@ -66,7 +74,9 @@ def settle(tab, frames=4):
 
 
 @local_only("Playwright with the built viewer page")
-@unittest.skipUnless(playwright_available(), "Playwright and the built viewer page are needed")
+@unittest.skipUnless(
+    playwright_available(), "Playwright and the built viewer page are needed"
+)
 class TestPoseEditPage(unittest.TestCase):
     def test_points_on_a_statue(self):
         from playwright.sync_api import sync_playwright
@@ -80,7 +90,11 @@ class TestPoseEditPage(unittest.TestCase):
         shots = os.environ.get("OSB_POSE_SHOTS")
         with sync_playwright() as p:
             browser, tab = open_tab(p, url + "?base", 1920, 1080)
-            shot = lambda name: tab.screenshot(path=str(pathlib.Path(shots) / f"{name}.png")) if shots else None
+
+            def shot(name):
+                if shots:
+                    tab.screenshot(path=str(pathlib.Path(shots) / f"{name}.png"))
+
             rig, rest, truth = open_statue(tab, folder)
             edit_on(tab)
             r = report(tab)
@@ -89,7 +103,9 @@ class TestPoseEditPage(unittest.TestCase):
 
             # Place points: every point on the scan, the arms turned towards the scan's pose
             tab.get_by_role("button", name="Place points").click()
-            tab.wait_for_function("() => window.poseEditReport().state.counts.placed > 0")
+            tab.wait_for_function(
+                "() => window.poseEditReport().state.counts.placed > 0"
+            )
             settle(tab)
             r = report(tab)
             placed = [v for v in r["points"].values() if v["target"] is not None]
@@ -98,7 +114,11 @@ class TestPoseEditPage(unittest.TestCase):
                 if v["target"] is not None and v["depth"] == 0:
                     self.assertLess(v["onScan"], 1e-4, name)
             # the right hand's points: Anny's points meet their places within a few millimetres
-            gaps = [np.linalg.norm(np.subtract(v["anny"], v["target"])) for k, v in r["points"].items() if k.endswith(".R") and v["on"]]
+            gaps = [
+                np.linalg.norm(np.subtract(v["anny"], v["target"]))
+                for k, v in r["points"].items()
+                if k.endswith(".R") and v["on"]
+            ]
             self.assertLess(float(np.median(gaps)), 0.004)
             shot("1b_placed")
 
@@ -132,15 +152,25 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertEqual(after["placed"], "owner")
             self.assertEqual(len(report(tab)["undo"]), undo0 + 1)
             # the finger followed its point
-            self.assertLess(np.linalg.norm(np.subtract(after["anny"], after["target"])), 0.01)
+            self.assertLess(
+                np.linalg.norm(np.subtract(after["anny"], after["target"])), 0.01
+            )
 
             # Ctrl+Z puts it back; Ctrl+Shift+Z brings the drag again
             press_in_view(tab, "Control+z")
             settle(tab)
-            np.testing.assert_allclose(report(tab)["points"]["index_pip.R"]["target"], before["target"], atol=1e-9)
+            np.testing.assert_allclose(
+                report(tab)["points"]["index_pip.R"]["target"],
+                before["target"],
+                atol=1e-9,
+            )
             press_in_view(tab, "Control+Shift+z")
             settle(tab)
-            np.testing.assert_allclose(report(tab)["points"]["index_pip.R"]["target"], after["target"], atol=1e-9)
+            np.testing.assert_allclose(
+                report(tab)["points"]["index_pip.R"]["target"],
+                after["target"],
+                atol=1e-9,
+            )
 
             # Esc during a drag puts the point back where it was
             s = report(tab)["points"]["index_pip.R"]["screen"]
@@ -152,7 +182,11 @@ class TestPoseEditPage(unittest.TestCase):
             tab.keyboard.press("Escape")
             tab.mouse.up()
             settle(tab)
-            np.testing.assert_allclose(report(tab)["points"]["index_pip.R"]["target"], after["target"], atol=1e-9)
+            np.testing.assert_allclose(
+                report(tab)["points"]["index_pip.R"]["target"],
+                after["target"],
+                atol=1e-9,
+            )
 
             # the wheel during a drag pushes the point 1 mm a notch; Page Down 1 mm more; Page Up pulls it out
             tip = report(tab)["points"]["middle_tip.R"]["screen"]
@@ -166,15 +200,23 @@ class TestPoseEditPage(unittest.TestCase):
                 settle(tab, 1)
             tab.mouse.up()
             settle(tab)
-            self.assertAlmostEqual(report(tab)["points"]["middle_tip.R"]["depth"], 3.0, places=6)
+            self.assertAlmostEqual(
+                report(tab)["points"]["middle_tip.R"]["depth"], 3.0, places=6
+            )
             press_in_view(tab, "PageDown")
             settle(tab)
-            self.assertAlmostEqual(report(tab)["points"]["middle_tip.R"]["depth"], 4.0, places=6)
+            self.assertAlmostEqual(
+                report(tab)["points"]["middle_tip.R"]["depth"], 4.0, places=6
+            )
             shot("1e_pushed")
             press_in_view(tab, "PageUp")
-            self.assertAlmostEqual(report(tab)["points"]["middle_tip.R"]["depth"], 3.0, places=6)
+            self.assertAlmostEqual(
+                report(tab)["points"]["middle_tip.R"]["depth"], 3.0, places=6
+            )
             press_in_view(tab, "Alt+r")
-            self.assertAlmostEqual(report(tab)["points"]["middle_tip.R"]["depth"], 0.0, places=6)
+            self.assertAlmostEqual(
+                report(tab)["points"]["middle_tip.R"]["depth"], 0.0, places=6
+            )
 
             # [ and ] walk along the finger; Esc clears the selection
             press_in_view(tab, "[")
@@ -185,7 +227,10 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertIsNone(report(tab)["state"]["selected"])
 
             # contact pins and the balance mark
-            tab.evaluate("() => { window.__poseEdit.selectHand(null, false); window.__poseEdit.addPin('sole.L', { kind: 'ground' }); window.__poseEdit.setBalance(true); }")
+            tab.evaluate(
+                "() => { const e = window.__poseEdit; e.selectHand(null, false); "
+                "e.addPin('sole.L', { kind: 'ground' }); e.setBalance(true); }"
+            )
             settle(tab, 6)
             r = report(tab)
             self.assertEqual(len(r["state"]["pins"]), 1)
@@ -197,12 +242,16 @@ class TestPoseEditPage(unittest.TestCase):
                 tab.get_by_role("button", name="Save points").click()
             data = pathlib.Path(dl.value.path()).read_bytes()
             if data[:2] == b"PK":
-                card = json.loads(zipfile.ZipFile(io.BytesIO(data)).read("character.json"))
+                card = json.loads(
+                    zipfile.ZipFile(io.BytesIO(data)).read("character.json")
+                )
             else:
                 card = json.loads(data)
             ref = card["detail"]["fit"]["reference"]
             self.assertEqual(ref["points"]["format"], "opensculptboy.card-points/1")
-            self.assertGreaterEqual(sum(len(v) for v in ref["points"]["chains"].values()), 50)
+            self.assertGreaterEqual(
+                sum(len(v) for v in ref["points"]["chains"].values()), 50
+            )
             self.assertEqual(len(ref["pins"]), 1)
             self.assertIn("ghost", ref)
             self.assertTrue(card["pose"]["bones"])

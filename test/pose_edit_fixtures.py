@@ -33,7 +33,9 @@ def scan_glb(vertices_anny, triangles) -> bytes:
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0, "scale": [float(scale)] * 3, "translation": lo.tolist()}],
-        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "mode": 4}]}],
+        "meshes": [
+            {"primitives": [{"attributes": {"POSITION": 0}, "indices": 1, "mode": 4}]}
+        ],
         "buffers": [{"byteLength": len(bin_)}],
         "bufferViews": [
             {"buffer": 0, "byteOffset": 0, "byteLength": len(pos), "byteStride": 8},
@@ -48,7 +50,12 @@ def scan_glb(vertices_anny, triangles) -> bytes:
                 "min": [0, 0, 0],
                 "max": q.max(0).astype(int).tolist(),
             },
-            {"bufferView": 1, "componentType": 5125, "count": int(np.size(triangles)), "type": "SCALAR"},
+            {
+                "bufferView": 1,
+                "componentType": 5125,
+                "count": int(np.size(triangles)),
+                "type": "SCALAR",
+            },
         ],
     }
     js = json.dumps(gltf).encode()
