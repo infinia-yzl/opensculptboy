@@ -6,11 +6,14 @@
 // offset and the turntable's holder. The card frame of the scan and of the saved points is the frame of Anny's
 // forward pass (opensculptboy.posing.pose_rig with an identity placement): the root's head of the rest body at the
 // origin, turned by the root's own turn, so x_card = Rr (x_rest - h_root). The solve works in the space of the turns
-// (each bone's rest head in Anny's axes) with that map as its frame. A page quaternion q of a bone is the rotation
-// A D A^T of the card's turn D.
+// of Anny's local-ref pose (PoseRig: each bone's reference head in Anny's axes, the bones bound by their map from the
+// rest to the reference pose) with that map as its frame. The page keeps its rotations R from the rest pose; the card
+// and the solve keep local-ref turns D, which pose_reference.ts converts with each bone's turn C of the body shown:
+// D_b = C_parent R_b C_b^T. A page quaternion q of a bone is the rotation A R A^T.
 
 import type { PoseHost } from './host.ts';
 import type { M3, RigSpace, SkinSource, V3 } from './problem.ts';
+import { pageToRef, refToPage, referencePose } from '../pose_reference.ts';
 
 export const A = [1, 0, 0, 0, 0, 1, 0, -1, 0];
 
@@ -39,6 +42,12 @@ export function matToQuat(m: ArrayLike<number>): [number, number, number, number
 const mul = (P: ArrayLike<number>, Q: ArrayLike<number>): M3 => {
   const o = new Array(9).fill(0);
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) o[r * 3 + c] = P[r * 3] * Q[c] + P[r * 3 + 1] * Q[3 + c] + P[r * 3 + 2] * Q[6 + c];
+  return o;
+};
+// 4 x 4 row-major product
+const mul4 = (P: ArrayLike<number>, Q: ArrayLike<number>): number[] => {
+  const o = new Array(16).fill(0);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[r * 4 + c] = P[r * 4] * Q[c] + P[r * 4 + 1] * Q[4 + c] + P[r * 4 + 2] * Q[8 + c] + P[r * 4 + 3] * Q[12 + c];
   return o;
 };
 const T = (P: ArrayLike<number>): M3 => [P[0], P[3], P[6], P[1], P[4], P[7], P[2], P[5], P[8]];
@@ -111,29 +120,58 @@ export class Frames {
     return new THREE.Matrix4().multiplyMatrices(this.host.holder(), m);
   }
 
-  // the card's rotations (B x 9) of the page's pose
-  cardRotations(q: Float32Array = this.host.pose()): number[][] {
-    const n = q.length / 4, out: number[][] = [];
-    for (let i = 0; i < n; i++) out.push(toCardRot(quatToMat(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3])));
-    return out;
+  // each bone's turn C = reference rest^T for the body shown (identity without the page's orientation tables)
+  turns(): ArrayLike<number> {
+    const C = this.host.restTurns(), n = this.host.bones().length;
+    if (C) return C;
+    const I = new Float64Array(n * 9);
+    for (let b = 0; b < n; b++) { I[b * 9] = 1; I[b * 9 + 4] = 1; I[b * 9 + 8] = 1; }
+    return I;
   }
-  // the page's quaternions of the card's rotations
-  pageQuaternions(R: number[][]): Float32Array {
-    const q = new Float32Array(R.length * 4);
-    R.forEach((D, i) => q.set(matToQuat(toPageRot(D)), i * 4));
+
+  // the card's local-ref turns D (B x 9, Anny's axes) of the page's pose: D_b = C_parent R_b C_b^T (pose_reference.ts)
+  cardRotations(q: Float32Array = this.host.pose()): number[][] {
+    const n = q.length / 4, R: number[][] = [];
+    for (let i = 0; i < n; i++) R.push(toCardRot(quatToMat(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3])));
+    return pageToRef(R, this.turns(), this.host.parents());
+  }
+  // the page's quaternions of local-ref turns D: R_b = C_parent^T D_b C_b
+  pageQuaternions(D: number[][]): Float32Array {
+    const R = refToPage(D, this.turns(), this.host.parents()), q = new Float32Array(R.length * 4);
+    R.forEach((Rb, i) => q.set(matToQuat(toPageRot(Rb)), i * 4));
     return q;
   }
 
-  // the rig in the space of the turns of the card frame, for the present pose's root turn
+  // the reference pose of the body shown (Anny's rest axes): each bone's map from its rest frame to its reference one,
+  // [C_b, h_ref - C_b h_b] (PoseRig.bind = ref rest^-1), and the reference heads h_ref (the page's rest rig posed by
+  // R_b = C_parent^T C_b, pose_reference.referencePose)
+  reference(): { bind: number[][]; heads: V3[] } {
+    const H = this.host.restHeads().map((h) => this.toCard(h)), parents = this.host.parents(), C = this.turns();
+    const R = referencePose(C, parents), G: number[][] = new Array(H.length), heads: V3[] = new Array(H.length);
+    const order: number[] = [], seen = new Set<number>();
+    const visit = (b: number) => { if (seen.has(b)) return; if (parents[b] >= 0) visit(parents[b]); seen.add(b); order.push(b); };
+    H.forEach((_, b) => visit(b));
+    for (const b of order) {
+      // the local turn about the rest head, then the parent's map: G_b = G_p [R_b, h_b - R_b h_b]
+      const r = R[b], h = H[b], t = [0, 1, 2].map((k) => h[k] - (r[k * 3] * h[0] + r[k * 3 + 1] * h[1] + r[k * 3 + 2] * h[2]));
+      const L = [r[0], r[1], r[2], t[0], r[3], r[4], r[5], t[1], r[6], r[7], r[8], t[2], 0, 0, 0, 1];
+      const p = parents[b];
+      G[b] = p >= 0 ? mul4(G[p], L) : L;
+      const g = G[b];
+      heads[b] = [0, 1, 2].map((k) => g[k * 4] * h[0] + g[k * 4 + 1] * h[1] + g[k * 4 + 2] * h[2] + g[k * 4 + 3]) as V3;
+    }
+    return { bind: G, heads };
+  }
+
+  // the rig in the space of the turns (Python's PoseRig with an identity placement): the reference heads, and the
+  // frame of the root's turn, x_card = D_root (x - h_root)
   rig(rotations?: number[][]): RigSpace {
-    const H = this.host.restHeads().map((h) => this.toCard(h)), root = this.host.root();
-    const Rr = (rotations || this.cardRotations())[root];
-    // Anny's forward pass: x_card = Rr (x - h)
-    const h = H[root];
-    const t = [0, 1, 2].map((r) => -(Rr[r * 3] * h[0] + Rr[r * 3 + 1] * h[1] + Rr[r * 3 + 2] * h[2]));
+    const ref = this.reference(), root = this.host.root();
+    const Dr = (rotations || this.cardRotations())[root], h = ref.heads[root];
+    const t = [0, 1, 2].map((r) => -(Dr[r * 3] * h[0] + Dr[r * 3 + 1] * h[1] + Dr[r * 3 + 2] * h[2]));
     return {
-      labels: this.host.bones(), parents: this.host.parents(), heads: H,
-      frame: [[Rr[0], Rr[1], Rr[2], t[0]], [Rr[3], Rr[4], Rr[5], t[1]], [Rr[6], Rr[7], Rr[8], t[2]], [0, 0, 0, 1]],
+      labels: this.host.bones(), parents: this.host.parents(), heads: ref.heads,
+      frame: [[Dr[0], Dr[1], Dr[2], t[0]], [Dr[3], Dr[4], Dr[5], t[1]], [Dr[6], Dr[7], Dr[8], t[2]], [0, 0, 0, 1]],
     };
   }
 
@@ -143,7 +181,9 @@ export class Frames {
     if (rows) for (let c = 0; c < rows.length; c++) index.set(rows[c], c);
     const at = (row: number) => { const c = rows ? index.get(row) : row; if (c === undefined) throw new Error(`The page has no row ${row} of Anny's mesh.`); return c; };
     const cache = new Map<number, V3>();
+    const bind = this.reference().bind;
     return {
+      bind: (b) => bind[b] || null,
       rest: (row) => { let v = cache.get(row); if (!v) { const c = at(row); v = this.toCard([b.coarse[c * 3], b.coarse[c * 3 + 1], b.coarse[c * 3 + 2]]); cache.set(row, v); } return v; },
       skin: (row) => { const c = at(row), K = b.skin; const bones: number[] = [], weights: number[] = [];
         for (let k = 0; k < 8; k++) { const w = K[c * 16 + 8 + k]; if (w) { bones.push(K[c * 16 + k]); weights.push(w / 255); } }

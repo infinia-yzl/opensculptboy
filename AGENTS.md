@@ -121,6 +121,8 @@ uv run python -m unittest test.test_statues                                     
 uv run python -m opensculptboy.statues ghost starters/david_goliath.zip --handoff out/<name>/handoff   # the figure's light scan (scan.glb, meshopt) put into a starter; the starter command packs one by default (--ghost TRIANGLES)
 uv run python -m opensculptboy.statues apply-card card.json src/opensculptboy/data/statues/david_goliath.json --out config.json   # a studio card's placed points, pins and hand poses as the config's reference_points and posed_hands keys (forearm twist shared)
 uv run python -m unittest test.test_statue_ghost test.test_statue_card                  # the light scan and its meshopt codecs (node: the page's decoder), and a card applied to a config, with contact pins
+uv run python -m unittest test.test_pose_reference                                     # a card's local-ref pose as the page's pose: Anny's own vertices after the conversion, the page's bone turns in node against Python's, pose.reference
+uv run python -m opensculptboy.posing.frames card starters/david_goliath.zip             # add a card's bone turns (pose.reference) to a card or a starter zip
 ```
 
 ### Face calibration

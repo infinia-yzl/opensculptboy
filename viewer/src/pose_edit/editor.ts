@@ -36,6 +36,7 @@ import { AXES, BODY_JOINTS, Joints, jointName, type JointValues } from './joints
 import { FINGERS, FINGER_LABELS, HandControls, PRESETS, RELAXED, copyMirrored, mirrorPose, type HandShape } from './hands.ts';
 import { transforms, coordinatesOf, rotationOf, expRotation, mul3, buildProblem, type PointInput, type PinInput } from './problem.ts';
 import { PointSolver, logRotation as logOf } from './solve.ts';
+import { cardTurns } from '../pose_reference.ts';
 
 export type Tool = 'select' | 'move' | 'turn';
 export type Section = 'points' | 'joints' | 'hands' | 'limbs' | 'library';
@@ -355,7 +356,9 @@ export class PoseEditor {
       tris.push(q[i], q[i + 1], q[i + 2], q[i], q[i + 2], q[i + 3]);
     }
     void rows;
-    this.body = new SkinnedBody(S.rig, rest, idx, w, 8, Uint32Array.from(tris));
+    // the bones bound by their map from the rest pose to the reference one (the zero of the local-ref turns)
+    const bind = this.frames.reference().bind;
+    this.body = new SkinnedBody(S.rig, rest, idx, w, 8, Uint32Array.from(tris), (k) => bind[k] || null);
     return this.body;
   }
 
@@ -1221,17 +1224,10 @@ export class PoseEditor {
     this.host.toast(`Saved the pose ${label}`);
   }
   deletePose(id: string) { const list = editStore.get().poses.filter((p) => p.id !== id); savePoses(list); this.publish({ poses: list }); }
-  // a saved pose's turns (card axes) by bone index: the card's quaternions (x, y, z, w) in Anny's frame; a bone it
-  // lacks stands at rest, as the card leaves out the bones at rest
+  // a saved pose's local-ref turns by bone index (its pose.bones, as a card keeps them); a bone it lacks stands at the
+  // zero, Anny's reference pose, as the card leaves out the bones there
   private poseRotations(p: SavedPose): number[][] {
-    const S = this.session!;
-    return S.rig.labels.map((l) => {
-      const q = p.bones[l];
-      if (!q || q.length !== 4) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
-      const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1, [x, y, z, w] = q.map((v) => v / n);
-      return [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
-        2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)];
-    });
+    return cardTurns(p.bones, this.session!.rig.labels);
   }
   // a saved pose onto the part chosen (the whole body, a hand, the arms, the legs)
   applyPose(id: string, part = editStore.get().applyTo) {

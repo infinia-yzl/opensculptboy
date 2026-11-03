@@ -17,6 +17,8 @@ export interface PoseHost {
   bones(): string[];
   parents(): number[];
   restHeads(): number[][];
+  // each bone's turn C = reference rest^T (bones * 9, Anny's axes) for the body shown (pose_reference.ts), or null
+  restTurns(): ArrayLike<number> | null;
   root(): number;
   // the page's frame of Anny's card frame: page = scale * rotation * x + offset (+ the body's lift on y)
   frame(): { scale: number; rotation: number[]; offset: number[] };
