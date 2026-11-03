@@ -40,9 +40,10 @@ class Character:
     relative to its parent, and ``"root"`` moves the root bone (x, y, z in metres, Anny's
     frame). The turns are measured from Anny's reference pose (each bone's frame at its
     reference orientation, a little apart from the rest pose): missing bones keep it, and an
-    empty ``pose`` is that pose. ``"reference"`` (optional, :mod:`opensculptboy.posing.frames`) holds each bone's turn from
-    its rest orientation to its reference orientation for the card's body, which the web
-    viewer checks its own conversion against.
+    empty ``pose`` is that pose. ``"reference"`` (optional,
+    :mod:`opensculptboy.posing.frames`) holds each bone's turn from its rest orientation to
+    its reference orientation for the card's body, which the web viewer checks its own
+    conversion against.
 
     ``detail`` holds an optional detail layer (schema 2): per-vertex offsets beyond the
     parametric model, such as the residuals of a fit to a reference mesh
