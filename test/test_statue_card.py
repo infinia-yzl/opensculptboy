@@ -342,6 +342,13 @@ class TestApplyCard(unittest.TestCase):
         block["frame"] = "scan"
         block["chains"] = {"neck": [{"name": "head_top", "position": [0.0, 1.7, 0.1]}]}
         card["detail"]["fit"]["reference"]["pins"] = []
+        from opensculptboy.statues.card_config import apply_card
+
+        idle = json.loads(json.dumps(card))
+        idle["detail"]["fit"]["reference"]["points"]["chains"]["neck"][0]["on"] = False
+        out, report = apply_card(idle, dict(BASE), hands=())
+        self.assertEqual(report["skipped_chains"], ["neck"])
+        self.assertNotIn("reference_points", out)
         self.assertEqual(
             card_points(card),
             {

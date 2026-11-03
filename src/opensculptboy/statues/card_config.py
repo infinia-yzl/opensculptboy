@@ -25,7 +25,7 @@ page saves it:
 - ``reference_points``: a hand's points and its arm's (the shoulder and the elbow) pose the
   chain ``arm.<side>`` (the arm and the hand), a leg's ``leg.<side>`` and the head's ``neck``;
   a pin joins the chain of the point it names (:func:`opensculptboy.statues.points.check`
-  takes both);
+  takes both); a chain with no point on and no pin is left out (``skipped_chains``);
 - ``posed_hands.hand.<side>.key``: ``bones``, the turns of every bone of the side from
   ``shoulder01`` down as rotation vectors in degrees, ``local_changes`` (the hand's), and the
   hand's ``after_fit`` (:data:`AFTER_FIT`: the right hand before the fit, the left after it, as
@@ -295,9 +295,6 @@ def apply_card(
     points = card_points(card)
     if points:
         check(points)
-        merged = dict(out.get("reference_points") or {})
-        merged.update(points)
-        out["reference_points"] = merged
         report["reference_points"] = {
             c: {
                 "points": sum("kind" not in e for e in v),
@@ -306,6 +303,18 @@ def apply_card(
             }
             for c, v in points.items()
         }
+        # a chain with no point on and no pin holds nothing to solve for: its solve would only
+        # curl the fingers, which the hand's key already sets
+        idle = sorted(
+            c
+            for c, r in report["reference_points"].items()
+            if r["on"] == 0 and r["pins"] == 0
+        )
+        merged = dict(out.get("reference_points") or {})
+        merged.update({c: v for c, v in points.items() if c not in idle})
+        if merged:
+            out["reference_points"] = merged
+        report["skipped_chains"] = idle
     if hands:
         fields = {k: v for k, v in card.items() if k != "look"}
         # the card without its look block, in the schema that holds a detail layer and a
