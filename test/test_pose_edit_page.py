@@ -264,6 +264,144 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertFalse(report(tab)["state"]["on"])
             browser.close()
 
+    def test_every_key(self):
+        """Every key of the pose editor in its scope, pressed in the view: each runs its action
+        (the registry's record of the actions that ran), and the studio's modal grab and turn
+        (G and R with an axis key, a typed value, Enter and Esc) move and put back."""
+        from playwright.sync_api import sync_playwright
+
+        folder = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        page_dir = folder / "page"
+        page_dir.mkdir()
+        servers, url = served(page_dir, {})
+        self.addCleanup(stop, servers)
+        with sync_playwright() as p:
+            browser, tab = open_tab(p, url + "?base", 1920, 1080)
+            open_statue(tab, folder)
+            edit_on(tab)
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            tab.get_by_role("button", name="Place points").click()
+            tab.wait_for_function(
+                "() => window.poseEditReport().state.counts.placed > 0"
+            )
+            settle(tab)
+            pressed = set()
+
+            def key(chord, action, setup=None):
+                if setup:
+                    tab.evaluate(setup)
+                    settle(tab, 2)
+                tab.evaluate("() => { window.__studio.ran.length = 0; }")
+                press_in_view(tab, chord)
+                settle(tab, 2)
+                ran = tab.evaluate("() => window.__studio.ran.slice()")
+                self.assertIn(action, ran, f"{chord} in the view runs {action}")
+                pressed.add(action)
+
+            select = "() => window.__poseEdit.select('index_pip.R')"
+            target = lambda: report(tab)["points"]["index_pip.R"]["target"]  # noqa: E731
+
+            # the tools and the sections
+            for chord, action in [
+                ("q", "pose.tool.select"),
+                ("w", "pose.tool.move"),
+                ("e", "pose.tool.turn"),
+                ("1", "pose.tool.1"),
+            ]:
+                key(chord, action)
+            self.assertEqual(report(tab)["state"]["section"], "points")
+
+            # G: the modal grab; Esc puts the point back
+            t0 = target()
+            key("g", "pose.grab", select)
+            box = tab.locator("#c").bounding_box()
+            cx, cy = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            for k in range(1, 8):
+                tab.mouse.move(cx + 4 * k, cy + 2 * k)
+                settle(tab, 1)
+            key("Escape", "modal.cancel")
+            np.testing.assert_allclose(target(), t0, atol=1e-9)
+            # G, X, 5, Enter: 5 mm along the page's X axis, one step of undo
+            undo0 = len(report(tab)["undo"])
+            key("g", "pose.grab")
+            key("x", "modal.x")
+            key("5", "modal.type")
+            key("Enter", "modal.confirm")
+            moved = float(np.linalg.norm(np.subtract(target(), t0)))
+            self.assertAlmostEqual(moved, 0.005, delta=2e-4)
+            self.assertEqual(len(report(tab)["undo"]), undo0 + 1)
+
+            # the selection's keys
+            key("[", "pose.parent", select)
+            key("]", "pose.child")
+            key("Shift+BracketLeft", "pose.finger-prev")
+            key("Shift+BracketRight", "pose.finger-next")
+            key("PageDown", "pose.push", select)
+            key("PageUp", "pose.pull")
+            key("ArrowLeft", "pose.nudge")
+            key("Alt+g", "pose.reset-point")
+            key("Alt+r", "pose.reset-turn")
+            key("Escape", "pose.clear")
+            self.assertIsNone(report(tab)["state"]["selected"])
+            key("a", "pose.select-all", "() => window.__poseEdit.selectHand('R')")
+            key("Alt+a", "pose.select-none")
+            key("Shift+z", "pose.scan")
+            press_in_view(tab, "Escape")
+
+            # the pose's keys: mirror, copy and paste, undo and redo
+            key("m", "pose.mirror")
+            key("Control+c", "pose.copy")
+            key("Control+v", "pose.paste")
+            key("Control+Shift+v", "pose.paste-mirrored")
+            key("Control+z", "pose.undo")
+            key("Control+Shift+z", "pose.redo")
+            key("Control+z", "pose.undo")
+            key("Control+y", "pose.redo")
+
+            # Joints: R, the modal turn; X, 30, Enter bends the elbow 30 degrees; Esc puts a turn back
+            key("2", "pose.tool.2")
+            self.assertEqual(report(tab)["state"]["section"], "joints")
+            tab.evaluate("() => window.__poseEdit.selectJoint('lowerarm01.R')")
+            settle(tab, 2)
+            b0 = report(tab)["state"]["jv"]["value"][0]
+            key("r", "pose.turn-keys")
+            key("x", "modal.x")
+            key("3", "modal.type")
+            key("0", "modal.type")
+            key("Enter", "modal.confirm")
+            b1 = report(tab)["state"]["jv"]["value"][0]
+            self.assertAlmostEqual(b1 - b0, 30, delta=0.5)
+            key("r", "pose.turn-keys")
+            for k in range(1, 8):
+                tab.mouse.move(cx + 6 * k, cy - 5 * k)
+                settle(tab, 1)
+            key("Escape", "modal.cancel")
+            self.assertAlmostEqual(
+                report(tab)["state"]["jv"]["value"][0], b1, delta=1e-6
+            )
+            key("Alt+r", "pose.reset-joint")
+            self.assertAlmostEqual(report(tab)["state"]["jv"]["value"][0], 0, delta=0.5)
+            key("Escape", "pose.clear-joint")
+            self.assertIsNone(report(tab)["state"]["joint"])
+
+            for chord, action in [
+                ("3", "pose.tool.3"),
+                ("4", "pose.tool.4"),
+                ("5", "pose.tool.5"),
+                ("Tab", "pose.edit"),
+            ]:
+                key(chord, action)
+            self.assertFalse(report(tab)["state"]["on"])
+
+            # every registered key of the pose editor was pressed
+            actions = tab.evaluate("() => window.__studio.actions()")
+            want = {
+                a["id"] for a in actions if a["id"].startswith("pose.") and a["keys"]
+            }
+            self.assertEqual(want - pressed, set())
+            browser.close()
+
 
 if __name__ == "__main__":
     unittest.main()

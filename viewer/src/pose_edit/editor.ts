@@ -20,6 +20,7 @@ import { registerPicker, registerSurface, type PickHit, type PointerInfo, type D
 import { setSelection } from '../studio/selection.ts';
 import { settings } from '../studio/settings.ts';
 import { PRIORITY, clearStatus, setStatus, type StatusPart } from '../studio/status.ts';
+import { cancelModal, confirmModal, startModal } from '../studio/modal.ts';
 import { TriangleBVH } from './bvh.ts';
 import { SkinnedBody, balance, squeeze, type Balance, type Prop } from './contact.ts';
 import { Frames } from './frames.ts';
@@ -167,6 +168,7 @@ export class PoseEditor {
   private bodyTris: { bvh: TriangleBVH; rows: Uint32Array } | null = null;
   private bal: Balance | null = null;
   private grab: { name: string; before: any; x0: number; y0: number; off: (() => void) } | null = null;
+  private pointer: { x: number; y: number } | null = null;   // the pointer's last place over the page (client pixels)
   private propBvh: TriangleBVH | null = null;
   private surfaceOff: (() => void) | null = null;
 
@@ -175,6 +177,7 @@ export class PoseEditor {
     this.frames = new Frames(host);
     this.view = new ScanView(host);
     this.registerKeys();
+    if (typeof addEventListener === 'function') addEventListener('pointermove', (e: PointerEvent) => { this.pointer = { x: e.clientX, y: e.clientY }; }, { passive: true });
   }
 
   // ---------------------------------------------------------------- the store
@@ -663,32 +666,48 @@ export class PoseEditor {
     this.statusSelected();
   }
 
-  // G: the selected point follows the mouse until a click or Enter; Esc or a right-click puts it back
+  // G: the selected point follows the mouse until a click or Enter; Esc or a right-click puts it back. The input,
+  // the axis keys, the typed value and the status line are the studio's modal grab (studio/modal.ts); X, Y or Z
+  // keeps the move along the screen's picture of that axis of the view, and a typed number moves the place that many
+  // millimetres along it, off the surface
   startGrab(): boolean {
     const name = editStore.get().selected;
     if (!name || !this.bvh || this.drag || this.grab) return false;
     const t = this.target(name);
     if (!t) return false;
-    const s = cam().toScreen(this.v3(this.frames.toWorld(t.position)));
+    const start = t.position.slice() as V3, w0 = this.frames.toWorld(start);
+    const s = cam().toScreen(this.v3(w0));
     this.beginDrag(name, s.x, s.y);
-    let lx = s.x, ly = s.y, first = true;
-    const move = (e: PointerEvent) => {
-      if (first) { lx = e.clientX; ly = e.clientY; first = false; return; }
-      const k = settings.get().dragSpeed * (e.shiftKey ? 0.25 : 1);
-      this.dragMove((e.clientX - lx) * k, (e.clientY - ly) * k, e.ctrlKey || e.metaKey);
-      lx = e.clientX; ly = e.clientY;
-    };
-    const down = (e: PointerEvent) => {
-      e.preventDefault(); e.stopImmediatePropagation();
-      if (e.button === 2) this.cancelGrab(); else this.confirmGrab();
-    };
-    window.addEventListener('pointermove', move, true);
-    window.addEventListener('pointerdown', down, true);
-    this.grab = { name, before: null, x0: s.x, y0: s.y, off: () => { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerdown', down, true); } };
+    let lx = 0, ly = 0;
+    const axisOf = (a: 'x' | 'y' | 'z'): V3 => (a === 'x' ? [1, 0, 0] : a === 'y' ? [0, 1, 0] : [0, 0, 1]);
+    this.grab = { name, before: null, x0: s.x, y0: s.y, off: () => {} };
+    startModal({
+      kind: 'grab', label: `point ${POINT_BY_NAME.get(name)!.number}`,
+      update: (v) => {
+        const D = this.drag, S = this.session;
+        if (!D || !S) return;
+        if (v.axis === 'free') {
+          this.dragMove(v.dx - lx, v.dy - ly, v.snap); lx = v.dx; ly = v.dy;
+          return this.drag ? POINT_BY_NAME.get(name)!.label : undefined;
+        }
+        // the axis of the page (Y up) as a direction on the screen and in the card frame
+        const ax = axisOf(v.axis), q = cam().toScreen(this.v3([w0[0] + ax[0] * 0.1, w0[1] + ax[1] * 0.1, w0[2] + ax[2] * 0.1]));
+        const sx = q.x - s.x, sy = q.y - s.y, px = Math.hypot(sx, sy) || 1;
+        const mm = v.typed !== null ? v.typed : (v.dx * sx + v.dy * sy) / px / (px / 100);
+        const d = this.frames.dirToCard(ax), r = (v.snap ? Math.round(mm) : mm) / 1000;
+        const position: V3 = [start[0] + d[0] * r, start[1] + d[1] * r, start[2] + d[2] * r];
+        D.last = position;
+        S.dragTo(name, position, { depth_mm: 0 });
+        this.publish();
+        return `${(r * 1000).toFixed(1)} mm`;
+      },
+      confirm: () => { this.grab = null; this.endDrag(); },
+      cancel: () => { this.grab = null; this.cancelDrag(); },
+    }, { x: s.x, y: s.y });
     return true;
   }
-  confirmGrab(): boolean { if (!this.grab) return false; this.grab.off(); this.grab = null; this.endDrag(); return true; }
-  cancelGrab(): boolean { if (!this.grab) return false; this.grab.off(); this.grab = null; this.cancelDrag(); return true; }
+  confirmGrab(): boolean { if (!this.grab) return false; confirmModal(); return true; }
+  cancelGrab(): boolean { if (!this.grab) return false; cancelModal(); return true; }
   grabbing(): boolean { return !!this.grab; }
 
   // ---------------------------------------------------------------- contact pins, Squeeze and balance
@@ -978,60 +997,58 @@ export class PoseEditor {
     return true;
   }
 
-  // R: the selected joint turns with the mouse about the view's axis until a click or Enter (Blender's R); X, Y or Z
-  // takes the bend, the side or the twist ring instead; Esc or a right-click puts it back
-  private turning: { before: any; off: () => void; axis: number | null; cx: number; cy: number; last: number } | null = null;
+  // R: the selected joint turns with the mouse about the view's axis until a click or Enter (Blender's R: the angle
+  // the pointer sweeps round the joint's centre on the screen); X, Y or Z takes the bend, the side or the twist ring
+  // instead, a typed number sets the angle in degrees and Ctrl snaps to 5 degrees. The input is the studio's modal
+  // turn (studio/modal.ts); Esc or a right-click puts the joint back
+  private turning: { before: any } | null = null;
   startTurn(): boolean {
     const st = editStore.get(), S = this.session;
     if (!S || !st.joint || this.turning) return false;
     const J = this.joints(), b = J.bone(st.joint)!, c = this.jointCentre(b);
     if (!c) return false;
     const sc = cam().toScreen(this.v3(this.frames.toWorld(c)));
-    const before = S.snapshot();
-    let first = true;
-    const move = (e: PointerEvent) => {
-      const a = Math.atan2(e.clientY - sc.y, e.clientX - sc.x);
-      if (first) { this.turning!.last = a; first = false; return; }
-      let d = a - this.turning!.last; if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI;
-      this.turning!.last = a;
-      d *= e.shiftKey ? 0.25 : 1;
-      const T = this.turning!;
-      if (T.axis === null) {
-        const cp = this.host.camera.position, w = this.frames.toWorld(c), view = this.frames.dirToCard([w[0] - cp.x, w[1] - cp.y, w[2] - cp.z]);
-        this.turnJoint(view, d);
-      } else {
-        const v = this.joints().values(b, S.rotations)!;
-        const ax = this.jointAxes(b)[T.axis], cp = this.host.camera.position, w = this.frames.toWorld(c);
+    const before = S.snapshot(), R0 = S.rotations.map((r) => r.slice());
+    // the pointer's start: where it last was over the canvas, else a little right of the joint
+    const at = this.pointer && Math.hypot(this.pointer.x - sc.x, this.pointer.y - sc.y) > 12 ? { ...this.pointer } : { x: sc.x + 80, y: sc.y };
+    const a0 = Math.atan2(at.y - sc.y, at.x - sc.x);
+    let sweep = 0, lastA = a0;
+    this.turning = { before };
+    const RING = { x: 0, y: 1, z: 2 } as const;
+    startModal({
+      kind: 'turn', label: jointName(st.joint).name,
+      update: (v) => {
+        // the angle swept round the centre, unwrapped, from the pointer's place (start + the modal's offset)
+        const a = Math.atan2(at.y + v.dy - sc.y, at.x + v.dx - sc.x);
+        let d = a - lastA; if (d > Math.PI) d -= 2 * Math.PI; if (d < -Math.PI) d += 2 * Math.PI;
+        sweep += d; lastA = a;
+        let deg = v.typed !== null ? v.typed : sweep * 180 / Math.PI;
+        if (v.snap) deg = Math.round(deg / 5) * 5;
+        S.rotations = R0.map((r) => r.slice());
+        const w = this.frames.toWorld(c), cp = this.host.camera.position;
+        if (v.axis === 'free') {
+          const view = this.frames.dirToCard([w[0] - cp.x, w[1] - cp.y, w[2] - cp.z]);
+          this.turnJoint(view, deg * Math.PI / 180);
+          this.poseChanged();
+          return `${Math.round(deg)}°`;
+        }
+        const k = RING[v.axis], v0 = J.values(b, R0)!, ax = this.jointAxes(b)[k];
         const toCam = this.frames.dirToCard([cp.x - w[0], cp.y - w[1], cp.z - w[2]]), facing = ax[0] * toCam[0] + ax[1] * toCam[1] + ax[2] * toCam[2] > 0 ? -1 : 1;
-        J.set(S.rotations, b, T.axis, v.value[T.axis] + facing * d * 180 / Math.PI, editStore.get().limits);
-      }
-      this.poseChanged();
-    };
-    const down = (e: PointerEvent) => { e.preventDefault(); e.stopImmediatePropagation(); if (e.button === 2) this.cancelTurn(); else this.confirmTurn(); };
-    window.addEventListener('pointermove', move, true);
-    window.addEventListener('pointerdown', down, true);
-    this.turning = { before, axis: null, cx: sc.x, cy: sc.y, last: 0, off: () => { window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerdown', down, true); } };
-    setStatus('pose-edit-turn', [{ text: `Turning ${jointName(st.joint).name}` }, { keys: 'X', text: 'bend' }, { keys: 'Y', text: 'side' }, { keys: 'Z', text: 'twist' },
-      { keys: 'Enter', text: 'confirm' }, { keys: 'Esc', text: 'cancel' }], { priority: PRIORITY.drag });
+        J.set(S.rotations, b, k, v0.value[k] + (v.typed !== null ? deg : facing * deg), editStore.get().limits);
+        this.poseChanged();
+        return `${AXES[k].label} ${Math.round(J.values(b, S.rotations)!.value[k])}°`;
+      },
+      confirm: () => {
+        this.turning = null;
+        S.undoStack.push({ label: 'Turn the joint', snap: before }); S.redoStack.length = 0;
+        this.publish();
+      },
+      cancel: () => { this.turning = null; S.restore(before); this.publish(); },
+    }, at);
     return true;
   }
-  turnAxis(axis: number): boolean { if (!this.turning) return false; this.turning.axis = this.turning.axis === axis ? null : axis; return true; }
-  confirmTurn(): boolean {
-    const T = this.turning, S = this.session;
-    if (!T || !S) return false;
-    T.off(); this.turning = null; clearStatus('pose-edit-turn');
-    S.undoStack.push({ label: 'Turn the joint', snap: T.before }); S.redoStack.length = 0;
-    this.publish();
-    return true;
-  }
-  cancelTurn(): boolean {
-    const T = this.turning, S = this.session;
-    if (!T || !S) return false;
-    T.off(); this.turning = null; clearStatus('pose-edit-turn');
-    S.restore(T.before);
-    this.publish();
-    return true;
-  }
+  confirmTurn(): boolean { if (!this.turning) return false; confirmModal(); return true; }
+  cancelTurn(): boolean { if (!this.turning) return false; cancelModal(); return true; }
 
   // the bone under a point of the canvas: the strongest bone of the nearest skin vertex to the body's first hit
   private boneAt(x: number, y: number): string | null {
@@ -1577,9 +1594,7 @@ export class PoseEditor {
   private registerKeys() {
     defineScope({ id: 'pose-edit', parent: 'pose', active: () => editStore.get().on });
     defineScope({ id: 'pose-select', parent: 'pose-edit', active: () => !!editStore.get().selected });
-    defineScope({ id: 'pose-grab', parent: 'pose-edit', active: () => !!this.grab, rank: 90 });
     defineScope({ id: 'pose-joint', parent: 'pose-edit', active: () => !!editStore.get().joint && (editStore.get().section === 'joints' || editStore.get().tool === 'turn') });
-    defineScope({ id: 'pose-turn', parent: 'pose-edit', active: () => !!this.turning, rank: 90 });
     const sel = () => editStore.get().selected;
     const tool = (t: Tool, label: string, key: string, desc: string, live = true): ActionDef => ({
       id: 'pose.tool.' + t, label, desc, keys: [key], group: 'Posing tools', tier: 'frequent', scope: 'pose-edit', place: 'Pose › Edit, the view\'s tools',
@@ -1595,8 +1610,6 @@ export class PoseEditor {
         tier: 'occasional', scope: 'pose-edit', checked: () => editStore.get().section === s.id, run: () => this.setSection(s.id) })),
       { id: 'pose.grab', label: 'Grab the point', desc: 'The selected point follows the mouse until a click or Enter', keys: ['G'], group: 'Points', tier: 'frequent',
         scope: 'pose-select', hint: 'Select a point first', run: () => this.startGrab() },
-      { id: 'pose.grab-confirm', label: 'Confirm the grab', keys: ['Enter'], group: 'Points', tier: 'frequent', scope: 'pose-grab', help: false, run: () => this.confirmGrab() },
-      { id: 'pose.grab-cancel', label: 'Cancel the grab', keys: ['Escape'], group: 'Points', tier: 'frequent', scope: 'pose-grab', help: false, run: () => this.cancelGrab() },
       { id: 'pose.parent', label: 'Parent joint', keys: ['['], group: 'Points', tier: 'frequent', scope: 'pose-select', row: 'pose.hier', rowLabel: 'Parent joint, child joint',
         run: () => this.step(-1) },
       { id: 'pose.child', label: 'Child joint', keys: [']'], group: 'Points', tier: 'frequent', scope: 'pose-select', row: 'pose.hier', run: () => this.step(1) },
@@ -1630,11 +1643,6 @@ export class PoseEditor {
         run: () => { if (!this.scan) return false; this.setScanLook({ look: 'solid', shown: true }); } },
       { id: 'pose.turn-keys', label: 'Turn the joint', desc: 'The joint turns with the mouse until a click or Enter; X, Y or Z keep to one ring', keys: ['R'], group: 'Joints',
         tier: 'frequent', scope: 'pose-joint', run: () => this.startTurn() },
-      { id: 'pose.turn-bend', label: 'Turn on the bend ring', keys: ['X'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.turnAxis(0) },
-      { id: 'pose.turn-side', label: 'Turn on the side ring', keys: ['Y'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.turnAxis(1) },
-      { id: 'pose.turn-twist', label: 'Turn on the twist ring', keys: ['Z'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.turnAxis(2) },
-      { id: 'pose.turn-confirm', label: 'Confirm the turn', keys: ['Enter'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.confirmTurn() },
-      { id: 'pose.turn-cancel', label: 'Cancel the turn', keys: ['Escape'], group: 'Joints', tier: 'frequent', scope: 'pose-turn', help: false, run: () => this.cancelTurn() },
       { id: 'pose.reset-joint', label: 'Reset the joint', desc: 'The joint back to its rest turn (Shift: the whole limb)', keys: ['Alt+R', 'Shift+Alt+R'], group: 'Joints',
         tier: 'frequent', scope: 'pose-joint', run: (c) => this.resetJoint(c.shift) },
       { id: 'pose.clear-joint', label: 'Clear the joint', keys: ['Escape'], group: 'Joints', tier: 'constant', scope: 'pose-joint', help: false, run: () => { this.selectJoint(null); } },
