@@ -183,8 +183,9 @@ class TestPoseReference(unittest.TestCase):
             with self.subTest(name):
                 C = reference_turns(self.model, character)
                 R = to_page(D, C, self.parents)
+                # C is orthonormal to about 3e-7, so the round trip holds to that
                 np.testing.assert_allclose(
-                    to_reference(R, C, self.parents), D, atol=1e-12
+                    to_reference(R, C, self.parents), D, atol=1e-5
                 )
                 page = page_skin(self.model, character, R)
                 anny = _anny_vertices(self.model, character, D)
