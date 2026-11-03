@@ -78,6 +78,8 @@ export interface EditState {
   preset: string | null;
   userPresets: { id: string; label: string; shape: HandShape }[];
   grip_report: { finger: string; clearance: number; inside: boolean }[];
+  grip_blocked: boolean;            // the open hand is still inside the prop
+  kept: string[];                   // the chains the last placement left as they stood
   clip: string;                      // what Ctrl+C took
   // the limbs (phase 3)
   limb: End | null;                  // the end whose pole handle shows
@@ -97,9 +99,16 @@ const init = (): EditState => ({
   hands: { L: [], R: [] }, body: [], dragging: false, magnifier: true, behind: true, pins: [], pinDraft: null, grip: null, squeeze: 1, props: [],
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
   joint: null, jv: null, limits: true, handSide: 'R', handShape: { curl: [0, 0, 0, 0, 0], spread: 0, fist: 0, thumb: 0 }, preset: null, userPresets: loadPresets(),
-  grip_report: [], clip: '', limb: null, pinned: [], follow: false, poses: loadPoses(), blend: null, applyTo: 'all',
+  grip_report: [], grip_blocked: false, kept: [], clip: '', limb: null, pinned: [], follow: false, poses: loadPoses(), blend: null, applyTo: 'all',
 });
 
+// a chain's plain name ("arm.l" -> "Left arm")
+const CHAIN_NAMES: Record<string, string> = { arm: 'arm', leg: 'leg', hand: 'hand', spine: 'Spine', neck: 'Head and neck' };
+function chainName(c: string): string {
+  const [base, side] = c.split('.');
+  const word = CHAIN_NAMES[base] || base;
+  return side ? `${side === 'l' ? 'Left' : 'Right'} ${word}` : word;
+}
 export type End = 'hand.L' | 'hand.R' | 'foot.L' | 'foot.R' | 'hips' | 'head';
 export const ENDS: { id: End; label: string }[] = [
   { id: 'hand.R', label: 'Right hand' }, { id: 'hand.L', label: 'Left hand' }, { id: 'foot.R', label: 'Right foot' }, { id: 'foot.L', label: 'Left foot' },
@@ -401,10 +410,13 @@ export class PoseEditor {
       if (!e.on) look++;
       S.targets.set(e.name, t);
     }
-    S.solveAll();
-    this.publish();
+    // only the chains with enough confident points turn; the others keep their pose (a lone point never pulls a limb)
+    const solved = S.confidentChains(), kept = S.placedChains().filter((c) => !solved.includes(c));
+    for (const c of solved) S.solve(c);
+    this.publish({ kept });
     const n = placed.filter((e) => e.method !== 'none').length;
-    this.host.toast(look ? `Placed ${n} points. ${look} need a look.` : `Placed ${n} points.`);
+    this.host.toast((look ? `Placed ${n} points. ${look} need a look.` : `Placed ${n} points.`)
+      + (kept.length ? ` ${kept.map(chainName).join(', ')} kept ${kept.length > 1 ? 'their' : 'its'} pose: too few sure points.` : ''));
     return { placed: n, look };
   }
 
@@ -784,12 +796,19 @@ export class PoseEditor {
   }
 
   // Grip: the hand and the prop; Squeeze closes its fingers onto the prop
-  setGrip(grip: { hand: 'L' | 'R'; prop: string } | null) { this.propBvh = null; this.publish({ grip }); }
-  setSqueeze(value: number, record = true): boolean {
-    const S = this.session, g = editStore.get().grip;
-    if (!S || !g) return false;
+  // Grip (DESIGN-0013, "Grip a prop"; GraspIt's closing of the fingers): the hand first opens (every finger straight);
+  // a finger still inside the prop stops the grip with a note, and Lift out moves the hand off the prop along the
+  // palm's normal (the arm follows) only when the owner asks. From that open start each finger closes joint by joint to
+  // contact with 1 mm to spare, and Squeeze scales the closing.
+  private gripOpen: number[][] | null = null;
+  setGrip(grip: { hand: 'L' | 'R'; prop: string } | null) { this.propBvh = null; this.gripOpen = null; this.publish({ grip, grip_blocked: false, grip_report: [] }); }
+
+  // the prop as a signed distance (card frame), as it stands now
+  private propSdf(): Prop | null {
+    const g = editStore.get().grip;
+    if (!g) return null;
     const prop = this.host.props().find((p) => p.name === g.prop);
-    if (!prop) { this.host.toast('That prop is not shown.'); return false; }
+    if (!prop) { this.host.toast('That prop is not shown.'); return null; }
     if (!this.propBvh) {
       // the prop in the card frame (it stands where it is shown now)
       const P = new Float32Array(prop.positions.length);
@@ -807,14 +826,77 @@ export class PoseEditor {
       }
       return out;
     };
+    return sdf;
+  }
+  // the hand's fingers straight (each finger at its reference curl, zero bend)
+  private openHand(R: number[][], side: 'L' | 'R') { const H = this.hands(); for (let k = 0; k < 5; k++) H.setCurl(R, side, k, 0); }
+  // each finger's gap to the prop (mm, negative inside) for rotations R, with the fingers as they stand
+  private fingerGaps(R: number[][], side: 'L' | 'R', sdf: Prop): number[] {
+    const r = squeeze(this.skinnedBody(), R, side === 'R' ? 'hand.r' : 'hand.l', [sdf], 0);
+    return FINGERS.map((_, k) => r.report[`finger${k + 1}`]?.clearance_mm ?? Infinity);
+  }
+  setSqueeze(value: number, record = true): boolean {
+    const S = this.session, g = editStore.get().grip;
+    if (!S || !g) return false;
+    const sdf = this.propSdf();
+    if (!sdf) return false;
     if (record) this.record('Squeeze');
-    const r = squeeze(this.skinnedBody(), S.rotations, g.hand === 'R' ? 'hand.r' : 'hand.l', [sdf], value);
+    if (!this.gripOpen) { const R = S.rotations.map((r) => r.slice()); this.openHand(R, g.hand); this.gripOpen = R; }
+    const open = this.gripOpen, gaps = this.fingerGaps(open, g.hand, sdf);
+    if (gaps.some((x) => x < 0)) {
+      // the open hand is still in the prop: the hand stays open and the panel says so
+      S.setPose(open);
+      this.poseChanged();
+      this.publish({ squeeze: value, grip_blocked: true, grip_report: FINGERS.map((f, k) => ({ finger: f, clearance: gaps[k], inside: gaps[k] < 0 })) });
+      return true;
+    }
+    const r = squeeze(this.skinnedBody(), open, g.hand === 'R' ? 'hand.r' : 'hand.l', [sdf], value);
     S.setPose(r.rotations);
     this.poseChanged();
     // each finger's gap to the prop at the chosen squeeze (negative: inside it), for the panel
     const report = FINGERS.map((f, k) => { const q = r.report[`finger${k + 1}`]; return { finger: f, clearance: q ? q.clearance_mm : NaN, inside: !!q && (q.inside || q.clearance_mm < 0) }; });
-    this.publish({ squeeze: value, grip_report: report });
+    this.publish({ squeeze: value, grip_report: report, grip_blocked: false });
     return true;
+  }
+  // Lift out: the open hand moved along its palm's normal, away from the prop, by the arm's IK (its turn kept), in
+  // steps of 2 mm up to 40 mm, until every finger clears the prop by 1 mm; then the grip closes from there
+  liftHand(): boolean {
+    const S = this.session, g = editStore.get().grip;
+    if (!S || !g || !this.gripOpen) return false;
+    const sdf = this.propSdf();
+    if (!sdf) return false;
+    const side = g.hand, end = ('hand.' + side) as End, before = S.snapshot(), open = this.gripOpen;
+    S.setPose(open);
+    const w = this.headOf('wrist.' + side)!, a = this.headOf('finger3-1.' + side)!, i = this.headOf('finger2-1.' + side)!, l = this.headOf('finger5-1.' + side)!;
+    const along = [a[0] - w[0], a[1] - w[1], a[2] - w[2]], across = [i[0] - l[0], i[1] - l[1], i[2] - l[2]];
+    const c = [along[1] * across[2] - along[2] * across[1], along[2] * across[0] - along[0] * across[2], along[0] * across[1] - along[1] * across[0]];
+    const cl = Math.hypot(c[0], c[1], c[2]) || 1, n = c.map((x) => x / cl);
+    const tryMove = (d: number): number[][] | null => {
+      S.setPose(open);
+      const { problem, bones } = this.limbProblem(end), sv = new PointSolver(problem), e = END_BONES[end];
+      const target = (p: V3): V3 => [p[0] + n[0] * d, p[1] + n[1] * d, p[2] + n[2] * d];
+      sv.setTarget(0, target(this.headOf(e.bone)!));
+      e.keep.forEach((k, j) => sv.setTarget(1 + j, target(this.headOf(k)!)));
+      const r = sv.solve(25), R = open.map((x) => x.slice());
+      for (const b of bones) R[b] = Array.from(r.rotations.subarray(b * 9, b * 9 + 9));
+      S.setPose(R);
+      const reached = this.headOf(e.bone)!, t = target(w);
+      return Math.hypot(reached[0] - t[0], reached[1] - t[1], reached[2] - t[2]) < 0.002 ? R : null;
+    };
+    // which way is out: the side whose first step opens the smallest gap more
+    const worst = (R: number[][] | null) => (R ? Math.min(...this.fingerGaps(R, side, sdf)) : -Infinity);
+    const sign = worst(tryMove(0.004)) >= worst(tryMove(-0.004)) ? 1 : -1;
+    let found: number[][] | null = null;
+    for (let mm = 2; mm <= 40 && !found; mm += 2) {
+      const R = tryMove(sign * mm / 1000);
+      if (R && Math.min(...this.fingerGaps(R, side, sdf)) >= 1) found = R;
+    }
+    if (!found) { S.restore(before); this.host.toast(`The arm cannot take the hand off the ${g.prop.split('/').pop()}.`); this.publish(); return false; }
+    S.restore(before);
+    this.record('Lift the hand out');
+    this.gripOpen = found;
+    S.setPose(found);
+    return this.setSqueeze(editStore.get().squeeze, false);
   }
 
   setBalance(shown: boolean) { this.bal = null; this.publish({ balance: { ...editStore.get().balance, shown } }); }

@@ -352,7 +352,12 @@ function GripBlock({ st }: { st: EditState }) {
       <Seg label="The prop" items={st.props.map((p) => ({ value: p, label: p.split('/').pop() || p }))} value={prop} onPick={(v) => ed.setGrip({ hand: side, prop: v })} />
       <TextButton label={on ? 'Let go' : 'Grip'} icon="hand" primary={!on} onClick={() => { if (on) ed.setGrip(null); else { ed.setGrip({ hand: side, prop }); ed.setSqueeze(st.squeeze || 0.8); } }} />
     </div>
-    {on ? <>
+    {on && st.grip_blocked ? <div className="pe-grip-blocked" role="status">
+      <p><Icon name="alert" size={16} /> Move the hand off the {(st.grip!.prop.split('/').pop() || 'prop')} first. With the fingers straight, {st.grip_report.filter((f) => f.inside).map((f) => FINGER_NAMES[FINGERS_ORDER.indexOf(f.finger)].toLowerCase()).join(', ') || 'a finger'} is still inside it.</p>
+      <TextButton label="Lift the hand out" icon="hand" onClick={() => ed.liftHand()} />
+      <Note>Lift the hand out moves the hand along its palm, and the arm follows, until every finger clears the prop. You can also drag the hand's handle in Limbs.</Note>
+    </div> : null}
+    {on && !st.grip_blocked ? <>
       <Range key="squeeze" id="grip-squeeze" label="Squeeze" value={Math.round(st.squeeze * 100)} min={0} max={100} step={1} unit="%" ends={['Looser', 'Tighter']}
         onInput={(v) => ed.setSqueeze(v / 100, false)} />
       <ul className="pe-grip-fingers">
@@ -366,6 +371,7 @@ function GripBlock({ st }: { st: EditState }) {
   </>;
 }
 const FINGER_NAMES = ['Thumb', 'Index finger', 'Middle finger', 'Ring finger', 'Little finger'];
+const FINGERS_ORDER = ['thumb', 'index', 'middle', 'ring', 'little'];
 function HandsPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!, h = st.handShape, side = st.handSide;
   const started = useState({ on: false })[0];

@@ -174,5 +174,41 @@ class TestPageProblem(unittest.TestCase):
                     )
 
 
+class TestOnePointHoldsTheRest(unittest.TestCase):
+    """The solve's prior holds every joint at the pose the edit starts from: one point on an
+    arm, moved 2 cm, turns the joints above it, and the joints below it (the forearm, the
+    wrist and the fingers) stay within 1 degree."""
+
+    def test_one_point_on_an_arm(self):
+        from opensculptboy.posing import point_solve as ps
+        from opensculptboy.posing.reference_points import influences_of, points_of
+
+        rig, _ = _rig()
+        start = _library("mh_fight")
+        elbow = [p for p in points_of(["arm.l"]) if p["name"] == "elbow.L"]
+        (f,) = influences_of(rig, elbow)
+        at = rig.to_output(rig.points(rig.transforms(start), [f]))[0]
+        target = at + np.array([0.02, 0.0, 0.0])
+        result = ps.solve(
+            rig,
+            start,
+            [{"influence": f, "target": target.tolist(), "on": True}],
+            ["arm.l"],
+        )
+        self.assertLess(result.residual_mm[0], 2.0)
+        before = ps.coordinates(rig, start)
+        after = ps.coordinates(rig, result.rotations)
+        below = [
+            label
+            for label in before
+            if label.endswith(".L")
+            and label.startswith(("lowerarm", "wrist", "metacarpal", "finger"))
+        ]
+        self.assertTrue(below)
+        for label in below:
+            moved = np.abs(np.subtract(after[label], before[label])).max()
+            self.assertLess(moved, 1.0, f"{label} turned {moved:.2f} degrees")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -36,6 +36,20 @@ export interface Pin {
 export interface Snapshot { rotations: number[][]; targets: [string, Target][]; pins: Pin[] }
 
 export const DRAG_STEPS = 8;
+// the automatic placement turns a chain only with at least MIN_POINTS points on, spread over MIN_BONES bones
+export const MIN_POINTS = 4;
+export const MIN_BONES = 2;
+
+// the chains whose entries (a point that is on: its chain and the bone that carries most of it) number at least
+// minPoints over at least minBones bones
+export function solvableChains(entries: { chain: string; bone: number }[], minPoints = MIN_POINTS, minBones = MIN_BONES): string[] {
+  const by = new Map<string, { n: number; bones: Set<number> }>();
+  for (const e of entries) {
+    const c = by.get(e.chain) || { n: 0, bones: new Set<number>() };
+    c.n++; c.bones.add(e.bone); by.set(e.chain, c);
+  }
+  return [...by].filter(([, c]) => c.n >= minPoints && c.bones.size >= minBones).map(([k]) => k);
+}
 export const FULL_STEPS = 40;
 export const PIN_WEIGHT = 10;
 
@@ -130,6 +144,20 @@ export class EditSession {
   }
 
   solveAll(iterations = FULL_STEPS) { for (const c of this.placedChains()) this.solve(c, iterations); }
+
+  // the chains with enough confident points for the automatic placement to turn them (solvableChains); every other
+  // chain keeps its pose until the owner places points there
+  confidentChains(minPoints = MIN_POINTS, minBones = MIN_BONES): string[] {
+    const entries: { chain: string; bone: number }[] = [];
+    for (const [name, t] of this.targets) {
+      if (!t.on) continue;
+      const f = this.influence(name);
+      let best = 0;
+      f.s.forEach((x, i) => { if (Math.abs(x) > Math.abs(f.s[best])) best = i; });
+      entries.push({ chain: POINT_BY_NAME.get(name)!.solve, bone: f.bones[best] });
+    }
+    return solvableChains(entries, minPoints, minBones);
+  }
 
   // ---------------------------------------------------------------- a drag of one point
   beginDrag(name: string) {

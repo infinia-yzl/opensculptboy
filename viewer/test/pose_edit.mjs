@@ -106,6 +106,16 @@ assert.deepEqual(handPoints('R').map((p) => p.mediapipe), [...Array(21).keys()])
 for (const p of POINTS) assert.ok(!/[._]/.test(p.label), p.label);
 console.log('points: 57, numbered as the screens');
 
+// ------------------------------------------------------------------ the chains a placement turns
+const { solvableChains } = await import('../src/pose_edit/session.ts');
+assert.deepEqual(solvableChains([
+  // the right arm: four points over three bones; the left arm: one point; the left leg: four points on one bone
+  { chain: 'arm.r', bone: 1 }, { chain: 'arm.r', bone: 2 }, { chain: 'arm.r', bone: 3 }, { chain: 'arm.r', bone: 3 },
+  { chain: 'arm.l', bone: 7 },
+  { chain: 'leg.l', bone: 9 }, { chain: 'leg.l', bone: 9 }, { chain: 'leg.l', bone: 9 }, { chain: 'leg.l', bone: 9 },
+]), ['arm.r']);
+console.log('placement: only the chains with four points on two bones or more turn');
+
 // ------------------------------------------------------------------ the editor's keys
 const actions = await import('../src/studio/actions.ts');
 const { installPoseEditor } = await import('../src/pose_edit/editor.ts');

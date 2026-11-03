@@ -127,3 +127,5 @@ body:not(.pose-edit-on) .pe-inset, body.shot .pe-inset { display: none !importan
 .pe-grip-fingers li span:last-child { display: inline-flex; gap: 4px; align-items: center; color: var(--good, #4f9a5b); }
 .pe-grip-fingers li.is-bad span:last-child { color: var(--bad, #c4503c); }
 .pe-library-panel .osb-seg, .pe-grip-row .osb-seg { flex-wrap: wrap; height: auto; }
+.pe-grip-blocked { display: grid; gap: 8px; margin: 6px 0; }
+.pe-grip-blocked p { display: flex; gap: 6px; align-items: flex-start; margin: 0; color: var(--bad, #c4503c); font-size: 13px; }
