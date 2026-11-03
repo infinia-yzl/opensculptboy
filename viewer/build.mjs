@@ -257,7 +257,9 @@ async function interfaceCss() {
 
   const osb = fs.readFileSync(path.join(D, 'osb.css'), 'utf8');
   const own = fs.readFileSync(path.join(D, 'page.css'), 'utf8');
-  return [fonts, twCss, tokens, osb, own].join('\n');
+  // the studio's navigation, keys and hints (src/studio/)
+  const studio = fs.readFileSync(path.join(here, 'src', 'studio', 'studio.css'), 'utf8');
+  return [fonts, twCss, tokens, osb, own, studio].join('\n');
 }
 
 // the script: the TypeScript with three.js and the interface (React, src/shell/) in one bundle

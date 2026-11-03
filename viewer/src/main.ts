@@ -56,7 +56,7 @@ let UI: any = null;
 // the view that the navigation (ui/camera_nav.ts) shares: the yaw of the framings, the width of the free space
 // between the inspectors (0: the whole window), its height between the top bar and the view bar (0: the whole window)
 // and how far its middle lies below the window's (pixels), and whether the user moved the pivot away from a framing
-const VIEW = { yaw: 24, freeW: 0, freeH: 0, shiftY: 0, userMoved: false };
+const VIEW = { yaw: 24, freeW: 0, freeH: 0, shiftY: 0, userMoved: false, lit: '' };
 // the times of the stages of the load, for the performance card
 const LOADT: [string, number][] = [];
 
@@ -144,6 +144,8 @@ function fitFrame(name: string, t1: any, p1: any) {
   }
 }
 // smooth move between framings
+// flights between views last 300 ms with an ease-out (DESIGN-0014): quick enough for repeated moves
+const FLIGHT_MS = 300;
 let tween = null;
 // the damping of the controls carries a drag on for a few frames; a camera move clears it, so it lands where it aims
 function stopInertia() { controls._sphericalDelta?.set(0, 0, 0); controls._panOffset?.set(0, 0, 0); if ('_scale' in controls) controls._scale = 1; }
@@ -158,7 +160,7 @@ function flyTo(name) {
   t1.y += frameLift(d);
   const p1 = new THREE.Vector3(t1.x + d * Math.sin(y) * Math.cos(p), t1.y + d * Math.sin(p), t1.z + d * Math.cos(y) * Math.cos(p));
   fitFrame(name, t1, p1);
-  tween = { t0: performance.now(), dur: 900, fromT: controls.target.clone(), fromP: camera.position.clone(), toT: t1, toP: p1 };
+  tween = { t0: performance.now(), dur: FLIGHT_MS, fromT: controls.target.clone(), fromP: camera.position.clone(), toT: t1, toP: p1 };
 }
 frameCamera('body');
 const scene = new THREE.Scene();
@@ -2146,6 +2148,42 @@ function skinnedCoarse(q: Float32Array, root: number[]) {
   }
   return out;
 }
+// the first point of the posed body that a ray meets (page frame), for the studio's pivot, its pan under the pointer and
+// its zoom near the skin: the coarse body skinned on the CPU, kept until the pose or the body changes. The coarse body
+// lies a little outside the smooth skin, which a pivot and a depth can bear.
+const BODY_RAY = { key: '', pos: null as Float64Array | null };
+function bodyRayKey() {
+  let k = 0;
+  const q = MOTION.q;
+  if (q) for (let i = 0; i < q.length; i++) k += q[i] * ((i % 13) + 1);
+  return k.toFixed(6) + ':' + MOTION.rootOff.join(',') + ':' + COUNTS.body;
+}
+function bodyRay(o: any, d: any): { point: any; distance: number } | null {
+  if (!RIG.ready || !MOTION.q || !BODY.anny) return null;
+  const key = bodyRayKey();
+  if (key !== BODY_RAY.key || !BODY_RAY.pos) { BODY_RAY.pos = skinnedCoarse(MOTION.q, MOTION.rootOff); BODY_RAY.key = key; }
+  const P = BODY_RAY.pos, Q = BODY.anny.quads;
+  let best = Infinity;
+  const tri = (a: number, b: number, c: number) => {
+    const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2];
+    const e1x = P[b * 3] - ax, e1y = P[b * 3 + 1] - ay, e1z = P[b * 3 + 2] - az;
+    const e2x = P[c * 3] - ax, e2y = P[c * 3 + 1] - ay, e2z = P[c * 3 + 2] - az;
+    const px = d.y * e2z - d.z * e2y, py = d.z * e2x - d.x * e2z, pz = d.x * e2y - d.y * e2x;
+    const det = e1x * px + e1y * py + e1z * pz;
+    if (Math.abs(det) < 1e-12) return;
+    const inv = 1 / det, tx = o.x - ax, ty = o.y - ay, tz = o.z - az;
+    const u = (tx * px + ty * py + tz * pz) * inv;
+    if (u < 0 || u > 1) return;
+    const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+    const v = (d.x * qx + d.y * qy + d.z * qz) * inv;
+    if (v < 0 || u + v > 1) return;
+    const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+    if (t > 1e-4 && t < best) best = t;
+  };
+  for (let i = 0; i + 3 < Q.length; i += 4) { tri(Q[i], Q[i + 1], Q[i + 2]); tri(Q[i], Q[i + 2], Q[i + 3]); }
+  if (!isFinite(best)) return null;
+  return { point: new THREE.Vector3(o.x + d.x * best, o.y + d.y * best, o.z + d.z * best), distance: best };
+}
 // the bounds of a pose for the Body view, as the build gives the library's (relative to the hip height)
 function poseBounds(c: any) {
   const q = new Float32Array(MOTION.nb * 4), root = [0, 0, 0];
@@ -2977,7 +3015,7 @@ function animate() {
   }
   if (tween) {
     const k = Math.min(1, (performance.now() - tween.t0) / tween.dur);
-    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;
+    const e = 1 - Math.pow(1 - k, 3);
     controls.target.lerpVectors(tween.fromT, tween.toT, e);
     camera.position.lerpVectors(tween.fromP, tween.toP, e);
     resetAccum();
@@ -3512,10 +3550,11 @@ const APP: any = {
   setFpsCap,
   groundY: () => GROUND_Y,
   figure: () => FIG,
+  bodyRay: (o: any, d: any) => bodyRay(o, d),
   flyTo: (name: string) => flyTo(name),
   currentFrame: () => currentFrame,
   view: VIEW,
-  tweenTo: (t: any, p: any, ms = 800) => { stopInertia(); tween = { t0: performance.now(), dur: ms, fromT: controls.target.clone(), fromP: camera.position.clone(), toT: t.clone(), toP: p.clone() }; },
+  tweenTo: (t: any, p: any, ms = FLIGHT_MS) => { stopInertia(); tween = { t0: performance.now(), dur: ms, fromT: controls.target.clone(), fromP: camera.position.clone(), toT: t.clone(), toP: p.clone() }; },
   tweening: () => !!tween,
   resetAccum,
   renderPass,

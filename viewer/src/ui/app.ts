@@ -121,11 +121,13 @@ export interface App {
 
   // the camera
   groundY(): number;
+  // the first point of the posed body that a ray meets (page frame), or null
+  bodyRay(origin: THREE.Vector3, dir: THREE.Vector3): { point: THREE.Vector3; distance: number } | null;
   figure(): { lo: THREE.Vector3; hi: THREE.Vector3; top: number; head: THREE.Vector3; joints: { name: string; p: THREE.Vector3 }[] };
   // the framings ('body', 'upper', 'face') at the view's yaw, and the state that the navigation shares with main.ts
   flyTo(name: string): void;
   currentFrame(): string;
-  view: { yaw: number; freeW: number; freeH: number; shiftY: number; userMoved: boolean };
+  view: { yaw: number; freeW: number; freeH: number; shiftY: number; userMoved: boolean; lit?: string };
   tweenTo(target: THREE.Vector3, position: THREE.Vector3, ms?: number): void;
   tweening(): boolean;
   resetAccum(): void;
