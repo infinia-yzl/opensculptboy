@@ -16,7 +16,7 @@ import type * as THREE from 'three';
 import type { App } from './app.ts';
 import { clamp, h } from './dom.ts';
 import { registerCamera, type BoxLike, type CameraState, type FrameOpts, type StudioCamera, type Vec3Like } from '../studio/camera.ts';
-import { registerCameraDriver, registerSurface, surfaceHit, type CameraGesture } from '../studio/pointer.ts';
+import { promoteRight, registerCameraDriver, registerSurface, surfaceHit, type CameraGesture } from '../studio/pointer.ts';
 import { settings } from '../studio/settings.ts';
 import { clearStatus, PRIORITY, setStatus } from '../studio/status.ts';
 
@@ -31,6 +31,10 @@ const TURN_PER_PX = 0.25;
 const TILT_LO = -80, TILT_HI = 85;
 const ZOOM_NOTCH = 0.12, ZOOM_FINE = 0.03, NEAR_SURFACE = 0.04;
 const HISTORY = 50;
+// the cut-away works within this distance of the pivot (metres)
+const CUT_RANGE = 0.9;
+// the distance a double-click on the body flies in to, when the camera is farther (metres)
+const POI_DISTANCE = 0.8;
 
 export interface CameraNav {
   before(): void;
@@ -69,14 +73,39 @@ export function cameraNav(app: App): CameraNav {
   controls.maxPolarAngle = (90 - TILT_LO) * DEG;
   controls.minDistance = 0.01;
   const lastT = new THREE.Vector3().copy(controls.target);
+  let pivotLabel = 'the figure';
+  // the camera flew away from the figure: the pivot's box round the figure waits for the next framing
+  let flown = false;
   const off = new THREE.Vector3(), sph = new THREE.Spherical();
   let filmPx = 0, filmGoal = 0, lastAspect = 0;
   let railT = 0;
   const changeFns = new Set<() => void>();
-  const changed = () => { for (const f of changeFns) f(); };
+  const changed = () => { for (const f of changeFns) f(); cutCheck(); };
   const userMove = () => { V.lit = ''; if (!V.userMoved) { V.userMoved = true; N.onView(); } };
   const emitStart = () => { controls.dispatchEvent({ type: 'start' }); document.body.classList.add('interacted'); };
   const emitChange = () => { controls.dispatchEvent({ type: 'change' }); app.resetAccum(); changed(); };
+  // the automatic cut-away: when the camera works close to a pivot on a part (a double-click, a framing) and the body
+  // stands between them more than 5 cm before the pivot, the skin nearer than that opens (DESIGN-0014, "The camera
+  // model")
+  let cutAt = 0, cutR = 0, cutLater: any = 0;
+  function cutCheck(force = false) {
+    const now = performance.now();
+    if (!force && now - cutAt < 80) { clearTimeout(cutLater); cutLater = setTimeout(() => cutCheck(true), 90); return; }
+    cutAt = now;
+    let r = 0;
+    const dp0 = camera.position.distanceTo(controls.target);
+    // close work only (a framed hand, a spot zoomed in on): from farther away the cut would open the whole figure
+    if (pivotLabel !== 'the figure' && pivotLabel !== 'the face' && dp0 < CUT_RANGE) {
+      const toP = controls.target.clone().sub(camera.position), dp = toP.length();
+      const hit = app.bodyRay(camera.position, toP.normalize());
+      if (hit && hit.distance < dp - 0.05) r = dp - 0.05;
+    }
+    if (Math.abs(r - cutR) < 1e-4) return;
+    cutR = r; display.cutAway = r > 0;
+    app.setCut(r);
+    if (r > 0) setStatus('cut', [{ text: 'Cut away to show the pivot' }, { keys: 'Home', text: 'the whole figure' }], { priority: PRIORITY.hover - 5 });
+    else clearStatus('cut');
+  }
 
   // ---------------------------------------------------------------- the view history
   const back: View[] = [], fwd: View[] = [];
@@ -204,16 +233,94 @@ export function cameraNav(app: App): CameraNav {
   // ---------------------------------------------------------------- the gestures of the pointer
   let gest: { kind: CameraGesture | 'none'; x: number; y: number; theta0: number; phi0: number; ax: number; ay: number; depth: number; moved: boolean } =
     { kind: 'none', x: 0, y: 0, theta0: 0, phi0: 0, ax: 0, ay: 0, depth: 1, moved: false };
-  let lastWheel = 0, startView: View | null = null, pivotLabel = 'the figure';
+  let lastWheel = 0, startView: View | null = null;
   const pivotDot = h('div.pivot-dot', { 'aria-hidden': 'true', hidden: true });
+  // the floor mark while the camera turns (DESIGN-0014, P2): a faint ring on the floor round the feet, with a tick at
+  // the figure's front
+  const NS = 'http://www.w3.org/2000/svg';
+  const floorMark = document.createElementNS(NS, 'svg');
+  floorMark.setAttribute('class', 'floor-mark'); floorMark.setAttribute('aria-hidden', 'true');
+  const ringPath = document.createElementNS(NS, 'path'), tickPath = document.createElementNS(NS, 'path');
+  tickPath.setAttribute('class', 'floor-tick');
+  floorMark.append(ringPath, tickPath);
+  pivotDot.append(floorMark);
   function paintPivot() {
     const s = toScreen(controls.target);
     pivotDot.style.left = s.x + 'px'; pivotDot.style.top = s.y + 'px';
+    const f = app.figure(), y = app.groundY() + 0.002;
+    const cx = (f.lo.x + f.hi.x) / 2, cz = (f.lo.z + f.hi.z) / 2, r = Math.max(0.3, Math.max(f.hi.x - f.lo.x, f.hi.z - f.lo.z) * 0.6);
+    let d = '';
+    for (let i = 0; i <= 48; i++) {
+      const a = i / 48 * Math.PI * 2, q = toScreen({ x: cx + Math.sin(a) * r, y, z: cz + Math.cos(a) * r });
+      if (q.depth <= 0) { d = ''; break; }
+      d += (i ? 'L' : 'M') + (q.x - s.x).toFixed(1) + ' ' + (q.y - s.y).toFixed(1);
+    }
+    ringPath.setAttribute('d', d);
+    const t0 = toScreen({ x: cx, y, z: cz + r }), t1 = toScreen({ x: cx, y, z: cz + r + 0.08 });
+    tickPath.setAttribute('d', d ? `M${(t0.x - s.x).toFixed(1)} ${(t0.y - s.y).toFixed(1)}L${(t1.x - s.x).toFixed(1)} ${(t1.y - s.y).toFixed(1)}` : '');
   }
   function turnStatus() {
     setStatus('camera', [{ text: 'Turning round ' + pivotLabel, shift: { text: 'Turning slowly round ' + pivotLabel }, ctrl: { text: 'Turning in steps of 15°' } },
       { keys: 'Shift', text: 'fine', shift: null }, { keys: 'Ctrl', text: 'snap to 15°', ctrl: null }, { keys: 'Esc', text: 'back to where the turn began' }], { priority: PRIORITY.drag });
   }
+  // ---------------------------------------------------------------- fly (Unreal's viewport): right-hold with W A S D
+  // While the right button is held, the mouse looks round from the camera, W and S move forward and back, A and D
+  // sideways, E and Q up and down, Shift moves three times as fast, and the wheel sets the speed. The pivot travels
+  // with the camera at its distance, so a turn after the flight turns round what the camera looks at.
+  const fly = (() => {
+    const held = new Set<string>();
+    let on = false, raf = 0, last = 0, speed = 0.6;
+    const keys: Record<string, [number, number, number]> = { KeyW: [0, 0, 1], KeyS: [0, 0, -1], KeyA: [-1, 0, 0], KeyD: [1, 0, 0], KeyE: [0, 1, 0], KeyQ: [0, -1, 0] };
+    const down = (e: KeyboardEvent) => {
+      if (!keys[e.code] || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (!on && !promoteRight()) return;
+      held.add(e.code); e.preventDefault(); e.stopImmediatePropagation();
+    };
+    const up = (e: KeyboardEvent) => { if (keys[e.code]) { held.delete(e.code); if (on) { e.preventDefault(); e.stopImmediatePropagation(); } } };
+    addEventListener('keydown', down, true); addEventListener('keyup', up, true);
+    let shift = false;
+    addEventListener('keydown', (e) => { shift = e.shiftKey; }, true); addEventListener('keyup', (e) => { shift = e.shiftKey; }, true);
+    const step = (t: number) => {
+      if (!on) return;
+      const dt = Math.min(0.05, (t - last) / 1000); last = t;
+      if (held.size) {
+        camera.updateMatrixWorld();
+        const v = new THREE.Vector3();
+        for (const c of held) { const k = keys[c]; v.x += k[0]; v.y += k[1]; v.z += k[2]; }
+        const fwd = camera.getWorldDirection(new THREE.Vector3()), right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+        const m = new THREE.Vector3().addScaledVector(right, v.x).addScaledVector(fwd, v.z).addScaledVector(new THREE.Vector3(0, 1, 0), v.y);
+        if (m.lengthSq() > 0) {
+          m.normalize().multiplyScalar(speed * settings.get().moveSpeed * (shift ? 3 : 1) * dt);
+          shift_(m); flown = true;
+          userMove(); emitChange();
+        }
+      }
+      raf = requestAnimationFrame(step);
+    };
+    const shift_ = (m: THREE.Vector3) => { camera.position.add(m); controls.target.add(m); controls.update(); };
+    return {
+      start() {
+        on = true; last = performance.now(); raf = requestAnimationFrame(step);
+        setStatus('camera', [{ text: 'Flying' }, { keys: 'W A S D', text: 'move' }, { keys: 'E Q', text: 'up and down' }, { keys: 'Wheel', text: 'speed' },
+          { keys: 'Shift', text: 'faster' }], { priority: PRIORITY.drag });
+      },
+      stop() { on = false; held.clear(); cancelAnimationFrame(raf); },
+      active: () => on,
+      // a look round from the camera: the pivot turns about the camera at its distance
+      look(dYaw: number, dPitch: number) {
+        const d = camera.position.distanceTo(controls.target);
+        off.copy(controls.target).sub(camera.position);
+        sph.setFromVector3(off);
+        sph.theta += dYaw; sph.phi = clamp(sph.phi - dPitch, 0.05, Math.PI - 0.05);
+        off.setFromSpherical(sph).setLength(d);
+        controls.target.copy(camera.position).add(off);
+        camera.lookAt(controls.target);
+        controls.update();
+      },
+      speed(k: number) { speed = clamp(speed * k, 0.05, 8); setStatus('camera', [{ text: `Flying at ${speed.toFixed(2)} m/s` }, { keys: 'W A S D', text: 'move' }, { keys: 'Wheel', text: 'speed' }], { priority: PRIORITY.drag }); },
+    };
+  })();
+
   // the kind of gesture of a button, after the Blender setting
   const kindOf = (k: CameraGesture, e: PointerEvent): CameraGesture => {
     if (k !== 'pan' || !settings.get().blenderMiddle) return k;
@@ -228,7 +335,7 @@ export function cameraNav(app: App): CameraNav {
       emitStart();
       off.copy(camera.position).sub(controls.target); sph.setFromVector3(off);
       let depth = camera.position.distanceTo(controls.target);
-      if (kind === 'pan' || kind === 'right') {
+      if (kind === 'pan') {
         // the depth of the grabbed spot, so it stays under the pointer
         const hit = surfaceHit(rayAt(from.x, from.y));
         const fwdDir = camera.getWorldDirection(tmp2);
@@ -236,7 +343,8 @@ export function cameraNav(app: App): CameraNav {
         else depth = controls.target.clone().sub(camera.position).dot(fwdDir);
       }
       gest = { kind, x: from.x, y: from.y, theta0: sph.theta, phi0: sph.phi, ax: 0, ay: 0, depth: Math.max(0.02, depth), moved: false };
-      if (kind === 'orbit') { turnStatus(); pivotDot.hidden = false; paintPivot(); }
+      if (kind === 'right') fly.start();
+      else if (kind === 'orbit') { turnStatus(); pivotDot.hidden = false; paintPivot(); }
       else if (kind === 'zoom') setStatus('camera', [{ text: 'Zooming' }, { keys: 'Shift', text: 'fine' }, { keys: 'Esc', text: 'back to where it began' }], { priority: PRIORITY.drag });
       else setStatus('camera', [{ text: 'Moving the view' }, { keys: 'Esc', text: 'back to where it began' }], { priority: PRIORITY.drag });
       if (e.clientX !== from.x || e.clientY !== from.y) this.move(e);
@@ -254,7 +362,11 @@ export function cameraNav(app: App): CameraNav {
         if (e.ctrlKey || e.metaKey) { const s = 15 * DEG; theta = Math.round(theta / s) * s; phi = Math.round(phi / s) * s; }
         setSpherical(theta, phi);
         paintPivot();
-      } else if (gest.kind === 'pan' || gest.kind === 'right') {
+      } else if (gest.kind === 'right') {
+        // fly: the mouse looks round from where the camera stands
+        const k = 0.15 * DEG * settings.get().turnSpeed * (e.shiftKey ? 0.25 : 1);
+        fly.look(-dx * k, -dy * k);
+      } else if (gest.kind === 'pan') {
         const m = perPx(gest.depth);
         camera.updateMatrixWorld();
         const right = tmp.setFromMatrixColumn(camera.matrixWorld, 0).multiplyScalar(-dx * m);
@@ -272,6 +384,7 @@ export function cameraNav(app: App): CameraNav {
     },
     end() {
       // no coast: the camera stops where the button is released
+      if (gest.kind === 'right') fly.stop();
       gest.kind = 'none';
       pivotDot.hidden = true;
       clearStatus('camera');
@@ -279,10 +392,13 @@ export function cameraNav(app: App): CameraNav {
     },
     // Esc: the camera goes back to where the gesture began
     cancel() {
+      if (gest.kind === 'right') fly.stop();
       gest.kind = 'none'; pivotDot.hidden = true; clearStatus('camera');
       if (startView) { back.pop(); app.tweenTo(startView.t, startView.p, 150); startView = null; changed(); }
     },
     wheel(e) {
+      // the wheel while flying sets the speed
+      if (gest.kind === 'right') { fly.speed(e.deltaY < 0 ? 1.25 : 0.8); return; }
       if (app.turntable()) app.setTurntable(false);
       const now = performance.now();
       if (now - lastWheel > 700) pushView();
@@ -315,19 +431,22 @@ export function cameraNav(app: App): CameraNav {
       emitChange();
     },
     doubleClick(e, surface) {
-      if (surface) { pivotLabel = 'this spot'; setPivotAt(surface.point, true); }
+      if (surface) { pivotLabel = 'this spot'; setPivotAt(surface.point, true, 300, true, true); }
       else N.frameFigure();
     },
-    cursor: () => (gest.kind === 'zoom' ? 'ns-resize' : 'grabbing'),
+    cursor: () => (gest.kind === 'zoom' ? 'ns-resize' : gest.kind === 'right' ? 'crosshair' : 'grabbing'),
   });
 
   // the pivot on a point; with `centre`, the camera moves so the point stands in the middle of the view, at the same angle
-  function setPivotAt(p: Vec3Like, centre: boolean, ms = 300, history = true) {
+  function setPivotAt(p: Vec3Like, centre: boolean, ms = 300, history = true, approach = false) {
     const t1 = new THREE.Vector3(p.x, p.y, p.z);
     if (history) pushView();
     if (!centre) { controls.target.copy(t1); camera.lookAt(controls.target); controls.update(); emitChange(); return; }
     const dir = camera.position.clone().sub(controls.target).normalize();
-    const d = Math.max(0.05, camera.position.distanceTo(t1));
+    // a double-click also comes in to working distance, as Sketchfab's does (the point of interest of Mackinlay, Card
+    // and Robertson): from the whole figure to a hand in one flight; closer views keep their distance
+    const d0 = camera.position.distanceTo(t1);
+    const d = Math.max(0.05, approach ? Math.min(d0, POI_DISTANCE) : d0);
     V.userMoved = true;
     app.tweenTo(t1, t1.clone().addScaledVector(dir, d), ms);
     N.onView(); changed();
@@ -419,12 +538,13 @@ export function cameraNav(app: App): CameraNav {
       goTo(fwd.pop()!);
       return true;
     },
-    isolate(objs) { display.isolated = objs && objs.length ? objs : null; app.resetAccum(); changed(); },
+    isolate(objs) { display.isolated = objs && objs.length ? objs : null; app.setXray(display.xray, display.isolated); changed(); },
     isolated: () => display.isolated,
-    xray(on) { if (display.xray === on) return; display.xray = on; app.resetAccum(); changed(); },
+    xray(on) { if (display.xray === on) return; display.xray = on; app.setXray(on, display.isolated); changed(); },
     xrayOn: () => display.xray,
     rayAt,
     toScreen,
+    turn(dYaw, dTilt = 0) { if (app.turntable()) app.setTurntable(false); around(dYaw * DEG, -dTilt * DEG); userMove(); },
     state(): CameraState {
       off.copy(camera.position).sub(controls.target); sph.setFromVector3(off);
       return {
@@ -455,7 +575,8 @@ export function cameraNav(app: App): CameraNav {
       lastT.copy(controls.target);
     },
     after(dt: number) {
-      if (!app.tweening()) {
+      if (app.tweening()) flown = false;
+      if (!app.tweening() && !flown) {
         // the pivot stays in a box around the posed figure
         const f = app.figure(), t = controls.target;
         const x = clamp(t.x, f.lo.x - 0.35, f.hi.x + 0.35), y = clamp(t.y, app.groundY(), f.top + 0.15), z = clamp(t.z, f.lo.z - 0.35, f.hi.z + 0.35);
@@ -464,7 +585,7 @@ export function cameraNav(app: App): CameraNav {
           t.set(x, y, z); camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
           controls.update();
         }
-      } else changed();
+      } else if (app.tweening()) changed();
       // a hard limit as well: a flight can end below the floor's polar limit of this frame
       const lim = app.groundY() + 0.03;
       if (camera.position.y < lim) {
@@ -555,7 +676,7 @@ export function cameraNav(app: App): CameraNav {
     frameHand(side) {
       const s = side || (lastHand === 'L' ? 'R' : 'L');
       lastHand = s;
-      frameBounds(handPoints(s), { label: s === 'R' ? 'Right hand' : 'Left hand', margin: 0.1 });
+      frameBounds(handPoints(s), { label: s === 'R' ? 'Right hand' : 'Left hand', margin: 0.3 });
       V.lit = 'hand';
       N.onView();
     },

@@ -4,12 +4,14 @@
 A statue starter's light scan: the figure's scan as the studio's ghost (DESIGN-0013, "Reference
 in the view"), a ``scan.glb`` of a few megabytes in the starter package.
 
-The scan is the run's handoff ``replica.glb`` (the figure's skin, without the pieces that the
-starter carries as props), taken into the frame of the starter's card: the frame of the card's
-own posed body, as Anny's forward pass with the card's pose gives it, where the page draws the
-skin and the props (``x_card = (x_scan - t) R`` with the card's ``detail.fit.placement``,
-``x_scan = R x_card + t``). It is reduced to about :data:`TRIANGLES` triangles by quadric
-collapses (:func:`opensculptboy.export.decimate.decimate`) and written in glTF axes with
+The scan is the run's handoff ``replica.glb`` (the figure's skin with its carved hair and
+drapery, such as a hat and locks; the removed pieces, such as a sword or a base, stay out),
+taken into the frame of the starter's card: the frame of Anny's forward pass with the card's
+pose and an identity placement (``x_card = (x_scan - t) R`` with the card's
+``detail.fit.placement``, ``x_scan = R x_card + t``). The page reaches its own rest frame by
+adding the root bone's rest head, turned by the root's turn. It is reduced to about
+:data:`TRIANGLES` triangles by quadric collapses
+(:func:`opensculptboy.export.decimate.decimate`) and written in glTF axes with
 ``EXT_meshopt_compression`` and ``KHR_mesh_quantization`` (:mod:`opensculptboy.export.meshopt`):
 
 - one mesh of one primitive, without normals or texture coordinates (the page computes smooth

@@ -23,8 +23,10 @@ const TABLE = {
   eyedropper: 'eyedropper', silhouette: 'person', planned: 'hourglass-simple', keyboard: 'keyboard', info: 'info',
   new: 'file-plus', saveCard: 'floppy-disk', key: 'key', lock: 'lock', statue: 'person-simple', walk: 'person-simple-walk', throw: 'person-simple-throw',
   taichi: 'person-simple-tai-chi', run: 'person-simple-run', continue: 'arrow-counter-clockwise', model: 'cube-transparent', character: 'user-circle', eye: 'eye',
+  compass: 'compass', display: 'circle-half', xray: 'intersect-square', ghost: 'ghost', eyeOff: 'eye-slash', home: 'house', cube: 'cube',
+  cursor: 'cursor', move: 'arrows-out-cardinal', rotate: 'arrow-clockwise', grab: 'hand-grabbing', mouse: 'mouse',
   // the pose editor's
-  pin: 'push-pin', cursor: 'cursor', move: 'arrows-out-cardinal', rotate: 'arrow-clockwise', chevronLeft: 'caret-left', sparkle: 'sparkle', arrowDown: 'arrow-line-down', hand: 'hand-palm',
+  pin: 'push-pin', chevronLeft: 'caret-left', sparkle: 'sparkle', arrowDown: 'arrow-line-down', hand: 'hand-palm',
 };
 const dir = path.join(here, 'node_modules', '@phosphor-icons', 'core', 'assets', 'light');
 const lines = Object.entries(TABLE).map(([name, ph]) => {

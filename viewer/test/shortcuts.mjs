@@ -16,6 +16,8 @@ import {
 } from '../src/studio/actions.ts';
 import { registerKeymap } from '../src/studio/keymap.ts';
 import { ui } from '../src/shell/state.ts';
+import { setSelection } from '../src/studio/selection.ts';
+import { startModal, modalActive } from '../src/studio/modal.ts';
 
 // ------------------------------------------------------------------ the chords of a key press
 const cases = [
@@ -58,7 +60,7 @@ let ran = [];
 const stubApp = {
   presets: { studio: { label: 'Studio' }, window: { label: 'Window' } },
   motion: () => ({ cur: null }), togglePlay() {}, turntable: () => false, setTurntable() {}, rigView: () => 'off', setRigView() {},
-  hairVisible: () => true, setHairVisible() {}, applyPreset() {},
+  hairVisible: () => true, setHairVisible() {}, applyPreset() {}, boneNames: () => ['root', 'wrist.R'], setParts: (h, f) => { ran.push('parts:' + JSON.stringify([h, f])); },
 };
 const stubNav = new Proxy({}, { get: (_, k) => (...a) => { ran.push('nav.' + String(k) + (a.length ? ':' + a.join(',') : '')); } });
 registerKeymap({
@@ -76,7 +78,6 @@ const P = [
   ['pose.push', ['PageDown', 'Shift+PageDown', 'Alt+PageDown']], ['pose.pull', ['PageUp', 'Shift+PageUp', 'Alt+PageUp']], ['pose.mirror', ['M']],
   ['pose.copy', ['Ctrl+C']], ['pose.paste', ['Ctrl+V']], ['pose.paste-mirrored', ['Ctrl+Shift+V']], ['pose.scan', ['Shift+Z']],
   ['pose.tool.1', ['1']], ['pose.tool.2', ['2']], ['pose.tool.3', ['3']], ['pose.tool.4', ['4']], ['pose.tool.5', ['5']],
-  ['pose.hide', ['H']], ['pose.hide-others', ['Shift+H']], ['pose.show-all', ['Alt+H']], ['pose.isolate', ['/']],
 ];
 for (const [id, keys, scope] of P) registerAction({ id, label: id, keys, group: 'Points', tier: 'frequent', scope: scope || 'pose-edit', run: () => { ran.push(id); } });
 registerAction({ id: 'pose.nudge', label: 'Nudge', keys: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Shift+ArrowLeft', 'Shift+ArrowRight', 'Shift+ArrowUp', 'Shift+ArrowDown'],
@@ -149,7 +150,7 @@ assert.equal(press('f', 'KeyF').id, 'view.frame');
 assert.equal(press('`', 'Backquote').id, 'view.menu');
 assert.deepEqual(ran, ['ring:view']);
 assert.equal(press('z', 'KeyZ', { altKey: true }).id, 'display.xray');
-assert.equal(press('?', 'Slash', { shiftKey: true }).id, 'help.keys');
+assert.equal(press('?', 'Slash', { shiftKey: true }).id, 'help.keys-q');
 assert.equal(press('F1', 'F1').id, 'help.keys');
 assert.equal(press('k', 'KeyK', { ctrlKey: true }).id, 'help.commands');
 assert.equal(press('z', 'KeyZ', { ctrlKey: true }).id, 'edit.undo');
@@ -160,10 +161,31 @@ assert.equal(press('ArrowRight', 'ArrowRight', { repeat: true }).id, 'view.turn-
 // typing in a field: only the actions marked for it
 assert.equal(dispatchKey({ key: 'f', code: 'KeyF' }, { typing: true }), null);
 assert.equal(dispatchKey({ key: 's', code: 'KeyS', ctrlKey: true }, { typing: true }), 'file.save');
-// Space with no animation playing says so
 let hint = '';
+// H with nothing selected says so; with a selected part it hides that part's bones
+assert.equal(dispatchKey({ key: 'h', code: 'KeyH' }, { hint: (t) => { hint = t; } }), 'part.hide');
+assert.equal(hint, 'Select a part first');
+setSelection({ label: 'Right hand', frame: () => null, bones: ['wrist.R'] });
+assert.deepEqual(press('h', 'KeyH').ran, ['parts:[["wrist.R"],null]']);
+assert.deepEqual(press('h', 'KeyH', { altKey: true }).ran, ['parts:[null,null]']);
+assert.deepEqual(press('/', 'Slash').ran, ['parts:[null,["wrist.R"]]']);
+setSelection(null);
+// Space with no animation playing says so
 assert.equal(dispatchKey({ key: ' ', code: 'Space' }, { hint: (t) => { hint = t; } }), 'motion.play');
 assert.equal(hint, 'No animation is playing');
+
+// ------------------------------------------------------------------ a modal grab takes the keys: an axis, a typed value, Enter
+globalThis.addEventListener ??= () => {}; globalThis.removeEventListener ??= () => {};
+const seen = [];
+startModal({ kind: 'grab', label: 'Point 22', update: (v) => { seen.push([v.axis, v.local, v.typed]); return ''; }, confirm: () => seen.push('ok'), cancel: () => seen.push('back') }, { x: 0, y: 0 });
+assert.ok(modalActive());
+for (const [key, code] of [['x', 'KeyX'], ['x', 'KeyX'], ['3', 'Digit3'], ['.', 'Period'], ['5', 'Digit5']]) assert.ok(dispatchKey({ key, code }, { only: 'modal' }), key);
+assert.equal(dispatchKey({ key: 'f', code: 'KeyF' }, { only: 'modal' }), null);   // F means nothing during a grab
+assert.equal(dispatchKey({ key: 'Enter', code: 'Enter' }, { only: 'modal' }), 'modal.confirm');
+assert.ok(!modalActive());
+assert.deepEqual(seen.at(-1), 'ok');
+assert.deepEqual(seen.at(-2), ['x', true, 3.5]);
+assert.deepEqual(conflicts(), []);
 
 // ------------------------------------------------------------------ menus, the command list and the Ctrl overlay
 assert.deepEqual(menuItems('view').map((a) => a.menuLabel || a.label), ['Top', 'Face', 'Right', 'Right hand', 'Three-quarter', 'Front', 'Full figure', 'Left hand', 'Left', 'Back']);

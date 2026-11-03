@@ -22,9 +22,25 @@ function keysCell(r: HelpRow): HTMLElement {
     parts.forEach((p) => { dt.append(h('kbd.osb-key', { text: p })); dt.append(' + '); });
     dt.append(h('span.help-mouse', { text: last }));
   };
-  // keys that differ only by a modifier the row explains (Shift for fine steps) show once
-  const keys = r.keys.filter((k, i) => !(k.startsWith('Shift+') && r.keys.includes(k.slice(6)) && i > 0));
-  keys.forEach((k, i) => { if (i) dt.append(h('span.help-or', { text: keys.length > 2 && i < keys.length - 1 ? ' ' : ' or ' })); add(k); });
+  // keys that differ from another key of the row only by a modifier the row explains (Shift for fine steps, Ctrl for
+  // the opposite side) show once; a run of digits with one modifier shows as a range (Shift 1-5)
+  let keys = r.keys.filter((k) => {
+    const m = /^(Shift|Ctrl)\+(.+)$/.exec(k);
+    return !(m && r.keys.includes(m[2]));
+  });
+  const run = /^((?:[A-Za-z]+\+)*)(\d)$/;
+  const ms = keys.map((k) => run.exec(k));
+  if (keys.length > 2 && ms.every((m) => m && m[1] === ms[0]![1])) {
+    const ds = ms.map((m) => +m![2]), prefix = ms[0]![1];
+    if (ds.every((d, i) => !i || d === ds[i - 1] + 1)) {
+      if (prefix) {
+        capsOf(prefix + '0').slice(0, -1).forEach((c) => { dt.append(h('kbd.osb-key', { text: c }), ' '); });
+        dt.append(h('kbd.osb-key', { text: `${ds[0]}–${ds[ds.length - 1]}` }));
+      } else ds.forEach((d, i) => { if (i) dt.append(' '); dt.append(h('kbd.osb-key', { text: String(d) })); });
+      keys = [];
+    }
+  }
+  keys.forEach((k, i) => { if (i) dt.append(keys.length > 2 ? ' ' : h('span.help-or', { text: ' or ' })); add(k); });
   r.mouse.forEach((m, i) => { if (i || keys.length) dt.append(h('span.help-or', { text: ' or ' })); mouse(m); });
   return dt;
 }
@@ -85,6 +101,12 @@ export function helpSheet(): Help {
     empty.hidden = any;
   }
   search.addEventListener('input', render);
+  // Esc closes the help at once, also with a query in the search (which a search field would clear first)
+  search.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault(); e.stopPropagation();
+    dlg.close();
+  });
   close.addEventListener('click', () => dlg.close());
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
   dlg.addEventListener('close', () => { search.value = ''; });

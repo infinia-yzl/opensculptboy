@@ -39,7 +39,10 @@ export function setStatus(source: string, parts: StatusPart[] | null, opts: Stat
 export function clearStatus(source: string) { if (entries.delete(source)) emit(); }
 export function subscribeStatus(fn: () => void): () => void { listeners.add(fn); return () => { listeners.delete(fn); }; }
 
-export interface StatusLine { source: string | null; lead: string; parts: StatusPart[]; held: Held | null; heldLong: Held | null }
+export interface StatusLine { source: string | null; lead: string; parts: StatusPart[]; held: Held | null; heldLong: Held | null; lit: string }
+// a part of the line to light (the tour's current step: 'Left-drag')
+let lit = '';
+export function setStatusLit(keys: string) { if (lit !== keys) { lit = keys; emit(); } }
 // the line as it shows now
 export function statusNow(): StatusLine {
   let top: Entry | null = null;
@@ -47,11 +50,11 @@ export function statusNow(): StatusLine {
     const p = e.opts.priority ?? 20, q = top ? (top.opts.priority ?? 20) : -1;
     if (!top || p > q || (p === q && e.t > top.t)) top = e;
   }
-  if (!top) return { source: null, lead: '', parts: [], held, heldLong };
+  if (!top) return { source: null, lead: '', parts: [], held, heldLong, lit };
   let parts = top.parts;
   if (held && top.opts.held?.[held]) parts = top.opts.held[held]!;
   else if (held) parts = top.parts.map((p) => (held! in p ? p[held!] : p)).filter((p): p is StatusPart => !!p);
-  return { source: top.source, lead: top.opts.lead || '', parts, held, heldLong };
+  return { source: top.source, lead: top.opts.lead || '', parts, held, heldLong, lit };
 }
 export function heldKey(): Held | null { return held; }
 

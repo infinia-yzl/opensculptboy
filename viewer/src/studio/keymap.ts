@@ -64,6 +64,11 @@ export function registerKeymap(d: KeymapDeps): () => void {
     before = { open: s.open, tool: s.tool, character: s.character };
     ui.set({ open: false, tool: null, character: false });
   };
+  // H, Shift+H, Alt+H and /: the selected part's skin hidden, everything else hidden, all shown, the part isolated
+  const parts = { hidden: new Set<string>(), isolated: null as string[] | null };
+  const applyParts = () => app.setParts(parts.hidden.size ? [...parts.hidden] : null, parts.isolated);
+  const selBones = () => selection()?.bones || [];
+  const hasPart = () => selBones().length > 0;
   const motionLoop = () => { const m = app.motion(); return !!m.cur && m.cur.kind === 'loop'; };
   const mode = (id: ModeId) => () => { uiActions.toggleMode(id); };
 
@@ -74,6 +79,7 @@ export function registerKeymap(d: KeymapDeps): () => void {
     { id: 'mouse.move', label: 'Move the view', mouse: ['Middle-drag'], group: 'Mouse', tier: 'constant' },
     { id: 'mouse.zoom', label: 'Zoom to the pointer', mouse: ['Wheel'], group: 'Mouse', tier: 'constant' },
     { id: 'mouse.zoomdrag', label: 'Zoom by dragging', mouse: ['Alt+Right-drag'], group: 'Mouse', tier: 'frequent' },
+    { id: 'mouse.fly', label: 'Fly: W and S forward and back, A and D sideways, E and Q up and down, the wheel for the speed', mouse: ['Right-hold'], group: 'Mouse', tier: 'occasional' },
     { id: 'mouse.click', label: 'Select', mouse: ['Click'], group: 'Mouse', tier: 'constant' },
     { id: 'mouse.dbl', label: 'Turn round this spot', mouse: ['Double-click'], group: 'Mouse', tier: 'frequent' },
     { id: 'mouse.right', label: 'Cancel a drag, or open the menu', mouse: ['Right-click'], group: 'Held keys', tier: 'frequent' },
@@ -106,10 +112,10 @@ export function registerKeymap(d: KeymapDeps): () => void {
     // ---------------------------------------------------------------- the view
     { id: 'view.frame', label: 'Frame the selection', desc: 'Again to widen: point, hand, arm, whole figure', keys: ['F', 'Numpad.'], group: 'The view', tier: 'constant',
       place: 'The view', icon: 'focus', run: frameSelection },
-    { id: 'view.home', label: 'Frame the whole figure', keys: ['Home'], group: 'The view', tier: 'frequent', place: 'The view', icon: 'focus', run: () => nav.frameFigure(),
+    { id: 'view.home', label: 'Frame the whole figure', keys: ['Home'], group: 'The view', tier: 'frequent', place: 'The view', icon: 'home', run: () => nav.frameFigure(),
       menu: 'view', menuOrder: 6, menuLabel: 'Full figure' },
     { id: 'view.menu', label: 'View menu', desc: 'Front, back, sides, top, face, hands and the whole figure round the pointer', keys: ['`'], group: 'The view', tier: 'frequent',
-      place: 'The view', icon: 'camera', run: () => d.ringMenu('view') },
+      place: 'The view', icon: 'compass', run: () => d.ringMenu('view') },
     { id: 'view.back', label: 'Previous view', keys: ['Backspace'], group: 'The view', tier: 'frequent', place: 'The view', icon: 'undo',
       row: 'view.history', rowLabel: 'Previous view, next view', hint: 'No earlier view', run: () => { if (!cam().previousView()) return false; d.toast('Back to the earlier view'); } },
     { id: 'view.forward', label: 'Next view', keys: ['Shift+Backspace'], group: 'The view', tier: 'occasional', place: 'The view', icon: 'redo',
@@ -145,17 +151,32 @@ export function registerKeymap(d: KeymapDeps): () => void {
 
     // ---------------------------------------------------------------- the display
     { id: 'display.menu', label: 'Display menu', desc: 'Solid, X-ray, the scan, the skeleton and the skin weights round the pointer', keys: ['Z'], group: 'The view', tier: 'frequent',
-      place: 'The view', run: () => d.ringMenu('display') },
-    { id: 'display.solid', label: 'Solid', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 0, help: false, place: 'The display menu',
+      place: 'The view', icon: 'display', run: () => d.ringMenu('display') },
+    { id: 'display.solid', label: 'Solid', icon: 'cube', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 0, help: false, place: 'The display menu',
       checked: () => !cam().xrayOn(), run: () => cam().xray(false) },
-    { id: 'display.xray', label: 'X-ray', desc: 'The body and the scan see-through, so points behind them show', keys: ['Alt+Z'], group: 'The view', tier: 'frequent',
+    { id: 'display.xray', label: 'X-ray', icon: 'xray', desc: 'The body and the scan see-through, so points behind them show', keys: ['Alt+Z'], group: 'The view', tier: 'frequent',
       menu: 'display', menuOrder: 1, place: 'The display menu', checked: () => cam().xrayOn(), run: () => cam().xray(!cam().xrayOn()) },
-    { id: 'display.skeleton', label: 'Skeleton', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 5, help: false, place: 'The display menu',
+    { id: 'display.skeleton', label: 'Skeleton', icon: 'bones', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 5, help: false, place: 'The display menu',
       checked: () => app.rigView() === 'skeleton', run: () => app.setRigView(app.rigView() === 'skeleton' ? 'off' : 'skeleton') },
-    { id: 'display.weights', label: 'Skin weights', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 6, help: false, place: 'The display menu',
+    { id: 'display.weights', label: 'Skin weights', icon: 'display', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 6, help: false, place: 'The display menu',
       checked: () => app.rigView() === 'weights', run: () => app.setRigView(app.rigView() === 'weights' ? 'off' : 'weights') },
-    { id: 'display.hair', label: 'Hair', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 7, help: false, place: 'The display menu',
+    { id: 'display.hair', label: 'Hair', icon: 'hair', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 7, help: false, place: 'The display menu',
       checked: () => app.hairVisible(), run: () => app.setHairVisible(!app.hairVisible()) },
+
+    { id: 'part.hide', label: 'Hide the selected part', keys: ['H'], group: 'The view', tier: 'frequent', row: 'part.hide', rowLabel: 'Hide the selected part, hide the rest, show all',
+      place: 'The view', icon: 'eyeOff', when: hasPart, hint: 'Select a part first',
+      run: () => { for (const b of selBones()) parts.hidden.add(b); applyParts(); d.toast('Hid ' + (selection()?.label || 'the part')); } },
+    { id: 'part.hide-rest', label: 'Hide everything else', keys: ['Shift+H'], group: 'The view', tier: 'frequent', row: 'part.hide', place: 'The view', icon: 'eyeOff',
+      when: hasPart, hint: 'Select a part first',
+      run: () => { const keep = new Set(selBones()); for (const n of app.boneNames()) if (!keep.has(n)) parts.hidden.add(n); applyParts(); } },
+    { id: 'part.show', label: 'Show everything', keys: ['Alt+H'], group: 'The view', tier: 'frequent', row: 'part.hide', place: 'The view', icon: 'eye',
+      when: () => parts.hidden.size > 0 || !!parts.isolated, hint: 'Nothing is hidden',
+      run: () => { parts.hidden.clear(); parts.isolated = null; applyParts(); } },
+    { id: 'part.isolate', label: 'Isolate the selected part', desc: 'The rest turns faint; again to leave', keys: ['/'], group: 'The view', tier: 'frequent', place: 'The view',
+      icon: 'focus', when: () => hasPart() || !!parts.isolated, hint: 'Select a part first', checked: () => !!parts.isolated,
+      run: () => { parts.isolated = parts.isolated ? null : selBones(); applyParts(); } },
+    { id: 'panel.controls', label: 'Controls', desc: 'Turn, move and zoom speeds, the drag speed of points, Larger targets', group: 'Panels', tier: 'rare', place: 'More › Controls',
+      icon: 'mouse', help: false, run: () => uiActions.toggleTool('controls') },
 
     // ---------------------------------------------------------------- the panels and the animation
     { id: 'panel.right', label: 'Right panel', desc: 'The Character panel or the tool panel on or off', keys: ['N'], group: 'Panels', tier: 'occasional',
@@ -174,7 +195,10 @@ export function registerKeymap(d: KeymapDeps): () => void {
     // ---------------------------------------------------------------- help
     { id: 'help.commands', label: 'Command list', desc: 'Every action by name, with its key', keys: ['F3', 'Ctrl+K'], group: 'Help', tier: 'rare', inText: true, place: 'The top bar',
       icon: 'search', run: () => d.commands() },
-    { id: 'help.keys', label: 'This help', desc: 'The keys and the mouse by use and by mode', keys: ['F1', '?'], group: 'Help', tier: 'rare', place: 'The top bar', icon: 'help', run: () => d.help() },
+    // F1 works in a text field too; ? types itself there
+    { id: 'help.keys', label: 'This help', desc: 'The keys and the mouse by use and by mode', keys: ['F1'], group: 'Help', tier: 'rare', place: 'The top bar', icon: 'help',
+      inText: true, row: 'help.keys', rowLabel: 'This help', run: () => d.help() },
+    { id: 'help.keys-q', label: 'This help', keys: ['?'], group: 'Help', tier: 'rare', row: 'help.keys', command: false, run: () => d.help() },
     { id: 'help.escape', label: 'Close the menu or the panel', keys: ['Escape'], group: 'Help', tier: 'constant', help: false, command: false, run: () => d.escape() },
   ];
   offs.push(registerActions(A));

@@ -58,6 +58,7 @@ export function ViewMenu() {
           <DropdownMenuItem key={t.id} icon={t.icon} data-tool={t.id} aria-checked={tool === t.id}
             onSelect={() => actions.toggleTool(t.id as any)}>{t.label}</DropdownMenuItem>
         ))}
+        <DropdownMenuItem icon="mouse" data-tool="controls" aria-checked={tool === 'controls'} onSelect={() => actions.toggleTool('controls')}>Controls</DropdownMenuItem>
         <DropdownMenuItem icon="stats" aria-checked={stats} onSelect={() => legacy.toggleStats()}>Performance</DropdownMenuItem>
         {full ? <DropdownMenuItem icon="fullscreen" onSelect={() => legacy.fullscreen()}>Full screen</DropdownMenuItem> : null}
         <DropdownMenuSeparator />

@@ -29,7 +29,13 @@ import { makeOpener } from '../shell/open.ts';
 import { mountShell } from '../shell/Shell.tsx';
 import type { Legacy } from '../shell/context.ts';
 import { flushSync } from 'react-dom';
-import { dispatchKey } from '../studio/actions.ts';
+import { allActions, dispatchKey, onActionRun } from '../studio/actions.ts';
+import { cam } from '../studio/camera.ts';
+import { setSelection } from '../studio/selection.ts';
+import { statusText } from '../studio/status.ts';
+import { modalActive } from '../studio/modal.ts';
+import { offerTour, startTour } from '../studio/Onboarding.tsx';
+import { settings } from '../studio/settings.ts';
 import { helpSheet } from '../studio/help.ts';
 import { registerKeymap } from '../studio/keymap.ts';
 import { commandList, ringMenu } from '../studio/menus.ts';
@@ -269,7 +275,7 @@ export function initUI(app: App): UI {
     frame: (v) => nav.frame(v), angle: (v) => nav.angle(v), turntable: () => app.setTurntable(!app.turntable()), resetView: () => nav.reset(),
     ring, heightRail: nav.rail, identity, opener, hosted,
   };
-  document.body.append(sheet.view, nav.rail, nav.pivotDot, stats.el, help.el, cmds.el, rings.el, shotDlg, boneTip);
+  document.body.append(sheet.view, nav.pivotDot, stats.el, help.el, cmds.el, rings.el, shotDlg, boneTip);
   // the 3D view's backdrop follows the theme: the dark studio, or the light theme's marble stage
   const stage = () => app.setStage(ui.get().dark ? 'dark' : 'light');
   ui.subscribe(stage); stage();
@@ -328,6 +334,21 @@ export function initUI(app: App): UI {
   trackModifiers();
   // the interface mounts once the keys are in the registry, so its tooltips and key caps show them from the start
   mountShell({ app, ed, legacy });
+  // for the page tests: the registry, the camera, the status line, the settings and the actions that ran
+  const ran: string[] = [];
+  onActionRun((id) => { ran.push(id); if (ran.length > 200) ran.shift(); });
+  (window as any).__studio = {
+    actions: () => allActions().map((a) => ({ id: a.id, keys: a.keys || [], scope: a.scope || 'global', run: !!a.run, label: a.label })),
+    cam: () => cam().state(), status: () => statusText(), settings, ran, setSelection,
+    project: (p: number[]) => cam().toScreen({ x: p[0], y: p[1], z: p[2] }),
+    joint: (name: string) => { const j = app.figure().joints.find((x) => x.name === name); return j ? [j.p.x, j.p.y, j.p.z] : null; },
+    hand: (side: string) => app.figure().joints.filter((j) => j.name.endsWith('.' + side) && /^(finger|wrist|metacarpal)/.test(j.name)).map((j) => { const s = cam().toScreen(j.p); return [s.x, s.y]; }),
+    bodyRay: (x: number, y: number) => { const r = cam().rayAt(x, y); const h = app.bodyRay(r.origin, r.direction); return h ? [h.point.x, h.point.y, h.point.z, h.distance] : null; },
+    free: () => ({ freeW: app.view.freeW, freeH: app.view.freeH }),
+    tour: () => startTour(), offerTour: () => offerTour(),
+  };
+  // the height rail after the interface, so the focus reaches it after the top bar, the panel and the view bar
+  document.body.append(nav.rail);
   app.canvas.tabIndex = -1;
   // the line under the view, with nothing held, Shift held and Alt held (artboard 3b)
   setStatus('idle', [{ keys: 'Left-drag', text: 'turn' }, { keys: 'Middle-drag', text: 'move the view' }, { keys: 'Wheel', text: 'zoom' }, { keys: 'F', text: 'frame' },
@@ -353,8 +374,10 @@ export function initUI(app: App): UI {
     if (rings.isOpen()) return;
     // the interface shows a key's panel before the next frame
     let id: string | null = null;
-    flushSync(() => { id = dispatchKey(e, { typing: isTyping, dialog: dialogOpen(), hint: (text) => toast(text) }); });
-    if (id) e.preventDefault();
+    // a grab or a turn (studio/modal.ts) takes every key while it lasts
+    const modal = modalActive();
+    flushSync(() => { id = dispatchKey(e, { typing: isTyping, dialog: dialogOpen(), hint: (text) => toast(text), only: modal ? 'modal' : undefined }); });
+    if (id || modal) e.preventDefault();
   });
   // Alt+← and Alt+→ would leave the page with unsaved edits; Ctrl+wheel would zoom the page over the view
   addEventListener('keydown', (e) => { if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !typing(e)) e.preventDefault(); }, true);

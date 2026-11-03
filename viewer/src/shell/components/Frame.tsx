@@ -16,6 +16,7 @@ import { Icon } from './ui/icon.tsx';
 import { Tip } from './ui/tooltip.tsx';
 import { runAction } from '../../studio/actions.ts';
 import { useActionsVersion } from '../../studio/react.ts';
+import { FirstRun } from '../../studio/Onboarding.tsx';
 
 // the framings and the angles of the view bar; an angle pressed again turns to the opposite side
 const FRAMES: [string, string, string, string][] = [['body', 'Full', 'Full body', 'The whole figure in the free space'], ['upper', 'Upper', 'Upper body', 'The head, the arms and the chest'],
@@ -54,19 +55,19 @@ export function ViewBar() {
           <button type="button" className="osb-ib" aria-label="Frame the selection (F)" onClick={() => runAction('view.frame')}><Icon name="focus" /></button>
         </Tip>
         <Tip action="view.menu" side="top">
-          <button type="button" className="osb-ib" aria-label="View menu (backtick)" data-ring="view" onClick={() => runAction('view.menu')}><Icon name="camera" /></button>
+          <button type="button" className="osb-ib" aria-label="View menu (backtick)" data-ring="view" onClick={() => runAction('view.menu')}><Icon name="compass" /></button>
         </Tip>
         <Tip action="display.menu" side="top">
-          <button type="button" className="osb-ib" aria-label="Display menu (Z)" data-ring="display" onClick={() => runAction('display.menu')}><Icon name="hud" /></button>
+          <button type="button" className="osb-ib" aria-label="Display menu (Z)" data-ring="display" onClick={() => runAction('display.menu')}><Icon name="display" /></button>
         </Tip>
-        <span className="osb-sep" />
       </>)}
-      {phone ? (
+      {phone ? (<>
         <Tip label="Turn the figure" side="top">
           <button type="button" className="osb-ib" aria-label="Turn the figure" aria-pressed={view.turntable} onClick={legacy.turntable}><Icon name="turntable" /></button>
         </Tip>
-      ) : null}
-      <div ref={ring} className="osb-ring-host" />
+        <span className="osb-sep" />
+        <div ref={ring} className="osb-ring-host" />
+      </>) : null}
     </>
   );
   if (phone) {
@@ -89,6 +90,12 @@ export function Welcome() {
   if (!shown) return null;
   const starter = starterOfName(name);
   const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  // a desktop: the six most used inputs (artboard 3i), with the starter's note when its package is missing
+  if (!touch && width !== 'phone') {
+    return <FirstRun onClose={() => actions.dismissWelcome()} note={!starter && note ? (
+      <p className="osb-note welcome-starter">The statue starters come as packages of their own. <a className="osb-link" href={note.link} target="_blank" rel="noopener noreferrer">{note.label}</a> and drop it on the page to start from it.</p>
+    ) : undefined} />;
+  }
   return (
     <section className="osb-glass osb-mended welcome" aria-labelledby="welcome-title" data-width={width}>
       <Tip label="Close" keys="Esc" side="left">

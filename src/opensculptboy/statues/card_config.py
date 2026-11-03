@@ -11,9 +11,10 @@ page saves it:
 
 - ``detail.fit.reference.points`` (``opensculptboy.card-points/1``): by point chain (``hand.r``,
   ``arm.r``, ``leg.l``, ``neck``), each point's ``name`` (of ``data/posing/reference_points.json``),
-  ``position``, ``on`` and ``weight``, in the card's frame (``"frame": "card"``: Anny's axes of
-  the card's posed body) or in the masks' frame (``"frame": "scan"``: the frame of
-  ``replica.glb``, y up);
+  ``position``, ``on`` and ``weight``, in the card's frame (``"frame": "card"``: Anny's forward
+  pass with the card's pose and an identity placement, the frame of the starter's ghost; the
+  page's rest frame is that frame moved by the root bone's rest head) or in the masks' frame
+  (``"frame": "scan"``: the frame of ``replica.glb``, y up);
 - ``detail.fit.reference.pins``: contact pins (``name``, ``kind`` ``"point"`` with ``target`` or
   ``"plane"`` with ``point`` and ``normal``, ``weight``) in the same frame;
 - ``pose.bones``: each bone's ``local-ref`` turn as a unit quaternion (x, y, z, w);
@@ -24,7 +25,7 @@ page saves it:
 - ``reference_points``: a hand's points and its arm's (the shoulder and the elbow) pose the
   chain ``arm.<side>`` (the arm and the hand), a leg's ``leg.<side>`` and the head's ``neck``;
   a pin joins the chain of the point it names (:func:`opensculptboy.statues.points.check`
-  takes both);
+  takes both); a chain with no point on and no pin is left out (``skipped_chains``);
 - ``posed_hands.hand.<side>.key``: ``bones``, the turns of every bone of the side from
   ``shoulder01`` down as rotation vectors in degrees, ``local_changes`` (the hand's), and the
   hand's ``after_fit`` (:data:`AFTER_FIT`: the right hand before the fit, the left after it, as
@@ -37,8 +38,9 @@ summed and given back by the table's shares (0.4, 0.5, 0.1), so that a turn keye
 does not kink the forearm halfway. The bones' twist axes differ a little, so the shared
 twist alone moves the hand; the posing solve then turns those bones again in its own
 parameters (each bone's bend and side, and the group's twist by its shares), without the
-ranges, until the hand's 21 points lie where the card has them (within about a millimetre). A pose that the page's solve
-made has those shares already and stays as it is.
+ranges, until the hand's 21 points come back to where the card has them, as close as those
+bones can bring them. A pose that the page's solve made has those shares already and stays
+as it is.
 
 The turns are local: the hand lands where the card shows it when the run that the config
 rebuilds starts from the same fit as the card (``run --from`` the starter's run).
@@ -293,9 +295,6 @@ def apply_card(
     points = card_points(card)
     if points:
         check(points)
-        merged = dict(out.get("reference_points") or {})
-        merged.update(points)
-        out["reference_points"] = merged
         report["reference_points"] = {
             c: {
                 "points": sum("kind" not in e for e in v),
@@ -304,6 +303,18 @@ def apply_card(
             }
             for c, v in points.items()
         }
+        # a chain with no point on and no pin holds nothing to solve for: its solve would only
+        # curl the fingers, which the hand's key already sets
+        idle = sorted(
+            c
+            for c, r in report["reference_points"].items()
+            if r["on"] == 0 and r["pins"] == 0
+        )
+        merged = dict(out.get("reference_points") or {})
+        merged.update({c: v for c, v in points.items() if c not in idle})
+        if merged:
+            out["reference_points"] = merged
+        report["skipped_chains"] = idle
     if hands:
         fields = {k: v for k, v in card.items() if k != "look"}
         # the card without its look block, in the schema that holds a detail layer and a
