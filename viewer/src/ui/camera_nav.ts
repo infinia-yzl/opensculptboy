@@ -31,6 +31,8 @@ const TURN_PER_PX = 0.25;
 const TILT_LO = -80, TILT_HI = 85;
 const ZOOM_NOTCH = 0.12, ZOOM_FINE = 0.03, NEAR_SURFACE = 0.04;
 const HISTORY = 50;
+// the cut-away works within this distance of the pivot (metres)
+const CUT_RANGE = 0.9;
 
 export interface CameraNav {
   before(): void;
@@ -80,15 +82,18 @@ export function cameraNav(app: App): CameraNav {
   const userMove = () => { V.lit = ''; if (!V.userMoved) { V.userMoved = true; N.onView(); } };
   const emitStart = () => { controls.dispatchEvent({ type: 'start' }); document.body.classList.add('interacted'); };
   const emitChange = () => { controls.dispatchEvent({ type: 'change' }); app.resetAccum(); changed(); };
-  // the automatic cut-away: when the pivot lies on a part (a double-click, a framing) and the body stands between it and
-  // the camera more than 5 cm before it, the skin nearer than that opens (DESIGN-0014, "The camera model")
+  // the automatic cut-away: when the camera works close to a pivot on a part (a double-click, a framing) and the body
+  // stands between them more than 5 cm before the pivot, the skin nearer than that opens (DESIGN-0014, "The camera
+  // model")
   let cutAt = 0, cutR = 0, cutLater: any = 0;
   function cutCheck(force = false) {
     const now = performance.now();
     if (!force && now - cutAt < 80) { clearTimeout(cutLater); cutLater = setTimeout(() => cutCheck(true), 90); return; }
     cutAt = now;
     let r = 0;
-    if (pivotLabel !== 'the figure' && pivotLabel !== 'the face') {
+    const dp0 = camera.position.distanceTo(controls.target);
+    // close work only (a framed hand, a spot zoomed in on): from farther away the cut would open the whole figure
+    if (pivotLabel !== 'the figure' && pivotLabel !== 'the face' && dp0 < CUT_RANGE) {
       const toP = controls.target.clone().sub(camera.position), dp = toP.length();
       const hit = app.bodyRay(camera.position, toP.normalize());
       if (hit && hit.distance < dp - 0.05) r = dp - 0.05;
@@ -666,7 +671,7 @@ export function cameraNav(app: App): CameraNav {
     frameHand(side) {
       const s = side || (lastHand === 'L' ? 'R' : 'L');
       lastHand = s;
-      frameBounds(handPoints(s), { label: s === 'R' ? 'Right hand' : 'Left hand', margin: 0.1 });
+      frameBounds(handPoints(s), { label: s === 'R' ? 'Right hand' : 'Left hand', margin: 0.3 });
       V.lit = 'hand';
       N.onView();
     },

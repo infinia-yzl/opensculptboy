@@ -101,7 +101,7 @@ dialog.cmd::backdrop { background: var(--scrim); }
 .help-v2 .help-grid[data-tab="use"] { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
 .help-v2 h3.osb-eyebrow .help-note { order: 2; margin-left: auto; font: 500 12px/16px var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--text-muted); }
 .help-v2 h3.osb-eyebrow::after { order: 1; }
-.help-v2 dl { grid-template-columns: minmax(0, 11em) minmax(0, 1fr); }
+.help-v2 dl { grid-template-columns: minmax(0, 13em) minmax(0, 1fr); }
 .help-v2 dt { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
 .help-or { color: var(--text-faint); }
 .help-mouse { color: var(--text); }
@@ -203,3 +203,6 @@ body.shot .tour-card, body.shot .tour-prompt { display: none !important; }
 .floor-mark path { fill: none; stroke: #fff; stroke-opacity: 0.55; stroke-width: 1.5; }
 .floor-mark .floor-tick { stroke-width: 3; stroke-opacity: 0.8; }
 :root[data-theme="light"] .floor-mark path { stroke: #2a2622; }
+
+/* the mode buttons keep their key cap on the same line */
+.osb-modes .osb-mode { white-space: nowrap; }

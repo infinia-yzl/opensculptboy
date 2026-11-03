@@ -290,6 +290,7 @@ class TestShortcutsPage(unittest.TestCase):
             self.assertEqual(state()["url"], url)
 
             # ---------------------------------------------------------------- drags with recorded mouse input
+            tab.evaluate("() => window.__shell.ui.set({ tool: null, character: false, open: false })")
             view_focus()
             tab.keyboard.press("Home")
             settle()
