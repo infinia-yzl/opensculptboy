@@ -348,7 +348,8 @@
   "cover_grow": 3,
   "near_locks": 0.045,
   "fit": {
-    "cover_reach": 0.045
+    "cover_reach": 0.045,
+    "unfold_limit": 0.01
   },
   "cover_removed": [
     "feet"

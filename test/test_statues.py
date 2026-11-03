@@ -2156,6 +2156,40 @@ class TestSolid(unittest.TestCase):
         z = np.cross(b - a, c - a)[:, 2]
         self.assertTrue((np.sign(z) == np.sign(z[0])).all())
 
+    def test_the_untangling_keeps_within_its_limit(self):
+        from opensculptboy.fit.register import unfold
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy(), T, {})
+        folded = V.copy()
+        folded[220, :2] = V[222, :2] + 0.002
+        every = np.ones(len(V), bool)
+        free, _ = unfold(folded, T, reference, every, every)
+        same, _ = unfold(folded, T, reference, every, every, limit=0.0)
+        np.testing.assert_array_equal(free, same)
+        self.assertGreater(np.linalg.norm(free - folded, axis=1).max(), 0.005)
+        held, count = unfold(folded, T, reference, every, every, limit=0.005)
+        self.assertGreater(count, 0)
+        self.assertLessEqual(np.linalg.norm(held - folded, axis=1).max(), 0.005 + 1e-12)
+
+    def test_the_reverse_pairs_leave_skin_without_data(self):
+        from opensculptboy.fit.register import _reverse_pairs
+
+        V, T = _grid(21, 0.1)
+        reference = Reference(V.copy() + [0.0, 0.0, 0.001], T, {})
+        normals = np.tile([0.0, 0.0, 1.0], (len(V), 1))
+        # the vertices with data: the left half of the grid
+        kept = np.nonzero(V[:, 0] < 0.05)[0]
+        hit, pulled = _reverse_pairs(V, normals, kept, reference, 0.02, 0.5)
+        own, held = _reverse_pairs(V, normals, kept, reference, 0.02, 0.5, own=True)
+        border = kept[V[kept, 0] > 0.04]
+        # the right half's scan pulls the border of the data across into it; with own the
+        # border takes only the scan points nearest to it
+        self.assertTrue(hit[border].all())
+        self.assertGreater((pulled[border, 0] - V[border, 0]).min(), 0.002)
+        np.testing.assert_allclose(held[border, :2], V[border, :2], atol=1e-9)
+        self.assertTrue(own[kept].all())
+
     def test_solid_statue_closes_its_openings(self):
         from unittest import mock
 
