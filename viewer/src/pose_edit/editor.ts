@@ -151,6 +151,8 @@ function savePresets(list: { id: string; label: string; shape: HandShape }[]) { 
 export const editStore = createStore<EditState>(init());
 
 const MAG_SIZE = 220, MAG_ZOOM = 4;
+// three rays out of a point, along no axis, for the parity test of a prop's inside
+const PARITY_RAYS = [[0.267, 0.535, 0.802], [-0.802, 0.267, 0.535], [0.535, -0.802, 0.267]];
 const SNAP_PX = 10;
 
 // the parts a pin can hold: a palm or a sole
@@ -801,6 +803,8 @@ export class PoseEditor {
   // palm's normal (the arm follows) only when the owner asks. From that open start each finger closes joint by joint to
   // contact with 1 mm to spare, and Squeeze scales the closing.
   private gripOpen: number[][] | null = null;
+  private propOutside = 1;
+  lastLift: { normal: number[]; trace: { mm: number; miss_mm: number; worst?: number }[] } | null = null;   // the last Lift out's steps, for the tests
   setGrip(grip: { hand: 'L' | 'R'; prop: string } | null) { this.propBvh = null; this.gripOpen = null; this.publish({ grip, grip_blocked: false, grip_report: [] }); }
 
   // the prop as a signed distance (card frame), as it stands now
@@ -814,15 +818,31 @@ export class PoseEditor {
       const P = new Float32Array(prop.positions.length);
       for (let i = 0; i < P.length; i += 3) P.set(this.frames.fromWorld([prop.positions[i], prop.positions[i + 1], prop.positions[i + 2]]), i);
       this.propBvh = new TriangleBVH(P, prop.indices);
+      // the side the faces' winding calls outside: a mesh wound clockwise has a negative volume, and its normals point in
+      let vol = 0;
+      const I = prop.indices;
+      for (let t = 0; t + 2 < I.length; t += 3) {
+        const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
+        vol += P[a] * (P[b + 1] * P[c + 2] - P[b + 2] * P[c + 1]) - P[a + 1] * (P[b] * P[c + 2] - P[b + 2] * P[c]) + P[a + 2] * (P[b] * P[c + 1] - P[b + 1] * P[c]);
+      }
+      this.propOutside = vol < 0 ? -1 : 1;
     }
-    const bvh = this.propBvh;
+    const bvh = this.propBvh, outside = this.propOutside;
     const sdf: Prop = (X: Float64Array) => {
       const out = new Float64Array(X.length / 3);
       for (let i = 0; i < out.length; i++) {
         const p = [X[i * 3], X[i * 3 + 1], X[i * 3 + 2]], q = bvh.closest(p);
         if (!q) { out[i] = Infinity; continue; }
+        // inside or out: the closest face's side, and where a face's winding is not to be trusted (within 3 cm of the
+        // prop, where the sign matters), the parity of crossings along three rays, by majority (the pieces are closed)
         const n = bvh.normal(q.tri), s = (p[0] - q.point[0]) * n[0] + (p[1] - q.point[1]) * n[1] + (p[2] - q.point[2]) * n[2];
-        out[i] = s < 0 ? -q.distance : q.distance;
+        let inside = s * outside < 0;
+        if (q.distance < 0.03) {
+          let odd = 0;
+          for (const d of PARITY_RAYS) if (bvh.rayAll(p, d).length % 2 === 1) odd++;
+          inside = odd >= 2;
+        }
+        out[i] = inside ? -q.distance : q.distance;
       }
       return out;
     };
@@ -880,16 +900,22 @@ export class PoseEditor {
       const r = sv.solve(25), R = open.map((x) => x.slice());
       for (const b of bones) R[b] = Array.from(r.rotations.subarray(b * 9, b * 9 + 9));
       S.setPose(R);
-      const reached = this.headOf(e.bone)!, t = target(w);
-      return Math.hypot(reached[0] - t[0], reached[1] - t[1], reached[2] - t[2]) < 0.002 ? R : null;
+      const reached = this.headOf(e.bone)!, t = target(w), miss = Math.hypot(reached[0] - t[0], reached[1] - t[1], reached[2] - t[2]);
+      trace.push({ mm: Math.round(d * 1000), miss_mm: Math.round(miss * 10000) / 10 });
+      return miss < 0.002 ? R : null;
     };
-    // which way is out: the side whose first step opens the smallest gap more
-    const worst = (R: number[][] | null) => (R ? Math.min(...this.fingerGaps(R, side, sdf)) : -Infinity);
-    const sign = worst(tryMove(0.004)) >= worst(tryMove(-0.004)) ? 1 : -1;
+    const trace: { mm: number; miss_mm: number; worst?: number }[] = [];
+    this.lastLift = { normal: n, trace };
+    // both ways along the normal, the shorter move first
     let found: number[][] | null = null;
     for (let mm = 2; mm <= 40 && !found; mm += 2) {
-      const R = tryMove(sign * mm / 1000);
-      if (R && Math.min(...this.fingerGaps(R, side, sdf)) >= 1) found = R;
+      for (const sign of [1, -1]) {
+        const R = tryMove(sign * mm / 1000);
+        if (!R) continue;
+        const g = Math.min(...this.fingerGaps(R, side, sdf));
+        trace[trace.length - 1].worst = Math.round(g * 10) / 10;
+        if (g >= 1) { found = R; break; }
+      }
     }
     if (!found) { S.restore(before); this.host.toast(`The arm cannot take the hand off the ${g.prop.split('/').pop()}.`); this.publish(); return false; }
     S.restore(before);
@@ -1773,7 +1799,7 @@ export function editorReport(ed: PoseEditor) {
     pts[p.name] = { number: p.number, target: t ? t.position : null, on: t ? t.on : null, confidence: t ? t.confidence : null, depth: t ? t.depth_mm : 0,
       placed: t ? t.placed : null, anny: a || null, screen: s || null, visible: (ed as any).visible.get(p.name) ?? null, onScan, annyGap };
   }
-  return { state: { ...editStore.get(), hands: undefined, body: undefined }, points: pts, rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
+  return { state: { ...editStore.get(), hands: undefined, body: undefined }, lift: ed.lastLift, points: pts, rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
     labels: S ? S.rig.labels : [] };
 }
 
