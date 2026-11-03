@@ -437,7 +437,10 @@ def fit_statue(
             if rep.get("stone"):
                 add_stone_prop(folder, rep["stone"])
     for chain, spec in (posed_hands or {}).items():
-        if spec.get("key") and spec.get("objects"):
+        held = list(spec.get("objects") or [])
+        if (hands_report.get(chain) or {}).get("stone"):
+            held.append(hands_report[chain]["stone"])
+        if spec.get("key") and held:
             from opensculptboy.statues.hands import check_key, keyed_clearance
 
             # on the card's own placement: the finer levels place the body again
@@ -447,7 +450,7 @@ def fit_statue(
                 result.rotation,
                 result.translation,
                 chain,
-                spec["objects"],
+                held,
             )
             hands_report[chain]["clearance_final_mm"] = final
             hands_report[chain]["key_check"] = check_key(spec["key"], final)
@@ -821,10 +824,11 @@ def restore_near(
 
 # the regions whose skin a statue's hat may cover, and those that fused locks may cover: the
 # face and the ears beside the locks keep their data, so that the cheeks meet the locks where
-# the scan joins them
+# the scan joins them; long locks cover the back under them too (the scan has no skin there,
+# and the finest level pulled that skin onto the cut's rim in a fan of stretched triangles)
 COVER_REGIONS = {
     "clothing": ("scalp", "ears", "neck", "face"),
-    "hair": ("scalp", "ears", "neck"),
+    "hair": ("scalp", "ears", "neck", "torso"),
     # the pieces the conversion and the pruning took out (supports, the plinth, props): a foot
     # set on a removed head, a leg by a sword and a sole on the plinth keep anny's shape
     "removed": ("feet", "legs", "hands", "arms", "torso"),
@@ -931,9 +935,9 @@ def covered_skin(
 ) -> int:
     """
     Mark in a statue handoff (``statue.covered`` in appearance.json) anny's level-0 vertices
-    of the head that a hat or fused locks cover, by a first fit (``result``, its sliders and
-    pose): those whose nearest piece of the statue is a hair or drapery piece rather than the
-    skin.
+    of the head (and, under long locks, of the back) that a hat or fused locks cover, by a
+    first fit (``result``, its sliders and pose): those whose nearest piece of the statue is
+    a hair or drapery piece rather than the skin.
     The scan has no skin under the hat and the locks, and the skin's cut at their edges would
     pull the skull flat onto it; :func:`fit_statue` gives those vertices no data, so that the
     skull keeps anny's own shape under them and follows the fitted skin around it. Returns

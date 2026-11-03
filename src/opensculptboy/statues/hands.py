@@ -178,6 +178,140 @@ def place_stone(joints: dict, radii, gap: float = 0.02) -> dict:
     }
 
 
+# a stone fitted to a closed fist: its clearance (metres) from the skin, and the bounds of its
+# length (metres)
+STONE_CLEARANCE = 0.001
+STONE_LENGTH = (0.035, 0.055)
+# a point lies inside the skin around a hand where the skin's winding number about it passes
+# this (the skin is cut off around the hand: an open sheet of it gives up to a half)
+INSIDE = 0.25
+
+
+def _winding(points, vertices, triangles, chunk: int = 2048) -> np.ndarray:
+    """The winding number of a surface about each point (1 inside a closed surface, 0
+    outside; Van Oosterom and Strackee's solid angles)."""
+    A, B, C = (vertices[triangles[:, k]] for k in range(3))
+    out = np.empty(len(points))
+    for s in range(0, len(points), chunk):
+        p = points[s : s + chunk, None, :]
+        a, b, c = A - p, B - p, C - p
+        la, lb, lc = (np.linalg.norm(x, axis=-1) for x in (a, b, c))
+        det = (a * np.cross(b, c)).sum(-1)
+        div = (
+            la * lb * lc
+            + (a * b).sum(-1) * lc
+            + (a * c).sum(-1) * lb
+            + (b * c).sum(-1) * la
+        )
+        out[s : s + chunk] = np.arctan2(det, div).sum(1) / (2.0 * np.pi)
+    return out
+
+
+def _signed_to_skin(points, vertices, triangles, local) -> np.ndarray:
+    """The distance (metres) of points from a skin, negative inside it (by the winding
+    number of the skin's triangles ``local`` around the points, :data:`INSIDE`)."""
+    from anny.hair import closest_triangles
+
+    _, _, d = closest_triangles(points, vertices, triangles)
+    return np.where(_winding(points, vertices, local) > INSIDE, -d, d)
+
+
+def cavity_stone(
+    vertices: np.ndarray,
+    triangles: np.ndarray,
+    hand: np.ndarray,
+    clearance: float = STONE_CLEARANCE,
+    length: tuple = STONE_LENGTH,
+    step: float = 0.002,
+) -> dict | None:
+    """A stone fitted to the hollow of a closed fist (``vertices``, anny's frame, posed;
+    ``hand`` the mask of the hand's vertices): centred on the point of the fist's hull
+    furthest from the skin (the hollow that the palm and the curled fingers enclose), its
+    long axis along the hollow (the main direction of the points nearly as deep), its
+    radius across the hollow and its length (within ``length``) as large as keep it
+    ``clearance`` off the skin. Returns the stone entry in the masks' frame, with its
+    clearance (mm), or None when the fist encloses no hollow."""
+    import trimesh
+    from scipy.spatial import Delaunay
+
+    from anny.hair import closest_triangles
+    from opensculptboy.fit.handoff import GLTF_TO_ANNY
+
+    vertices = np.asarray(vertices, np.float64)
+    triangles = np.asarray(triangles)
+    X = vertices[np.asarray(hand, bool)]
+    lo, hi = X.min(0), X.max(0)
+    # the skin around the hand (the body it rests on included), which tells inside from out
+    reach = 0.03
+    local = triangles[
+        ((vertices[triangles] > lo - reach) & (vertices[triangles] < hi + reach))
+        .all(2)
+        .any(1)
+    ]
+    axes = [np.arange(a, b + step, step) for a, b in zip(lo, hi)]
+    grid = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3)
+    P = grid[Delaunay(X).find_simplex(grid) >= 0]
+    if not len(P):
+        return None
+    d = closest_triangles(P, vertices, triangles)[2]
+    # the points deep enough to matter, outside the skin (the flesh is deep too)
+    keep = d > clearance + 0.002
+    P, d = P[keep], d[keep]
+    out = _winding(P, vertices, local) < INSIDE
+    P, d = P[out], d[out]
+    if not len(P):
+        return None
+    deep = d.max()
+    # the hollow's middle: the points nearly as deep around the deepest
+    first = P[np.argmax(d)]
+    centre = first
+    for _ in range(3):
+        middle = (d > 0.9 * deep) & (np.linalg.norm(P - centre, axis=1) < length[1] / 2)
+        centre = P[middle].mean(0)
+    if _winding(centre[None], vertices, local)[0] > INSIDE:
+        centre = first
+    deep = float(closest_triangles(centre[None], vertices, triangles)[2][0])
+    if deep <= clearance:
+        return None
+    # the hollow's direction: the points nearly as deep near the centre
+    near = (d > 0.7 * deep) & (np.linalg.norm(P - centre, axis=1) < length[1])
+    Q = P[near] - P[near].mean(0)
+    axis = np.linalg.svd(Q, full_matrices=False)[2][0] if len(Q) > 2 else None
+    if axis is None or not np.isfinite(axis).all():
+        axis = np.array([1.0, 0.0, 0.0])
+    axis = axis / np.linalg.norm(axis)
+    sphere = trimesh.creation.icosphere(subdivisions=3, radius=1.0).vertices
+    frame = _ellipsoid_frame({"axis": (axis @ GLTF_TO_ANNY).tolist()})
+
+    def least(a, r):
+        S = (sphere * [a, r, r]) @ frame + centre
+        return float(_signed_to_skin(S, vertices, triangles, local).min())
+
+    # the largest stone that clears the skin
+    best = None
+    radius = deep - clearance
+    for a in np.arange(length[1] / 2, length[0] / 2 - 1e-9, -0.0005):
+        for r in radius * np.arange(1.0, 0.49, -0.05):
+            r = min(r, a)
+            if best is not None and a * r * r <= best[0] * best[1] ** 2:
+                break
+            c = least(a, r)
+            if c >= clearance:
+                best = (a, r, c)
+                break
+    if best is None:
+        a, r = length[0] / 2, min(radius, length[0] / 2)
+        best = (a, r, least(a, r))
+    a, r, c = best
+    return {
+        "kind": "ellipsoid",
+        "centre": (centre @ GLTF_TO_ANNY).round(5).tolist(),
+        "radii": [round(float(a), 5), round(float(r), 5), round(float(r), 5)],
+        "axis": (axis @ GLTF_TO_ANNY).round(5).tolist(),
+        "clearance_mm": round(1000 * c, 2),
+    }
+
+
 # the library pose whose joints' turning axes a keyed finger's curl turns about
 KEY_FIST = "mh_fight"
 # a turn's rotation vector on one side of the rig, as the other side's mirror image has it
@@ -332,8 +466,10 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
     largest curl.
     A hand with a ``stone`` first gets the stone, placed in its palm with the fingers open
     (:func:`place_stone`), among its objects. A hand with ``key`` takes that pose instead of
-    the curl's (:func:`key_hand`). A hand with ``clear_body`` (metres) then moves out of the
-    body (:func:`_clear_body`), and its stone moves with it. Returns the card and a report
+    the curl's (:func:`key_hand`), and its stone is fitted to the hollow of the keyed fist
+    (:func:`cavity_stone`, its ``clearance`` and ``length`` from the stone's entry). A
+    hand with ``clear_body`` (metres) then moves out of the body (:func:`_clear_body`), and
+    its stone moves with it. Returns the card and a report
     per hand (the curl of each finger (root, outer joints) or ``"key"``, its clearance in
     mm, and the stone).
     """
@@ -409,6 +545,27 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
             key_hand(model, pose, chain, spec["key"])
             with torch.no_grad():
                 X = skin(pose).numpy()
+            if stone is not None:
+                # the keyed fingers stay: the stone comes to them, fitted to the fist
+                hand = np.isin(
+                    strongest,
+                    [
+                        i
+                        for i, n in enumerate(labels)
+                        if n.endswith(side) and n.startswith(HAND_BONES)
+                    ],
+                )
+                fitted = cavity_stone(
+                    X,
+                    model.faces.cpu().numpy(),
+                    hand,
+                    float(spec["stone"].get("clearance", STONE_CLEARANCE)),
+                    tuple(spec["stone"].get("length", STONE_LENGTH)),
+                )
+                if fitted is not None:
+                    objects.remove(stone)
+                    stone = {**fitted, "name": stone["name"]}
+                    objects.append(stone)
             report[chain] = {
                 "wrist_turn_deg": None,
                 "curl": "key",

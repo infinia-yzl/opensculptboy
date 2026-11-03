@@ -902,6 +902,60 @@ class TestPrune(unittest.TestCase):
             self.assertTrue(set(covered.tolist()) <= set(wide))
             self.assertGreater(V[wide, 2].min(), top - 0.2)
 
+    def test_the_back_under_long_locks_takes_no_data(self):
+        import types
+
+        import trimesh
+
+        from opensculptboy.fit.handoff import write_handoff
+        from opensculptboy.statues.compare import STATUE_REGIONS, statue_regions
+        from opensculptboy.statues.fit import covered_skin
+
+        model = _model()
+        statue = synthetic_statue(0)
+        V, T = statue["body"]
+        regions = statue_regions(model)[: len(V)]
+        torso = regions == STATUE_REGIONS.index("torso")
+        neck = regions == STATUE_REGIONS.index("neck")
+        face = regions == STATUE_REGIONS.index("face")
+        # the back: away from the face, level with the torso's middle
+        front = V[face].mean(0) - V[torso].mean(0)
+        front[2] = 0.0
+        front /= np.linalg.norm(front)
+        side = (V - V[torso].mean(0)) @ front
+        neck_low = V[neck, 2].min()
+        # long locks over the back of the neck and the top of the back: the scan has no skin
+        # under them, and they lie 8 mm out over it
+        under = (side < -0.02) & (V[:, 2] > neck_low - 0.12) & (neck | torso)
+        cut = under[T].all(1)
+        normals = trimesh.Trimesh(V, T, process=False).vertex_normals
+        used = np.unique(T[cut])
+        remap = np.full(len(V), -1)
+        remap[used] = np.arange(len(used))
+        locks = V[used] + 0.008 * normals[used]
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = write_handoff(
+                pathlib.Path(tmp) / "h",
+                V,
+                T[~cut],
+                name="statue",
+                parts=[("locks", locks, remap[T[cut]], "hair")],
+            )
+            result = types.SimpleNamespace(meshes={0: (V, model.faces.cpu().numpy())})
+            covered_skin(folder, result, model)
+            appearance = json.loads(
+                (pathlib.Path(folder) / "appearance.json").read_text("utf-8")
+            )
+        covered = np.zeros(len(V), bool)
+        covered[np.asarray(appearance["statue"]["covered"], np.int64)] = True
+        # the back under the locks is covered, inside its rim
+        inner = under & torso & (V[:, 2] > neck_low - 0.1) & (side < -0.04)
+        self.assertGreater(inner.sum(), 20)
+        self.assertGreater(covered[inner].mean(), 0.8)
+        # the torso the locks leave bare keeps its data: its front, and the back below them
+        self.assertFalse(covered[torso & (side > 0.0)].any())
+        self.assertFalse(covered[torso & (V[:, 2] < neck_low - 0.16)].any())
+
 
 class TestChains(unittest.TestCase):
     def test_chain_bones_and_shapes(self):
@@ -1416,6 +1470,74 @@ class TestPosedHands(unittest.TestCase):
         # the hand comes just off the body, no farther
         self.assertLess(report["gap_after_mm"], 6.0, report)
         self.assertLessEqual(report["share"], 1.0)
+
+    def test_a_stone_fits_the_hollow_of_a_fist(self):
+        import trimesh
+
+        from opensculptboy.statues.hands import _to_anny, cavity_stone
+
+        # a tube 4 cm long, its hollow 3 cm across along anny's x
+        tube = trimesh.creation.annulus(
+            r_min=0.015, r_max=0.025, height=0.04, sections=48
+        )
+        tube.apply_transform(
+            trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+        )
+        V, T = np.asarray(tube.vertices), np.asarray(tube.faces)
+        stone = cavity_stone(V, T, np.ones(len(V), bool))
+        self.assertEqual(stone["kind"], "ellipsoid")
+        np.testing.assert_allclose(_to_anny(stone["centre"]), 0.0, atol=0.0015)
+        self.assertGreater(abs(_to_anny(stone["axis"])[0]), 0.99)
+        # 1 mm off the skin, as long as the bounds allow (its ends out of the tube)
+        self.assertGreaterEqual(stone["clearance_mm"], 1.0)
+        self.assertAlmostEqual(stone["radii"][0], 0.0275, places=4)
+        self.assertGreater(stone["radii"][1], 0.0125)
+        self.assertLessEqual(stone["radii"][1], 0.014 + 1e-9)
+        # a solid ball encloses no hollow
+        ball = trimesh.creation.icosphere(3, radius=0.03)
+        self.assertIsNone(
+            cavity_stone(
+                np.asarray(ball.vertices),
+                np.asarray(ball.faces),
+                np.ones(len(ball.vertices), bool),
+            )
+        )
+
+    def test_a_keyed_fist_gets_its_stone_in_its_hollow(self):
+        from opensculptboy.character import Character
+        from opensculptboy.statues.hands import pose_hands
+
+        model = _model()
+        # a fist closed loosely enough to hold something
+        fist = {"finger1": [30.0, 40.0, 40.0]}
+        fist.update(
+            {
+                f: [60.0, 75.0, 50.0]
+                for f in ("finger2", "finger3", "finger4", "finger5")
+            }
+        )
+        _, report = pose_hands(
+            model,
+            Character(name="rest"),
+            np.eye(3),
+            np.zeros(3),
+            {
+                "hand.l": {
+                    "key": {"fingers": fist},
+                    "stone": {"radii": [0.02, 0.015, 0.015]},
+                }
+            },
+        )
+        rep = report["hand.l"]
+        stone = rep["stone"]
+        self.assertEqual(stone["name"], "Stone")
+        self.assertGreaterEqual(stone["clearance_mm"], 0.99)
+        self.assertGreaterEqual(2 * stone["radii"][0], 0.035 - 1e-9)
+        self.assertLessEqual(2 * stone["radii"][0], 0.055 + 1e-9)
+        # the fingers meet it: the hollow's walls lie about a millimetre off it
+        near = [c for c in rep["clearance_mm"].values() if c < 3.0]
+        self.assertGreaterEqual(len(near), 2)
+        self.assertGreaterEqual(min(rep["clearance_mm"].values()), 0.9)
 
     def test_a_stone_moves_with_its_hand_off_the_hip(self):
         import roma
