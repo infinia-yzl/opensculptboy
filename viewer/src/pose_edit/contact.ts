@@ -25,8 +25,11 @@ export const CONTACT = 0.01;
 export class SkinnedBody {
   readonly n: number;
   readonly strongest: Int32Array;
-  constructor(readonly rig: RigSpace, readonly rest: Float64Array, readonly indices: Int32Array, readonly weights: Float64Array, readonly k: number,
-    readonly faces: Uint32Array, readonly bind: ((b: number) => ArrayLike<number> | null) | null = null) {
+  readonly rig: RigSpace; readonly rest: Float64Array; readonly indices: Int32Array; readonly weights: Float64Array; readonly k: number;
+  readonly faces: Uint32Array; readonly bind: ((b: number) => ArrayLike<number> | null) | null;
+  constructor(rig: RigSpace, rest: Float64Array, indices: Int32Array, weights: Float64Array, k: number, faces: Uint32Array,
+    bind: ((b: number) => ArrayLike<number> | null) | null = null) {
+    this.rig = rig; this.rest = rest; this.indices = indices; this.weights = weights; this.k = k; this.faces = faces; this.bind = bind;
     this.n = rest.length / 3;
     this.strongest = new Int32Array(this.n);
     for (let v = 0; v < this.n; v++) {
