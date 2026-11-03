@@ -193,7 +193,8 @@ class TestPoseReference(unittest.TestCase):
                 anny = _anny_vertices(self.model, character, D)
                 residual, turn = _rigid_residual(page, anny)
                 self.assertLess(residual, 1e-6)
-                self.assertLess(turn, 1e-6)
+                # the model's float32 vertices: a few 1e-6 degrees
+                self.assertLess(turn, 1e-4)
                 # without the conversion the page's pose is off by millimetres
                 wrong, _ = _rigid_residual(page_skin(self.model, character, D), anny)
                 self.assertGreater(wrong, 0.003)

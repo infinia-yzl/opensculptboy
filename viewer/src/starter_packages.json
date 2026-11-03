@@ -6,14 +6,14 @@
   "packages": {
     "doryphoros": {
       "file": "doryphoros.zip",
-      "bytes": 5793957,
-      "sha256": "0b47b5c3c1b240637eb9f40da4916821f5178a00f0fede93b1be9a95d74f38c5",
+      "bytes": 5796123,
+      "sha256": "c830c8e566a00fb8ecafe3ddb4f4cfd1483fbc375dbf3e45bf6542e124a2b6a8",
       "card": "Doryphoros (the spear bearer)"
     },
     "david_goliath": {
       "file": "david_goliath.zip",
-      "bytes": 14857186,
-      "sha256": "baf7dc7d00d5f464dfa33a3aa2bb4f523a7997d7339068a7c44879492aa848a3",
+      "bytes": 14859182,
+      "sha256": "5bac0337f416df40aae7f0d72e206c6108184b3cbff56a447e9e321b65123638",
       "card": "David with the head of Goliath"
     }
   }
