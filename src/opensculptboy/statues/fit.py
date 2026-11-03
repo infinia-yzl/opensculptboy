@@ -249,7 +249,8 @@ def fit_statue(
     fitted card afterwards (:func:`~opensculptboy.fit.register.repose_fit`): the offsets stay
     in rest space and ride along with the bones, so a keyed arm or one moved off the body
     keeps the scan's carving and nothing pulls its skin back to where the scan's arm was.
-    The result's ``hands`` holds their report. Returns the
+    A hand's own ``after_fit`` chooses for that hand. The result's ``hands`` holds their
+    report. Returns the
     :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -376,9 +377,15 @@ def fit_statue(
         )
 
         hand_log = (lambda m: print(m, flush=True)) if options.verbose else None
-        if not hands_after_fit:
+        # each hand is posed before the fit or after it (its own ``after_fit``, else
+        # ``hands_after_fit``)
+        later = {
+            c: s for c, s in posed_hands.items() if s.get("after_fit", hands_after_fit)
+        }
+        sooner = {c: s for c, s in posed_hands.items() if c not in later}
+        if sooner:
             character, hands_report = pose_hands(
-                model, character, rotation, translation, posed_hands, log=hand_log
+                model, character, rotation, translation, sooner, log=hand_log
             )
         pinned = np.zeros(model.template_vertices.shape[-2], bool)
         band = np.zeros_like(pinned)
@@ -411,17 +418,18 @@ def fit_statue(
         reference, character, rotation, translation, detail, options, model, seconds
     )
     if posed_hands:
-        if hands_after_fit:
+        if later:
             from opensculptboy.fit.register import repose_fit
 
-            posed, hands_report = pose_hands(
+            posed, after_report = pose_hands(
                 model,
                 result.character,
                 rotation,
                 translation,
-                posed_hands,
+                later,
                 log=hand_log,
             )
+            hands_report = {**hands_report, **after_report}
             result = repose_fit(model, result, posed)
             if options.verbose:
                 print("hands posed on the fitted card", flush=True)

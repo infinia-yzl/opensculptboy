@@ -2080,6 +2080,58 @@ class TestSolid(unittest.TestCase):
         eyes_only = held_openings(model, 3, 0)
         self.assertLess(eyes_only.sum(), wide.sum())
 
+    def test_each_hand_is_posed_before_or_after_the_fit(self):
+        import types
+        from unittest import mock
+
+        from opensculptboy import Character
+        from opensculptboy.statues import fit_statue
+        from opensculptboy.statues.fit import stage1_dict
+
+        card = Character(name="kouros")
+        data = json.loads(
+            json.dumps(
+                stage1_dict(
+                    types.SimpleNamespace(
+                        character=card, rotation=np.eye(3), translation=np.zeros(3)
+                    )
+                )
+            )
+        )
+        calls = []
+
+        def posing(model, character, rotation, translation, hands, log=None):
+            calls.append(sorted(hands))
+            return character, {c: {"stone": None} for c in hands}
+
+        statue = synthetic_statue(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = pathlib.Path(tmp) / "kouros" / "handoff"
+            scan_to_handoff((statue["vertices"], statue["triangles"]), folder)
+            fitted = types.SimpleNamespace(character=card)
+            with (
+                mock.patch(
+                    "opensculptboy.fit.register.fit_levels", return_value=fitted
+                ),
+                mock.patch(
+                    "opensculptboy.statues.hands.pose_hands", side_effect=posing
+                ),
+                mock.patch(
+                    "opensculptboy.fit.register.repose_fit", return_value=fitted
+                ) as repose,
+            ):
+                result = fit_statue(
+                    folder,
+                    detail=1,
+                    stage1=data,
+                    posed_hands={"hand.r": {"after_fit": False}, "hand.l": {}},
+                    hands_after_fit=True,
+                )
+        # the right hand before the fit, the left after it on the fitted card
+        self.assertEqual(calls, [["hand.r"], ["hand.l"]])
+        self.assertTrue(repose.called)
+        self.assertEqual(sorted(result.hands), ["hand.l", "hand.r"])
+
     def test_stage1_runs_the_levels_alone(self):
         import types
         from unittest import mock
