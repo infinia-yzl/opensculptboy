@@ -204,8 +204,10 @@ class TestPoseEditPage(unittest.TestCase):
             for _ in range(3):
                 tab.mouse.wheel(0, 100)
                 settle(tab, 1)
+            dragged = report(tab)["state"]["selected"]
             tab.mouse.up()
             settle(tab)
+            self.assertEqual(dragged, "middle_tip.R")
             self.assertAlmostEqual(
                 report(tab)["points"]["middle_tip.R"]["depth"], 3.0, places=6
             )
@@ -341,10 +343,11 @@ class TestPoseEditPage(unittest.TestCase):
             key("Shift+BracketLeft", "pose.finger-prev")
             key("Shift+BracketRight", "pose.finger-next")
             key("PageDown", "pose.push", select)
+            key("PageDown", "pose.push")
             key("PageUp", "pose.pull")
+            key("Alt+r", "pose.reset-turn")
             key("ArrowLeft", "pose.nudge")
             key("Alt+g", "pose.reset-point")
-            key("Alt+r", "pose.reset-turn")
             key("Escape", "pose.clear")
             self.assertIsNone(report(tab)["state"]["selected"])
             key("a", "pose.select-all", "() => window.__poseEdit.selectHand('R')")

@@ -619,8 +619,9 @@ export class PoseEditor {
     D.vx += dx; D.vy += dy;
     this.mag = { x: D.vx, y: D.vy };
     const hit = this.scanHit(D.vx, D.vy, D.last);
-    if (!hit) return;
-    let spot = hit.point;
+    // off the scan the point keeps its last spot (a push with the wheel still takes it in)
+    if (!hit && (dx || dy)) return;
+    let spot = hit ? hit.point : D.last;
     const t = S.targets.get(D.name)!;
     if (snap && t.auto) {
       const a = cam().toScreen(this.v3(this.frames.toWorld(t.auto)));
