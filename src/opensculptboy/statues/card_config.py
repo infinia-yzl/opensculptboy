@@ -213,8 +213,8 @@ def hand_keys(
         keys[hand] = key
         own = [p for p in points if p["chain"] == f"hand.{side}"]
         f = influences_of(rig, own)
-        before = rig.points(rig.transforms(R), f)
-        after = rig.points(rig.transforms(shared), f)
+        before = rig.to_output(rig.points(rig.transforms(R), f))
+        after = rig.to_output(rig.points(rig.transforms(shared), f))
         moved = np.linalg.norm(after - before, axis=1)
         twist = {}
         for name in groups:
