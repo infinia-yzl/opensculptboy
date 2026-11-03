@@ -317,7 +317,7 @@ class TestAiPage(unittest.TestCase):
         tab.wait_for_function("() => window.__ready === true", timeout=300000)
         # View > Settings shows the AI providers on the right
         tab.wait_for_timeout(300)
-        tab.locator("[aria-label='View menu']").click()
+        tab.locator("[data-menu='more']").click()
         tab.locator("[data-slot='settings']").click()
         tab.locator(".ai-panel").wait_for()
 

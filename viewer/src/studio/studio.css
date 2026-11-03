@@ -1,0 +1,208 @@
+/* OpenSculptBoy: the studio's navigation, keys and hints (DESIGN-0014; artboards 3a to 3k), on the design system's tokens. */
+
+/* ------------------------------------------------------------ tooltips: the name, its key caps, a line of what it does */
+.osb-tip-head { display: flex; align-items: center; gap: 4px; }
+.osb-tip-title { margin-right: auto; font-weight: 600; }
+.osb-tip .osb-tip-head .osb-key { margin-left: 0; }
+.osb-tip .osb-tip-head .osb-key:first-of-type { margin-left: 16px; }
+.osb-tip-desc { display: block; margin-top: 2px; font-weight: 400; color: color-mix(in srgb, var(--tip-text) 82%, transparent); white-space: normal; max-width: 300px; }
+.osb-tip--long { padding: 8px 12px; }
+
+/* ------------------------------------------------------------ the status line under the view */
+.status-line {
+  position: fixed; z-index: 9; left: calc(var(--inset-l, 0px) + var(--space-2)); right: var(--space-2); bottom: calc(env(safe-area-inset-bottom, 0px) + var(--space-2));
+  display: flex; align-items: center; flex-wrap: nowrap; gap: 0; min-height: 30px; padding: 0 var(--space-3); overflow: hidden;
+  font: 400 13px/20px var(--font-sans); color: var(--text-muted); border-radius: var(--radius-s); white-space: nowrap;
+  transition: left var(--duration-move) var(--ease-standard);
+}
+body.tool-open .status-line { right: calc(var(--insp-w) + var(--space-4)); }
+.status-part + .status-part::before { content: "·"; margin: 0 10px; color: var(--text-faint); }
+.status-part b { color: var(--text); font-weight: 600; }
+.status-part .osb-key { margin: 0 1px; padding: 0 5px; font-size: 11px; line-height: 16px; }
+.status-lead { color: var(--text); }
+.status-held { display: inline-flex; align-items: center; gap: 6px; margin-right: 12px; padding: 1px 8px 1px 2px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); color: var(--text); font-weight: 600; font-size: 12px; }
+body:not([data-width="phone"]) .viewbar { bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); }
+body.shot .status-line, body.shot .pivot-dot, body.shot .compass, body.shot .held-overlay { display: none !important; }
+
+/* the combinations of a held modifier, faint at the left edge of the view (artboard 3c) */
+.held-overlay {
+  position: fixed; z-index: 9; left: calc(var(--inset-l, 0px) + var(--space-4)); top: 50%; translate: 0 -50%; max-height: 70vh; overflow: hidden;
+  padding: var(--space-3) var(--space-4); background: color-mix(in srgb, var(--panel) 72%, transparent); border: 1px solid var(--line); border-radius: var(--radius-m);
+  font-size: 13px; line-height: 20px; color: var(--text-muted); pointer-events: none; animation: osb-tip-in var(--duration-fast) var(--ease-standard) both;
+}
+.held-overlay h2 { margin: 0 0 var(--space-2); }
+.held-overlay dl { display: grid; gap: 4px; margin: 0; }
+.held-row { display: grid; grid-template-columns: 96px 1fr; gap: 12px; align-items: center; }
+.held-row dt { display: flex; gap: 3px; }
+.held-row dd { margin: 0; }
+
+/* ------------------------------------------------------------ the pivot dot while the camera turns (artboard 3k) */
+.pivot-dot {
+  position: fixed; z-index: 8; box-sizing: border-box; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; border-radius: 50%;
+  border: 2px solid #fff; box-shadow: 0 0 0 1.5px #1d1b19, inset 0 0 0 1.5px #1d1b19; background: transparent;
+}
+.pivot-dot::before, .pivot-dot::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 0 1px #1d1b19; }
+.pivot-dot::before { left: -10px; right: -10px; top: 6px; height: 2px; clip-path: polygon(0 0, 8px 0, 8px 100%, 0 100%, 0 0, 100% 0, 100% 100%, calc(100% - 8px) 100%, calc(100% - 8px) 0); }
+.pivot-dot::after { top: -10px; bottom: -10px; left: 6px; width: 2px; clip-path: polygon(0 0, 100% 0, 100% 8px, 0 8px, 0 0, 0 100%, 100% 100%, 100% calc(100% - 8px), 0 calc(100% - 8px)); }
+
+/* ------------------------------------------------------------ the ring menus (artboards 3d and 3e) */
+.ring-menu { position: fixed; inset: 0; z-index: 70; }
+.ring-line { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; overflow: visible; }
+.ring-line line { stroke: var(--accent); stroke-width: 2; }
+.ring-hub {
+  position: fixed; width: 88px; height: 88px; translate: -50% -50%; border-radius: 50%; display: grid; place-content: center; justify-items: center; gap: 4px;
+  background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow-pop); color: var(--text-muted); font: 500 13px/16px var(--font-sans); cursor: pointer;
+}
+.ring-item {
+  position: fixed; translate: -50% -50%; display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 12px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius-s); box-shadow: var(--shadow-float);
+  font: 500 14px/20px var(--font-sans); white-space: nowrap; cursor: pointer;
+}
+.ring-item .osb-key { font-size: 11px; line-height: 14px; padding: 1px 5px; }
+.ring-item .osb-ico { color: var(--text-muted); }
+.ring-item.lit, .ring-item:hover { background: color-mix(in srgb, var(--accent) 16%, var(--panel)); border-color: var(--accent); }
+.ring-item:focus-visible { outline: var(--focus-w) solid var(--focus); outline-offset: 2px; }
+.ring-tick { display: inline-flex; color: var(--accent); }
+
+/* ------------------------------------------------------------ the command list (artboard 3f) */
+dialog.cmd {
+  margin: 0 auto; top: 14vh; width: min(640px, calc(100vw - 32px)); max-height: 70vh; padding: var(--space-4); display: none; flex-direction: column; gap: var(--space-2);
+  background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius-m); box-shadow: var(--shadow-dialog);
+}
+dialog.cmd[open] { display: flex; }
+dialog.cmd::backdrop { background: var(--scrim); }
+.cmd-search { display: flex; align-items: center; gap: 10px; padding: 0 12px; min-height: 44px; border: 2px solid var(--focus); border-radius: var(--radius-s); background: var(--well); }
+.cmd-input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: 400 16px/24px var(--font-sans); outline: none; }
+.cmd-list { list-style: none; margin: 0; padding: 0; overflow: auto; display: grid; gap: 2px; }
+.cmd-row { display: grid; grid-template-columns: 28px 1fr auto; gap: 12px; align-items: center; padding: 6px 12px; border-radius: var(--radius-s); cursor: pointer; }
+.cmd-row[aria-selected="true"] { background: var(--accent-soft); }
+.cmd-row[aria-disabled="true"] { opacity: 0.6; }
+.cmd-icon { display: inline-flex; color: var(--text-muted); }
+.cmd-text { display: grid; }
+.cmd-label { font-size: 14px; line-height: 20px; }
+.cmd-label b { font-weight: 700; }
+.cmd-place { font-size: 12px; line-height: 16px; color: var(--text-muted); }
+.cmd-keys { display: flex; gap: 3px; }
+.cmd-nokey { font-size: 12px; color: var(--text-faint); }
+.cmd-foot { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); padding-top: var(--space-1); }
+.cmd-foot .osb-key + .osb-key { margin-left: 2px; }
+.cmd-count { margin-left: 12px; }
+
+/* ------------------------------------------------------------ the help with its tabs (artboards 2f and 3j) */
+.help.help-v2 { width: min(1720px, calc(100vw - 48px)); }
+.help-v2 .help-head h2 { display: flex; align-items: center; gap: 12px; }
+.help-v2 .help-head h2 .osb-key { font-size: 12px; letter-spacing: 0; }
+.help-v2 .help-tools { display: flex; align-items: center; gap: var(--space-4); justify-content: space-between; flex-wrap: wrap; }
+.help-v2 .help-search { max-width: 340px; }
+.help-tabs { display: flex; gap: 8px; }
+.help-tab { min-height: 32px; padding: 4px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); background: transparent; color: var(--text); font: 500 13px/20px var(--font-sans); cursor: pointer; }
+.help-tab[aria-selected="true"] { background: var(--accent-soft); border-color: var(--accent); }
+.help-v2 .help-grid { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+.help-v2 .help-grid[data-tab="use"] { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.help-v2 h3.osb-eyebrow .help-note { order: 2; margin-left: auto; font: 500 12px/16px var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--text-muted); }
+.help-v2 h3.osb-eyebrow::after { order: 1; }
+.help-v2 dl { grid-template-columns: minmax(0, 13em) minmax(0, 1fr); }
+.help-v2 dt { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.help-or { color: var(--text-faint); }
+.help-mouse { color: var(--text); }
+.help-foot { padding: 0 var(--space-6) var(--space-5); margin: 0; }
+
+/* ------------------------------------------------------------ the body compass (artboard 3k) */
+.compass {
+  position: fixed; z-index: 9; right: var(--space-2); bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); width: 104px; height: 108px;
+  border-radius: var(--radius-s); display: grid; place-items: end center; transition: right var(--duration-move) var(--ease-standard);
+  --cmp-left: #1f9e8f; --cmp-right: #e07a2e;
+}
+body.tool-open .compass { right: calc(var(--insp-w) + var(--space-4)); }
+body[data-width="phone"] .compass { display: none; }
+.compass::after {
+  content: attr(data-angle); position: absolute; right: 0; bottom: calc(100% + 8px); white-space: nowrap; pointer-events: none; opacity: 0;
+  font: 500 12px/16px var(--font-sans); color: var(--tip-text); background: var(--tip); padding: 4px 8px; border-radius: var(--radius-s); box-shadow: var(--shadow-tip);
+  transition: opacity var(--duration-tip) var(--ease-standard);
+}
+.compass:hover::after { opacity: 1; transition-delay: var(--duration-tip-wait); }
+.compass-home { position: absolute; left: 4px; top: 4px; min-width: 28px; min-height: 28px; }
+.compass-fig { cursor: pointer; touch-action: none; }
+.compass-fig line { stroke-width: 5; stroke-linecap: round; }
+.cmp-C { stroke: var(--text-muted); }
+.cmp-L { stroke: var(--cmp-left); }
+.cmp-R { stroke: var(--cmp-right); }
+.cmp-head { fill: var(--panel); stroke: var(--text-muted); stroke-width: 2.5; }
+.compass-fig .cmp-nose { stroke: var(--text); stroke-width: 3; }
+.cmp-floor { fill: none; stroke: var(--line-strong); stroke-width: 1.5; }
+.compass-fig .cmp-tick { stroke: var(--text-muted); stroke-width: 2; }
+.cmp-lab { font: 700 11px/1 var(--font-sans); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.cmp-lab-L { fill: var(--cmp-left); }
+.cmp-lab-R { fill: var(--cmp-right); }
+
+/* ------------------------------------------------------------ Create's sections on 1 to 4: the digit at the tab's corner */
+.osb-panel-tabs [role="tab"] { position: relative; }
+.osb-panel-tabs [role="tab"] > .osb-hint { display: inline-block; position: absolute; top: 3px; right: 4px; margin: 0; padding: 0; min-width: 0; border: 0; font-size: 10px; line-height: 12px; color: var(--text-faint); }
+
+/* ------------------------------------------------------------ the status line's lit part (the tour's step) */
+.status-part.status-lit { outline: 1.5px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-s); color: var(--text); }
+
+/* ------------------------------------------------------------ mouse pictures */
+.mouse-pic .mouse-body { fill: var(--panel); stroke: var(--text); stroke-width: 2.4; }
+.mouse-pic .mouse-line { fill: none; stroke: var(--text); stroke-width: 2; }
+.mouse-pic .mouse-wheel { fill: var(--panel); stroke: var(--text); stroke-width: 2; }
+.mouse-pic .mouse-lit { fill: var(--accent); }
+
+/* ------------------------------------------------------------ the first-run card (artboard 3i) */
+.welcome.first-run { width: 420px; padding: var(--space-5) var(--space-6) var(--space-5); gap: var(--space-4); }
+.first-run-head { display: flex; align-items: center; justify-content: space-between; }
+.first-run-head .welcome-title { font: 600 16px/24px var(--font-display); letter-spacing: 0.06em; }
+.first-run .welcome-x { position: static; }
+.first-run-tiles { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
+.first-run-tile { display: grid; justify-items: center; align-content: start; gap: 2px; min-height: 132px; padding: var(--space-3) var(--space-2); text-align: center;
+  background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-s); font-size: 13px; line-height: 18px; color: var(--text-muted); }
+.first-run-tile b { margin-top: var(--space-2); color: var(--text); font-weight: 600; }
+.first-run-pic { display: flex; align-items: center; justify-content: center; gap: 4px; height: 52px; }
+.first-run-pic .osb-key { font-size: 14px; line-height: 20px; padding: 2px 8px; }
+.first-run-foot { display: flex; align-items: center; justify-content: space-between; }
+.first-run-foot .osb-note { margin: 0; }
+
+/* ------------------------------------------------------------ the tour (artboards 3g and 3h) */
+.tour-prompt {
+  position: fixed; z-index: 16; left: calc(var(--inset-l, 0px) + 88px); top: calc(var(--top-h) + var(--space-4)); width: 400px; box-sizing: border-box;
+  display: flex; gap: var(--space-4); padding: var(--space-5); border-radius: var(--radius-m); box-shadow: var(--shadow-pop); animation: osb-pop var(--duration-toast) var(--ease-spring) both;
+}
+.tour-prompt h2 { font: 600 15px/22px var(--font-display); letter-spacing: 0.04em; }
+.tour-prompt p { margin: 4px 0 var(--space-3); font-size: 13px; line-height: 20px; }
+.tour-prompt-pic { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border: 1px solid var(--line-strong); border-radius: var(--radius-s); }
+.tour-never { background: none; border: 0; padding: 0 4px; cursor: pointer; font: inherit; font-size: 13px; }
+.tour-card {
+  position: fixed; z-index: 16; right: calc(var(--inset-r, 0px) + var(--space-8)); top: 35vh; width: 420px; box-sizing: border-box; display: grid; gap: var(--space-4);
+  padding: var(--space-5) var(--space-6); border-radius: var(--radius-m); box-shadow: var(--shadow-pop);
+}
+.tour-head { display: flex; justify-content: space-between; align-items: center; }
+.tour-head h2 { margin: 0; }
+.tour-now { display: flex; gap: var(--space-5); align-items: center; padding-bottom: var(--space-4); border-bottom: 1px solid var(--line); }
+.tour-now p { margin: 0; font-size: 16px; line-height: 24px; color: var(--text); }
+.tour-pic { display: grid; place-items: center; flex: none; width: 84px; height: 104px; background: var(--raised-2); border-radius: var(--radius-s); gap: 4px; grid-auto-flow: column; }
+.tour-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; font-size: 13px; line-height: 20px; }
+.tour-steps li { display: grid; grid-template-columns: 16px 1fr auto; gap: 10px; align-items: center; color: var(--text-muted); }
+.tour-steps li[data-state="now"] { color: var(--text); font-weight: 600; }
+.tour-steps code { font: 500 12px/16px var(--font-mono); color: var(--text-muted); }
+.tour-dot { display: grid; place-items: center; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid var(--text-faint); color: var(--on-accent); }
+.tour-steps li[data-state="now"] .tour-dot { background: var(--accent); border-color: var(--accent); }
+.tour-steps li[data-state="done"] .tour-dot { background: var(--good); border-color: var(--good); }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; }
+.tour-foot .osb-note { margin: 0; font-size: 13px; }
+.tour-path { position: fixed; left: calc(var(--inset-l, 0px) + 120px); top: 58vh; pointer-events: none; overflow: visible; }
+.tour-path path { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 7 6; }
+.tour-path .tour-arrow { fill: var(--accent); stroke: none; }
+body.shot .tour-card, body.shot .tour-prompt { display: none !important; }
+
+/* ------------------------------------------------------------ targets of 24 px at least (WCAG 2.5.8) */
+.hr-thumb::before { content: ""; position: absolute; inset: -7px; }
+.hr-tick { min-height: 24px; }
+.osb-sl-reset { width: 24px; height: 24px; }
+.help-search, .search-input.osb-input, .osb-search input { min-height: 28px; }
+.floor-mark { position: absolute; left: 7px; top: 7px; width: 1px; height: 1px; overflow: visible; pointer-events: none; }
+.floor-mark path { fill: none; stroke: #fff; stroke-opacity: 0.55; stroke-width: 1.5; }
+.floor-mark .floor-tick { stroke-width: 3; stroke-opacity: 0.8; }
+:root[data-theme="light"] .floor-mark path { stroke: #2a2622; }
+
+/* the mode buttons keep their key cap on the same line */
+.osb-modes .osb-mode { white-space: nowrap; }

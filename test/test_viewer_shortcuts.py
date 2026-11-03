@@ -1,23 +1,19 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-The keyboard shortcuts of the viewer page (viewer/src/ui/index.ts, the table and the help's
-list in viewer/src/ui/shortcuts.ts). In node: the keys that a keydown event means on other
-keyboards (Caps Lock, a keyboard in another script, an input method, AZERTY's digit row) and the
-help's list against the keys of the modes, of Create's sections and of the View menu's tools. In
-the built page, in Chromium with SwiftShader through Playwright (local only): the steps a person
-takes (a click on the figure, D for the Dress mode, a card opened through Open folder, a slider, a
-switch, a segmented button, a fold, the help closed by its button, a name typed into the Sheet
-section and left with Esc), then every shortcut of the help with its effect, the shortcuts kept
-off while a text field has the focus, and the panel keys of other keyboards as synthetic events.
+The keys of the viewer page: key map version 2 (viewer/src/studio/keymap.ts) in the action
+registry (viewer/src/studio/actions.ts). In node (viewer/test/shortcuts.mjs): the chords that a
+keydown event means on other keyboards, no two actions on one key in a scope, no key the browser
+keeps, the help against the registry, and the handler's order of scopes. In the built page, in
+Chromium through Playwright (local only): the modes and sections, a text field that keeps its
+keys, every key of the registry with its action and effect, Ctrl+S, Alt+arrows, and the camera's
+drags with recorded mouse input.
 """
 
 import json
 import pathlib
 import shutil
 import subprocess
-import tempfile
-import time
 import unittest
 
 from test.markers import local_only
@@ -45,43 +41,6 @@ def playwright_available():
 
 SCRIPT = REPO / "viewer" / "test" / "shortcuts.mjs"
 ARGS = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
-# what each panel key opens (viewer/src/ui/shortcuts.ts PANEL_KEYS): its panel (the mode's on the
-# left, the View menu's tools on the right), its mode, and its section (None: the mode's last one)
-PANELS = {
-    "c": ("left", "create", None),
-    "d": ("left", "dress", "wear"),
-    "x": ("left", "express", "expression"),
-    "p": ("left", "pose", "pose"),
-    "s": ("left", "sheet", "sheet"),
-    "e": ("left", "export", "export"),
-    "b": ("left", "create", "body"),
-    "f": ("left", "create", "face"),
-    "h": ("left", "create", "hair"),
-    "k": ("left", "create", "skin"),
-    "r": ("right", None, "rig"),
-    "l": ("right", None, "scene"),
-}
-# the id of each panel key in PANEL_KEYS: a mode, a section of Create or a tool
-PANEL_IDS = {
-    k: (sec if mode is None or k in "bfhk" else mode)
-    for k, (_, mode, sec) in PANELS.items()
-}
-# the sections that show, the dialogs, the focus and what the view shortcuts change
-STATE = """() => {
-  const vis = (side) => {
-    const p = document.getElementById('insp-' + side);
-    if (!p || p.hidden) return null;
-    const s = p.querySelector('.sec:not([hidden])');
-    return s ? s.id.replace('sec-', '') : null;
-  };
-  const a = document.activeElement;
-  const focus = a ? a.tagName.toLowerCase() + (a.type ? '[' + a.type + ']' : '') : null;
-  const lp = document.getElementById('insp-left');
-  return Object.assign({ left: vis('left'), right: vis('right'), mode: lp ? lp.dataset.mode : null,
-    help: !!document.querySelector('dialog.help[open]'),
-    stats: !document.getElementById('stats').hidden, focus,
-    look: JSON.stringify(window.__look().phenotype) }, window.viewState());
-}"""
 
 
 @unittest.skipUnless(
@@ -95,10 +54,103 @@ class TestShortcutKeys(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-4000:])
         out = json.loads(r.stdout.strip().splitlines()[-1])
         self.assertTrue(out["ok"])
-        self.assertEqual(
-            {k: v for k, v in out["panels"].items()},
-            {sec: key for key, sec in PANEL_IDS.items()},
+        keys = out["keys"]
+        # key map version 2: the modes on Shift and a digit, Export behind Ctrl+Shift, Create's sections on 1 to 4
+        for i, mode in enumerate(["create", "dress", "express", "pose", "sheet"]):
+            self.assertEqual(keys[f"global Shift+{i + 1}"], "mode." + mode)
+        self.assertEqual(keys["global Ctrl+Shift+E"], "mode.export")
+        for i, sec in enumerate(["body", "face", "skin", "hair"]):
+            self.assertEqual(keys[f"create {i + 1}"], "create." + sec)
+        for key, action in (
+            ("F", "view.frame"),
+            ("Home", "view.home"),
+            ("`", "view.menu"),
+            ("Z", "display.menu"),
+            ("Alt+Z", "display.xray"),
+            ("Backspace", "view.back"),
+            ("F1", "help.keys"),
+            ("F3", "help.commands"),
+        ):
+            self.assertEqual(keys["global " + key], action)
+
+
+# a chord of the registry as Playwright presses it
+CODES = {
+    "`": "Backquote",
+    "/": "Slash",
+    "=": "Equal",
+    "-": "Minus",
+    "[": "BracketLeft",
+    "]": "BracketRight",
+    "Numpad.": "NumpadDecimal",
+    "?": "Shift+Slash",
+    "+": "Shift+Equal",
+}
+
+
+def pw_key(chord):
+    *mods, key = chord.split("+") if chord != "+" else ["+"]
+    if chord.endswith("++"):
+        mods, key = chord[:-2].split("+"), "+"
+    key = CODES.get(key, key)
+    if len(key) == 1 and key.isalpha():
+        key = "Key" + key.upper()
+    elif len(key) == 1 and key.isdigit():
+        key = "Digit" + key
+    mods = ["Control" if m == "Ctrl" else m for m in mods]
+    return "+".join(mods + [key])
+
+
+# what each action of the key map changes, read from the page's state before and after the key
+def cam_moved(a, b):
+    return any(
+        abs(x - y) > 1e-4
+        for x, y in zip(
+            a["cam"]["position"] + a["cam"]["pivot"],
+            b["cam"]["position"] + b["cam"]["pivot"],
         )
+    )
+
+
+EFFECTS = {
+    "view.frame": lambda a, b: True,
+    "view.home": lambda a, b: True,
+    "view.turn-left": cam_moved,
+    "view.turn-right": cam_moved,
+    "view.tilt-up": cam_moved,
+    "view.tilt-down": cam_moved,
+    "view.up": cam_moved,
+    "view.down": cam_moved,
+    "view.zoom-in": lambda a, b: b["cam"]["distance"] < a["cam"]["distance"],
+    "view.zoom-out": lambda a, b: b["cam"]["distance"] > a["cam"]["distance"],
+    "view.front": cam_moved,
+    "view.back-side": cam_moved,
+    "view.right": cam_moved,
+    "view.left": cam_moved,
+    "view.top": cam_moved,
+    "view.bottom": cam_moved,
+    "view.back": lambda a, b: b["cam"]["back"] < a["cam"]["back"] or cam_moved(a, b),
+    "view.forward": lambda a, b: b["cam"]["forward"] < a["cam"]["forward"],
+    "view.menu": lambda a, b: b["ring"],
+    "display.menu": lambda a, b: b["ring"],
+    "display.xray": lambda a, b: b["cam"]["xray"] != a["cam"]["xray"],
+    "help.keys": lambda a, b: b["help"],
+    "help.keys-q": lambda a, b: b["help"],
+    "help.commands": lambda a, b: b["cmd"],
+    "file.open": lambda a, b: b["open"],
+    "panel.left": lambda a, b: b["left"] != a["left"],
+    "panel.right": lambda a, b: (b["tool"], b["character"])
+    != (a["tool"], a["character"]),
+    "panel.full": lambda a, b: True,
+    "mode.export": lambda a, b: b["mode"] == "export",
+}
+STATE = """() => { const s = window.__shell.ui.get(); return { mode: s.mode, open: s.open, sub: s.sub, tool: s.tool,
+  character: s.character,
+  left: !document.getElementById('insp-left').hidden, cam: window.__studio.cam(), status: window.__studio.status(),
+  ring: !!document.querySelector('.ring-menu:not([hidden])'), help: !!document.querySelector('dialog.help-v2[open]'),
+  cmd: !!document.querySelector('dialog.cmd[open]'), open: s.openDialog, ran: window.__studio.ran.slice(-3),
+  url: location.href,
+  look: JSON.stringify(window.__look().phenotype), tweening: window.viewState().tweening }; }"""
 
 
 @local_only("Playwright with the built viewer page")
@@ -106,276 +158,259 @@ class TestShortcutKeys(unittest.TestCase):
     playwright_available(), "Playwright and the built viewer page are needed"
 )
 class TestShortcutsPage(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # a card folder as a person opens it: a card of its own, without packages
-        cls.dir = pathlib.Path(tempfile.mkdtemp()) / "card"
-        cls.dir.mkdir()
-        (cls.dir / "character.json").write_text(
-            json.dumps(
-                {"schema": 1, "name": "Shortcut test", "phenotype": {"muscle": 0.7}}
-            ),
-            encoding="utf-8",
-        )
+    """Key map version 2 in the built page: every key of the registry pressed in its scope, with its action run and
+    its effect seen; a text field keeps the keys; and the camera's drags with recorded mouse input (DESIGN-0014,
+    "How to test it"): no coast, the turn per pixel, the pan 1:1 under the pointer, the zoom steps from a framed
+    hand, Alt+right-drag, Esc during a drag, the double-click's pivot, the view history and the Hand framing."""
 
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.dir.parent, ignore_errors=True)
-
-    def test_shortcuts(self):
+    def test_keys_and_drags(self):
         from playwright.sync_api import sync_playwright
 
-        log = []
         with sync_playwright() as p:
             kw = dict(executable_path=str(CHROMIUM)) if CHROMIUM.exists() else {}
             browser = p.chromium.launch(args=ARGS, **kw)
-            tab = browser.new_context(viewport=dict(width=1000, height=700)).new_page()
+            ctx = browser.new_context(
+                viewport=dict(width=1600, height=900), accept_downloads=True
+            )
+            tab = ctx.new_page()
             errors = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.goto(PAGE.as_uri() + "?acc=1&blink=off")
+            tab.goto(PAGE.as_uri() + "?base&acc=1&blink=off")
             tab.set_default_timeout(120000)
             tab.wait_for_function("() => window.__ready === true", timeout=300000)
+            tab.evaluate("() => window.__shell.actions.dismissWelcome()")
             state = lambda: tab.evaluate(STATE)  # noqa: E731
 
             def settle():
                 tab.wait_for_function(
                     "() => !window.viewState().tweening", timeout=60000
                 )
+                tab.wait_for_timeout(50)
 
-            def press(key, label=""):
-                tab.keyboard.press(key)
-                tab.wait_for_timeout(60)
-                return state()
+            def close_all():
+                for _ in range(3):
+                    st = state()
+                    if st["ring"] or st["help"] or st["cmd"] or st["open"]:
+                        tab.keyboard.press("Escape")
+                        tab.wait_for_timeout(80)
 
-            def shows(key, st):
-                """the panel of the key shows: its section, or for a mode any of its sections"""
-                side, mode, sec = PANELS[key]
-                if sec is None:
-                    return st["mode"] == mode and st[side] is not None
-                return st[side] == sec and (mode is None or st["mode"] == mode)
-
-            def panel_works(key, step):
-                """the panel key opens its panel, or closes it when it shows"""
-                side = PANELS[key][0]
-                before = state()
-                after = press(key)
-                ok = after[side] is None if shows(key, before) else shows(key, after)
-                log.append((step, key, before["focus"], ok))
-                self.assertTrue(ok, (step, key, before, after))
-
-            # ---------------------------------------------------------------- a person's steps
-            tab.mouse.click(500, 350)
-            panel_works("d", "a click on the figure")
-            self.assertEqual(state()["left"], "wear")
-            # Open folder: the button opens the folder chooser, and the focus stays on the button
-            with tab.expect_file_chooser() as fc:
-                tab.locator("#sec-wear button", has_text="Open folder").click()
-            try:
-                fc.value.set_files(str(self.dir))
-            except Exception:
-                fc.value.set_files([str(f) for f in self.dir.iterdir()])
-            tab.wait_for_function(
-                "() => window.wearStats() && window.wearStats().card === 'Shortcut test'",
-                timeout=120000,
-            )
-            panel_works("x", "the card opened through Open folder")
-            panel_works("s", "the card opened through Open folder")
-            # a slider of the Body section: the Create mode, then its Body tab
-            if state()["mode"] != "create" or state()["left"] is None:
-                tab.click("#tab-create")
-            tab.click("#tab-body")
-            tab.locator("#sec-body input[type=range]").first.click()
-            panel_works("x", "a click on a slider")
-            # a switch and a segmented button of the Sheet section
-            if state()["left"] != "sheet":
-                tab.click("#tab-sheet")
-            tab.locator("#sec-sheet .seg button", has_text="Paper").first.click()
-            panel_works("d", "a click on a segmented button")
-            if state()["left"] != "sheet":
-                tab.click("#tab-sheet")
-            tab.locator("#sec-sheet button.switch").first.click()
-            panel_works("e", "a click on a switch")
-            if state()["left"] != "sheet":
-                tab.click("#tab-sheet")
-            tab.locator("#sec-sheet summary").first.click()
-            panel_works("c", "a click on a fold")
-            # the help, closed by its button
-            press("?")
-            self.assertTrue(state()["help"])
-            tab.locator("dialog.help[open] .help-head button").click()
-            self.assertFalse(state()["help"])
-            panel_works("x", "the help closed by its button")
-            # a text field keeps every key while it has the focus, and Esc leaves it
-            if state()["left"] != "sheet":
-                tab.click("#tab-sheet")
-            field = tab.locator("#sec-sheet input.cs-input").first
-            field.click()
-            before = state()
-            tab.keyboard.type("Wx")
-            after = state()
-            self.assertEqual(field.input_value(), "Wx")
-            self.assertEqual(
-                (before["left"], before["right"]), (after["left"], after["right"])
-            )
-            press("Escape")
-            self.assertNotEqual(state()["focus"], "input[text]")
-            panel_works("x", "Esc in a text field")
-
-            # ---------------------------------------------------------------- every shortcut of the help
-            tab.mouse.click(500, 350)
-            for key in PANELS:
-                panel_works(key, "the panel keys")
-            for key in PANELS:
-                if shows(key, state()):
-                    panel_works(key, "the panel keys close their panel")
-            self.assertTrue(press("`")["stats"])
-            self.assertFalse(press("`")["stats"])
-            self.assertTrue(press("?")["help"])
-            self.assertFalse(press("Escape")["help"])
-            # Esc closes the panels
-            press("x")
-            press("r")
-            s = press("Escape")
-            s = press("Escape")
-            self.assertEqual((s["left"], s["right"]), (None, None))
-            # the camera
-            tab.mouse.click(500, 350)
-            press("0")
-            settle()
-            rest = state()
-            press("3")
-            settle()
-            face = state()
-
-            def dist(s):
-                return (
-                    sum((a - b) ** 2 for a, b in zip(s["camera"], s["target"])) ** 0.5
+            def view_focus():
+                tab.evaluate(
+                    "() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); }"
                 )
 
-            self.assertLess(dist(face), dist(rest) * 0.8)
-            press("2")
+            # ---------------------------------------------------------------- the modes and Create's sections
+            view_focus()
+            for i, mode in enumerate(["create", "dress", "express", "pose", "sheet"]):
+                tab.keyboard.press(f"Shift+Digit{i + 1}")
+                self.assertEqual(state()["mode"], mode)
+            tab.keyboard.press("Shift+Digit1")
+            for i, sec in enumerate(["body", "face", "skin", "hair"]):
+                tab.keyboard.press(f"Digit{i + 1}")
+                st = state()
+                self.assertEqual((st["mode"], st["sub"]["create"]), ("create", sec))
+            # version 1's letters do nothing now
+            before = state()
+            for k in ("c", "d", "x", "p", "s", "e", "b", "k", "r", "l"):
+                tab.keyboard.press(k)
+            after = state()
+            self.assertEqual(
+                (before["mode"], before["sub"], before["tool"]),
+                (after["mode"], after["sub"], after["tool"]),
+            )
+            # a text field keeps every key, and Esc leaves it
+            # (a slider's value box of the Body section)
+            tab.evaluate("() => window.__shell.actions.openMode('create', 'body')")
+            field = tab.locator("#sec-body .osb-sl-num").first
+            field.click()
+            c0 = tab.evaluate("() => window.__studio.cam()")
+            tab.keyboard.press("Control+KeyA")
+            tab.keyboard.type("F1z")
+            self.assertEqual(field.input_value(), "F1z")
+            self.assertEqual(state()["mode"], "create")
+            self.assertEqual(
+                tab.evaluate("() => window.__studio.cam()")["back"], c0["back"]
+            )
+            tab.keyboard.press("Escape")
+            self.assertNotEqual(
+                tab.evaluate("() => document.activeElement.className"), "osb-sl-num"
+            )
+            tab.keyboard.press("Shift+Digit1")
+            tab.keyboard.press("Shift+Digit1")
+            self.assertEqual(state()["mode"], "create")
+
+            # ---------------------------------------------------------------- every key of the registry
+            actions = tab.evaluate("() => window.__studio.actions()")
+            # a selected part for H, Shift+H, Alt+H and /
+            tab.evaluate(
+                "() => window.__studio.setSelection({ label: 'Right hand', frame: () => null, bones: ['wrist.R'] })"
+            )
+            log = []
+            for a in actions:
+                if (
+                    not a["run"]
+                    or a["scope"] not in ("global", "create")
+                    or a["id"] in ("help.escape", "file.save", "drag.cancel")
+                ):
+                    continue
+                for chord in a["keys"]:
+                    close_all()
+                    view_focus()
+                    if a["scope"] == "create":
+                        tab.keyboard.press("Shift+Digit1")
+                    if a["id"] == "view.forward":
+                        tab.keyboard.press("Backspace")
+                        settle()
+                    if a["id"] == "panel.right":
+                        tab.evaluate("() => window.__shell.ui.set({ tool: null })")
+                    b0 = state()
+                    tab.keyboard.press(pw_key(chord))
+                    tab.wait_for_timeout(60)
+                    settle()
+                    b1 = state()
+                    ok_ran = a["id"] in b1["ran"] or a["id"] in ("motion.play",)
+                    eff = EFFECTS.get(a["id"])
+                    ok_eff = eff(b0, b1) if eff else True
+                    log.append((a["id"], chord, ok_ran, ok_eff))
+                    self.assertTrue(ok_ran, (a["id"], chord, b1["ran"]))
+                    self.assertTrue(ok_eff, (a["id"], chord, b0, b1))
+                    if a["id"] == "panel.full":
+                        tab.keyboard.press("Control+Space")
+            close_all()
+            tab.evaluate("() => window.__studio.setSelection(null)")
+            # Ctrl+S saves the card as a download
+            with tab.expect_download() as dl:
+                tab.keyboard.press("Control+KeyS")
+            self.assertTrue(dl.value.suggested_filename.endswith(".json"))
+            # Alt+arrows never leave the page
+            url = state()["url"]
+            tab.keyboard.press("Alt+ArrowLeft")
+            tab.keyboard.press("Alt+ArrowRight")
+            tab.wait_for_timeout(300)
+            self.assertEqual(state()["url"], url)
+
+            # ---------------------------------------------------------------- drags with recorded mouse input
+            tab.evaluate(
+                "() => window.__shell.ui.set({ tool: null, character: false, open: false })"
+            )
+            view_focus()
+            tab.keyboard.press("Home")
             settle()
-            self.assertGreater(dist(state()), dist(face))
-            press("1")
-            settle()
-            for key in "4567":
-                before = state()
-                press(key)
-                settle()
-                self.assertNotEqual(state()["camera"], before["camera"], key)
-            for key, what in (
-                ("ArrowLeft", "camera"),
-                ("ArrowRight", "camera"),
-                ("ArrowUp", "target"),
-                ("ArrowDown", "target"),
-                ("Shift+ArrowUp", "camera"),
-                ("Shift+ArrowDown", "camera"),
-            ):
-                before = state()
-                press(key)
-                settle()
-                self.assertNotEqual(state()[what], before[what], key)
-            for key, closer in (("+", True), ("-", False), ("=", True), ("_", False)):
-                before = dist(state())
-                press(key)
-                settle()
-                self.assertEqual(dist(state()) < before, closer, key)
-            press("0")
+            # a turn: 0.25 degrees a pixel, no coast after release
+            c0 = tab.evaluate("() => window.__studio.cam()")
+            tab.mouse.move(1450, 300)
+            tab.mouse.down()
+            for i in range(1, 21):
+                tab.mouse.move(1450 - i * 10, 300)
+                tab.wait_for_timeout(16)
+            c1 = tab.evaluate("() => window.__studio.cam()")
+            tab.mouse.up()
+            tab.wait_for_timeout(500)
+            c2 = tab.evaluate("() => window.__studio.cam()")
+            turn = ((c1["yaw"] - c0["yaw"]) + 540) % 360 - 180
+            self.assertAlmostEqual(abs(turn), 50, delta=2)
+            self.assertLess(abs(c2["yaw"] - c1["yaw"]), 1)
+            # Esc during a turn: back to where it began
+            tab.mouse.move(1450, 300)
+            tab.mouse.down()
+            tab.mouse.move(1350, 300, steps=8)
+            tab.keyboard.press("Escape")
+            tab.mouse.up()
             settle()
             self.assertLess(
-                max(abs(a - b) for a, b in zip(state()["camera"], rest["camera"])), 1e-3
+                abs(tab.evaluate("() => window.__studio.cam()")["yaw"] - c2["yaw"]), 0.5
             )
-            # the view
-            self.assertTrue(press("t")["turntable"])
-            self.assertFalse(press("t")["turntable"])
-            hair = state()["hair"]
-            self.assertEqual(press("Shift+H")["hair"], not hair)
-            self.assertEqual(press("Shift+H")["hair"], hair)
-            self.assertEqual(press("Shift+B")["rig"], "skeleton")
-            self.assertEqual(press("Shift+B")["rig"], "off")
-            self.assertEqual(press("Shift+W")["rig"], "weights")
-            self.assertEqual(press("Shift+W")["rig"], "off")
-            presets = state()["presets"]
-            for i, name in enumerate(presets[:4]):
-                self.assertEqual(press(f"Alt+Digit{i + 1}")["preset"], name)
-            press("Alt+Digit1")
-            loop = tab.evaluate(
-                "() => (window.__MOTION.clips.find((c) => c.kind === 'loop') || {}).name"
+            # a middle-drag on the body: the grabbed spot stays under the pointer (1:1)
+            chest = tab.evaluate(
+                "() => window.__studio.project(window.__studio.joint('spine03'))"
             )
-            if loop:
-                tab.evaluate("(n) => window.setMotion(n, 0, false)", loop)
-                self.assertTrue(state()["playing"])
-                self.assertFalse(press("Space")["playing"])
-                self.assertTrue(press("Space")["playing"])
-                tab.evaluate("() => window.setMotion('a_pose', 0, true)")
-            # undo and redo of a slider's edit
-            press("b")
-            slider = tab.locator("#sec-body input[type=range]").first
-            slider.focus()
-            look0 = state()["look"]
-            tab.keyboard.press("ArrowRight")
-            tab.wait_for_function(
-                "(w) => JSON.stringify(window.__look().phenotype) !== w", arg=look0
+            x0, y0 = chest["x"], chest["y"]
+            hit = tab.evaluate(f"() => window.__studio.bodyRay({x0}, {y0})")
+            self.assertIsNotNone(hit)
+            tab.mouse.move(x0, y0)
+            tab.mouse.down(button="middle")
+            tab.mouse.move(x0 + 120, y0 + 30, steps=15)
+            tab.mouse.up(button="middle")
+            s = tab.evaluate(
+                f"() => window.__studio.project([{hit[0]}, {hit[1]}, {hit[2]}])"
             )
-            look1 = state()["look"]
-            tab.mouse.click(500, 350)
-            for key, want in (
-                ("Control+z", look0),
-                ("Control+Shift+z", look1),
-                ("Control+z", look0),
-                ("Control+y", look1),
-            ):
-                tab.keyboard.press(key)
-                tab.wait_for_function(
-                    "(w) => JSON.stringify(window.__look().phenotype) === w",
-                    arg=want,
-                    timeout=30000,
-                )
-
-            # ---------------------------------------------------------------- other keyboards
-            tab.mouse.click(500, 350)
-            for ev, side, sec in (
-                ({"key": "X", "code": "KeyX"}, "left", "expression"),
-                ({"key": "ы", "code": "KeyS"}, "left", "sheet"),
-                ({"key": "Process", "code": "KeyD", "keyCode": 229}, "left", "wear"),
-            ):
-                for s0 in ("left", "right"):
-                    if state()[s0]:
-                        press("Escape")
-                before = state()
-                handled = not tab.evaluate(
-                    "(ev) => document.body.dispatchEvent(new KeyboardEvent('keydown',"
-                    " { ...ev, bubbles: true, cancelable: true }))",
-                    ev,
-                )
-                # the interface shows the panel at once; the states seen over at most 5 s name what happened when it
-                # does not
-                seen, t0 = [], time.time()
-                while time.time() - t0 < 5:
-                    now = state()
-                    seen.append(
-                        (
-                            round(time.time() - t0, 2),
-                            now["left"],
-                            now["right"],
-                            now["mode"],
-                        )
+            self.assertLess(
+                abs(s["x"] - (x0 + 120)) + abs(s["y"] - (y0 + 30)), 4, (s, x0, y0)
+            )
+            tab.keyboard.press("Backspace")
+            settle()
+            # the Hand framing puts every joint of the hand inside the free space
+            tab.locator(".viewbar button[data-value=hand]").click()
+            settle()
+            pts = tab.evaluate(
+                "() => window.__studio.hand('R').concat(window.__studio.hand('L'))"
+            )
+            inside = [
+                all(0 <= x <= 1600 and 56 <= y <= 900 - 46 for x, y in pts[i : i + 20])
+                for i in (0, 20)
+            ]
+            self.assertTrue(any(inside), pts)
+            # from the framed hand to a fingertip's view (15 cm from the skin) in 10 notches or fewer; the camera stops
+            # 4 cm from the skin
+            side = 0 if inside[0] else 20
+            hx = sum(x for x, _ in pts[side : side + 20]) / 20
+            hy = sum(y for _, y in pts[side : side + 20]) / 20
+            tab.mouse.move(hx, hy)
+            n, near = 0, None
+            while n < 40:
+                tab.mouse.wheel(0, -100)
+                tab.wait_for_timeout(40)
+                n += 1
+                h = tab.evaluate(f"() => window.__studio.bodyRay({hx}, {hy})")
+                if h and h[3] < 0.15 and near is None:
+                    near = n
+                if h and h[3] < 0.045:
+                    break
+            self.assertIsNotNone(near)
+            self.assertLessEqual(near, 10)
+            self.assertGreater(h[3], 0.035)
+            # Alt+right-drag zooms
+            d1 = tab.evaluate("() => window.__studio.cam().distance")
+            tab.keyboard.down("Alt")
+            tab.mouse.down(button="right")
+            tab.mouse.move(800, 550, steps=10)
+            tab.mouse.up(button="right")
+            tab.keyboard.up("Alt")
+            self.assertGreater(
+                tab.evaluate("() => window.__studio.cam().distance"), d1 * 1.2
+            )
+            # the view history goes back past those moves
+            backs = tab.evaluate("() => window.__studio.cam().back")
+            self.assertGreaterEqual(backs, 3)
+            # a double-click on the body sets the pivot on its skin; on the background it frames the whole figure
+            tab.keyboard.press("Home")
+            settle()
+            hip = tab.evaluate(
+                "() => window.__studio.project(window.__studio.joint('pelvis.L'))"
+            )
+            hit = tab.evaluate(f"() => window.__studio.bodyRay({hip['x']}, {hip['y']})")
+            self.assertIsNotNone(hit)
+            tab.mouse.dblclick(hip["x"], hip["y"])
+            settle()
+            piv = tab.evaluate("() => window.__studio.cam().pivot")
+            self.assertLess(
+                sum((a - b) ** 2 for a, b in zip(piv, hit[:3])) ** 0.5, 0.01
+            )
+            tab.mouse.dblclick(1500, 120)
+            settle()
+            self.assertGreater(
+                sum(
+                    (a - b) ** 2
+                    for a, b in zip(
+                        tab.evaluate("() => window.__studio.cam().pivot"), piv
                     )
-                    if now[side] == sec:
-                        break
-                    tab.wait_for_timeout(100)
-                self.assertEqual(
-                    seen[-1][1 if side == "left" else 2],
-                    sec,
-                    (ev, handled, before, seen),
                 )
+                ** 0.5,
+                0.05,
+            )
             browser.close()
         print(
-            "\n"
-            + "\n".join(
-                f"{s:40} {k:6} focus {f:20} {'ok' if ok else 'FAIL'}"
-                for s, k, f, ok in log
-            )
+            "\n" + "\n".join(f"{i:22} {c:16} ran {r} effect {e}" for i, c, r, e in log)
         )
         self.assertFalse(errors, errors)
 

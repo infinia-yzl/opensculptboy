@@ -19,6 +19,9 @@ import { OpenDialog, ProgressCard, ViewBar, Welcome } from './components/Frame.t
 import { NewScreen } from './components/NewScreen.tsx';
 import { CharacterPanel } from './components/CharacterPanel.tsx';
 import { TooltipProvider } from './components/ui/tooltip.tsx';
+import { StatusLine } from '../studio/StatusLine.tsx';
+import { Compass } from '../studio/Compass.tsx';
+import { Tour } from '../studio/Onboarding.tsx';
 
 function Shell() {
   const width = useUI((s) => s.width);
@@ -30,7 +33,10 @@ function Shell() {
       <ToolPanel />
       <CharacterPanel />
       <ViewBar />
+      {width === 'phone' ? null : <StatusLine />}
+      {width === 'phone' ? null : <Compass />}
       <Welcome />
+      {width === 'phone' ? null : <Tour />}
       <ProgressCard />
       <OpenDialog />
       <NewScreen />

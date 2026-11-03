@@ -12,7 +12,7 @@ import { saveUi, uiState } from '../ui/dom.ts';
 import type { StarterNote } from '../starters.ts';
 
 export type Theme = 'light' | 'dark' | 'system';
-export type ToolId = 'rig' | 'scene' | 'settings';
+export type ToolId = 'rig' | 'scene' | 'settings' | 'controls';
 
 export interface OpenError { title: string; body: string; fit?: boolean; action?: { label: string; run: () => void } }
 // the progress card of a long step (a card's open): its title and its steps, each done, now or to do

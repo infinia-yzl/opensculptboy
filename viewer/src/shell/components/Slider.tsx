@@ -94,6 +94,24 @@ export function Slider(p: SliderProps) {
         n.value = fmt(clamp(st.current.cur + s, P.current.min, P.current.max), digits); commitNum();
       }
     };
+    // the keys of the track: an arrow moves a step, Shift+arrow a tenth of a step, Page Up and Page Down ten steps,
+    // Home and End the ends (DESIGN-0014, "Everyday accessibility"); each press is one step of undo
+    const rangeKey = (e: KeyboardEvent) => {
+      const o = P.current, step = o.step ?? 0.01;
+      const k = e.key;
+      let d = 0;
+      if (k === 'ArrowRight' || k === 'ArrowUp') d = e.shiftKey ? step / 10 : step;
+      else if (k === 'ArrowLeft' || k === 'ArrowDown') d = e.shiftKey ? -step / 10 : -step;
+      else if (k === 'PageUp') d = step * 10;
+      else if (k === 'PageDown') d = -step * 10;
+      else if (k === 'Home') d = o.min - st.current.cur;
+      else if (k === 'End') d = o.max - st.current.cur;
+      else return;
+      e.preventDefault(); e.stopPropagation();
+      const v = clamp(Math.round((st.current.cur + d) * 1e6) / 1e6, o.min, o.max);
+      start(); inp.value = String(v); apply(v); end();
+    };
+    inp.addEventListener('keydown', rangeKey);
     const resetB = el.querySelector('.osb-sl-reset') as HTMLButtonElement;
     const onReset = () => { reset(); inp.focus({ preventScroll: true }); };
     const sel = () => n.select();
@@ -102,6 +120,7 @@ export function Slider(p: SliderProps) {
     inp.addEventListener('dblclick', reset); resetB.addEventListener('click', onReset);
     n.addEventListener('keydown', numKey); n.addEventListener('blur', commitNum); n.addEventListener('focus', sel);
     return () => {
+      inp.removeEventListener('keydown', rangeKey);
       inp.removeEventListener('input', onInput); inp.removeEventListener('change', end);
       inp.removeEventListener('pointerdown', down); inp.removeEventListener('pointerup', up); inp.removeEventListener('pointercancel', up); inp.removeEventListener('blur', up);
       inp.removeEventListener('dblclick', reset); resetB.removeEventListener('click', onReset);
@@ -120,7 +139,7 @@ export function Slider(p: SliderProps) {
         <input ref={num} className="osb-sl-num" type="text" inputMode="decimal" autoComplete="off" spellCheck={false} aria-label={p.label + ' value'} defaultValue={fmt(p.def, digits)} />
       </div>
       <div className="osb-sl-track">
-        <input ref={input} id={p.id} type="range" min={p.min} max={p.max} step={p.step ?? 0.01} defaultValue={p.def} />
+        <input ref={input} id={p.id} type="range" min={p.min} max={p.max} step="any" data-step={p.step ?? 0.01} defaultValue={p.def} />
         {p.colour ? null : <span ref={mark} className="osb-sl-def" aria-hidden="true" />}
         <span ref={bubble} className="osb-sl-bubble" aria-hidden="true" />
       </div>
