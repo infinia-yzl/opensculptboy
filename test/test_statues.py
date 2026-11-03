@@ -1245,26 +1245,20 @@ class TestPosedHands(unittest.TestCase):
             np.testing.assert_allclose(P[labels.index(name)], rest[labels.index(name)])
         rep = report["hand.r"]
         self.assertEqual(rep["curl"], "key")
-        self.assertIsNone(rep["key_check"])
-        # a key that carries the clearances it was set with is checked against the pose's
-        same = {**key, "clearance_mm": dict(rep["clearance_mm"])}
-        _, checked = pose_hands(
-            model, character, R, t, {"hand.r": {"key": same, "objects": [grip]}}
-        )
-        self.assertTrue(checked["hand.r"]["key_check"]["ok"])
-        moved = {
-            **key,
-            "clearance_mm": {f: c + 5.0 for f, c in rep["clearance_mm"].items()},
-        }
+        # the fitted card's own clearances match those of the pose (the fit's check), and a
+        # key that carries other clearances is warned about
+        from opensculptboy.statues.hands import check_key, keyed_clearance
+
+        final = keyed_clearance(model, posed, R, t, "hand.r", [grip])
+        for f, c in rep["clearance_mm"].items():
+            self.assertAlmostEqual(final[f], c, delta=0.05)
+        self.assertIsNone(check_key(key, final))
+        self.assertTrue(check_key({**key, "clearance_mm": final}, final)["ok"])
+        moved = {f: c + 5.0 for f, c in final.items()}
         with self.assertWarns(UserWarning):
-            _, off = pose_hands(
-                model, character, R, t, {"hand.r": {"key": moved, "objects": [grip]}}
-            )
-        self.assertFalse(off["hand.r"]["key_check"]["ok"])
-        self.assertAlmostEqual(off["hand.r"]["key_check"]["max_diff_mm"], 5.0, places=6)
-        self.assertEqual(
-            sorted(rep["clearance_mm"]), [f"finger{k}" for k in range(1, 6)]
-        )
+            off = check_key({**key, "clearance_mm": moved}, final)
+        self.assertFalse(off["ok"])
+        self.assertAlmostEqual(off["max_diff_mm"], 5.0, places=6)
         with self.assertRaises(ValueError):
             key_hand(model, P[None].clone(), "hand.r", {"bones": {"elbow": [0, 0, 0]}})
         with self.assertRaises(ValueError):

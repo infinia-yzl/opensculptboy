@@ -213,12 +213,37 @@ def key_hand(model, pose, chain: str, key: dict) -> None:
                 pose[0, b, :3, :3] = turn(value)
 
 
+def keyed_clearance(model, character, rotation, translation, chain, objects) -> dict:
+    """Each finger's clearance (mm) from the objects on a card's own pose, as its exports
+    pose it: the check of a keyed hand after the fit (:func:`check_key`)."""
+    import torch
+
+    from opensculptboy.statues.chains import _identity_pose, _Skinner
+
+    side = "." + _side(chain)
+    labels = list(model.bone_labels)
+    skin = _Skinner(model, character, rotation, translation)
+    pose = character.pose_parameters(model)
+    with torch.no_grad():
+        X = skin(_identity_pose(model) if pose is None else pose).numpy()
+    weights = model.vertex_bone_weights.detach().cpu().numpy()
+    indices = model.vertex_bone_indices.cpu().numpy()
+    strongest = indices[np.arange(len(indices)), weights.argmax(1)]
+    out = {}
+    for f in FINGERS:
+        bones = [labels.index(f"{f}-{k}{side}") for k in (1, 2, 3)]
+        rows = np.isin(strongest, bones)
+        out[f] = round(1000 * float(signed_distance(X[rows], objects).min()), 2)
+    return out
+
+
 # how far (mm) a keyed finger's clearance on the fit's own pose may differ from the key's
 KEY_TOLERANCE = 1.0
 
 
 def check_key(key: dict, clearance: dict) -> dict | None:
-    """Compare a keyed hand's clearances (mm, per finger) on the fit's own pose with those
+    """Compare a keyed hand's clearances (mm, per finger) on the fitted card's pose
+    (:func:`keyed_clearance`) with those
     the key was set with (``key["clearance_mm"]``, from the probe that chose it): a key set
     on one arm pose and applied to another puts the fingers elsewhere. Warns when one
     differs by more than ``key["tolerance_mm"]`` (default :data:`KEY_TOLERANCE`). Returns
@@ -362,13 +387,9 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
                 },
                 "stone": stone,
             }
-            report[chain]["key_check"] = check_key(
-                spec["key"], report[chain]["clearance_mm"]
-            )
             if log:
                 log(
-                    f"hand {chain}: keyed, clearance (mm) "
-                    f"{report[chain]['clearance_mm']}, check {report[chain]['key_check']}"
+                    f"hand {chain}: keyed, clearance (mm) {report[chain]['clearance_mm']}"
                 )
             continue
         turn = None
