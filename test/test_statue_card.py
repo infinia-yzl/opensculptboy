@@ -196,12 +196,18 @@ class TestApplyCard(unittest.TestCase):
                 twist[name] = np.degrees(
                     _coordinates(frames[self.rig.index[name + side]], M)
                 )[2]
+            whole = sum(twist.values())
             with self.subTest(hand):
-                self.assertAlmostEqual(sum(twist.values()), total, places=2)
-                self.assertAlmostEqual(twist["lowerarm01"], 0.4 * total, places=2)
-                self.assertAlmostEqual(twist["lowerarm02"], 0.5 * total, places=2)
-                self.assertAlmostEqual(twist["wrist"], 0.1 * total, places=2)
-            self.assertGreater(self.report["hands"][hand]["points_moved_mm"], 0.1)
+                # the shares hold; the whole twist moves a little to keep the hand in place
+                self.assertAlmostEqual(whole, total, delta=5.0)
+                self.assertAlmostEqual(twist["lowerarm01"], 0.4 * whole, places=2)
+                self.assertAlmostEqual(twist["lowerarm02"], 0.5 * whole, places=2)
+                self.assertAlmostEqual(twist["wrist"], 0.1 * whole, places=2)
+                self.assertGreater(
+                    min(self.report["hands"][hand]["twist_change_deg"].values()), 1.0
+                )
+                # and the hand's points stay where the card has them
+                self.assertLess(self.report["hands"][hand]["points_moved_mm"], 0.5)
 
     def test_the_key_holds_every_bone_of_the_arm(self):
         import roma

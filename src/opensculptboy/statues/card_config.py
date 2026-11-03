@@ -34,8 +34,11 @@ The forearm's twist is shared as the posing solve shares it (:func:`share_twist`
 coordinates of ``lowerarm01``, ``lowerarm02`` and the wrist (each bone's turn about its own
 twist axis, in the joint frames of :func:`opensculptboy.posing.point_solve.joint_frames`) are
 summed and given back by the table's shares (0.4, 0.5, 0.1), so that a turn keyed in one bone
-does not kink the forearm halfway. A pose that the page's solve made has those shares already
-and stays as it is.
+does not kink the forearm halfway. The bones' twist axes differ a little, so the shared
+twist alone moves the hand; the posing solve then turns those bones again in its own
+parameters (each bone's bend and side, and the group's twist by its shares), without the
+ranges, until the hand's 21 points lie where the card has them. A pose that the page's solve
+made has those shares already and stays as it is.
 
 The turns are local: the hand lands where the card shows it when the run that the config
 rebuilds starts from the same fit as the card (``run --from`` the starter's run).
@@ -163,6 +166,36 @@ def share_twist(rig, rotations: np.ndarray, groups=SHARED) -> np.ndarray:
     return out
 
 
+def _keep_hand(rig, rotations, influences, places, groups, suffix):
+    """The pose with the twist groups' bones of one side turned again, as the posing solve
+    turns them (each bone's bend and side, and the group's twist by its shares), so that
+    the hand's points come back to ``places``: the shared twist leaves the hand where the
+    card has it."""
+    from opensculptboy.posing.point_solve import load_ranges, solve
+
+    table = load_ranges()
+    bones = [
+        rig.index[m + suffix]
+        for name in groups
+        for m in table["twist"][name]["shares"]
+        if m + suffix in rig.index
+    ]
+    if not bones:
+        return rotations
+    targets = [{"influence": f, "target": x} for f, x in zip(influences, places)]
+    result = solve(
+        rig,
+        rotations,
+        targets,
+        [],
+        bones=bones,
+        limits=False,
+        prior=1e-6,
+        iterations=100,
+    )
+    return result.rotations
+
+
 def _side_bones(labels, side: str) -> list:
     suffix = "." + side.upper()
     return [
@@ -176,8 +209,8 @@ def hand_keys(
     model, character, hands=tuple(AFTER_FIT), groups=SHARED
 ) -> tuple[dict, dict]:
     """The keys of the card's hands (``{"hand.r": {"bones", "local_changes"}}``) and a report:
-    the twist moved by the sharing (degrees per bone) and how far the hand's points moved
-    with it (mm)."""
+    the twist moved by the sharing (degrees per bone) and how far the hand's points lie from
+    the card's after it (mm)."""
     import roma
     import torch
 
@@ -194,11 +227,15 @@ def hand_keys(
     keys, report = {}, {}
     for hand in hands:
         side = hand.split(".")[1]
+        suffix = "." + side.upper()
+        own = [p for p in points if p["chain"] == f"hand.{side}"]
+        f = influences_of(rig, own)
+        before = rig.to_output(rig.points(rig.transforms(R), f))
+        shared = _keep_hand(rig, shared, f, before, groups, suffix)
         bones = _side_bones(labels, side)
         vectors = np.degrees(
             roma.rotmat_to_rotvec(torch.as_tensor(shared[bones])).numpy()
         )
-        suffix = "." + side.upper()
         key = {
             "bones": {
                 labels[b][: -len(suffix)]: [round(float(x), 4) for x in v]
@@ -211,9 +248,6 @@ def hand_keys(
             },
         }
         keys[hand] = key
-        own = [p for p in points if p["chain"] == f"hand.{side}"]
-        f = influences_of(rig, own)
-        before = rig.to_output(rig.points(rig.transforms(R), f))
         after = rig.to_output(rig.points(rig.transforms(shared), f))
         moved = np.linalg.norm(after - before, axis=1)
         twist = {}
