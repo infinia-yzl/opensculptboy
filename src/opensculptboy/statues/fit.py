@@ -380,7 +380,9 @@ def fit_statue(
         pinned = np.zeros(model.template_vertices.shape[-2], bool)
         band = np.zeros_like(pinned)
         for chain, spec in posed_hands.items():
-            hand, ring = hand_masks(model, chain, spec.get("blend", 4))
+            hand, ring = hand_masks(
+                model, chain, spec.get("blend", 4), tuple(spec.get("pin", ()))
+            )
             pinned |= hand
             band |= ring
         levels = band | pinned

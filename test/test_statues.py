@@ -1067,6 +1067,11 @@ class TestPosedHands(unittest.TestCase):
         self.assertFalse((hand & band).any())
         with self.assertRaises(ValueError):
             hand_masks(model, "foot.r")
+        # an arm moved off the scan keeps anny's shape from the elbow down as well
+        arm, arm_band = hand_masks(model, "hand.r", 3, ("lowerarm",))
+        self.assertTrue((arm | ~hand).all())
+        self.assertGreater(arm.sum(), hand.sum() + 200)
+        self.assertFalse((arm & arm_band).any())
         self.assertIsInstance(mesh, trimesh.Trimesh)
 
     def test_fingers_close_on_a_grip_without_entering_it(self):

@@ -47,13 +47,15 @@ def _side(chain: str) -> str:
     return side.upper()
 
 
-def hand_bones(model, chain: str) -> list:
-    """The bones (indices) of a hand from the wrist down."""
+def hand_bones(model, chain: str, extra=()) -> list:
+    """The bones (indices) of a hand from the wrist down, and of the ``extra`` bones of its
+    arm (words such as ``"lowerarm"``, ``"upperarm"``)."""
     suffix = "." + _side(chain)
+    words = HAND_BONES + tuple(extra)
     return [
         i
         for i, b in enumerate(model.bone_labels)
-        if b.endswith(suffix) and b.startswith(HAND_BONES)
+        if b.endswith(suffix) and b.startswith(words)
     ]
 
 
@@ -63,13 +65,15 @@ def _hand_weight(model, bones) -> np.ndarray:
     return (np.isin(indices, bones) * weights).sum(1)
 
 
-def hand_masks(model, chain: str, rings: int = BLEND_RINGS):
+def hand_masks(model, chain: str, rings: int = BLEND_RINGS, pin=()):
     """Masks (V,) of the level-0 vertices of a hand (more than half their weight on its
-    bones), which keep anny's shape, and of the band of ``rings`` rings round them, which
-    blends the forearm's fit into the hand."""
+    bones, and on the arm's bones named in ``pin``: an arm that the posing moved away from
+    the scan's, whose skin the finer levels would otherwise pull back to the scan in
+    flaps), which keep anny's shape, and of the band of ``rings`` rings round them, which
+    blends the fit into them."""
     from opensculptboy.fit.lips import rings_from
 
-    hand = _hand_weight(model, hand_bones(model, chain)) > 0.5
+    hand = _hand_weight(model, hand_bones(model, chain, pin)) > 0.5
     triangles = model.faces.cpu().numpy()
     grown = rings_from(triangles, np.nonzero(hand)[0], int(rings), len(hand))
     return hand, grown & ~hand
