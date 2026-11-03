@@ -141,7 +141,7 @@ export class PoseEditor {
     const s = this.session;
     const info = (p: RefPoint): PointInfo => {
       const t = s?.targets.get(p.name);
-      const state: PointInfo['state'] = !t ? 'unplaced' : !t.on ? 'off' : t.confidence < 0.5 && t.placed === 'auto' ? 'look' : 'placed';
+      const state: PointInfo['state'] = !t ? 'unplaced' : !t.on && t.placed === 'auto' && t.confidence < 0.5 ? 'look' : !t.on ? 'off' : 'placed';
       return { name: p.name, number: p.number, label: p.label, state, reason: t?.reason, weight: t ? t.weight : 1, depth: t ? t.depth_mm : 0,
         distance: null };
     };
@@ -347,7 +347,9 @@ export class PoseEditor {
     let look = 0;
     for (const e of placed) {
       if (e.method === 'none') continue;
-      const t: Target = { position: e.position as V3, on: e.on || e.confidence > 0.15, weight: 1, confidence: e.confidence, placed: 'auto', depth_mm: 0,
+      // as the Python placement: a point is on when its confidence reaches ON; the others need a look, and the solve
+      // leaves them out until the owner moves them or switches them on
+      const t: Target = { position: e.position as V3, on: e.on, weight: 1, confidence: e.confidence, placed: 'auto', depth_mm: 0,
         auto: e.position as V3, reason: e.on ? undefined : reason(e) };
       if (!e.on) look++;
       S.targets.set(e.name, t);
@@ -1066,7 +1068,7 @@ export class PoseEditor {
       const hidden = this.behindScan(at);
       this.screen.set(p.name, s); this.visible.set(p.name, !hidden);
       const small = p.group !== 'body' && clustered.has(p.side as 'L' | 'R');
-      const state: DrawPoint['state'] = !t ? 'unplaced' : !t.on ? 'off' : t.confidence < 0.5 && t.placed === 'auto' ? 'look' : 'placed';
+      const state: DrawPoint['state'] = !t ? 'unplaced' : !t.on && t.placed === 'auto' && t.confidence < 0.5 ? 'look' : !t.on ? 'off' : 'placed';
       if (hidden && st.dragging && !st.behind && p.name !== st.selected) continue;
       f.points.push({ name: p.name, number: p.number, x: s.x, y: s.y, state, hidden, selected: p.name === st.selected, hovered: p.name === this.hovered,
         pushed: t ? t.depth_mm : 0, small });
@@ -1088,8 +1090,9 @@ export class PoseEditor {
     const lab = this.hovered || st.selected;
     if (lab && this.screen.has(lab)) {
       const p = POINT_BY_NAME.get(lab)!, s = this.screen.get(lab)!, t = S.targets.get(lab);
-      const line = st.dragging ? 'Slides on the scan. The hand follows.' : !t ? 'Not placed yet' : !t.on ? 'Switched off' : t.depth_mm > 0 ? `${t.depth_mm.toFixed(1)} mm into the stone`
-        : t.confidence < 0.5 && t.placed === 'auto' ? `Needs a look: ${t.reason || 'unsure'}` : !this.visible.get(lab) ? 'Behind the stone' : 'Placed on the scan';
+      const line = st.dragging ? 'Slides on the scan. The hand follows.' : !t ? 'Not placed yet'
+        : !t.on && t.placed === 'auto' && t.confidence < 0.5 ? `Needs a look: ${t.reason || 'unsure'}` : !t.on ? 'Switched off'
+          : t.depth_mm > 0 ? `${t.depth_mm.toFixed(1)} mm into the stone` : !this.visible.get(lab) ? 'Behind the stone' : 'Placed on the scan';
       f.labels.push({ x: s.x, y: s.y - 34, title: `${p.number} ${p.label}`, line, side: 'left' });
     }
     // the pins and the balance mark

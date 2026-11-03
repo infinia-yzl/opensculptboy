@@ -146,11 +146,12 @@ export class EditSession {
   // the point's new place (card frame): a few warm steps of the solve
   dragTo(name: string, position: V3, extra: Partial<Target> = {}) {
     const t = this.targets.get(name)!;
-    Object.assign(t, extra, { position, placed: 'owner' as const });
+    // a point the owner moves is on
+    Object.assign(t, extra, { position, placed: 'owner' as const, on: true });
     if (!this.drag) return;
     const d = this.drag;
     d.solver.setTarget(d.index, position);
-    d.solver.setWeight(d.index, t.on ? t.weight : 0);
+    d.solver.setWeight(d.index, t.weight);
     const r = d.solver.solve(DRAG_STEPS);
     this.take(r.rotations, d.bones);
     this.onChange();
