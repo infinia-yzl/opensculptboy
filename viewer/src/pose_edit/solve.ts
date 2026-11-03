@@ -130,7 +130,16 @@ export class PointSolver {
   private Lm: Float64Array;
   private axesW: Float64Array; // per column member: its world axis (3)
   private memberOffset: number[];
-  private coordRow: Map<string, Float64Array> = new Map();
+  private memberBone: Int32Array;
+  // d c_bk / d column for the rows linear in the coordinates, sparse: column indices and values, by b * 3 + k
+  private coordIdx: (Int32Array | null)[] = [];
+  private coordVal: (Float64Array | null)[] = [];
+  // for each point and pin: (column, member, mask of its influences under the member's bone) triples
+  private plans: Int32Array[] = [];
+  private pinPlans: Int32Array[] = [];
+  // the columns each point's rows can touch, ascending
+  private planCols: Int32Array[] = [];
+  private pinCols: Int32Array[] = [];
   private frameA: number[];
   private frameAinv: number[];
   private frameT: number[];
@@ -165,6 +174,7 @@ export class PointSolver {
     let m = 0;
     for (const ms of this.members) { this.memberOffset.push(m); m += ms.length; }
     this.axesW = new Float64Array(m * 3);
+    this.memberBone = Int32Array.from(this.members.flat().map((mm) => mm.bone));
     const n = this.n;
     this.D = new Float64Array(B * 9);
     this.KR = new Float64Array(B * 9);
@@ -174,11 +184,42 @@ export class PointSolver {
     this.g = new Float64Array(n);
     this.Lm = new Float64Array(n * n);
     // d c_bk / d column, for the rows linear in the coordinates
+    this.coordIdx = new Array(B * 3).fill(null);
+    this.coordVal = new Array(B * 3).fill(null);
     for (const b of this.coordBones) for (let k = 0; k < 3; k++) {
-      const row = new Float64Array(n);
-      this.members.forEach((ms, ci) => { for (const mm of ms) if (mm.bone === b && mm.k === k) row[ci] += mm.share; });
-      this.coordRow.set(b * 3 + k + '', row);
+      const idx: number[] = [], val: number[] = [];
+      this.members.forEach((ms, ci) => {
+        let v = 0;
+        for (const mm of ms) if (mm.bone === b && mm.k === k) v += mm.share;
+        if (v !== 0) { idx.push(ci); val.push(v); }
+      });
+      if (idx.length) { this.coordIdx[b * 3 + k] = Int32Array.from(idx); this.coordVal[b * 3 + k] = Float64Array.from(val); }
     }
+    const plan = (e: { bones: number[] }) => {
+      const out: number[] = [];
+      this.members.forEach((ms, ci) => {
+        let m = this.memberOffset[ci];
+        for (const mm of ms) {
+          let mask = 0;
+          e.bones.forEach((c, k) => { if (this.ancestor[mm.bone * B + c]) mask |= 1 << k; });
+          if (mask) out.push(ci, m, mask);
+          m++;
+        }
+      });
+      return Int32Array.from(out);
+    };
+    if (problem.points.some((e) => e.bones.length > 30) || problem.pins.some((e) => e.bones.length > 30)) {
+      throw new Error('A reference point has more than 30 influences.');
+    }
+    this.plans = problem.points.map(plan);
+    this.pinPlans = problem.pins.map(plan);
+    const cols = (pl: Int32Array) => {
+      const seen = new Set<number>();
+      for (let q = 0; q < pl.length; q += 3) seen.add(pl[q]);
+      return Int32Array.from([...seen].sort((a, b) => a - b));
+    };
+    this.planCols = this.plans.map(cols);
+    this.pinCols = this.pinPlans.map(cols);
     const F = problem.frame;
     this.frameA = [F[0][0], F[0][1], F[0][2], F[1][0], F[1][1], F[1][2], F[2][0], F[2][1], F[2][2]];
     this.frameT = [F[0][3], F[1][3], F[2][3]];
@@ -253,6 +294,7 @@ export class PointSolver {
     if (build) { this.computeAxes(C); H.fill(0); g.fill(0); }
     let cost = 0;
     const row = new Float64Array(n);
+    // a dense row of the Jacobian (times w) and its residual r
     const addRow = (r: number, jac: Float64Array | null, w: number) => {
       cost += 0.5 * r * r;
       if (!build || jac === null) return;
@@ -263,11 +305,35 @@ export class PointSolver {
         for (let j = 0; j <= i; j++) H[i * n + j] += ji * w * jac[j];
       }
     };
+    // a sparse row: columns idx with values val (times w)
+    const addSparse = (r: number, idx: Int32Array | null, val: Float64Array | null, w: number) => {
+      cost += 0.5 * r * r;
+      if (!build || idx === null) return;
+      for (let a = 0; a < idx.length; a++) {
+        const i = idx[a], ji = w * val![a];
+        g[i] += r * ji;
+        for (let b = 0; b < idx.length; b++) {
+          const j = idx[b];
+          if (j <= i) H[i * n + j] += ji * w * val![b];
+        }
+      }
+    };
+    // a dense row restricted to the columns cols
+    const addCols = (r: number, jac: Float64Array, off: number, cols: Int32Array, w: number) => {
+      cost += 0.5 * r * r;
+      if (!build) return;
+      for (let a = 0; a < cols.length; a++) {
+        const i = cols[a], ji = w * jac[off + i];
+        if (ji === 0) continue;
+        g[i] += r * ji;
+        for (let b = 0; b <= a; b++) { const j = cols[b]; H[i * n + j] += ji * w * jac[off + j]; }
+      }
+    };
     // a point's position and its rows' derivatives (3 x n)
     const Jx = new Float64Array(3 * n);
-    const pointRows = (e: SolvePoint | SolvePin, weight: number, kind: 'point' | 'plane', target: number[], normal?: number[]) => {
+    const ys = new Float64Array(96);
+    const pointRows = (e: SolvePoint | SolvePin, plan: Int32Array, cols: Int32Array, weight: number, kind: 'point' | 'plane', target: number[], normal?: number[]) => {
       const nInf = e.bones.length;
-      const ys = new Float64Array(nInf * 3);
       let x0 = 0, x1 = 0, x2 = 0;
       for (let k = 0; k < nInf; k++) {
         const b = e.bones[k], o = b * 9, u = e.u[k], s = e.s[k];
@@ -279,27 +345,23 @@ export class PointSolver {
       }
       if (build) {
         Jx.fill(0);
-        this.members.forEach((ms, ci) => {
-          let m = this.memberOffset[ci];
-          for (const mm of ms) {
-            const b = mm.bone;
-            let Y0 = 0, Y1 = 0, Y2 = 0, Ss = 0, any = false;
-            for (let k = 0; k < nInf; k++) {
-              if (this.ancestor[b * B + e.bones[k]]) { Y0 += ys[k * 3]; Y1 += ys[k * 3 + 1]; Y2 += ys[k * 3 + 2]; Ss += e.s[k]; any = true; }
-            }
-            if (any) {
-              const d0 = Y0 - Ss * J[b * 3], d1 = Y1 - Ss * J[b * 3 + 1], d2 = Y2 - Ss * J[b * 3 + 2];
-              const a0 = this.axesW[m * 3], a1 = this.axesW[m * 3 + 1], a2 = this.axesW[m * 3 + 2];
-              Jx[ci] += a1 * d2 - a2 * d1; Jx[n + ci] += a2 * d0 - a0 * d2; Jx[2 * n + ci] += a0 * d1 - a1 * d0;
-            }
-            m++;
+        const members = this.memberBone;
+        for (let q = 0; q < plan.length; q += 3) {
+          const ci = plan[q], m = plan[q + 1], mask = plan[q + 2], b = members[m];
+          let Y0 = 0, Y1 = 0, Y2 = 0, Ss = 0;
+          for (let k = 0; k < nInf; k++) {
+            if (mask & (1 << k)) { Y0 += ys[k * 3]; Y1 += ys[k * 3 + 1]; Y2 += ys[k * 3 + 2]; Ss += e.s[k]; }
           }
-        });
+          const d0 = Y0 - Ss * J[b * 3], d1 = Y1 - Ss * J[b * 3 + 1], d2 = Y2 - Ss * J[b * 3 + 2];
+          const a0 = this.axesW[m * 3], a1 = this.axesW[m * 3 + 1], a2 = this.axesW[m * 3 + 2];
+          Jx[ci] += a1 * d2 - a2 * d1; Jx[n + ci] += a2 * d0 - a0 * d2; Jx[2 * n + ci] += a0 * d1 - a1 * d0;
+        }
       }
       const w = weight * S;
       if (kind === 'point') {
-        const x = [x0, x1, x2];
-        for (let r = 0; r < 3; r++) addRow(w * (x[r] - target[r]), build ? Jx.subarray(r * n, (r + 1) * n) : null, w);
+        addCols(w * (x0 - target[0]), Jx, 0, cols, w);
+        addCols(w * (x1 - target[1]), Jx, n, cols, w);
+        addCols(w * (x2 - target[2]), Jx, 2 * n, cols, w);
       } else {
         const nr = normal!;
         const d = nr[0] * (x0 - target[0]) + nr[1] * (x1 - target[1]) + nr[2] * (x2 - target[2]);
@@ -307,32 +369,48 @@ export class PointSolver {
         addRow(w * d, build ? row : null, w);
       }
     };
-    for (const e of this.P.points) if (e.weight > 0) pointRows(e, e.weight, 'point', e.target);
-    for (const e of this.P.pins) {
-      if (e.kind === 'point') pointRows(e, e.weight, 'point', e.target!);
-      else pointRows(e, e.weight, 'plane', e.point!, e.normal!);
+    const pts = this.P.points;
+    for (let p = 0; p < pts.length; p++) if (pts[p].weight > 0) pointRows(pts[p], this.plans[p], this.planCols[p], pts[p].weight, 'point', pts[p].target);
+    const pins = this.P.pins;
+    for (let p = 0; p < pins.length; p++) {
+      const e = pins[p];
+      if (e.kind === 'point') pointRows(e, this.pinPlans[p], this.pinCols[p], e.weight, 'point', e.target!);
+      else pointRows(e, this.pinPlans[p], this.pinCols[p], e.weight, 'plane', e.point!, e.normal!);
     }
     const wp = this.P.weights.prior;
     for (const b of this.coordBones) {
       const e = this.bones.get(b)!, c = C.get(b)!;
       for (let k = 0; k < 3; k++) {
-        const jr = this.coordRow.get(b * 3 + k + '')!;
-        let used = false;
-        for (let i = 0; i < n; i++) if (jr[i] !== 0) { used = true; break; }
-        if (!used) continue;
-        addRow(wp * (c[k] - e.start[k]), jr, wp);
+        const idx = this.coordIdx[b * 3 + k];
+        if (idx === null) continue;
+        addSparse(wp * (c[k] - e.start[k]), idx, this.coordVal[b * 3 + k], wp);
       }
     }
     const wn = this.P.weights.natural;
     for (const cd of this.P.curls) {
       if (!this.bones.has(cd.bone)) continue;
-      const nb = cd.neighbours.filter((x) => this.bones.has(x));
-      let target: number;
-      if (nb.length) { target = 0; for (const x of nb) target += C.get(x)![0]; target /= nb.length; } else target = cd.natural[0];
-      addRow(wn * (C.get(cd.bone)![0] - target), this.coordRow.get(cd.bone * 3 + '')!, wn);
+      let target = 0, count = 0;
+      for (const x of cd.neighbours) if (this.bones.has(x)) { target += C.get(x)![0]; count++; }
+      target = count ? target / count : cd.natural[0];
+      addSparse(wn * (C.get(cd.bone)![0] - target), this.coordIdx[cd.bone * 3], this.coordVal[cd.bone * 3], wn);
     }
     if (build) for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) H[j * n + i] = H[i * n + j];
     return cost;
+  }
+
+  // whether a column sits at a range's end with its descent (-g) leading out
+  private blocked(C: Map<number, Float64Array>, ci: number, g: number): boolean {
+    if (!this.P.limits) return false;
+    const c = this.P.columns[ci], eps = 1e-12;
+    let v: number, lo: number, hi: number;
+    if ('group' in c) {
+      const gr = this.P.groups[c.group];
+      v = C.get(gr.read)![2] / gr.read_share; lo = gr.lo; hi = gr.hi;
+    } else {
+      const e = this.bones.get(c.bone)!;
+      v = C.get(c.bone)![c.axis]; lo = e.lo[c.axis]; hi = e.hi[c.axis];
+    }
+    return (v >= hi - eps && g < 0) || (v <= lo + eps && g > 0);
   }
 
   // the coordinates after a step, held within the ranges (a coordinate outside its range may stay or move back)
@@ -365,13 +443,23 @@ export class PointSolver {
     let cost = this.evaluate(C, n > 0);
     if (n > 0) {
       let mu = -1, nu = 2;
-      const A = new Float64Array(n * n), delta = new Float64Array(n), neg = new Float64Array(n);
+      const A = new Float64Array(n * n), delta = new Float64Array(n), neg = new Float64Array(n), red = new Float64Array(n);
       for (let it = 0; it < iterations; it++) {
         const H = this.H, g = this.g;
         if (mu < 0) { let mx = 0; for (let i = 0; i < n; i++) mx = Math.max(mx, H[i * n + i]); mu = 1e-3 * Math.max(mx, 1e-12); }
-        A.set(H);
-        for (let i = 0; i < n; i++) { A[i * n + i] += mu; neg[i] = -g[i]; }
-        choleskySolve(A, neg, n, this.Lm, delta);
+        // the columns held at a range's end that the gradient pushes further out stay out of the step (an active set)
+        const free: number[] = [];
+        for (let i = 0; i < n; i++) if (!this.blocked(C, i, g[i])) free.push(i);
+        const m = free.length;
+        delta.fill(0);
+        if (m) {
+          for (let a = 0; a < m; a++) {
+            for (let b = 0; b < m; b++) A[a * m + b] = H[free[a] * n + free[b]];
+            A[a * m + a] += mu; neg[a] = -g[free[a]];
+          }
+          choleskySolve(A, neg, m, this.Lm, red);
+          for (let a = 0; a < m; a++) delta[free[a]] = red[a];
+        }
         let predicted = 0;
         for (let i = 0; i < n; i++) predicted += delta[i] * (mu * delta[i] - g[i]);
         predicted *= 0.5;

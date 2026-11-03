@@ -50,13 +50,15 @@ def _library(name):
 
 def _random_pose(rig, R0, chains, seed=0, share=(0.1, 0.5)):
     """A pose of the chains' bones: each free joint coordinate a random share of its range's
-    upper end."""
+    upper end (the toes, which have one point between them, stay)."""
     from opensculptboy.posing import point_solve as ps
 
     frames = ps.joint_frames(rig)
     rng = np.random.default_rng(seed)
     R = R0.copy()
     for b in ps.chain_bones(rig, chains):
+        if rig.labels[b].startswith("toe"):
+            continue
         f = frames[b]
         c = np.zeros(3)
         for k in range(3):
@@ -112,10 +114,10 @@ class TestForwardModel(unittest.TestCase):
         skin = _Skinner(model, card, R, t)
         with torch.no_grad():
             expected = skin(card.pose_parameters(model)).numpy()
-        # the model is exact: the same posed and placed skin to the rounding of float64
-        self.assertLess(np.abs(rig.vertices(rotations) - expected).max(), 1e-9)
+        # the same posed and placed skin to a micrometre (the model's weights are float32)
+        self.assertLess(np.abs(rig.vertices(rotations) - expected).max(), 1e-6)
         joints = rig.to_output(rig.joints(rig.transforms(rotations)))
-        self.assertLess(np.abs(joints - skin.joints.numpy()).max(), 1e-9)
+        self.assertLess(np.abs(joints - skin.joints.numpy()).max(), 1e-6)
 
 
 class TestPointSet(unittest.TestCase):
@@ -265,10 +267,11 @@ class TestSolve(unittest.TestCase):
         rig = self.rig
         frames = ps.joint_frames(rig)
         elbow = rig.index["lowerarm01.R"]
-        # the forearm bent backwards past its range: the solve stops at the range's end
+        # the forearm bent backwards past its range (the reference pose holds it bent by 42
+        # degrees): the solve stops at the range's end
         truth = self.rest.copy()
         f = frames[elbow]
-        truth[elbow] = ps._exp(f["axes"] @ (f["sign"] * np.radians([-40.0, 0.0, 0.0])))
+        truth[elbow] = ps._exp(f["axes"] @ (f["sign"] * np.radians([-70.0, 0.0, 0.0])))
         _, points = _targets(rig, truth, ["arm.r"])
         held = ps.solve(rig, self.rest, points, ["arm.r"])
         free = ps.solve(rig, self.rest, points, ["arm.r"], limits=False)
@@ -445,9 +448,14 @@ class TestPageParity(unittest.TestCase):
             f"page solve of an arm and hand, a drag of {len(times)} frames: mean "
             f"{times.mean():.2f} ms, median {np.median(times):.2f} ms, max {times.max():.2f} ms"
         )
-        # the drag follows: the fingertip ends at its last place
-        tip = np.asarray(out["drag"]["points"][index])
-        self.assertLess(np.linalg.norm(tip - frames[-1]), 0.002)
+        # the drag, solved warm a few steps a frame, ends where a full solve of its last
+        # places from its first pose ends (the other points hold the hand, so the tip stops
+        # short of its place in both)
+        final = [dict(p) for p in points]
+        final[index]["target"] = frames[-1]
+        full = ps.solve(rig, settled.rotations, final, ["arm.r"], iterations=100)
+        page = np.asarray(out["drag"]["points"])
+        self.assertLess(np.abs(page - full.points).max(), 0.001)
         self.assertLess(float(np.median(times)), 10.0)
 
 

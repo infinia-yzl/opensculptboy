@@ -518,6 +518,27 @@ class _Solver:
                     out[m][2] += s * (clamped - v)
         return out
 
+    def blocked(self, C: dict, g: np.ndarray) -> np.ndarray:
+        """Mask (columns,) of the columns at a range's end whose descent (-g) leads out."""
+        out = np.zeros(self.n, bool)
+        if not self.P["limits"]:
+            return out
+        eps = 1e-12
+        for ci, c in enumerate(self.columns):
+            if "group" in c:
+                grp = self.groups[c["group"]]
+                v = C[grp["read"]][2] / grp["read_share"]
+                lo, hi = grp["lo"], grp["hi"]
+            else:
+                e = self.bones[c["bone"]]
+                v, lo, hi = (
+                    C[c["bone"]][c["axis"]],
+                    e["lo"][c["axis"]],
+                    e["hi"][c["axis"]],
+                )
+            out[ci] = (v >= hi - eps and g[ci] < 0) or (v <= lo + eps and g[ci] > 0)
+        return out
+
     def residuals(self, C: dict, jacobian: bool):
         D = self.rotations(C)
         K = self.transforms(D)
@@ -641,7 +662,13 @@ def solve_problem(problem: dict, surfaces=None, iterations: int | None = None):
         g = Jm.T @ r
         if mu is None:
             mu = 1e-3 * max(float(np.diag(H).max()), 1e-12)
-        delta = -_cholesky_solve(H + mu * np.eye(n), g)
+        # the columns held at a range's end that the gradient pushes further out stay out of
+        # the step (an active set), so that the step turns the other bones instead
+        free = np.nonzero(~solver.blocked(C, g))[0]
+        delta = np.zeros(n)
+        if len(free):
+            A = H[np.ix_(free, free)] + mu * np.eye(len(free))
+            delta[free] = -_cholesky_solve(A, g[free])
         C_new = solver.step(C, delta)
         r_new = solver.residuals(C_new, False)
         cost_new = 0.5 * float(r_new @ r_new)
