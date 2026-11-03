@@ -1296,6 +1296,66 @@ class TestPosedHands(unittest.TestCase):
                 model, P[None].clone(), "hand.r", {"fingers": {"finger6": [0, 0, 0]}}
             )
 
+    def test_hands_posed_after_the_fit_carry_its_offsets(self):
+        import roma
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.fit import residual as R_
+        from opensculptboy.fit.register import FitResult, _card_rest, repose_fit
+        from opensculptboy.statues.chains import _identity_pose
+        from opensculptboy.statues.hands import hand_bones
+
+        model = _model()
+        labels = list(model.bone_labels)
+        before = Character(name="rest")
+        rest0, transforms = _card_rest(model, before)
+        weights = model.vertex_bone_weights.detach().double().numpy()
+        indices = model.vertex_bone_indices.cpu().numpy()
+        rng = np.random.default_rng(0)
+        offsets = {0: rng.normal(0.0, 0.002, rest0.shape)}
+        R, t = np.eye(3), np.array([0.0, 0.0, 0.1])
+        posed0 = R_.pose_vertices(
+            rest0 + offsets[0], weights, indices, transforms, R, t
+        )
+        triangles = model.faces.cpu().numpy()
+        result = FitResult(
+            character=before,
+            rotation=R,
+            translation=t,
+            parametric_rest=rest0,
+            offsets=offsets,
+            errors={},
+            seconds={},
+            meshes={0: (posed0, triangles)},
+        )
+        # the right wrist turned by 40 degrees after the fit
+        pose = _identity_pose(model).clone()
+        wrist = labels.index("wrist.R")
+        pose[0, wrist, :3, :3] = roma.rotvec_to_rotmat(
+            torch.tensor([0.0, 0.0, np.radians(40.0)], dtype=pose.dtype)
+        )
+        after = Character(name="rest")
+        after.pose = Character.pose_from_parameters(model, pose)
+        moved = repose_fit(model, result, after)
+        self.assertIs(moved.character, after)
+        np.testing.assert_array_equal(moved.offsets[0], offsets[0])
+        V = moved.meshes[0][0]
+        hand = np.isin(
+            model.vertex_bone_indices.numpy()[:, 0], hand_bones(model, "hand.r")
+        )
+        on_hand = (weights * np.isin(indices, hand_bones(model, "hand.r"))).sum(1)
+        far = on_hand == 0
+        # the body away from the hand stays where the fit put it, offsets and all
+        np.testing.assert_allclose(V[far], posed0[far], atol=1e-9)
+        # the hand moves with its bones, carrying its offsets
+        self.assertGreater(np.linalg.norm(V[hand] - posed0[hand], axis=1).max(), 0.02)
+        _, transforms1 = _card_rest(model, after)
+        expected = R_.pose_vertices(
+            rest0 + offsets[0], weights, indices, transforms1, R, t
+        )
+        np.testing.assert_allclose(V, expected, atol=1e-9)
+
     def test_a_fist_on_the_hip_comes_out_of_it(self):
         import roma
         import torch
@@ -1330,6 +1390,9 @@ class TestPosedHands(unittest.TestCase):
         self.assertGreater(report["inside_before"], 0, report)
         self.assertLess(report["inside_after"], report["inside_before"], report)
         self.assertLessEqual(report["deepest_after_mm"], 1.0, report)
+        # the hand comes just off the body, no farther
+        self.assertLess(report["gap_after_mm"], 6.0, report)
+        self.assertLessEqual(report["share"], 1.0)
 
     def test_a_stone_moves_with_its_hand_off_the_hip(self):
         import roma
@@ -1421,6 +1484,16 @@ class TestPosedHands(unittest.TestCase):
         )
         self.assertEqual(config.posed_hands, hands)
         self.assertEqual(StatueConfig.from_dict(base).posed_hands, {})
+        self.assertFalse(config.posed_hands_after_fit)
+        after = StatueConfig.from_dict(
+            {
+                **base,
+                "posed_hands": hands,
+                "chains": ["hand.l"],
+                "posed_hands_after_fit": True,
+            }
+        )
+        self.assertTrue(after.posed_hands_after_fit)
 
 
 class TestPieceRebuild(unittest.TestCase):

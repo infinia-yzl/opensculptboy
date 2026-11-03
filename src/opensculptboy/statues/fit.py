@@ -218,6 +218,7 @@ def fit_statue(
     chain_options=None,
     chain_hints: dict | None = None,
     posed_hands: dict | None = None,
+    hands_after_fit: bool = False,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
@@ -243,7 +244,12 @@ def fit_statue(
     level, their fingers curled round the objects they hold after the chains, with a band
     of ``blend`` rings (default :data:`~opensculptboy.statues.hands.BLEND_RINGS`) at the wrist
     that blends the forearm's fit into them; a hand's stone joins the handoff's props
-    (``props.glb``). The result's ``hands`` holds their report. Returns the
+    (``props.glb``). With ``hands_after_fit`` the detail levels are fitted with the arms in
+    the chains' pose, where they lie on the scan's own arms, and the hands are posed on the
+    fitted card afterwards (:func:`~opensculptboy.fit.register.repose_fit`): the offsets stay
+    in rest space and ride along with the bones, so a keyed arm or one moved off the body
+    keeps the scan's carving and nothing pulls its skin back to where the scan's arm was.
+    The result's ``hands`` holds their report. Returns the
     :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -369,14 +375,11 @@ def fit_statue(
             pose_hands,
         )
 
-        character, hands_report = pose_hands(
-            model,
-            character,
-            rotation,
-            translation,
-            posed_hands,
-            log=(lambda m: print(m, flush=True)) if options.verbose else None,
-        )
+        hand_log = (lambda m: print(m, flush=True)) if options.verbose else None
+        if not hands_after_fit:
+            character, hands_report = pose_hands(
+                model, character, rotation, translation, posed_hands, log=hand_log
+            )
         pinned = np.zeros(model.template_vertices.shape[-2], bool)
         band = np.zeros_like(pinned)
         near_scan = None
@@ -404,12 +407,27 @@ def fit_statue(
             no_data_levels=levels,
             fill_no_data=True,
         )
-        for chain, rep in hands_report.items():
-            if rep.get("stone"):
-                add_stone_prop(folder, rep["stone"])
     result = fit_levels(
         reference, character, rotation, translation, detail, options, model, seconds
     )
+    if posed_hands:
+        if hands_after_fit:
+            from opensculptboy.fit.register import repose_fit
+
+            posed, hands_report = pose_hands(
+                model,
+                result.character,
+                rotation,
+                translation,
+                posed_hands,
+                log=hand_log,
+            )
+            result = repose_fit(model, result, posed)
+            if options.verbose:
+                print("hands posed on the fitted card", flush=True)
+        for chain, rep in hands_report.items():
+            if rep.get("stone"):
+                add_stone_prop(folder, rep["stone"])
     for chain, spec in (posed_hands or {}).items():
         if spec.get("key") and spec.get("objects"):
             from opensculptboy.statues.hands import check_key, keyed_clearance

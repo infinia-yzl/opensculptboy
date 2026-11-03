@@ -2854,6 +2854,30 @@ def _card_rest(model, character: Character) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
+def repose_fit(model, result: "FitResult", character: Character) -> "FitResult":
+    """A fit given a new pose and shape after its levels were fitted: the offsets of each
+    level stay in rest space, so they ride along with the bones, and the meshes are posed
+    again from the new card (its parametric rest and skinning transforms). The errors and
+    measures stay those of the fit itself."""
+    from opensculptboy.detail import detail_topology
+
+    rest0, transforms = _card_rest(model, character)
+    weights0 = model.vertex_bone_weights.detach().double().numpy()
+    indices0 = model.vertex_bone_indices.cpu().numpy()
+    meshes = {}
+    for level, (_, triangles) in result.meshes.items():
+        topology = detail_topology(model, level, "full", character.topology)
+        w, i = topology.skin_weights(weights0, indices0)
+        rest = np.asarray(topology.apply(rest0)) + np.asarray(result.offsets[level])
+        posed = R_.pose_vertices(
+            rest, w, i, transforms, result.rotation, result.translation
+        )
+        meshes[level] = (posed, triangles)
+    return dataclasses.replace(
+        result, character=character, parametric_rest=rest0, meshes=meshes
+    )
+
+
 def fit_reference(
     reference: Reference,
     detail: int = 1,

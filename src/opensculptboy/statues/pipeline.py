@@ -112,6 +112,9 @@ class StatueConfig:
     # objects they hold (opensculptboy.statues.hands): {"hand.r": {"objects": [...]},
     # "hand.l": {"stone": {"radii": [...]}}}; their chains must be among "chains"
     posed_hands: dict = dataclasses.field(default_factory=dict)
+    # pose the hands on the fitted card after the detail levels (fit_statue's
+    # hands_after_fit), so that moved arms keep the scan's carving
+    posed_hands_after_fit: bool = False
     # the skin by the removed pieces (supports, props, the plinth) takes no data on the detail
     # levels (False: it keeps its data, for masks that keep the figure's skin whole; a list
     # of regions: only there, such as ["feet"] for a foot set on a removed head)
@@ -520,6 +523,7 @@ def fit(
             chain_options=_chain_options(config, verbose) if config.chains else None,
             chain_hints=_chain_hints(config),
             posed_hands=config.posed_hands or None,
+            hands_after_fit=config.posed_hands_after_fit,
         )
 
     saved = pathlib.Path(card).parent.parent / "stage1"

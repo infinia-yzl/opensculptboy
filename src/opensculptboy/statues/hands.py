@@ -574,14 +574,18 @@ def _place_wrist(
 # the arm's bones that may move a hand off the body, and the steps of that solve
 CLEAR_BONES = ("shoulder01", "upperarm01", "lowerarm01")
 CLEAR_STEPS = 300
+# the shares of the solve's turns tried, from the least, for the least lift that clears
+CLEAR_SHARES = 40
 
 
 def _clear_body(skin, pose, labels, strongest, side, margin):
     """Lift a hand that rests on the body (a fist on the hip) out of it: the shoulder's, the
     upper arm's and the elbow's turns (the wrist keeps the chain's angle) move the hand until
     its vertices lie ``margin`` outside the body's surface around it, as a contact solve
-    would, paying for each turn away from the chain's pose. Returns the hand's vertices
-    inside the body and the deepest of them (mm), before and after."""
+    would, paying for each turn away from the chain's pose; then only the least share of
+    those turns that clears the body is kept, so that the hand stays just off it. Returns
+    the hand's vertices inside the body and the deepest of them (mm), before and after, and
+    the gap that is left (mm)."""
     import roma
     import torch
     from scipy.spatial import cKDTree
@@ -647,8 +651,21 @@ def _clear_body(skin, pose, labels, strongest, side, margin):
         loss = (torch.relu(margin - depth) ** 2).sum() / 1e-6 + 0.3 * (x**2).sum()
         loss.backward()
         optimizer.step()
+
+    def gap(V):
+        _, k = tree.query(V[hand])
+        return float(((V[hand] - points[k]) * normals[k]).sum(1).min())
+
+    # the least share of the solve's turns that lifts the hand clear (a fist that rests on
+    # the hip comes off it by the margin, no farther)
+    x = x.detach()
+    share = 1.0
     with torch.no_grad():
-        moved = posed(x)
+        for s in np.linspace(0.0, 1.0, CLEAR_SHARES + 1)[1:]:
+            if gap(skin(posed(float(s) * x)).numpy()) >= 0.9 * margin:
+                share = float(s)
+                break
+        moved = posed(share * x)
         X = skin(moved).numpy()
     for k, i in bone.items():
         pose[0, i, :3, :3] = moved[0, i, :3, :3]
@@ -657,7 +674,9 @@ def _clear_body(skin, pose, labels, strongest, side, margin):
         "deepest_before_mm": before[1],
         "inside_after": inside(X)[0],
         "deepest_after_mm": inside(X)[1],
-        "arm_turn_deg": round(float(np.degrees(x.detach().norm())), 1),
+        "gap_after_mm": round(1000 * gap(X), 1),
+        "share": round(share, 3),
+        "arm_turn_deg": round(float(np.degrees(share * x.norm())), 1),
     }
 
 
