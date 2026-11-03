@@ -1289,6 +1289,29 @@ class TestPosedHands(unittest.TestCase):
             off = check_key({**key, "clearance_mm": moved}, final)
         self.assertFalse(off["ok"])
         self.assertAlmostEqual(off["max_diff_mm"], 5.0, places=6)
+        # the fight pose closes the right fist only: the left hand keyed with the same curls
+        # takes the right's axes mirrored, and its fingers close as the right's mirror image
+        both = _identity_pose(model)
+        for chain in ("hand.r", "hand.l"):
+            key_hand(model, both, chain, {"fingers": {"finger3": [60.0, 75.0, 40.0]}})
+        for k in (1, 2, 3):
+            right = roma.rotmat_to_rotvec(
+                both[0, labels.index(f"finger3-{k}.R"), :3, :3]
+            )
+            left = roma.rotmat_to_rotvec(
+                both[0, labels.index(f"finger3-{k}.L"), :3, :3]
+            )
+            np.testing.assert_allclose(
+                left.numpy(), [1.0, -1.0, -1.0] * right.numpy(), atol=1e-6
+            )
+        with torch.no_grad():
+            skin(both)
+        J = skin.joints.numpy()
+        tips = [
+            J[labels.index(f"finger3-3{s}")] - J[labels.index(f"wrist{s}")]
+            for s in (".R", ".L")
+        ]
+        np.testing.assert_allclose(tips[1], [-1.0, 1.0, 1.0] * tips[0], atol=2e-3)
         with self.assertRaises(ValueError):
             key_hand(model, P[None].clone(), "hand.r", {"bones": {"elbow": [0, 0, 0]}})
         with self.assertRaises(ValueError):

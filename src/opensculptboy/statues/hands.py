@@ -180,6 +180,8 @@ def place_stone(joints: dict, radii, gap: float = 0.02) -> dict:
 
 # the library pose whose joints' turning axes a keyed finger's curl turns about
 KEY_FIST = "mh_fight"
+# a turn's rotation vector on one side of the rig, as the other side's mirror image has it
+MIRROR = np.array([1.0, -1.0, -1.0])
 
 
 def key_hand(model, pose, chain: str, key: dict) -> None:
@@ -190,14 +192,17 @@ def key_hand(model, pose, chain: str, key: dict) -> None:
     pose's. ``key["fingers"]`` maps a finger (``"finger2"``) to the curl of its three joints
     in degrees, each about that joint's own bending axis (the axis of its turn in the library
     pose :data:`KEY_FIST`); a joint's entry may instead be a rotation vector in degrees (the
-    thumb's opposition). A key's ``local_changes`` (the hand chain's, such as
-    ``"r-hand-scale-incr"``) are set on the card by :func:`pose_hands`."""
+    thumb's opposition). Where the library closes the other hand's finger further (the fight
+    pose closes the right fist only), the finger takes that hand's axes, mirrored. A key's
+    ``local_changes`` (the hand chain's, such as ``"r-hand-scale-incr"``) are set on the
+    card by :func:`pose_hands`."""
     import roma
     import torch
 
     from opensculptboy.statues.chains import _library_rotations
 
     side = "." + _side(chain)
+    opposite = ".L" if side == ".R" else ".R"
     labels = list(model.bone_labels)
 
     def turn(v):
@@ -217,6 +222,15 @@ def key_hand(model, pose, chain: str, key: dict) -> None:
                 )
             bones = [labels.index(f"{finger}-{k}{side}") for k in (1, 2, 3)]
             axes = roma.rotmat_to_rotvec(torch.as_tensor(library[bones])).numpy()
+            other = [labels.index(f"{finger}-{k}{opposite}") for k in (1, 2, 3)]
+            mirrored = (
+                MIRROR * roma.rotmat_to_rotvec(torch.as_tensor(library[other])).numpy()
+            )
+            if (
+                np.linalg.norm(mirrored, axis=1).sum()
+                > np.linalg.norm(axes, axis=1).sum()
+            ):
+                axes = mirrored
             norms = np.linalg.norm(axes, axis=1)
             for k, (b, value) in enumerate(zip(bones, joints)):
                 if np.ndim(value) == 0:
