@@ -390,6 +390,9 @@ class FitOptions:
     # untangle the folds within 3 mm of the reference (unfold) in this many rounds on each
     # level (0: none)
     unfold_rounds: int = 0
+    # and no vertex of the untangling ends further than this (metres) from where it started
+    # (0: no limit; see unfold)
+    unfold_limit: float = 0.0
     # the pose the parameter stage starts from: (B, 3, 3) rotations of the fit model's bones
     # (a library pose for a reference that stands far from anny's rest; the fixed bones keep
     # theirs); None: the rest pose
@@ -3692,6 +3695,7 @@ def fit_levels(
                 every,
                 on,
                 options.unfold_rounds,
+                limit=options.unfold_limit,
             )
             rows = np.nonzero(np.abs(fitted_new - fitted).max(1) > 0)[0]
             if len(rows):
@@ -4030,6 +4034,7 @@ def unfold(
     on_surface: np.ndarray,
     rounds: int = 10,
     reach: float = 0.003,
+    limit: float = 0.0,
 ) -> tuple[np.ndarray, int]:
     """
     The vertices (V, 3) with the folds near the reference untangled, and the number of
@@ -4037,9 +4042,13 @@ def unfold(
     against the reference's there are folded over; their vertices of ``rows`` move to the
     mean of their ring, and those of ``on_surface`` back onto the reference, for ``rounds``
     rounds. Fitted to a solid statue, the lids' corners and the lips' corners folded into
-    knots and slivers that showed dark.
+    knots and slivers that showed dark. With ``limit`` (metres; 0: none) no vertex ends
+    further than that from where it started: in a hollow of the reference (under a chin)
+    the mean of a ring and the closest point after it walk a vertex a little further each
+    round, and the rounds piled the side of a neck onto one spot 10 cm away.
     """
     V = np.asarray(fitted, np.float64).copy()
+    start = V.copy()
     T = np.asarray(triangles)
     A = _adjacency(len(V), T)
     count = np.maximum(np.asarray(A.sum(1)).ravel(), 1.0)
@@ -4069,6 +4078,12 @@ def unfold(
         back = bad & on_surface
         if back.any():
             V[back] = reference.closest(V[back])[0]
+        if limit > 0:
+            step = V[bad] - start[bad]
+            length = np.linalg.norm(step, axis=1, keepdims=True)
+            V[bad] = start[bad] + step * np.minimum(
+                1.0, limit / np.maximum(length, 1e-18)
+            )
         moved |= bad
     return V, int(moved.sum())
 
