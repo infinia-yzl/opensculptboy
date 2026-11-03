@@ -10,7 +10,7 @@
 //   the lashes follow the triangles under their roots (anny.hair.StrandBinding): followStrands gives one frame
 //   per strand, and the page's hair shader places the points.
 
-import { addFace, addRows, coefficients, faceRowWeights, faceScales, localRowWeights, makeRule, ShapeSpace, type CoefficientRule, type FaceData, type LocalData } from './anny_shape.ts';
+import { addFace, addRows, coefficients, faceRowWeights, faceScales, localRowWeights, makeRule, referenceTurns, restOrientations, ShapeSpace, type CoefficientRule, type FaceData, type LocalData, type TurnData, type TurnRows } from './anny_shape.ts';
 import { FineSubdivision } from './subdivision.ts';
 
 export interface StrandSet {
@@ -216,13 +216,15 @@ export class AnnyBody {
   weldShown: Uint32Array | null = null; hide = false; private allNormals: Float32Array | null = null;
   jointsDefault: Float32Array;
   head = -1;   // the head bone (the faces carry the jaw's pivot with it)
+  turnData: TurnData | null = null;   // the bones' rest orientations as Anny finds them (anny_shape.ts), when the data has them
   constructor(meta: any, bufs: {
     template: Float32Array; components: Int16Array; projection: Float32Array; jointTemplate: Float32Array; jointBlend: Float32Array;
     quads: Uint32Array; rows: Uint32Array; detail: Int16Array; relief?: Int16Array; index: Uint32Array; rest: Float32Array; nsmooth: Float32Array;
-    coarseSkin: Uint8Array; face?: FaceData; seams?: Uint32Array; local?: LocalData; hidden?: Uint8Array;
+    coarseSkin: Uint8Array; face?: FaceData; seams?: Uint32Array; local?: LocalData; hidden?: Uint8Array; turns?: TurnData;
   }, positions?: Float32Array, normals?: Float32Array, nsmooth?: Float32Array) {
     const sm = meta.shape;
     this.meta = meta;
+    this.turnData = bufs.turns || null;
     this.face = bufs.face || null;
     this.local = bufs.local || null;
     this.rule = makeRule(sm.tables);
@@ -332,6 +334,21 @@ export class AnnyBody {
     this.coarseOffsets = card?.coarse || null;
     this.levelOffsets = card?.levels || [];
     this.pageDetail = card?.pageDetail ?? true;
+  }
+
+  // each bone's turn C = reference rest^T (bones * 9, Anny's axes) for the body's sliders, face shapes and local
+  // changes, which converts a card's local-ref pose into the page's rotations (pose_reference.ts); null without the data
+  restTurns(): Float64Array | null {
+    const T = this.turnData;
+    if (!T) return null;
+    const c = coefficients(this.rule, this.values);
+    const extra: [TurnRows | undefined, ArrayLike<number> | null][] = [];
+    if (this.face?.turns) {
+      const f = this.faceVector(this.faceValues);
+      if (f.some((x) => x !== 0)) extra.push([this.face.turns, faceRowWeights(this.face.tables, f, faceScales(this.face, c))]);
+    }
+    if (this.local?.turns && this.localValues) extra.push([this.local.turns, localRowWeights(this.local, this.localValues)]);
+    return referenceTurns(T, restOrientations(T, c, extra));
   }
 
   // the face-shape values in the order of the face tables (missing names take 0)

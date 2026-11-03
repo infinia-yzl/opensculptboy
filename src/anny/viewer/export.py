@@ -127,6 +127,39 @@ def joint_tables(model) -> dict:
     )
 
 
+def sparse_turns(rows: np.ndarray, threshold: float = 0.0) -> dict:
+    """Blend rows of the bones' rest-orientation matrices (R, B, 3, 3) as sparse blocks: the
+    (row, bone) pairs whose matrix is not zero, and their matrices (row-major)."""
+    rows = np.asarray(rows, np.float64)
+    nz = np.abs(rows).max(axis=(2, 3)) > threshold
+    r, b = np.nonzero(nz)
+    return dict(
+        index=np.stack([r, b], 1).astype(np.uint32),
+        values=rows[r, b].reshape(-1, 9),
+    )
+
+
+def orientation_tables(model) -> dict:
+    """
+    What the page needs to find each bone's rest orientation as Anny does with the "cached"
+    bone orientation: the template cross-covariance (B, 3, 3) and its phenotype blend rows (as
+    :func:`sparse_turns`), which the page weighs with the blend-shape coefficients and turns
+    into a rotation by the special Procrustes solution (``roma.special_procrustes``); and the
+    reference orientations (B, 3, 3), the zero of Anny's ``local-ref`` pose. All in Anny's axes.
+    """
+    if model.bone_template_orientation_matrices is None:
+        raise ValueError("The model has no cached bone orientations.")
+    n = int(model.stacked_phenotype_blend_shapes_mask.shape[0])
+    return dict(
+        template=model.bone_template_orientation_matrices.detach().cpu().numpy(),
+        blend=sparse_turns(
+            model.bone_orientation_blendshapes[:n].detach().cpu().numpy()
+        ),
+        reference=model.reference_bone_orientations.detach().cpu().numpy(),
+        root_identity=bool(getattr(model, "root_identity_orientation", False)),
+    )
+
+
 def coefficients(model, phenotype_kwargs: dict) -> np.ndarray:
     """anny's coefficients for one slider setting (for checks)"""
     params = torch.tensor(
@@ -236,6 +269,7 @@ def face_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dict
     first = face_tables(model)["first_row"]
     B = model.blendshapes[first:, vertex_ids].detach().cpu().numpy()
     J = model.bone_heads_blendshapes[first:].detach().cpu().numpy()
+    turns = _orientation_rows(model, slice(first, None))
     starts, counts, ids, offsets = [], [], [], []
     for r in range(len(B)):
         moved = np.nonzero(np.linalg.norm(B[r], axis=1) > threshold)[0]
@@ -251,7 +285,18 @@ def face_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dict
         offsets=np.concatenate(offsets),
         bones=bones.tolist(),
         bone_deltas=J[:, bones],
+        turns=turns,
     )
+
+
+def _orientation_rows(model, rows) -> dict | None:
+    """The rows' blend of the bones' rest-orientation matrices, as :func:`sparse_turns`
+    (row numbers from the first of ``rows``), or None for a model without cached
+    orientations."""
+    blend = getattr(model, "bone_orientation_blendshapes", None)
+    if blend is None:
+        return None
+    return sparse_turns(blend[rows].detach().cpu().numpy())
 
 
 def local_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dict:
@@ -267,6 +312,7 @@ def local_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dic
     rows = slice(first, first + 2 * len(labels))
     B = model.blendshapes[rows, vertex_ids].detach().cpu().numpy()
     J = model.bone_heads_blendshapes[rows].detach().cpu().numpy()
+    turns = _orientation_rows(model, rows)
     starts, counts, ids, offsets = [], [], [], []
     for r in range(len(B)):
         moved = np.nonzero(np.linalg.norm(B[r], axis=1) > threshold)[0]
@@ -283,6 +329,7 @@ def local_offsets(model, vertex_ids: np.ndarray, threshold: float = 1e-6) -> dic
         offsets=np.concatenate(offsets),
         bones=bones.tolist(),
         bone_deltas=J[:, bones],
+        turns=turns,
     )
 
 

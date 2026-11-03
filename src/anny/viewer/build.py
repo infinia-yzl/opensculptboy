@@ -569,6 +569,17 @@ def with_copies(shape, source, count):
     return out
 
 
+def add_turns(pk, name: str, turns: dict) -> int:
+    """sparse blend rows of the bones' rest-orientation matrices (anny.viewer.export.sparse_turns)
+    as two buffers: <name>_index (row, bone) and <name>_values (9 floats each); the number of
+    blocks"""
+    index = np.ascontiguousarray(turns["index"], np.uint32)
+    values = np.ascontiguousarray(turns["values"], np.float32)
+    pk.add(f"{name}_index", index.reshape(-1), "raw", index.size * 4, 1)
+    pk.add(f"{name}_values", values.reshape(-1), "raw", values.size * 4, 1)
+    return int(len(index))
+
+
 # ------------------------------------------------------------------ build
 def build(out_dir=DEFAULT_OUT, verbose=True):
     import anny
@@ -699,10 +710,25 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
     jb = space["joint_blend"].astype(np.float32)
     pk.add("joint_template", jt, "raw", jt.size * 4, 1)
     pk.add("joint_blend", jb, "raw", jb.size * 4, 1)
+    # the bones' rest orientations as Anny finds them (the "cached" bone orientation): the
+    # template cross-covariances and their sparse phenotype rows, and the reference orientations
+    # (the zero of the local-ref pose), in Anny's axes; the page converts a card's local-ref
+    # pose with them (viewer/src/pose_reference.ts)
+    ot = export.orientation_tables(model)
+    add_turns(pk, "turn", ot["blend"])
+    tt = ot["template"].reshape(-1, 9).astype(np.float32)
+    tr = ot["reference"].reshape(-1, 9).astype(np.float32)
+    pk.add("turn_template", tt, "raw", tt.size * 4, 1)
+    pk.add("turn_reference", tr, "raw", tr.size * 4, 1)
     # anny's skinning weights on the coarse body (for grounding the poses in the page)
     csi, csw = top_weights(coarse["W"][compact], 8)
     pk.add("coarse_skin", skin_record(csi, csw), "raw", len(compact) * 16, 1)
     man["shape"] = dict(
+        turns=dict(
+            entries=int(len(ot["blend"]["index"])),
+            root_identity=ot["root_identity"],
+            axes="anny",
+        ),
         tables=space["tables"],
         sliders=SLIDERS,
         components=int(len(comp)),
@@ -753,6 +779,8 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
     man["shape"]["face"] = dict(
         ft, starts=fo["starts"], counts=fo["counts"], bones=fo["bones"], step=1e-5
     )
+    if fo["turns"] is not None:
+        man["shape"]["face"]["turns"] = add_turns(pk, "face_turn", fo["turns"])
     if FACE_PRIOR.exists():
         prior_meta, factors = export.face_prior_tables(model)
         pk.add("face_prior", factors, "raw", factors.size * 4, 1)
@@ -780,6 +808,8 @@ def build(out_dir=DEFAULT_OUT, verbose=True):
             bones=lc["bones"],
             step=1e-5,
         )
+        if lc["turns"] is not None:
+            man["shape"]["local"]["turns"] = add_turns(pk, "local_turn", lc["turns"])
 
     # ---------------- rig and motion
     q, root, clips, bones = motion_data()

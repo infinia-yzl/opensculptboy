@@ -576,8 +576,9 @@ def build_starter(
     default :data:`~opensculptboy.statues.ghost.TRIANGLES`, 0 for none) where the run's
     handoff has its ``replica.glb``, and
     ``thumbnail.png`` (``picture``, a PNG file, or a drawing of the finest fitted level),
-    and the light card beside it (``<out stem>.light.json``). Returns the entries and their
-    sizes in bytes.
+    and the light card beside it (``<out stem>.light.json``). A card with a pose carries its
+    body's bone turns as ``pose.reference`` (:mod:`opensculptboy.posing.frames`). Returns the
+    entries and their sizes in bytes.
     """
     import tempfile
 
@@ -618,6 +619,11 @@ def build_starter(
         data, entry = build_ghost(replica.parent, card, ghost or TRIANGLES, log=log)
         card["detail"]["fit"]["reference"]["ghost"] = entry
         scan = (FILE, data)
+    # the card's bone turns for its body, which the page checks its own against when it shows
+    # the card's pose (opensculptboy.posing.frames)
+    from opensculptboy.posing.frames import with_reference
+
+    card = with_reference(card)
     if picture is not None:
         png = pathlib.Path(picture).read_bytes()
     else:
