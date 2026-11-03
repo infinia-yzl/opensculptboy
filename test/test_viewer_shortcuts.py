@@ -95,10 +95,24 @@ class TestShortcutKeys(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-4000:])
         out = json.loads(r.stdout.strip().splitlines()[-1])
         self.assertTrue(out["ok"])
-        self.assertEqual(
-            {k: v for k, v in out["panels"].items()},
-            {sec: key for key, sec in PANEL_IDS.items()},
-        )
+        keys = out["keys"]
+        # key map version 2: the modes on Shift and a digit, Export behind Ctrl+Shift, Create's sections on 1 to 4
+        for i, mode in enumerate(["create", "dress", "express", "pose", "sheet"]):
+            self.assertEqual(keys[f"global Shift+{i + 1}"], "mode." + mode)
+        self.assertEqual(keys["global Ctrl+Shift+E"], "mode.export")
+        for i, sec in enumerate(["body", "face", "skin", "hair"]):
+            self.assertEqual(keys[f"create {i + 1}"], "create." + sec)
+        for key, action in (
+            ("F", "view.frame"),
+            ("Home", "view.home"),
+            ("`", "view.menu"),
+            ("Z", "display.menu"),
+            ("Alt+Z", "display.xray"),
+            ("Backspace", "view.back"),
+            ("F1", "help.keys"),
+            ("F3", "help.commands"),
+        ):
+            self.assertEqual(keys["global " + key], action)
 
 
 @local_only("Playwright with the built viewer page")

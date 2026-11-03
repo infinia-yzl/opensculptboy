@@ -6,7 +6,8 @@
 // the Open dialog) is React (src/shell); this file builds what the frame hosts and drives: the editor and its
 // history, the sections that are still the page's own DOM (character_ui.ts, stage_ui.ts, rig_ui.ts, sheet_ui.ts,
 // expression_ui.ts, wearables_ui.ts), the camera's navigation and height rail, the performance card, the help sheet,
-// the name of the bone under the pointer, the refinement ring, and the keyboard shortcuts of shortcuts.ts.
+// the name of the bone under the pointer, the refinement ring, and the keys of key map version 2 (studio/keymap.ts in
+// the registry of studio/actions.ts), with the pointer's arbitration (studio/pointer.ts) and the status line.
 // main.ts calls initUI once the model is ready, and calls the returned hooks when the look, the motion or a frame
 // changes; the hooks reach the React interface through the bus of src/shell/state.ts, never by a React render.
 
@@ -15,7 +16,6 @@ import { cameraNav, type CameraNav } from './camera_nav.ts';
 import { randomBodyInto, randomColours, randomFaceInto, randomHair, randomPhenotype, type Editor } from './character_ui.ts';
 import { download, h, iconButton, slug, typing } from './dom.ts';
 import { lookHistory } from './history.ts';
-import { helpSheet, MODES, SECTIONS, shortcutKeys, TOOLS } from './shortcuts.ts';
 import { sheetController } from '../sheet/controller.ts';
 import { stageSections } from './stage_ui.ts';
 import { wearLoader } from '../shell/sections/DressSection.tsx';
@@ -29,6 +29,12 @@ import { makeOpener } from '../shell/open.ts';
 import { mountShell } from '../shell/Shell.tsx';
 import type { Legacy } from '../shell/context.ts';
 import { flushSync } from 'react-dom';
+import { dispatchKey } from '../studio/actions.ts';
+import { helpSheet } from '../studio/help.ts';
+import { registerKeymap } from '../studio/keymap.ts';
+import { commandList, ringMenu } from '../studio/menus.ts';
+import { installPointer, registerPicker } from '../studio/pointer.ts';
+import { PRIORITY, setStatus, trackModifiers } from '../studio/status.ts';
 
 export interface UI { hooks: Hooks; nav: CameraNav; stats: Stats; firstStarter: (id: string) => Promise<void> }
 
@@ -156,6 +162,8 @@ export function initUI(app: App): UI {
   };
   const fileName = () => slug(app.look().name || 'character');
   const help = helpSheet();
+  const cmds = commandList();
+  const rings = ringMenu();
   stats.onToggle = (on) => ui.set({ stats: on });
   const fullscreen = () => {
     if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => toast('Full screen is not allowed here', 'error'));
@@ -183,9 +191,13 @@ export function initUI(app: App): UI {
     ring.setAttribute('aria-label', `Picture ${txt.toLowerCase()}. Open the performance card.`);
   };
   // the view bar's state: changes only on a new framing, angle or turntable (the store drops equal values)
+  // the angle lights only while the camera is at it, so a free turn leaves none lit
   const paintView = () => {
-    const a = Object.entries({ front: 0, three: 24, side: 90, back: 180 }).find(([, y]) => y === app.view.yaw);
-    ui.set({ view: { frame: app.view.userMoved ? '' : app.currentFrame(), angle: a ? a[0] : '', turntable: app.turntable() } });
+    const st = nav.api.state(), yaw = st.yaw;
+    const a = st.flying ? null : Object.entries({ front: 0, three: 24, side: 90, back: 180, right: -90 })
+      .find(([, y]) => Math.abs(((yaw - y) % 360 + 540) % 360 - 180) < 1 && Math.abs(st.tilt) < 20);
+    const frame = app.view.lit || (app.view.userMoved ? '' : app.currentFrame());
+    ui.set({ view: { frame, angle: a ? (a[0] === 'right' ? 'side' : a[0]) : '', turntable: app.turntable() } });
   };
   nav.onView = paintView;
 
@@ -210,14 +222,13 @@ export function initUI(app: App): UI {
     if (!tipQueued && app.rigView() !== 'off') { tipQueued = true; requestAnimationFrame(paintBoneTip); }
   });
   app.canvas.addEventListener('pointerleave', () => { tipAt = null; boneTip.hidden = true; });
-  // a click is a press without a drag
-  let press: { x: number; y: number; t: number } | null = null;
-  app.canvas.addEventListener('pointerdown', (e) => { press = { x: e.clientX, y: e.clientY, t: performance.now() }; });
-  app.canvas.addEventListener('pointerup', (e) => {
-    const p = press; press = null;
-    if (!p || app.rigView() === 'off' || Math.hypot(e.clientX - p.x, e.clientY - p.y) > 5 || performance.now() - p.t > 400) return;
-    const name = app.pickBone(e.clientX, e.clientY);
-    app.setRigBone(name, !!name);
+  // a click keeps a bone, and a click beside the bones clears it (a picker of the pointer's arbitration)
+  registerPicker({
+    id: 'rig.bone', priority: 0,
+    enabled: () => app.rigView() !== 'off',
+    hit: (p) => { const name = app.pickBone(p.x, p.y); return name ? { item: name, distPx: 0, label: name } : null; },
+    onClick: (hit) => app.setRigBone(hit.item as string, true),
+    onBackground: () => app.setRigBone(null, false),
   });
 
   // ---------------------------------------------------------------- the character shown
@@ -254,12 +265,11 @@ export function initUI(app: App): UI {
     saveImage,
     poseCard: () => download(`${fileName()}-pose.json`, new Blob([JSON.stringify(app.poseCard(), null, 2) + '\n'], { type: 'application/json' })),
     silhouette: () => download(`${fileName()}-silhouette.svg`, new Blob([app.poseSilhouette()], { type: 'image/svg+xml' })),
-    toggleStats: () => stats.toggle(), showHelp: () => help.showModal(), fullscreen,
+    toggleStats: () => stats.toggle(), showHelp: () => help.open(), fullscreen,
     frame: (v) => nav.frame(v), angle: (v) => nav.angle(v), turntable: () => app.setTurntable(!app.turntable()), resetView: () => nav.reset(),
     ring, heightRail: nav.rail, identity, opener, hosted,
   };
-  document.body.append(sheet.view, nav.rail, stats.el, help, shotDlg, boneTip);
-  mountShell({ app, ed, legacy });
+  document.body.append(sheet.view, nav.rail, nav.pivotDot, stats.el, help.el, cmds.el, rings.el, shotDlg, boneTip);
   // the 3D view's backdrop follows the theme: the dark studio, or the light theme's marble stage
   const stage = () => app.setStage(ui.get().dark ? 'dark' : 'light');
   ui.subscribe(stage); stage();
@@ -292,71 +302,62 @@ export function initUI(app: App): UI {
   // a drag of files over the page outlines the canvas
   ui.subscribe(() => document.body.classList.toggle('osb-dragging', ui.get().dragging));
 
-  // ---------------------------------------------------------------- the keyboard
+  // ---------------------------------------------------------------- the keyboard and the mouse
+  // the key map version 2 (studio/keymap.ts) in the registry of studio/actions.ts; one handler for every key
   const dialogOpen = () => !!document.querySelector('dialog[open], [role="dialog"][data-state="open"], [role="menu"][data-state="open"]');
+  let pointerAt = { x: innerWidth / 2, y: innerHeight / 2 };
+  addEventListener('pointermove', (e) => { pointerAt = { x: e.clientX, y: e.clientY }; }, { passive: true });
+  const escape = () => {
+    const a = document.activeElement, s = ui.get();
+    const left = document.getElementById('insp-left'), right = document.getElementById('insp-right');
+    if (s.tool && right?.contains(a)) { actions.closeTool(); (document.querySelector('[data-menu="more"]') as HTMLElement)?.focus(); }
+    else if (s.open && left?.contains(a)) { actions.closePanel(); document.getElementById('tab-' + s.mode)?.focus(); }
+    else if (s.tool) actions.closeTool();
+    else if (s.open) actions.closePanel();
+    else if (s.welcome) actions.dismissWelcome();
+    else if (stats.isOpen()) stats.close();
+    else return false;
+  };
+  registerKeymap({
+    app, nav, undo, redo, saveCard, hosted, toast: (t) => toast(t),
+    help: () => help.open(), commands: () => cmds.open(),
+    ringMenu: (m) => rings.open(m, m === 'view' ? 'Views' : 'Display', m === 'view' ? '`' : 'Z', pointerAt, m === 'view' ? 'Backquote' : 'KeyZ'),
+    escape,
+  });
+  installPointer(app.canvas);
+  trackModifiers();
+  // the interface mounts once the keys are in the registry, so its tooltips and key caps show them from the start
+  mountShell({ app, ed, legacy });
+  app.canvas.tabIndex = -1;
+  // the line under the view, with nothing held, Shift held and Alt held (artboard 3b)
+  setStatus('idle', [{ keys: 'Left-drag', text: 'turn' }, { keys: 'Middle-drag', text: 'move the view' }, { keys: 'Wheel', text: 'zoom' }, { keys: 'F', text: 'frame' },
+    { keys: 'Double-click', text: 'turn round this spot' }], {
+    priority: PRIORITY.idle,
+    held: {
+      shift: [{ text: 'Fine movement' }, { keys: 'Left-drag', text: 'turn slowly' }, { keys: 'Wheel', text: 'zoom 3 %' }, { keys: 'Drag a point', text: 'a quarter speed' }],
+      alt: [{ text: 'Turn even over a point' }, { keys: 'Alt+left-drag', text: 'turn' }, { keys: 'Alt+right-drag', text: 'zoom' }],
+      ctrl: [{ text: 'Snap' }, { keys: 'Ctrl+left-drag', text: 'turn in steps of 15°' }, { keys: 'Ctrl+Z', text: 'undo' }, { keys: 'Ctrl+S', text: 'save' }],
+    },
+  });
   document.addEventListener('keydown', (e) => {
     if (e.defaultPrevented) return;
-    const mod = e.ctrlKey || e.metaKey;
-    if (mod && !e.altKey && (e.key === 'z' || e.key === 'Z' || e.key === 'y')) {
-      if (typing(e)) return;
-      e.preventDefault();
-      if (e.key === 'y' || e.shiftKey) redo(); else undo();
-      return;
-    }
-    if (mod && !e.altKey && !e.shiftKey && (e.key === 'o' || e.key === 'O' || e.code === 'KeyO')) { e.preventDefault(); actions.showOpen(); return; }
-    if (mod && !e.altKey && !e.shiftKey && (e.key === 's' || e.key === 'S' || e.code === 'KeyS')) { e.preventDefault(); if (!hosted) saveCard(); return; }
-    if (typing(e)) {
-      // Esc leaves a text field, so the shortcuts work again (a slider's value box and a search field put back their
-      // text first)
-      if (e.key === 'Escape' && !mod) (e.target as HTMLElement).blur();
-      return;
-    }
-    if (mod) return;
-    if (dialogOpen()) return;
-    if (e.altKey) {
-      const m = /^Digit([1-4])$/.exec(e.code);
-      if (m) { const names = Object.keys(app.presets); const n = names[+m[1] - 1]; if (n) { e.preventDefault(); app.applyPreset(n); } }
-      return;
-    }
-    const act: Record<string, () => void> = {
-      ArrowLeft: () => nav.orbit(-8), ArrowRight: () => nav.orbit(8),
-      ArrowUp: () => e.shiftKey ? nav.tilt(5) : nav.move(0.05), ArrowDown: () => e.shiftKey ? nav.tilt(-5) : nav.move(-0.05),
-      '+': () => nav.zoom(0.88), '=': () => nav.zoom(0.88), '-': () => nav.zoom(1.14), '_': () => nav.zoom(1.14),
-      '0': () => nav.reset(), '1': () => nav.frame('body'), '2': () => nav.frame('upper'), '3': () => nav.frame('face'),
-      '4': () => nav.angle('front'), '5': () => nav.angle('three'), '6': () => nav.angle('side'), '7': () => nav.angle('back'),
-      H: () => app.setHairVisible(!app.hairVisible()), t: () => app.setTurntable(!app.turntable()),
-      B: () => app.setRigView(app.rigView() === 'skeleton' ? 'off' : 'skeleton'),
-      W: () => app.setRigView(app.rigView() === 'weights' ? 'off' : 'weights'),
-      '`': () => stats.toggle(), '?': () => help.showModal(),
-      ' ': () => { const m = app.motion(); if (m.cur && m.cur.kind === 'loop') app.togglePlay(); },
-      Escape: () => {
-        const a = document.activeElement, s = ui.get();
-        const left = document.getElementById('insp-left'), right = document.getElementById('insp-right');
-        if (s.tool && right?.contains(a)) { actions.closeTool(); (document.querySelector('[aria-label="View menu"]') as HTMLElement)?.focus(); }
-        else if (s.open && left?.contains(a)) { actions.closePanel(); document.getElementById('tab-' + s.mode)?.focus(); }
-        else if (s.tool) actions.closeTool();
-        else if (s.open) actions.closePanel();
-        else if (s.welcome) actions.dismissWelcome();
-        else if (stats.isOpen()) stats.close();
-      },
-    };
-    // the modes, Create's sections and the tools of the View menu (shortcuts.ts)
-    for (const m of MODES) act[m.key] = () => actions.toggleMode(m.id);
-    for (const s of SECTIONS.create) if (s.key) act[s.key] = () => actions.toggleSection('create', s.id);
-    for (const t of TOOLS) act[t.key!] = () => actions.toggleTool(t.id as any);
-    act.n = () => { if (ui.get().newDialog) actions.hideNew(); else actions.showNew(); };
+    const isTyping = typing(e);
+    // Esc leaves a text field, so the shortcuts work again (a slider's value box and a search field put back their
+    // text first)
+    if (isTyping && e.key === 'Escape' && !(e.ctrlKey || e.metaKey)) { (e.target as HTMLElement).blur(); return; }
     const t = e.target as HTMLElement;
-    const keys = shortcutKeys(e);
-    // a focused button keeps Space and Enter; the arrows stay with the camera only outside the controls that use them
-    if (keys[0] === ' ' && t.closest('button, summary')) return;
-    if (keys[0]?.startsWith('Arrow') && t.closest('input, .seg, .osb-seg, [role="tablist"], [role="radiogroup"], [role="menu"]')) return;
-    // Shift with a panel's letter opens it as the letter alone does, where Shift gives the letter no meaning of its own
-    const k = keys.find((x) => act[x]) ?? keys.map((x) => x.length === 1 ? x.toLowerCase() : x).find((x) => act[x]);
-    if (!k) return;
-    e.preventDefault();
+    // a focused button keeps Space and Enter; the arrows stay with the controls that use them; Tab moves the focus
+    // outside the 3D view
+    if ((e.key === ' ' || e.key === 'Enter') && !e.ctrlKey && t.closest?.('button, summary, a')) return;
+    if (e.key.startsWith('Arrow') && t.closest?.('input, .seg, .osb-seg, [role="tablist"], [role="radiogroup"], [role="menu"], [role="slider"]')) return;
+    if (rings.isOpen()) return;
     // the interface shows a key's panel before the next frame
-    flushSync(() => act[k]());
+    let id: string | null = null;
+    flushSync(() => { id = dispatchKey(e, { typing: isTyping, dialog: dialogOpen(), hint: (text) => toast(text) }); });
+    if (id) e.preventDefault();
   });
+  // Alt+← and Alt+→ would leave the page with unsaved edits; Ctrl+wheel would zoom the page over the view
+  addEventListener('keydown', (e) => { if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !typing(e)) e.preventDefault(); }, true);
 
   // ---------------------------------------------------------------- the start state
   if (!app.shot && app.qs.get('stats') === '1') stats.open();

@@ -1,12 +1,15 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// shadcn/ui's Tooltip (Radix Tooltip): the action's name, then its key (KeyHint), after the design system's wait.
-// Touch screens show no tooltip.
+// shadcn/ui's Tooltip (Radix Tooltip) in one pattern everywhere (artboard 3a): the name, its key caps, and one line of
+// what the control does, after the design system's wait. A control of a registered action names it (`action`), so the
+// tooltip shows the registry's label, line and keys. Touch screens show no tooltip.
 
 import * as React from 'react';
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { keyText } from '../../../ui/shortcuts.ts';
+import { action as actionDef, capsFor, capsOf } from '../../../studio/actions.ts';
+import { useActionsVersion } from '../../../studio/react.ts';
 import { cn } from '../../lib/utils.ts';
 
 export const TooltipProvider = ({ children }: { children: React.ReactNode }) => (
@@ -23,14 +26,22 @@ export const TooltipContent = React.forwardRef<React.ElementRef<typeof TooltipPr
   ));
 TooltipContent.displayName = 'TooltipContent';
 
-// a control with its tooltip: the label and, when it has one, the key as a key cap
-export function Tip({ label, keys, side = 'bottom', children }: { label: string; keys?: string; side?: 'top' | 'bottom' | 'left' | 'right'; children: React.ReactElement }) {
+// a control with its tooltip: the label, its keys as key caps, and a line of what it does; `keys` is a chord
+// ('Shift+4', 'Ctrl+Shift+E') or caps with spaces ('Ctrl Z'), else the keys of the `action` of the registry
+export function Tip({ label, keys, action, desc, side = 'bottom', children }: {
+  label?: string; keys?: string; action?: string; desc?: string; side?: 'top' | 'bottom' | 'left' | 'right'; children: React.ReactElement;
+}) {
+  useActionsVersion();
+  const a = action ? actionDef(action) : undefined;
+  const title = label ?? a?.label ?? '';
+  const caps = keys ? (/\+./.test(keys) ? capsOf(keys) : keys.split(' ').map(keyText)) : action ? capsFor(action) : [];
+  const line = desc ?? a?.desc;
   return (
     <TooltipRoot>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side={side}>
-        {label}
-        {keys ? keys.split(' ').map((k, i) => <span key={i} className="osb-key">{keyText(k)}</span>) : null}
+      <TooltipContent side={side} className={line ? 'osb-tip--long' : undefined}>
+        <span className="osb-tip-head"><span className="osb-tip-title">{title}</span>{caps.map((k, i) => <span key={i} className="osb-key">{k}</span>)}</span>
+        {line ? <span className="osb-tip-desc">{line}</span> : null}
       </TooltipContent>
     </TooltipRoot>
   );

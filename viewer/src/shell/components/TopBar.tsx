@@ -7,6 +7,8 @@
 
 import { useRef } from 'react';
 import { MODES, TOOLS } from '../../ui/shortcuts.ts';
+import { keyLine } from '../../studio/actions.ts';
+import { useActionsVersion } from '../../studio/react.ts';
 import { useShell, settingsSlot } from '../context.ts';
 import { useBus, useUI } from '../hooks.ts';
 import { actions, type Theme } from '../state.ts';
@@ -45,18 +47,18 @@ export function ViewMenu() {
   const full = typeof document !== 'undefined' && document.fullscreenEnabled;
   return (
     <DropdownMenu>
-      <Tip label="View: rig, scene, performance, theme, settings">
+      <Tip label="More: rig, scene, performance, theme, settings">
         <DropdownMenuTrigger asChild>
-          <button type="button" className="osb-ib" aria-label="View menu"><Icon name="view" /></button>
+          <button type="button" className="osb-ib" aria-label="More: theme, settings" data-menu="more"><Icon name="more" /></button>
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end" className="osb-view-menu">
         <DropdownMenuLabel>View</DropdownMenuLabel>
         {TOOLS.map((t) => (
-          <DropdownMenuItem key={t.id} icon={t.icon} shortcut={t.key!.toUpperCase()} data-tool={t.id} aria-checked={tool === t.id}
+          <DropdownMenuItem key={t.id} icon={t.icon} data-tool={t.id} aria-checked={tool === t.id}
             onSelect={() => actions.toggleTool(t.id as any)}>{t.label}</DropdownMenuItem>
         ))}
-        <DropdownMenuItem icon="stats" shortcut="`" aria-checked={stats} onSelect={() => legacy.toggleStats()}>Performance</DropdownMenuItem>
+        <DropdownMenuItem icon="stats" aria-checked={stats} onSelect={() => legacy.toggleStats()}>Performance</DropdownMenuItem>
         {full ? <DropdownMenuItem icon="fullscreen" onSelect={() => legacy.fullscreen()}>Full screen</DropdownMenuItem> : null}
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Theme</DropdownMenuLabel>
@@ -76,6 +78,7 @@ export function ViewMenu() {
 
 export function TopBar() {
   const { legacy } = useShell();
+  useActionsVersion();
   const mode = useUI((s) => s.mode), open = useUI((s) => s.open), width = useUI((s) => s.width), hist = useUI((s) => s.history);
   const phone = width === 'phone';
   return (
@@ -85,11 +88,11 @@ export function TopBar() {
       {width === 'wide' ? (
         <nav className="osb-modes osb-glass" aria-label="Modes">
           {MODES.map((m) => (
-            <Tip key={m.id} label={m.tip} keys={m.key}>
+            <Tip key={m.id} action={'mode.' + m.id} label={m.label} desc={m.tip}>
               <button id={'tab-' + m.id} type="button" className="osb-mode" aria-current={mode === m.id ? 'page' : undefined}
                 data-state={mode === m.id ? 'active' : 'inactive'} aria-expanded={mode === m.id ? open : undefined} aria-controls="insp-left"
                 onClick={() => actions.toggleMode(m.id)}>
-                {m.label}<span className="osb-hint">{m.key.toUpperCase()}</span>
+                {m.label}<span className="osb-hint">{keyLine('mode.' + m.id)}</span>
               </button>
             </Tip>
           ))}
@@ -99,29 +102,29 @@ export function TopBar() {
         {phone ? (
           <>
             <Tip label="Undo" keys="Ctrl Z"><button type="button" className="osb-ib" aria-label="Undo (Ctrl Z)" disabled={!hist.undo} onClick={legacy.undo}><Icon name="undo" /></button></Tip>
-            <Tip label="New character" keys="N"><button type="button" className="osb-ib" aria-label="New character (N)" onClick={() => actions.showNew()}><Icon name="new" /></button></Tip>
+            <Tip action="file.new" label="New character"><button type="button" className="osb-ib" aria-label="New character" onClick={() => actions.showNew()}><Icon name="new" /></button></Tip>
             <Tip label="Open a character" keys="Ctrl O"><button type="button" className="osb-ib" aria-label="Open (Ctrl O)" onClick={() => actions.showOpen()}><Icon name="open" /></button></Tip>
           </>
         ) : (
           <>
-            <Tip label="New character: a starter, the base or your own 3D model" keys="N">
-              <Button variant="ghost" aria-label="New character (N)" onClick={() => actions.showNew()}><Icon name="new" size={16} />New</Button>
+            <Tip action="file.new" label="New character">
+              <Button variant="ghost" aria-label="New character" onClick={() => actions.showNew()}><Icon name="new" size={16} />New</Button>
             </Tip>
-            <Tip label="Open a character, wearables or sheet settings" keys="Ctrl O">
+            <Tip action="file.open" label="Open">
               <Button variant="outline" aria-label="Open (Ctrl O)" onClick={() => actions.showOpen()}><Icon name="open" size={16} />Open</Button>
             </Tip>
             <span className="osb-sep" />
-            <Tip label={hist.undo ? 'Undo ' + hist.undo : 'Nothing to undo'} keys="Ctrl Z">
+            <Tip label={hist.undo ? 'Undo ' + hist.undo : 'Nothing to undo'} action="edit.undo">
               <button type="button" className="osb-ib" aria-label="Undo (Ctrl Z)" disabled={!hist.undo} onClick={legacy.undo}><Icon name="undo" /></button>
             </Tip>
-            <Tip label={hist.redo ? 'Redo ' + hist.redo : 'Nothing to redo'} keys="Ctrl Shift Z">
+            <Tip label={hist.redo ? 'Redo ' + hist.redo : 'Nothing to redo'} action="edit.redo">
               <button type="button" className="osb-ib" aria-label="Redo (Ctrl Shift Z)" disabled={!hist.redo} onClick={legacy.redo}><Icon name="redo" /></button>
             </Tip>
           </>
         )}
         {phone ? null : (
-          <Tip label="Help and keys" keys="?">
-            <button type="button" className="osb-ib" aria-label="Help and keys (?)" onClick={legacy.showHelp}><Icon name="help" /></button>
+          <Tip action="help.keys" label="Help and keys">
+            <button type="button" className="osb-ib" aria-label="Help and keys (F1)" onClick={legacy.showHelp}><Icon name="help" /></button>
           </Tip>
         )}
         <ViewMenu />

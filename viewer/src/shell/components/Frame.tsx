@@ -14,12 +14,18 @@ import { Button } from './ui/button.tsx';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from './ui/dialog.tsx';
 import { Icon } from './ui/icon.tsx';
 import { Tip } from './ui/tooltip.tsx';
+import { runAction } from '../../studio/actions.ts';
+import { useActionsVersion } from '../../studio/react.ts';
 
-const FRAMES: [string, string, string, string][] = [['body', 'Full', 'Full body', '1'], ['upper', 'Upper', 'Upper body', '2'], ['face', 'Face', 'Face', '3']];
-const ANGLES: [string, string, string, string][] = [['front', 'Front', 'Front', '4'], ['three', '¾', 'Three-quarter', '5'], ['side', 'Side', 'Side', '6'], ['back', 'Back', 'Back', '7']];
+// the framings and the angles of the view bar; an angle pressed again turns to the opposite side
+const FRAMES: [string, string, string, string][] = [['body', 'Full', 'Full body', 'The whole figure in the free space'], ['upper', 'Upper', 'Upper body', 'The head, the arms and the chest'],
+  ['face', 'Face', 'Face', 'The head and the hair'], ['hand', 'Hand', 'Hand', 'A hand; again for the other hand']];
+const ANGLES: [string, string, string, string][] = [['front', 'Front', 'Front', 'Again for the back'], ['three', '¾', 'Three-quarter', 'The front, turned a quarter'],
+  ['side', 'Side', 'Side', 'Again for the other side'], ['back', 'Back', 'Back', 'Again for the front']];
 
 export function ViewBar() {
   const { legacy } = useShell();
+  useActionsVersion();
   const view = useUI((s) => s.view), width = useUI((s) => s.width);
   const [unfolded, setUnfolded] = useState(false);
   const ring = useRef<HTMLDivElement>(null);
@@ -28,28 +34,38 @@ export function ViewBar() {
   const items = (
     <>
       <div className="osb-seg" role="group" aria-label="Framing">
-        {FRAMES.map(([v, short, label, key]) => (
-          <Tip key={v} label={label} keys={key} side="top">
+        {FRAMES.map(([v, short, label, desc]) => (
+          <Tip key={v} label={label} desc={desc} side="top">
             <button type="button" aria-pressed={view.frame === v} data-value={v} aria-label={label} onClick={() => legacy.frame(v)}>{short}</button>
           </Tip>
         ))}
       </div>
       <span className="osb-sep" />
       <div className="osb-seg" role="group" aria-label="Angle">
-        {ANGLES.map(([v, short, label, key]) => (
-          <Tip key={v} label={label} keys={key} side="top">
+        {ANGLES.map(([v, short, label, desc]) => (
+          <Tip key={v} label={label} desc={desc} side="top">
             <button type="button" aria-pressed={view.angle === v} data-value={v} aria-label={label} onClick={() => legacy.angle(v)}>{short}</button>
           </Tip>
         ))}
       </div>
       <span className="osb-sep" />
-      <Tip label="Turn the figure" keys="T" side="top">
-        <button type="button" className="osb-ib" aria-label="Turn the figure (T)" aria-pressed={view.turntable} onClick={legacy.turntable}><Icon name="turntable" /></button>
-      </Tip>
-      <Tip label="Reset the view" keys="0" side="top">
-        <button type="button" className="osb-ib" aria-label="Reset the view (0)" onClick={legacy.resetView}><Icon name="reset" /></button>
-      </Tip>
-      <span className="osb-sep" />
+      {phone ? null : (<>
+        <Tip action="view.frame" side="top">
+          <button type="button" className="osb-ib" aria-label="Frame the selection (F)" onClick={() => runAction('view.frame')}><Icon name="focus" /></button>
+        </Tip>
+        <Tip action="view.menu" side="top">
+          <button type="button" className="osb-ib" aria-label="View menu (backtick)" data-ring="view" onClick={() => runAction('view.menu')}><Icon name="camera" /></button>
+        </Tip>
+        <Tip action="display.menu" side="top">
+          <button type="button" className="osb-ib" aria-label="Display menu (Z)" data-ring="display" onClick={() => runAction('display.menu')}><Icon name="hud" /></button>
+        </Tip>
+        <span className="osb-sep" />
+      </>)}
+      {phone ? (
+        <Tip label="Turn the figure" side="top">
+          <button type="button" className="osb-ib" aria-label="Turn the figure" aria-pressed={view.turntable} onClick={legacy.turntable}><Icon name="turntable" /></button>
+        </Tip>
+      ) : null}
       <div ref={ring} className="osb-ring-host" />
     </>
   );
