@@ -71,7 +71,7 @@ def scan_glb(vertices_anny, triangles) -> bytes:
     )
 
 
-def points_statue(folder, chains=("arm.r", "arm.l"), seed=5, outside=0.001):
+def points_statue(folder, chains=("hand.r", "hand.l"), seed=5, outside=0.001):
     """A card and its scan in ``folder``: the scan is the default body posed by a random pose of
     the chains (``test_reference_points._random_pose``), ``outside`` metres outside its skin.
     Returns the files, the rig, the rest and the true rotations."""
@@ -82,7 +82,7 @@ def points_statue(folder, chains=("arm.r", "arm.l"), seed=5, outside=0.001):
     folder = pathlib.Path(folder)
     # every phenotype at its default, as the page shows a card
     rig, rest = _rig(Character(phenotypes="all"))
-    truth = _random_pose(rig, rest, list(chains), seed, share=(0.04, 0.15))
+    truth = _random_pose(rig, rest, list(chains), seed, share=(0.05, 0.25))
     V = rig.vertices(truth)
     V = V + outside * _vertex_normals(V, rig.faces)
     (folder / "scan.glb").write_bytes(scan_glb(V, rig.faces))
