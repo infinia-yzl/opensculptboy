@@ -357,7 +357,7 @@ class TestPoseEditPage(unittest.TestCase):
 
             # the pose's keys: mirror, copy and paste, undo and redo
             key("m", "pose.mirror")
-            key("Control+c", "pose.copy")
+            key("Control+c", "pose.copy", "() => window.__poseEdit.selectHand('R')")
             key("Control+v", "pose.paste")
             key("Control+Shift+v", "pose.paste-mirrored")
             key("Control+z", "pose.undo")
