@@ -33,7 +33,10 @@ export interface Frame {
   strokes?: DrawStroke[]; tags?: DrawTag[]; joints?: DrawJoint[];
   points: DrawPoint[]; anny: DrawAnny[]; labels: DrawLabel[]; clusters: DrawCluster[]; pins: DrawPin[]; balance: DrawBalance | null;
   magnifier: DrawMagnifier | null; scale: number;
+  alerts?: DrawAlert[];
 }
+// a finger inside a prop (Grip): a red ring at its tip
+export interface DrawAlert { x: number; y: number; title: string; line: string }
 
 function el<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number> = {}, parent?: Element): SVGElementTagNameMap[K] {
   const e = document.createElementNS(NS, tag);
@@ -67,6 +70,11 @@ export class PointLayer {
     const s = f.scale;
     // the balance mark under everything
     if (f.balance) this.balance(g, f.balance);
+    // fingers inside a prop: a red ring with a dark outline
+    for (const a of f.alerts || []) {
+      el('circle', { cx: a.x, cy: a.y, r: 11 * s, fill: 'rgba(196, 80, 60, 0.35)', stroke: '#1d1b19', 'stroke-width': 4 * s }, g);
+      el('circle', { cx: a.x, cy: a.y, r: 11 * s, fill: 'none', stroke: '#c4503c', 'stroke-width': 2.2 * s }, g);
+    }
     // the joints' rings (the Joints tool) under the points
     for (const j of f.joints || []) {
       const r = (j.selected ? 9 : 7) * s * (j.hovered ? 4 / 3 : 1), col = j.side === 'L' ? '#2a9d8f' : j.side === 'R' ? '#e07a2f' : '#f2efe9';
@@ -101,6 +109,7 @@ export class PointLayer {
     const box = document.createDocumentFragment();
     for (const c of f.clusters) box.appendChild(this.tag(c.x, c.y, c.title, c.line, 'right'));
     for (const l of f.labels) box.appendChild(this.tag(l.x, l.y, l.title, l.line, l.side || 'right'));
+    for (const a of f.alerts || []) box.appendChild(this.tag(a.x + 16 * s, a.y, a.title, a.line, 'right'));
     for (const t of f.tags || []) {
       const d = document.createElement('div');
       d.className = 'osb-glass pose-ring-tag';

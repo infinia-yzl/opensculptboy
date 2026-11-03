@@ -33,7 +33,7 @@ import { ghostOf, readScan, type ScanMesh } from './scan.ts';
 import { EditSession, PIN_WEIGHT, type Pin, type Target } from './session.ts';
 import { ScanView, type ScanLook } from './view3d.ts';
 import { AXES, BODY_JOINTS, Joints, jointName, type JointValues } from './joints.ts';
-import { FINGERS, HandControls, PRESETS, RELAXED, copyMirrored, mirrorPose, type HandShape } from './hands.ts';
+import { FINGERS, FINGER_LABELS, HandControls, PRESETS, RELAXED, copyMirrored, mirrorPose, type HandShape } from './hands.ts';
 import { transforms, coordinatesOf, rotationOf, expRotation, mul3, buildProblem, type PointInput, type PinInput } from './problem.ts';
 import { PointSolver, logRotation as logOf } from './solve.ts';
 
@@ -1343,6 +1343,15 @@ export class PoseEditor {
         : !t.on && t.placed === 'auto' && t.confidence < 0.5 ? `Needs a look: ${t.reason || 'unsure'}` : !t.on ? 'Switched off'
           : t.depth_mm > 0 ? `${t.depth_mm.toFixed(1)} mm into the stone` : !this.visible.get(lab) ? 'Behind the stone' : 'Placed on the scan';
       f.labels.push({ x: s.x, y: s.y - 34, title: `${p.number} ${p.label}`, line, side: 'left' });
+    }
+    // Grip: the fingers inside the prop, marked red at their tips
+    if (st.section === 'hands' && st.grip && st.grip_report.length) {
+      const side = st.grip.hand, tips = ['thumb_tip', 'index_tip', 'middle_tip', 'ring_tip', 'pinky_tip'], at = S.positions(tips.map((t) => POINT_BY_NAME.get(`${t}.${side}`)!));
+      f.alerts = st.grip_report.flatMap((r, k) => {
+        if (!r.inside) return [];
+        const s = toS(at.get(`${tips[k]}.${side}`)!);
+        return [{ x: s.x, y: s.y, title: `${FINGER_LABELS[k]}: ${Math.abs(r.clearance).toFixed(0)} mm inside the ${(st.grip!.prop.split('/').pop() || 'prop')}`, line: 'Red marks skin inside a prop' }];
+      });
     }
     // the pins and the balance mark
     S.pinPositions().forEach((x, i) => { const s = toS(x); f.pins.push({ x: s.x, y: s.y, label: S.pins[i].name }); });
