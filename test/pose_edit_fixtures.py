@@ -75,11 +75,13 @@ def points_statue(folder, chains=("arm.r", "arm.l"), seed=5, outside=0.001):
     """A card and its scan in ``folder``: the scan is the default body posed by a random pose of
     the chains (``test_reference_points._random_pose``), ``outside`` metres outside its skin.
     Returns the files, the rig, the rest and the true rotations."""
+    from opensculptboy.character import Character
     from opensculptboy.posing.point_place import _vertex_normals
     from test.test_reference_points import _random_pose, _rig
 
     folder = pathlib.Path(folder)
-    rig, rest = _rig()
+    # every phenotype at its default, as the page shows a card
+    rig, rest = _rig(Character(phenotypes="all"))
     truth = _random_pose(rig, rest, list(chains), seed, share=(0.04, 0.15))
     V = rig.vertices(truth)
     V = V + outside * _vertex_normals(V, rig.faces)
@@ -87,6 +89,7 @@ def points_statue(folder, chains=("arm.r", "arm.l"), seed=5, outside=0.001):
     card = {
         "schema": 5,
         "name": "Points statue",
+        "phenotypes": "all",
         "phenotype": {},
         "detail": {
             "fit": {

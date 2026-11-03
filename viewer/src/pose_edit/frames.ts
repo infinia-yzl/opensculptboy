@@ -1,11 +1,13 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The frames of the pose editor. The page shows Anny's card frame (z up, metres) as page = s A x + o, lifted by the
+// The frames of the pose editor. The page shows Anny's rest frame (z up, metres) as page = s A x + o, lifted by the
 // body's floor shift, with A = ANNY_TO_PAGE ((x, y, z) -> (x, z, -y)); the posed body then moves by the root's
-// offset and the turntable's holder. The solve works in the space of the turns of the card frame
-// (opensculptboy.posing.pose_rig): each bone's rest head in Anny's axes, and the root's own turn in the frame. A
-// page quaternion q of a bone is the rotation A D A^T of the card's turn D.
+// offset and the turntable's holder. The card frame of the scan and of the saved points is the frame of Anny's
+// forward pass (opensculptboy.posing.pose_rig with an identity placement): the root's head of the rest body at the
+// origin, turned by the root's own turn, so x_card = Rr (x_rest - h_root). The solve works in the space of the turns
+// (each bone's rest head in Anny's axes) with that map as its frame. A page quaternion q of a bone is the rotation
+// A D A^T of the card's turn D.
 
 import type { PoseHost } from './host.ts';
 import type { M3, RigSpace, SkinSource, V3 } from './problem.ts';
@@ -61,9 +63,17 @@ export class Frames {
     return [s * (R[0] * x[0] + R[1] * x[1] + R[2] * x[2]) + o[0], s * (R[3] * x[0] + R[4] * x[1] + R[5] * x[2]) + o[1] + l,
       s * (R[6] * x[0] + R[7] * x[1] + R[8] * x[2]) + o[2]];
   }
+  // the root's head of the rest body (rest frame): the card frame's origin
+  rootHead(): V3 { return this.toCard(this.host.restHeads()[this.host.root()]); }
+  // the root's own turn of the pose shown (card axes)
+  rootTurn(): M3 { const q = this.host.pose(), r = this.host.root(); return toCardRot(quatToMat(q[r * 4], q[r * 4 + 1], q[r * 4 + 2], q[r * 4 + 3])); }
+  // card frame -> the rest frame of the posed figure (before the root's offset): x_rest = Rr^T x_card + h_root; the
+  // root's turn is part of the pose, so the posed body in the rest frame is Rr (x - h) + h, and x_card its point less h
+  private cardToRest(x: ArrayLike<number>): V3 { const h = this.rootHead(); return [x[0] + h[0], x[1] + h[1], x[2] + h[2]]; }
+  private restToCard(x: ArrayLike<number>): V3 { const h = this.rootHead(); return [x[0] - h[0], x[1] - h[1], x[2] - h[2]]; }
   // card frame of the posed figure -> the world (root offset and holder)
   toWorld(x: ArrayLike<number>, out: number[] = [0, 0, 0]): number[] {
-    const p = this.toPage(x), r = this.host.rootOffset(), M = this.host.holder().elements;
+    const p = this.toPage(this.cardToRest(x)), r = this.host.rootOffset(), M = this.host.holder().elements;
     const a = p[0] + r[0], b = p[1] + r[1], c = p[2] + r[2];
     out[0] = M[0] * a + M[4] * b + M[8] * c + M[12]; out[1] = M[1] * a + M[5] * b + M[9] * c + M[13]; out[2] = M[2] * a + M[6] * b + M[10] * c + M[14];
     return out;
@@ -73,7 +83,7 @@ export class Frames {
     const M = this.host.holder().clone().invert().elements, r = this.host.rootOffset();
     const a = M[0] * w[0] + M[4] * w[1] + M[8] * w[2] + M[12] - r[0], b = M[1] * w[0] + M[5] * w[1] + M[9] * w[2] + M[13] - r[1],
       c = M[2] * w[0] + M[6] * w[1] + M[10] * w[2] + M[14] - r[2];
-    return this.toCard([a, b, c]);
+    return this.restToCard(this.toCard([a, b, c]));
   }
   // a direction in the world -> card frame
   dirToCard(d: ArrayLike<number>): V3 {
@@ -86,7 +96,9 @@ export class Frames {
   }
   // the 4 x 4 matrix (three.js, column-major elements) that takes the card frame to the world
   cardToWorld(THREE: any): any {
-    const f = this.host.frame(), s = f.scale, R = f.rotation, o = f.offset, l = this.host.lift(), r = this.host.rootOffset();
+    const f = this.host.frame(), s = f.scale, R = f.rotation, l = this.host.lift(), r = this.host.rootOffset(), h = this.rootHead();
+    // the page of x + h
+    const o = [0, 1, 2].map((k) => f.offset[k] + s * (R[k * 3] * h[0] + R[k * 3 + 1] * h[1] + R[k * 3 + 2] * h[2]));
     const m = new THREE.Matrix4().set(s * R[0], s * R[1], s * R[2], o[0] + r[0], s * R[3], s * R[4], s * R[5], o[1] + l + r[1], s * R[6], s * R[7], s * R[8], o[2] + r[2], 0, 0, 0, 1);
     return new THREE.Matrix4().multiplyMatrices(this.host.holder(), m);
   }
@@ -108,8 +120,9 @@ export class Frames {
   rig(rotations?: number[][]): RigSpace {
     const H = this.host.restHeads().map((h) => this.toCard(h)), root = this.host.root();
     const Rr = (rotations || this.cardRotations())[root];
+    // Anny's forward pass: x_card = Rr (x - h)
     const h = H[root];
-    const t = [0, 1, 2].map((r) => h[r] - (Rr[r * 3] * h[0] + Rr[r * 3 + 1] * h[1] + Rr[r * 3 + 2] * h[2]));
+    const t = [0, 1, 2].map((r) => -(Rr[r * 3] * h[0] + Rr[r * 3 + 1] * h[1] + Rr[r * 3 + 2] * h[2]));
     return {
       labels: this.host.bones(), parents: this.host.parents(), heads: H,
       frame: [[Rr[0], Rr[1], Rr[2], t[0]], [Rr[3], Rr[4], Rr[5], t[1]], [Rr[6], Rr[7], Rr[8], t[2]], [0, 0, 0, 1]],

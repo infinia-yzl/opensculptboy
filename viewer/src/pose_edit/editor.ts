@@ -352,6 +352,11 @@ export class PoseEditor {
     });
     this.statusSelected();
     if (opts.frame) { const f = this.framing(p, 1); if (f) cam().frameBounds(f.box, { label: f.label, pivot: f.pivot }); }
+    else {
+      // turn round the selection (DESIGN-0014): the pivot moves to the point, the camera stays
+      const t = this.target(p.name), at = t ? t.position : this.session?.positions([p]).get(p.name);
+      if (at) { const w = this.frames.toWorld(at); cam().setPivot({ x: w[0], y: w[1], z: w[2] }, { history: false }); }
+    }
   }
 
   selectHand(side: 'L' | 'R' | null, frame = true) {
