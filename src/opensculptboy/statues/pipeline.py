@@ -131,6 +131,11 @@ class StatueConfig:
     # bones of the chains -> their heads in the frame of replica.glb, read off the preview
     # (a knuckle, a toe), for hands and feet that the surface alone leaves ambiguous
     chain_hints: dict = dataclasses.field(default_factory=dict)
+    # reference points placed on the scan, by the chain they pose ("arm.r", "leg.l"): each
+    # {"name", "position" (the frame of replica.glb), "on", "weight"} (see
+    # opensculptboy.statues.points); a posed hand's arm or hand points pose that hand when it
+    # is posed, and the other chains are solved after the chains' fit
+    reference_points: dict = dataclasses.field(default_factory=dict)
     pose: str | None = "auto"
     detail: int = 2
     # FitOptions fields that this statue's fit takes over the defaults (name -> value)
@@ -162,6 +167,10 @@ class StatueConfig:
         unknown = set(config.fit) - options
         if unknown:
             raise ValueError(f"Unknown fit options {sorted(unknown)}.")
+        if config.reference_points:
+            from opensculptboy.statues.points import check
+
+            check(config.reference_points)
         loose = set(config.posed_hands) - {c.lower() for c in config.chains}
         if loose:
             raise ValueError(
@@ -446,6 +455,15 @@ def _chain_hints(config: StatueConfig) -> dict:
     return {k: _anny([v])[0] for k, v in (config.chain_hints or {}).items()}
 
 
+def _reference_points(config: StatueConfig) -> dict | None:
+    """The config's reference points in Anny's frame."""
+    if not config.reference_points:
+        return None
+    from opensculptboy.statues.points import in_anny
+
+    return in_anny(config.reference_points)
+
+
 def _first_with_chains(config: StatueConfig, folder, first, verbose: bool = False):
     """An earlier first fit (its card and level 0) with its chains fitted again to the
     handoff ``folder``: the level 0 moves with the parametric mesh of the new pose."""
@@ -524,6 +542,7 @@ def fit(
             chain_hints=_chain_hints(config),
             posed_hands=config.posed_hands or None,
             hands_after_fit=config.posed_hands_after_fit,
+            reference_points=_reference_points(config),
         )
 
     saved = pathlib.Path(card).parent.parent / "stage1"
@@ -637,6 +656,15 @@ def fit(
             )
             + "\n",
             encoding="utf-8",
+        )
+    points = dict(getattr(result, "points", None) or {})
+    for chain, rep in (getattr(result, "hands", None) or {}).items():
+        if (rep or {}).get("points"):
+            points[chain] = rep["points"]
+    if points:
+        # how far each placed point lies from Anny's (mm), for the page and the review
+        (saved / "points.json").write_text(
+            json.dumps({"report": points}, indent=1) + "\n", encoding="utf-8"
         )
     if verbose and pruned:
         print(f"pruned {pruned}", flush=True)

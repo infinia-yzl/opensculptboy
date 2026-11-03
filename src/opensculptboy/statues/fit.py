@@ -219,6 +219,7 @@ def fit_statue(
     chain_hints: dict | None = None,
     posed_hands: dict | None = None,
     hands_after_fit: bool = False,
+    reference_points: dict | None = None,
 ):
     """
     Fit anny to a statue handoff folder (:func:`~opensculptboy.statues.scan_to_handoff`):
@@ -250,7 +251,11 @@ def fit_statue(
     in rest space and ride along with the bones, so a keyed arm or one moved off the body
     keeps the scan's carving and nothing pulls its skin back to where the scan's arm was.
     A hand's own ``after_fit`` chooses for that hand. The result's ``hands`` holds their
-    report. Returns the
+    report. ``reference_points`` maps a solve's chain (``"arm.r"``, ``"leg.l"``) to points
+    placed on the scan (Anny's frame; :mod:`opensculptboy.statues.points`): a posed hand's
+    arm or hand points pose that hand when it is posed, before the fit or after it, and the
+    other chains are solved to their points after the chains' fit (the result's ``points``
+    holds their report). Returns the
     :class:`~opensculptboy.fit.register.FitResult`.
     """
     from opensculptboy.fit.handoff import load_handoff
@@ -327,7 +332,19 @@ def fit_statue(
         )
     title = (appearance.get("statue") or {}).get("title")
     name = name or title or folder.resolve().name
-    if stage1 is None and not chains:
+    point_solves = dict(reference_points or {})
+    if posed_hands and point_solves:
+        # a posed hand's points pose it at the hand's own time
+        posed_hands = {c: dict(spec) for c, spec in posed_hands.items()}
+        for chain in list(point_solves):
+            part, _, side = chain.lower().partition(".")
+            hand = f"hand.{side}"
+            if part in ("arm", "hand") and hand in posed_hands:
+                posed_hands[hand]["points"] = {
+                    "chain": chain,
+                    "points": point_solves.pop(chain),
+                }
+    if stage1 is None and not chains and not point_solves and not posed_hands:
         if start_pose and options.initial_pose is None:
             options = _library_start(model, reference, start_pose, options)
         return fit_reference(
@@ -368,6 +385,18 @@ def fit_statue(
             hints=chain_hints,
         )
         seconds["chains"] = time.perf_counter() - clock
+    points_report = {}
+    if point_solves:
+        from opensculptboy.statues.points import solve_card
+
+        character, points_report = solve_card(
+            model,
+            character,
+            rotation,
+            translation,
+            point_solves,
+            log=(lambda m: print(m, flush=True)) if options.verbose else None,
+        )
     hands_report = {}
     if posed_hands:
         from opensculptboy.statues.hands import (
@@ -462,6 +491,7 @@ def fit_statue(
                 )
     result.chains = report
     result.hands = hands_report
+    result.points = points_report
     return result
 
 

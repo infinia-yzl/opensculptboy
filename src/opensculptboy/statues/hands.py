@@ -541,8 +541,25 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
             stone["name"] = spec["stone"].get("name", "Stone")
             objects.append(stone)
         margin = float(spec.get("margin", MARGIN))
-        if spec.get("key"):
-            key_hand(model, pose, chain, spec["key"])
+        point_report = None
+        if spec.get("key") or spec.get("points"):
+            if spec.get("key"):
+                key_hand(model, pose, chain, spec["key"])
+            if spec.get("points"):
+                # the reference points placed on the scan pose the arm and the hand, from
+                # the key's pose when the hand has one
+                from opensculptboy.statues.points import solve_on_pose
+
+                solved, point_report = solve_on_pose(
+                    model,
+                    character,
+                    rotation,
+                    translation,
+                    pose,
+                    spec["points"]["chain"],
+                    spec["points"]["points"],
+                )
+                pose[0, :, :3, :3] = torch.as_tensor(solved, dtype=pose.dtype)
             with torch.no_grad():
                 X = skin(pose).numpy()
             if stone is not None:
@@ -568,7 +585,8 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
                     objects.append(stone)
             report[chain] = {
                 "wrist_turn_deg": None,
-                "curl": "key",
+                "curl": "points" if spec.get("points") else "key",
+                "points": point_report,
                 "clearance_mm": {
                     f: round(
                         1000
@@ -585,7 +603,8 @@ def pose_hands(model, character, rotation, translation, hands: dict, log=None):
             }
             if log:
                 log(
-                    f"hand {chain}: keyed, clearance (mm) {report[chain]['clearance_mm']}"
+                    f"hand {chain}: {report[chain]['curl']}, clearance (mm) "
+                    f"{report[chain]['clearance_mm']}"
                 )
             continue
         turn = None
