@@ -12,7 +12,7 @@
 // speed, Ctrl snaps to the automatic place, the wheel pushes the point into the stone or pulls it out along the ray,
 // and Esc or a right-click puts it back. Each drag, push, nudge or placement is one step of the editor's history.
 
-import { createStore } from '../shell/state.ts';
+import { createStore, ui } from '../shell/state.ts';
 import { defineScope, registerActions, type ActionDef } from '../studio/actions.ts';
 import { cam } from '../studio/camera.ts';
 import { viewFocused } from '../studio/keymap.ts';
@@ -930,7 +930,7 @@ export class PoseEditor {
     });
     const list: ActionDef[] = [
       { id: 'pose.edit', label: 'Edit the pose', desc: 'Posing Edit on or off: points on the scan, joints and hands', keys: ['Tab'], group: 'Posing tools', tier: 'frequent',
-        scope: 'pose', when: viewFocused, place: 'Pose › Edit', checked: () => editStore.get().on, run: () => { this.setOn(!editStore.get().on); } },
+        scope: 'pose', when: () => viewFocused() && ui.get().width !== 'phone', place: 'Pose › Edit', checked: () => editStore.get().on, run: () => { this.setOn(!editStore.get().on); } },
       tool('select', 'Select tool', 'Q', 'Clicks select; a drag on the background turns the camera'),
       tool('move', 'Move tool', 'W', 'Drags move points on the scan'),
       tool('turn', 'Turn tool', 'E', 'Drags turn a joint\'s rings', false),

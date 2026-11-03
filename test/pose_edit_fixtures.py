@@ -80,7 +80,7 @@ def points_statue(folder, chains=("arm.r", "arm.l"), seed=5, outside=0.001):
 
     folder = pathlib.Path(folder)
     rig, rest = _rig()
-    truth = _random_pose(rig, rest, list(chains), seed, share=(0.2, 0.6))
+    truth = _random_pose(rig, rest, list(chains), seed, share=(0.04, 0.15))
     V = rig.vertices(truth)
     V = V + outside * _vertex_normals(V, rig.faces)
     (folder / "scan.glb").write_bytes(scan_glb(V, rig.faces))

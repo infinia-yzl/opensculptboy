@@ -158,6 +158,32 @@ function ViewTools({ st }: { st: EditState }) {
     </div>, document.body);
 }
 
+// the side view of a pushed point (artboard 1e): the camera's ray, the surface where it meets the stone and the point
+// further in, as a diagram with the depth written on it
+function DepthInset({ p }: { p: PointInfo }) {
+  const d = p.depth, x = 150 + Math.min(150, d * 12);
+  return createPortal(
+    <aside className="osb-glass pe-inset" aria-label={`Side view of point ${p.number}`}>
+      <header className="pe-inset-head"><h2 className="osb-eyebrow">Side view</h2><span className="osb-tag">Point {p.number}</span></header>
+      <svg viewBox="0 0 320 180" role="img" aria-label={`The ray from the camera meets the stone at the surface; the point sits ${d.toFixed(1)} mm further in.`}>
+        <rect x="0" y="0" width="320" height="180" fill="#15171a" />
+        <path d="M150 0 C 132 60, 132 120, 150 180 L 320 180 L 320 0 Z" fill="#d9d3c9" />
+        <path d="M150 0 C 132 60, 132 120, 150 180" fill="none" stroke="#d4ae52" strokeWidth="3" />
+        <text x="296" y="22" textAnchor="end" fontSize="13" fill="#24201c">Stone</text>
+        <circle cx="22" cy="100" r="8" fill="none" stroke="#ffffff" strokeWidth="2" /><circle cx="22" cy="100" r="3" fill="#ffffff" />
+        <text x="10" y="130" fontSize="12" fill="#ffffff">Camera</text>
+        <line x1="32" y1="100" x2={x - 10} y2="100" stroke="#ffffff" strokeWidth="1.5" strokeDasharray="5 4" />
+        <circle cx="137" cy="100" r="4" fill="#ffffff" stroke="#1d1b19" />
+        <text x="96" y="86" fontSize="12" fill="#d4ae52">Surface</text>
+        <line x1="137" y1="70" x2={x} y2="70" stroke="#1d1b19" strokeWidth="1.5" /><line x1="137" y1="64" x2="137" y2="76" stroke="#1d1b19" strokeWidth="1.5" />
+        <line x1={x} y1="64" x2={x} y2="76" stroke="#1d1b19" strokeWidth="1.5" />
+        <text x={(137 + x) / 2} y="60" textAnchor="middle" fontSize="13" fontWeight="600" fill="#1d1b19">{d.toFixed(1)} mm</text>
+        <circle cx={x} cy="100" r="10" fill="none" stroke="#2f6fd6" strokeWidth="3" />
+      </svg>
+      <p className="pe-inset-note">The ray from the camera meets the stone at the surface. The point sits {d.toFixed(1)} mm further in, inside the carving.</p>
+    </aside>, document.body);
+}
+
 export function PoseEditSection() {
   const st = useEditState(), ed = poseEditor();
   const { legacy } = useShell();
@@ -167,6 +193,7 @@ export function PoseEditSection() {
   return (
     <div className="pose-edit">
       <ViewTools st={st} />
+      {st.point && st.point.depth > 0 ? <DepthInset p={st.point} /> : null}
       <ScanBlock st={st} />
       <div className="osb-section pe-points">
         <h3 className="osb-eyebrow">Reference points <span className="osb-eyebrow-val">{st.counts.placed + st.counts.look + st.counts.off ? `${st.counts.placed + st.counts.look + st.counts.off} placed` : 'None placed'}</span></h3>
