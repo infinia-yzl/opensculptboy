@@ -262,6 +262,18 @@ vec2 keyShadowLite(vec3 wp, vec3 n) {
   }
   return vec2(lit * 0.25, T * 0.25);
 }
+// the studio's cut-away (studio/camera.ts): every surface nearer the camera than uCut leaves the picture, with a soft
+// edge of a centimetre; the body, the worn pieces, the props, the eyes and the hair all call it first
+uniform float uCut;
+void studioCut(vec3 wp) {
+  if (uCut <= 0.0) return;
+  float dc = distance(wp, cameraPosition);
+  if (dc < uCut - 0.01 || (dc < uCut && ign(gl_FragCoord.xy + 3.0) > (dc - uCut + 0.01) / 0.01)) discard;
+}
+// the studio's parts by bone in a fragment shader: 1 hidden, 2 faint (a screen-door that the accumulation averages)
+void studioPart(float part) {
+  if (part > 0.5) { if (part < 1.5 || ign(gl_FragCoord.xy) > 0.18) discard; }
+}
 `;
 
 // Diffuse light goes to a second render target and is spread by a screen-space diffusion pass (SSS_SCREEN).
@@ -403,7 +415,7 @@ uniform float uTrans; uniform float uFuzz; uniform float uUnd;
 uniform vec3 uSkinTint; uniform vec3 uScalpCol; uniform vec3 uScalp0; uniform float uMelanin;
 uniform vec4 uKnA[28]; uniform vec4 uKnB[28];
 uniform vec4 uEyeL; uniform vec4 uEyeR;
-varying float vHairMass; varying float vPart; uniform float uCut;
+varying float vHairMass; varying float vPart;
 varying vec3 vWPos; varying vec3 vN; varying vec3 vNs; varying vec3 vAlb; varying vec3 vObj; varying vec4 vA; varying vec4 vB; varying vec4 vC; varying vec4 vD; varying vec3 vAx;
 varying vec3 vN0; varying vec3 vR0; varying vec3 vR1; varying vec3 vR2; varying vec3 vHOut;
 #ifdef CARD_SKIN
@@ -523,10 +535,8 @@ vec3 knuckles(vec3 p, vec3 N, inout float cavK) {
 void main() {
   // the studio's hidden parts leave the picture, and the parts outside an isolated one turn faint: a screen-door that
   // the page's accumulation of jittered frames averages into a see-through skin
-  if (vPart > 0.5) { if (vPart < 1.5 || ign(gl_FragCoord.xy) > 0.18) discard; }
-  // the cut-away: when the body hides the pivot, the skin nearer the camera than the pivot's surroundings opens, with a
-  // soft edge of a centimetre
-  if (uCut > 0.0) { float dc = distance(vWPos, cameraPosition); if (dc < uCut - 0.01 || (dc < uCut && ign(gl_FragCoord.xy + 3.0) > (dc - uCut + 0.01) / 0.01)) discard; }
+  studioPart(vPart);
+  studioCut(vWPos);
   vec3 N = normalize(vN);
   vec3 Ns = normalize(vNs);
   vec3 V = normalize(cameraPosition - vWPos);
@@ -764,6 +774,7 @@ uniform float uZcc; uniform float uRL; uniform float uIrisZ; uniform float uPupi
 uniform sampler2D uIris;
 varying vec3 vWPos; varying vec3 vL; varying float vAO;
 void main() {
+  studioCut(vWPos);
   vec3 lp = vL;
   float ao = clamp(vAO, 0.0, 1.0);
   vec3 Vw = normalize(cameraPosition - vWPos);
@@ -845,6 +856,7 @@ uniform sampler2D uEyeLayout; uniform float uEyeLeft; uniform float uScleraRough
 varying vec3 vWPos; varying vec3 vL; varying vec3 vNl; varying float vAO;
 const float FRONT_SHARE = 0.9;
 void main() {
+  studioCut(vWPos);
   vec3 lp = vL;
   float ao = clamp(vAO, 0.0, 1.0);
   vec3 Nw = normalize(uEyeRot * vNl);
@@ -967,6 +979,7 @@ vec3 hairDiffuse(vec3 T, vec3 V, vec3 L, vec3 base, float shadow) {
 }
 float hash13(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
 void main() {
+  studioCut(vWPos);
   float t = vH.x;
   float cov = vCov * (1.0 - smoothstep(0.9, 1.0, t));
   float rnd0 = hash13(vec3(gl_FragCoord.xy, uFrame * 7.31 + vH.z * 131.7));
@@ -1032,6 +1045,7 @@ uniform vec3 uWood;
 varying vec3 vWPos; varying vec3 vN; varying vec3 vObj;
 float hp(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
 void main() {
+  studioCut(vWPos);
   vec3 N = normalize(vN);
   if (!gl_FrontFacing) N = -N;
   vec3 V = normalize(cameraPosition - vWPos);

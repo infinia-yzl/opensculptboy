@@ -9,7 +9,7 @@
 // HAS_VCOLOR multiplies the base colour by the vertex colours (glTF COLOR_0, the gColor attribute), as a reference's
 // hair carries its colour (opensculptboy.groom).
 
-import { GLSL_COMMON, SKIN_GLSL } from '../shading.ts';
+import { GLSL_COMMON, PART_GLSL, SKIN_GLSL } from '../shading.ts';
 
 export const GARMENT_VS = /* glsl */`
 ${SKIN_GLSL}
@@ -19,7 +19,9 @@ varying vec3 vWPos; varying vec3 vN; varying vec2 vUv; varying vec4 vT;
 attribute vec4 gColor;
 varying vec4 vCol;
 #endif
+${PART_GLSL}
 void main() {
+  vPart = partState();
 #ifdef HAS_VCOLOR
   vCol = gColor;
 #endif
@@ -70,7 +72,10 @@ varying vec3 vWPos; varying vec3 vN; varying vec2 vUv; varying vec4 vT;
 #ifdef HAS_VCOLOR
 varying vec4 vCol;
 #endif
+varying float vPart;
 void main() {
+  studioPart(vPart);
+  studioCut(vWPos);
   vec4 base = uBase;
 #ifdef HAS_MAP
   base *= texture(uMap, vUv);

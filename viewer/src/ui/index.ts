@@ -346,6 +346,22 @@ export function initUI(app: App): UI {
     bodyRay: (x: number, y: number) => { const r = cam().rayAt(x, y); const h = app.bodyRay(r.origin, r.direction); return h ? [h.point.x, h.point.y, h.point.z, h.distance] : null; },
     free: () => ({ freeW: app.view.freeW, freeH: app.view.freeH }),
     tour: () => startTour(), offerTour: () => offerTour(),
+    // the display states for the page tests: parts by bone, the cut-away's radius, every drawn mesh on or off, and each
+    // mesh's X-ray blending and shader hooks
+    parts: (hidden: string[] | null, faint: string[] | null) => app.setParts(hidden, faint),
+    cut: (r: number) => app.setCut(r),
+    bones: () => app.boneNames(),
+    showMeshes: (on: boolean) => {
+      for (const o of app.bodyMeshes().all as any[]) {
+        if (!on) { o.userData.shownBefore = o.visible; o.visible = false; } else if (o.userData.shownBefore !== undefined) { o.visible = o.userData.shownBefore; delete o.userData.shownBefore; }
+      }
+      app.resetAccum();
+    },
+    meshes: () => app.bodyMeshes().all.map((o: any) => {
+      const ms = Array.isArray(o.material) ? o.material : [o.material];
+      return { name: o.name || o.type, xray: ms.map((m: any) => (m.transparent ? m.blendAlpha : 1)),
+        cut: ms.every((m: any) => typeof m.fragmentShader !== 'string' || m.fragmentShader.includes('studioCut(')) };
+    }),
   };
   // the height rail after the interface, so the focus reaches it after the top bar, the panel and the view bar
   document.body.append(nav.rail);
