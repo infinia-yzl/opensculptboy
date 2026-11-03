@@ -3261,9 +3261,9 @@ function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
   c.label = label;
   for (let i = 0; i < nb * 4; i++) MOTION.Q[c.start * nb * 4 + i] = Math.round(Math.max(-1, Math.min(1, q[i] ?? (i % 4 === 3 ? 1 : 0))) * 32767);
 }
-// the still pose of a character card (opensculptboy.Character.pose: each bone's turn relative to its parent as a
-// quaternion in anny's frame, the inverse of cardBones), as a pose clip 'card:<name>' of the page's motion; null for a
-// card without one. Bones that the page's rig lacks are left out.
+// the still pose of a character card (opensculptboy.Character.pose: each bone's local-ref turn relative to its parent as
+// a quaternion in anny's frame, the inverse of cardBonesRef), as a pose clip 'card:<name>' of the page's motion; null for
+// a card without one. Bones that the page's rig lacks are left out.
 function cardPose(card: any): string | null {
   const bones = card?.pose?.bones;
   if (!bones || typeof bones !== 'object' || !Object.keys(bones).length || !RIG.ready || !MOTION.nb) return null;
