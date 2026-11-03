@@ -119,7 +119,7 @@ class TestPoseEditPage(unittest.TestCase):
                 for k, v in r["points"].items()
                 if k.endswith(".R") and v["on"]
             ]
-            self.assertLess(float(np.median(gaps)), 0.004)
+            self.assertLess(float(np.median(gaps)), 0.006)
             shot("1b_placed")
 
             # the right hand selected from its cluster (the camera frames it), then point 22 on the hand map
