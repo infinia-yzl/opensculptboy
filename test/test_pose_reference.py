@@ -38,7 +38,9 @@ def _rigid_residual(P, Q):
     D = np.diag([1.0, 1.0, np.sign(np.linalg.det(Vt.T @ U.T))])
     R = Vt.T @ D @ U.T
     res = np.linalg.norm((P - a) @ R.T + b - Q, axis=1)
-    turn = np.degrees(np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)))
+    # the angle from the skew part and the trace: arccos of the trace reads its rounding as
+    # turns of a few 1e-6 degrees
+    turn = _angles(np.eye(3)[None], R[None])[0]
     return float(res.max()), float(turn)
 
 
