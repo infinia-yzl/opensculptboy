@@ -2180,13 +2180,14 @@ class TestSolid(unittest.TestCase):
         normals = np.tile([0.0, 0.0, 1.0], (len(V), 1))
         # the vertices with data: the left half of the grid
         kept = np.nonzero(V[:, 0] < 0.05)[0]
-        hit, _ = _reverse_pairs(V, normals, kept, reference, 0.02, 0.5)
-        own, _ = _reverse_pairs(V, normals, kept, reference, 0.02, 0.5, own=True)
+        hit, pulled = _reverse_pairs(V, normals, kept, reference, 0.02, 0.5)
+        own, held = _reverse_pairs(V, normals, kept, reference, 0.02, 0.5, own=True)
         border = kept[V[kept, 0] > 0.04]
-        # the right half's scan pulls the border of the data; with own it pulls nothing
+        # the right half's scan pulls the border of the data across into it; with own the
+        # border takes only the scan points nearest to it
         self.assertTrue(hit[border].all())
-        self.assertGreater(hit.sum(), own.sum())
-        # each vertex with data still takes the scan points nearest to it
+        self.assertGreater((pulled[border, 0] - V[border, 0]).min(), 0.002)
+        np.testing.assert_allclose(held[border, :2], V[border, :2], atol=1e-9)
         self.assertTrue(own[kept].all())
 
     def test_solid_statue_closes_its_openings(self):
