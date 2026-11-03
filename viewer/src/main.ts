@@ -2940,12 +2940,25 @@ function xrayInto(m: any, alpha: number) {
   if (alpha >= 1) { Object.assign(m, k); return; }
   Object.assign(m, { blending: THREE.CustomBlending, transparent: true, depthWrite: false, blendSrc: THREE.ConstantAlphaFactor, blendDst: THREE.OneMinusConstantAlphaFactor, blendAlpha: alpha });
 }
+// the part state of a mesh that the shaders' per-bone texel cannot reach (shading.ts PART_GLSL reads skinning weights):
+// the eyes and the hair follow the head; a prop on no bone counts as the root, so Shift+H hides it and / turns it faint
+const PART_JS = { hidden: new Set<string>(), keep: null as Set<string> | null };
+function partAlpha(o: any): number {
+  if (!PART_JS.hidden.size && !PART_JS.keep) return 1;
+  const mats = Array.isArray(o.material) ? o.material : [o.material];
+  if (mats.some((m: any) => m && typeof m.fragmentShader === 'string' && m.fragmentShader.includes('studioPart(vPart)'))) return 1;
+  const bone = o.userData.partBone || (hairObjs.includes(o) || (RIG.eyes || []).some((e: any) => e.mesh === o) || mats.some((m: any) => m?.uniforms?.uIris) ? 'head' : 'root');
+  if (PART_JS.hidden.has(bone)) return 0;
+  if (PART_JS.keep && !PART_JS.keep.has(bone)) return XRAY.faint;
+  return 1;
+}
 function syncXray() {
   const objs = [...opaque, ...hairObjs];
   for (const o of objs) {
     let a = 1;
     if (XRAY.isolated && !XRAY.isolated.has(o)) a = XRAY.faint;
     else if (XRAY.on) a = XRAY.alpha;
+    a = Math.min(a, partAlpha(o));
     if (o.userData.xrayAlpha === a && o.userData.xrayMat === o.material) continue;
     o.userData.xrayAlpha = a; o.userData.xrayMat = o.material;
     xrayInto(o.material, a);
@@ -2959,6 +2972,8 @@ function setParts(hidden: string[] | null, faintBut: string[] | null) {
   if (hidden) { const hid = new Set(hidden); names.forEach((n: string, i: number) => { if (hid.has(n)) PART_DATA[i] = 1; }); }
   U.uPartOn.value = PART_DATA.some((v) => v) ? 1 : 0;
   PART_TEX.needsUpdate = true;
+  PART_JS.hidden = new Set(hidden || []); PART_JS.keep = faintBut && faintBut.length ? new Set(faintBut) : null;
+  syncXray();
   resetAccum();
 }
 function setXray(on: boolean, isolated: any[] | null) {
