@@ -33,7 +33,8 @@ import { EditSession, PIN_WEIGHT, type Pin, type Target } from './session.ts';
 import { ScanView, type ScanLook } from './view3d.ts';
 import { AXES, BODY_JOINTS, Joints, jointName, type JointValues } from './joints.ts';
 import { FINGERS, HandControls, PRESETS, RELAXED, copyMirrored, mirrorPose, type HandShape } from './hands.ts';
-import { transforms, coordinatesOf, rotationOf, expRotation, mul3 } from './problem.ts';
+import { transforms, coordinatesOf, rotationOf, expRotation, mul3, buildProblem, type PointInput, type PinInput } from './problem.ts';
+import { PointSolver, logRotation as logOf } from './solve.ts';
 
 export type Tool = 'select' | 'move' | 'turn';
 export type Section = 'points' | 'joints' | 'hands' | 'limbs' | 'library';
@@ -76,6 +77,14 @@ export interface EditState {
   userPresets: { id: string; label: string; shape: HandShape }[];
   grip_report: { finger: string; clearance: number; inside: boolean }[];
   clip: string;                      // what Ctrl+C took
+  // the limbs (phase 3)
+  limb: End | null;                  // the end whose pole handle shows
+  pinned: End[];
+  follow: boolean;                   // the body follows a dragged hand
+  // the library (phase 4)
+  poses: SavedPose[];
+  blend: { a: string; b: string; t: number } | null;
+  applyTo: string;
   version: number;
 }
 
@@ -86,8 +95,40 @@ const init = (): EditState => ({
   hands: { L: [], R: [] }, body: [], dragging: false, magnifier: true, behind: true, pins: [], pinDraft: null, grip: null, squeeze: 1, props: [],
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
   joint: null, jv: null, limits: true, handSide: 'R', handShape: { curl: [0, 0, 0, 0, 0], spread: 0, fist: 0, thumb: 0 }, preset: null, userPresets: loadPresets(),
-  grip_report: [], clip: '',
+  grip_report: [], clip: '', limb: null, pinned: [], follow: false, poses: loadPoses(), blend: null, applyTo: 'all',
 });
+
+export type End = 'hand.L' | 'hand.R' | 'foot.L' | 'foot.R' | 'hips' | 'head';
+export const ENDS: { id: End; label: string }[] = [
+  { id: 'hand.R', label: 'Right hand' }, { id: 'hand.L', label: 'Left hand' }, { id: 'foot.R', label: 'Right foot' }, { id: 'foot.L', label: 'Left foot' },
+  { id: 'hips', label: 'Hips' }, { id: 'head', label: 'Head' },
+];
+// the bone at an end, the chain that moves it, the bones that keep its turn, and its pole's bone
+const END_BONES: Record<string, { bone: string; chain: string; keep: string[]; pole: string | null }> = {
+  'hand.L': { bone: 'wrist.L', chain: 'arm.l', keep: ['finger3-1.L', 'finger2-1.L'], pole: 'lowerarm01.L' },
+  'hand.R': { bone: 'wrist.R', chain: 'arm.r', keep: ['finger3-1.R', 'finger2-1.R'], pole: 'lowerarm01.R' },
+  'foot.L': { bone: 'foot.L', chain: 'leg.l', keep: ['toe1-1.L', 'toe5-1.L'], pole: 'lowerleg01.L' },
+  'foot.R': { bone: 'foot.R', chain: 'leg.r', keep: ['toe1-1.R', 'toe5-1.R'], pole: 'lowerleg01.R' },
+  hips: { bone: 'upperleg01.L', chain: 'spine', keep: [], pole: null },
+  head: { bone: 'head', chain: 'neck', keep: [], pole: null },
+};
+// the library: poses saved in this browser, as the card's pose (each bone's turn in Anny's frame, quaternions)
+export interface SavedPose { id: string; label: string; bones: Record<string, number[]> }
+const POSE_KEY = 'osb.poseLibrary';
+function loadPoses(): SavedPose[] {
+  try { const v = JSON.parse(localStorage.getItem(POSE_KEY) || '[]'); return Array.isArray(v) ? v.filter((x) => x && x.bones && x.label) : []; } catch { return []; }
+}
+function savePoses(list: SavedPose[]) { try { localStorage.setItem(POSE_KEY, JSON.stringify(list)); } catch { /* kept for this visit */ } }
+// the parts a saved pose applies to
+export const PARTS: { id: string; label: string; test: (label: string) => boolean }[] = [
+  { id: 'all', label: 'Whole body', test: () => true },
+  { id: 'hands', label: 'Both hands', test: (l) => /^(finger|metacarpal)/.test(l) },
+  { id: 'hand.R', label: 'Right hand', test: (l) => /^(finger|metacarpal)/.test(l) && l.endsWith('.R') },
+  { id: 'hand.L', label: 'Left hand', test: (l) => /^(finger|metacarpal)/.test(l) && l.endsWith('.L') },
+  { id: 'arms', label: 'Arms', test: (l) => /^(clavicle|shoulder01|upperarm|lowerarm|wrist)/.test(l) },
+  { id: 'legs', label: 'Legs', test: (l) => /^(pelvis|upperleg|lowerleg|foot|toe)/.test(l) },
+  { id: 'upper', label: 'Spine and head', test: (l) => /^(spine|neck|head)/.test(l) },
+];
 
 // the user's own hand presets, in this browser
 const PRESET_KEY = 'osb.handPresets';
@@ -1008,6 +1049,193 @@ export class PoseEditor {
     return null;
   }
 
+  // ---------------------------------------------------------------- limbs: handles with IK (phase 3)
+  // A drag on a hand's or foot's handle moves the end in the plane facing the camera; the limb's chain is solved
+  // to it with the point solve (damped least squares within the joint ranges, so a limb never snaps at full length):
+  // the end's joint goes to the handle, two points of the hand or foot keep its turn in the world, the elbow or knee
+  // leans to its pole handle, and pinned ends hold where they are. With Body follows on, the spine joins the chain
+  // and bends a little towards a far reach (the HumanIK feel).
+  private poles = new Map<string, V3>();
+  private handleScreens: { id: string; kind: 'end' | 'pole'; x: number; y: number }[] = [];
+  private limbDrag: { id: string; kind: 'end' | 'pole'; before: any; solver: PointSolver | null; names: string[]; bones: number[]; start: V3; keep: V3[]; plane: V3 } | null = null;
+
+  private headOf(label: string): V3 | null { const J = this.joints(), b = J.bone(label); return b === undefined ? null : this.jointCentre(b); }
+  endAt(id: End): V3 | null { return this.headOf(END_BONES[id].bone); }
+  poleAt(id: End): V3 | null {
+    const e = END_BONES[id];
+    if (!e.pole) return null;
+    const saved = this.poles.get(id);
+    if (saved) return saved;
+    // in front of the elbow or the knee: away from the line between the limb's root and its end
+    const S = this.session!, J = this.joints(), mid = this.headOf(e.pole)!, end = this.headOf(e.bone)!;
+    const rootLabel = id.startsWith('hand') ? 'upperarm01.' + id.slice(-1) : 'upperleg01.' + id.slice(-1), root = this.headOf(rootLabel)!;
+    const t = [end[0] - root[0], end[1] - root[1], end[2] - root[2]], tl = Math.hypot(t[0], t[1], t[2]) || 1;
+    const m = [mid[0] - root[0], mid[1] - root[1], mid[2] - root[2]], k = (m[0] * t[0] + m[1] * t[1] + m[2] * t[2]) / (tl * tl);
+    let off = [m[0] - k * t[0], m[1] - k * t[1], m[2] - k * t[2]];
+    const ol = Math.hypot(off[0], off[1], off[2]);
+    off = ol < 1e-4 ? (id.startsWith('hand') ? [0, 1, 0] : [0, -1, 0]) : off.map((x) => x / ol);
+    void S; void J;
+    return [mid[0] + 0.25 * off[0], mid[1] + 0.25 * off[1], mid[2] + 0.25 * off[2]];
+  }
+  setPinned(id: End, on: boolean) {
+    const list = editStore.get().pinned.filter((x) => x !== id);
+    if (on) list.push(id);
+    this.publish({ pinned: list });
+  }
+  setFollow(on: boolean) { this.publish({ follow: on }); }
+  selectLimb(id: End | null) { this.publish({ limb: id }); }
+
+  private limbProblem(id: End) {
+    const S = this.session!, st = editStore.get(), e = END_BONES[id], J = this.joints();
+    const chains = [e.chain, ...(st.follow && e.chain.startsWith('arm') ? ['spine'] : [])];
+    const pin = (label: string) => ({ bones: [J.bone(label)!], s: [1], u: [S.rig.heads[J.bone(label)!].slice()] });
+    const points: PointInput[] = [], names: string[] = [];
+    const add = (label: string, target: V3, weight: number) => { points.push({ influence: pin(label), target, weight, on: true }); names.push(label); };
+    add(e.bone, this.headOf(e.bone)!, 1);
+    for (const k of e.keep) add(k, this.headOf(k)!, 0.5);
+    if (e.pole) add(e.pole, this.poleAt(id)!, 0.08);
+    const pins: PinInput[] = [];
+    for (const other of st.pinned) {
+      if (other === id) continue;
+      const o = END_BONES[other];
+      pins.push({ influence: pin(o.bone), kind: 'point', target: this.headOf(o.bone)!, weight: 10 });
+      if (st.follow && o.chain.startsWith('arm') && !chains.includes(o.chain)) chains.push(o.chain);
+    }
+    for (const q of S.pins) pins.push({ influence: S.skinInfluence(q.skin.vertices, q.skin.barycentric), kind: q.kind, point: q.point, normal: q.normal, target: q.target, weight: q.weight });
+    const problem = buildProblem(S.rig, S.rotations, points, chains, { limits: st.limits, pins });
+    const active = new Set(problem.bones.map((b: any) => b.bone));
+    return { problem, names, bones: [...active] as number[] };
+  }
+
+  beginLimbDrag(id: string, kind: 'end' | 'pole') {
+    const S = this.session!, end = id as End;
+    const before = S.snapshot();
+    const start = kind === 'end' ? this.endAt(end)! : this.poleAt(end)!;
+    const keep = END_BONES[end].keep.map((k) => this.headOf(k)!);
+    // the drag's plane faces the camera through the handle
+    const c = this.host.camera.position, w = this.frames.toWorld(start), plane = this.frames.dirToCard([w[0] - c.x, w[1] - c.y, w[2] - c.z]);
+    const prob = kind === 'end' ? this.limbProblem(end) : null;
+    this.limbDrag = { id, kind, before, solver: prob ? new PointSolver(prob.problem) : null, names: prob ? prob.names : [], bones: prob ? prob.bones : [], start, keep, plane };
+  }
+  limbDragTo(x: number, y: number) {
+    const D = this.limbDrag, S = this.session;
+    if (!D || !S) return;
+    const ray = cam().rayAt(x, y), o = this.frames.fromWorld([ray.origin.x, ray.origin.y, ray.origin.z]), d = this.frames.dirToCard([ray.direction.x, ray.direction.y, ray.direction.z]);
+    const n = D.plane, den = d[0] * n[0] + d[1] * n[1] + d[2] * n[2];
+    if (Math.abs(den) < 1e-9) return;
+    const t = ((D.start[0] - o[0]) * n[0] + (D.start[1] - o[1]) * n[1] + (D.start[2] - o[2]) * n[2]) / den;
+    const p: V3 = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t], move = [p[0] - D.start[0], p[1] - D.start[1], p[2] - D.start[2]];
+    if (D.kind === 'pole') { this.poles.set(D.id, p); this.solveLimb(D.id as End); this.dirty = true; return; }
+    const sv = D.solver!;
+    sv.setTarget(0, p);
+    D.keep.forEach((k, i) => sv.setTarget(1 + i, [k[0] + move[0], k[1] + move[1], k[2] + move[2]]));
+    const r = sv.solve(10);
+    for (const b of D.bones) S.rotations[b] = Array.from(r.rotations.subarray(b * 9, b * 9 + 9));
+    this.poseChanged();
+  }
+  endLimbDrag(cancel = false) {
+    const D = this.limbDrag, S = this.session;
+    this.limbDrag = null;
+    if (!D || !S) return;
+    if (cancel) { S.restore(D.before); this.publish(); return; }
+    S.undoStack.push({ label: D.kind === 'pole' ? 'Pole' : ENDS.find((e) => e.id === D.id)!.label, snap: D.before }); S.redoStack.length = 0;
+    this.publish();
+  }
+  // a full solve of a limb to its present end, keeps and pole (after the pole moves)
+  private solveLimb(id: End) {
+    const S = this.session!, { problem, bones } = this.limbProblem(id);
+    const r = new PointSolver(problem).solve(20);
+    for (const b of bones) S.rotations[b] = Array.from(r.rotations.subarray(b * 9, b * 9 + 9));
+    this.poseChanged();
+  }
+
+  private drawHandles(f: Frame, st: EditState) {
+    const toS = (x: V3) => cam().toScreen(this.v3(this.frames.toWorld(x)));
+    this.handleScreens = [];
+    f.handles = [];
+    for (const e of ENDS.slice(0, 4)) {
+      const at = this.endAt(e.id);
+      if (!at) continue;
+      const s = toS(at);
+      if (s.depth <= 0) continue;
+      this.handleScreens.push({ id: e.id, kind: 'end', x: s.x, y: s.y });
+      f.handles.push({ x: s.x, y: s.y, kind: 'end', pinned: st.pinned.includes(e.id), selected: st.limb === e.id, hovered: this.hoverHandle === e.id + ':end' });
+    }
+    if (st.limb) {
+      const pole = this.poleAt(st.limb), mid = this.headOf(END_BONES[st.limb].pole || '');
+      if (pole && mid) {
+        const s = toS(pole), m = toS(mid);
+        this.handleScreens.push({ id: st.limb, kind: 'pole', x: s.x, y: s.y });
+        f.handles.push({ x: s.x, y: s.y, kind: 'pole', pinned: false, selected: false, hovered: this.hoverHandle === st.limb + ':pole', from: [m.x, m.y] });
+      }
+    }
+  }
+  private hoverHandle: string | null = null;
+
+  private registerLimbPickers() {
+    const on = () => { const st = editStore.get(); return st.on && st.section === 'limbs'; };
+    this.offs.push(registerPicker({
+      id: 'pose-handles', priority: 20, enabled: on,
+      hit: (p) => this.handleScreens.map((h) => ({ item: h.id + ':' + h.kind, distPx: Math.max(0, Math.hypot(h.x - p.x, h.y - p.y) - (h.kind === 'end' ? 13 : 8)),
+        label: h.kind === 'pole' ? 'Pole' : ENDS.find((e) => e.id === h.id)!.label })).filter((h) => h.distPx <= p.radius),
+      onDown: (h) => { const [id, kind] = (h.item as string).split(':'); this.selectLimb(id as End); this.beginLimbDrag(id, kind as any); return true; },
+      onDrag: (_h, p) => this.limbDragTo(p.x, p.y),
+      onUp: () => this.endLimbDrag(false),
+      onCancel: () => this.endLimbDrag(true),
+      onClick: (h) => { this.endLimbDrag(true); const [id] = (h.item as string).split(':'); this.selectLimb(id as End); },
+      onContext: (h) => { const [id, kind] = (h.item as string).split(':'); if (kind !== 'end') return false; this.setPinned(id as End, !editStore.get().pinned.includes(id as End)); },
+      onHover: (h) => { this.hoverHandle = h ? (h.item as string) : null; this.dirty = true; },
+      cursor: 'grab',
+    }));
+  }
+
+  // ---------------------------------------------------------------- the library (phase 4)
+  savePose(label: string) {
+    const S = this.session;
+    if (!S) return;
+    const list = [...editStore.get().poses, { id: 'pose-' + Date.now().toString(36), label, bones: this.host.cardPose().bones }];
+    savePoses(list);
+    this.publish({ poses: list });
+    this.host.toast(`Saved the pose ${label}`);
+  }
+  deletePose(id: string) { const list = editStore.get().poses.filter((p) => p.id !== id); savePoses(list); this.publish({ poses: list }); }
+  // a saved pose's turns (card axes) by bone index: the card's quaternions (x, y, z, w) in Anny's frame; a bone it
+  // lacks stands at rest, as the card leaves out the bones at rest
+  private poseRotations(p: SavedPose): number[][] {
+    const S = this.session!;
+    return S.rig.labels.map((l) => {
+      const q = p.bones[l];
+      if (!q || q.length !== 4) return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      const n = Math.hypot(q[0], q[1], q[2], q[3]) || 1, [x, y, z, w] = q.map((v) => v / n);
+      return [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w),
+        2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)];
+    });
+  }
+  // a saved pose onto the part chosen (the whole body, a hand, the arms, the legs)
+  applyPose(id: string, part = editStore.get().applyTo) {
+    const p = editStore.get().poses.find((x) => x.id === id), S = this.session;
+    if (!p || !S) return;
+    const test = (PARTS.find((x) => x.id === part) || PARTS[0]).test, R = this.poseRotations(p), root = this.host.root();
+    this.change(`Apply ${p.label}`, (cur) => { S.rig.labels.forEach((l, i) => { if (i !== root && test(l)) cur[i] = R[i]; }); });
+  }
+  setApplyTo(part: string) { this.publish({ applyTo: part }); }
+  // two saved poses blended by t (a turn per bone, along the shortest arc)
+  blendPoses(a: string, b: string, t: number, record = true) {
+    const P = editStore.get().poses, A = P.find((x) => x.id === a), B = P.find((x) => x.id === b), S = this.session;
+    if (!A || !B || !S) return;
+    const RA = this.poseRotations(A), RB = this.poseRotations(B), test = (PARTS.find((x) => x.id === editStore.get().applyTo) || PARTS[0]).test, root = this.host.root();
+    this.change('Blend poses', (cur) => {
+      S.rig.labels.forEach((l, i) => {
+        if (i === root || !test(l)) return;
+        // R = RA exp(t log(RA^T RB))
+        const RAt = [RA[i][0], RA[i][3], RA[i][6], RA[i][1], RA[i][4], RA[i][7], RA[i][2], RA[i][5], RA[i][8]];
+        const rel = mul3(RAt, RB[i]), w = logOf(rel);
+        cur[i] = mul3(RA[i], expRotation(w.map((x) => x * t)));
+      });
+    }, record);
+    this.publish({ blend: { a, b, t } });
+  }
+
   // ---------------------------------------------------------------- drawing
   private v3(a: ArrayLike<number>) { return { x: a[0], y: a[1], z: a[2] }; }
 
@@ -1086,6 +1314,7 @@ export class PoseEditor {
     // the joints (the Joints tool and the Turn tool) and the dial of the selected joint
     if (st.section === 'joints' || st.tool === 'turn') { f.points = f.points.filter((q) => q.selected); f.anny = []; f.clusters = []; this.drawJoints(f, st); }
     else { this.jointScreens = []; this.dial = null; }
+    if (st.section === 'limbs') { f.points = []; f.anny = []; f.clusters = []; this.drawHandles(f, st); } else this.handleScreens = [];
     // the label of the selected or hovered point
     const lab = this.hovered || st.selected;
     if (lab && this.screen.has(lab)) {
@@ -1261,7 +1490,7 @@ export class PoseEditor {
       },
       cursor: 'pointer',
     };
-    const pointsOn = () => { const st = editStore.get(); return st.on && st.section !== 'joints' && st.section !== 'hands' && st.tool !== 'turn'; };
+    const pointsOn = () => { const st = editStore.get(); return st.on && st.section === 'points' && st.tool !== 'turn'; };
     this.offs.push(registerPicker({ id: 'pose-points-select', priority: 10, enabled: () => pointsOn() && editStore.get().tool !== 'move', ...common }));
     this.offs.push(registerPicker({
       id: 'pose-points-move', priority: 10, enabled: () => pointsOn() && editStore.get().tool === 'move', ...common,
@@ -1422,6 +1651,7 @@ export class PoseEditor {
     registerActions(list);
     this.registerPickers();
     this.registerJointPickers();
+    this.registerLimbPickers();
     // the pickers stay registered; enabled() keeps them out while Edit is off
     this.offs = [];
   }

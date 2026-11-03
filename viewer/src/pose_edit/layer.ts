@@ -27,7 +27,9 @@ export interface DrawMagnifier { cx: number; cy: number; r: number; zoom: number
 export interface DrawStroke { d: string; colour: string; width: number; dash?: string; opacity?: number }
 export interface DrawTag { x: number; y: number; text: string; colour: string }
 export interface DrawJoint { x: number; y: number; selected: boolean; hovered: boolean; side: 'L' | 'R' | '' }
+export interface DrawHandle { x: number; y: number; kind: 'end' | 'pole'; pinned: boolean; selected: boolean; hovered: boolean; from?: [number, number] }
 export interface Frame {
+  handles?: DrawHandle[];
   strokes?: DrawStroke[]; tags?: DrawTag[]; joints?: DrawJoint[];
   points: DrawPoint[]; anny: DrawAnny[]; labels: DrawLabel[]; clusters: DrawCluster[]; pins: DrawPin[]; balance: DrawBalance | null;
   magnifier: DrawMagnifier | null; scale: number;
@@ -91,6 +93,7 @@ export class PointLayer {
     const order = f.points.slice().sort((a, b) => Number(!a.hidden) - Number(!b.hidden) || Number(a.selected || a.hovered) - Number(b.selected || b.hovered));
     for (const p of order) this.point(g, p, s);
     for (const q of f.pins) this.pin(g, q, s);
+    for (const h of f.handles || []) this.handle(g, h, s);
     if (f.magnifier) this.magnifier(g, f.magnifier, s);
     this.root.replaceWith(g);
     this.root = g;
@@ -144,6 +147,26 @@ export class PointLayer {
         const d = el('text', { x: lx + 6, y: p.y + 0.5, 'dominant-baseline': 'central', 'font-size': 11, 'font-weight': 600, 'font-family': 'var(--font-sans)', fill: '#ffffff' }, grp);
         d.textContent = `${Math.round(p.pushed)} mm in`;
       }
+    }
+  }
+
+  // a hand's or foot's handle (gold, hollow when free, dark and filled with a pin when pinned) and a pole handle
+  // (small and blue, with a line to its elbow or knee), artboard 2d
+  private handle(g: SVGGElement, h: DrawHandle, s: number) {
+    const grow = h.hovered ? 4 / 3 : 1;
+    if (h.kind === 'pole') {
+      if (h.from) el('line', { x1: h.from[0], y1: h.from[1], x2: h.x, y2: h.y, stroke: '#2f6fd6', 'stroke-width': 1.5, 'stroke-dasharray': '4 3' }, g);
+      el('circle', { cx: h.x, cy: h.y, r: 7 * s * grow, fill: '#2f6fd6', stroke: COLOURS.halo, 'stroke-width': 2 }, g);
+      return;
+    }
+    const r = 14 * s * grow;
+    if (h.selected) el('circle', { cx: h.x, cy: h.y, r: r + 5, fill: 'none', stroke: COLOURS.selected, 'stroke-width': 2.5 }, g);
+    if (h.pinned) {
+      el('circle', { cx: h.x, cy: h.y, r, fill: COLOURS.pin, stroke: COLOURS.selected, 'stroke-width': 2.5 }, g);
+      el('path', { d: `M${h.x - 4} ${h.y - 5} l8 0 l-1.5 5 l3 2 l-11 0 l3 -2 z M${h.x} ${h.y + 2} l0 6`, fill: '#ffffff', stroke: '#ffffff', 'stroke-width': 1.2 }, g);
+    } else {
+      el('circle', { cx: h.x, cy: h.y, r, fill: 'rgba(212,174,82,0.18)', stroke: COLOURS.outline, 'stroke-width': 5 }, g);
+      el('circle', { cx: h.x, cy: h.y, r, fill: 'none', stroke: COLOURS.selected, 'stroke-width': 3 }, g);
     }
   }
 

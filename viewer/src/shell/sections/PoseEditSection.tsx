@@ -9,7 +9,7 @@
 
 import { useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { editStore, PIN_PARTS, poseEditor, type EditState, type PointInfo } from '../../pose_edit/editor.ts';
+import { editStore, ENDS, PARTS, PIN_PARTS, poseEditor, type EditState, type PointInfo } from '../../pose_edit/editor.ts';
 import { BodyMap, HandMap, JointMap } from '../../pose_edit/maps.tsx';
 import { AXES } from '../../pose_edit/joints.ts';
 import { FINGER_LABELS, PRESETS } from '../../pose_edit/hands.ts';
@@ -24,9 +24,76 @@ export function useEditState(): EditState { return useSyncExternalStore(editStor
 
 const pct = (v: number) => Math.round(v * 100);
 const TAB_ICONS = ['focus', 'bones', 'hand', 'move', 'save'];
-// the Limbs and Library tools arrive with phases 3 and 4
-function LimbsPanel(_: { st: EditState }) { return <div className="osb-section"><Note>Hand and foot handles arrive in the next step.</Note></div>; }
-function LibraryPanel(_: { st: EditState }) { return <div className="osb-section"><Note>The pose library arrives in a later step.</Note></div>; }
+// the Limbs tool (artboard 2d): the hands' and feet's handles in the view, their pins, the pole of the limb chosen and
+// Body follows
+function LimbsPanel({ st }: { st: EditState }) {
+  const ed = poseEditor()!;
+  return (
+    <div className="osb-section pe-limbs">
+      <Note>Drag a gold handle on a hand or a foot: the limb follows, and the elbow or knee bends on its own. The small blue handle sets where the elbow or knee points. A right-click on a handle pins it.</Note>
+      <h3 className="osb-eyebrow pe-eyebrow">Pins</h3>
+      <div className="pe-handle-opts">
+        {ENDS.map((e) => (
+          <div key={e.id} className="pe-switch-row">
+            <Switch label={e.label} on={st.pinned.includes(e.id)} onChange={(on) => ed.setPinned(e.id, on)} tip={`Pin the ${e.label.toLowerCase()}: it stays where it is while other parts move`} />
+            {e.id.startsWith('hand') || e.id.startsWith('foot') ? <button type="button" className="tb osb-btn osb-btn--quiet" aria-pressed={st.limb === e.id}
+              onClick={() => ed.selectLimb(st.limb === e.id ? null : e.id)}><span>Pole</span></button> : null}
+          </div>
+        ))}
+      </div>
+      <h3 className="osb-eyebrow pe-eyebrow">Body</h3>
+      <Switch label="Body follows a hand" on={st.follow} onChange={(on) => ed.setFollow(on)} tip="The spine bends a little towards a far reach" />
+      <Note>Off by default: the hips and the spine stay, and only the arm moves.</Note>
+    </div>
+  );
+}
+
+// the Library tool (artboard 2e): saved poses as tiles, applied to the whole body or one part, two poses blended, and
+// mirror and copy
+function LibraryPanel({ st }: { st: EditState }) {
+  const ed = poseEditor()!;
+  const [name, setName] = useState('');
+  const [a, setA] = useState(''), [b, setB] = useState('');
+  const poses = st.poses;
+  return (
+    <div className="osb-section pe-library-panel">
+      <h3 className="osb-eyebrow">Saved poses <span className="osb-eyebrow-val">{poses.length}</span></h3>
+      {poses.length ? (
+        <div className="pe-library" role="group" aria-label="Saved poses">
+          {poses.map((p) => (
+            <div key={p.id} className="pe-pose-tile">
+              <button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.applyPose(p.id)} title={`Apply ${p.label} to: ${(PARTS.find((x) => x.id === st.applyTo) || PARTS[0]).label}`}>
+                <Icon name="pose" size={22} /><span>{p.label}</span></button>
+              <button type="button" className="osb-ib" aria-label={`Delete ${p.label}`} onClick={() => ed.deletePose(p.id)}><Icon name="close" size={12} /></button>
+            </div>
+          ))}
+        </div>
+      ) : <Note>No saved poses yet. Name the pose shown and save it.</Note>}
+      <div className="pe-save-hand">
+        <input type="text" className="osb-input" placeholder="A name for this pose" aria-label="A name for this pose" value={name} onChange={(e) => setName(e.target.value)} />
+        <TextButton label="Save the pose" icon="plus" disabled={!name.trim()} onClick={() => { ed.savePose(name.trim()); setName(''); }} />
+      </div>
+      <h3 className="osb-eyebrow pe-eyebrow">Apply to</h3>
+      <Seg label="Apply to" items={PARTS.map((p) => ({ value: p.id, label: p.label }))} value={st.applyTo} onPick={(v) => ed.setApplyTo(v)} />
+      {poses.length >= 2 ? <>
+        <h3 className="osb-eyebrow pe-eyebrow">Blend two poses</h3>
+        <div className="pe-blend">
+          <select aria-label="First pose" value={a} onChange={(e) => setA(e.target.value)}><option value="">First pose</option>{poses.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
+          <select aria-label="Second pose" value={b} onChange={(e) => setB(e.target.value)}><option value="">Second pose</option>{poses.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
+        </div>
+        {a && b ? <Range key={a + b} id="blend" label="Blend" unit="%" value={Math.round((st.blend?.t ?? 0) * 100)} min={0} max={100} step={1}
+          ends={[poses.find((p) => p.id === a)!.label, poses.find((p) => p.id === b)!.label]} onInput={(v) => ed.blendPoses(a, b, v / 100, false)}
+          onStart={() => (ed as any).record('Blend poses')} /> : null}
+      </> : null}
+      <h3 className="osb-eyebrow pe-eyebrow">Mirror and copy</h3>
+      <div className="btn-row">
+        <Tip action="pose.mirror"><button type="button" className="tb osb-btn" onClick={() => ed.mirror()}><Icon name="turntable" size={16} /><span>Mirror the pose</span></button></Tip>
+        <Tip action="pose.copy"><button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => runAction('pose.copy')}><Icon name="copy" size={16} /><span>Copy</span></button></Tip>
+        <Tip action="pose.paste-mirrored"><button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => runAction('pose.paste-mirrored')}><Icon name="paste" size={16} /><span>Paste mirrored</span></button></Tip>
+      </div>
+    </div>
+  );
+}
 
 // a plain range with its number, for the editor's own values (they change with the store, not with the look)
 function Range({ id, label, value, min, max, step, ends, unit, onInput, onStart, onEnd, colour, limits, onReset }: { id: string; label: string; value: number; min: number; max: number;
