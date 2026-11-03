@@ -360,7 +360,7 @@ export function initUI(app: App): UI {
     meshes: () => app.bodyMeshes().all.map((o: any) => {
       const ms = Array.isArray(o.material) ? o.material : [o.material];
       return { name: o.name || o.type, xray: ms.map((m: any) => (m.transparent ? m.blendAlpha : 1)),
-        cut: ms.every((m: any) => typeof m.fragmentShader !== 'string' || m.fragmentShader.includes('studioCut(')) };
+        cut: ms.every((m: any) => typeof m.fragmentShader !== 'string' || m.fragmentShader.includes('studioCut(vWPos)')) };
     }),
   };
   // the height rail after the interface, so the focus reaches it after the top bar, the panel and the view bar

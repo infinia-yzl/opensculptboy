@@ -2941,7 +2941,7 @@ const PART_JS = { hidden: new Set<string>(), keep: null as Set<string> | null };
 function partAlpha(o: any): number {
   if (!PART_JS.hidden.size && !PART_JS.keep) return 1;
   const mats = Array.isArray(o.material) ? o.material : [o.material];
-  if (mats.some((m: any) => m && typeof m.fragmentShader === 'string' && m.fragmentShader.includes('studioPart('))) return 1;
+  if (mats.some((m: any) => m && typeof m.fragmentShader === 'string' && m.fragmentShader.includes('studioPart(vPart)'))) return 1;
   const bone = o.userData.partBone || (hairObjs.includes(o) || (RIG.eyes || []).some((e: any) => e.mesh === o) || mats.some((m: any) => m?.uniforms?.uIris) ? 'head' : 'root');
   if (PART_JS.hidden.has(bone)) return 0;
   if (PART_JS.keep && !PART_JS.keep.has(bone)) return XRAY.faint;
