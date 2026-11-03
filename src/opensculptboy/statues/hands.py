@@ -65,15 +65,22 @@ def _hand_weight(model, bones) -> np.ndarray:
     return (np.isin(indices, bones) * weights).sum(1)
 
 
-def hand_masks(model, chain: str, rings: int = BLEND_RINGS, pin=()):
+def hand_masks(model, chain: str, rings: int = BLEND_RINGS, pin=(), keep=None):
     """Masks (V,) of the level-0 vertices of a hand (more than half their weight on its
     bones, and on the arm's bones named in ``pin``: an arm that the posing moved away from
     the scan's, whose skin the finer levels would otherwise pull back to the scan in
     flaps), which keep anny's shape, and of the band of ``rings`` rings round them, which
-    blends the fit into them."""
+    blends the fit into them. ``keep`` (V,) marks the arm's vertices that stay fitted (those
+    still near the scan's own arm): only the hand and the rest of the pinned arm keep anny's
+    shape."""
     from opensculptboy.fit.lips import rings_from
 
-    hand = _hand_weight(model, hand_bones(model, chain, pin)) > 0.5
+    hand = _hand_weight(model, hand_bones(model, chain)) > 0.5
+    if pin:
+        arm = _hand_weight(model, hand_bones(model, chain, pin)) > 0.5
+        if keep is not None:
+            arm &= ~np.asarray(keep, bool)
+        hand |= arm
     triangles = model.faces.cpu().numpy()
     grown = rings_from(triangles, np.nonzero(hand)[0], int(rings), len(hand))
     return hand, grown & ~hand

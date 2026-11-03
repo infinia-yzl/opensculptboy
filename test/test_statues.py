@@ -1072,6 +1072,13 @@ class TestPosedHands(unittest.TestCase):
         self.assertTrue((arm | ~hand).all())
         self.assertGreater(arm.sum(), hand.sum() + 200)
         self.assertFalse((arm & arm_band).any())
+        # with keep, the arm's vertices kept fitted leave the pin; the hand stays pinned
+        keep = np.zeros(len(arm), bool)
+        keep[np.nonzero(arm & ~hand)[0][:100]] = True
+        keep[np.nonzero(hand)[0][:10]] = True
+        part, _ = hand_masks(model, "hand.r", 3, ("lowerarm",), keep)
+        self.assertEqual(part.sum(), arm.sum() - 100)
+        self.assertTrue((part | ~hand).all())
         self.assertIsInstance(mesh, trimesh.Trimesh)
 
     def test_fingers_close_on_a_grip_without_entering_it(self):

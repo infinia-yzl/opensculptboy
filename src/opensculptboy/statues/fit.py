@@ -379,9 +379,18 @@ def fit_statue(
         )
         pinned = np.zeros(model.template_vertices.shape[-2], bool)
         band = np.zeros_like(pinned)
+        near_scan = None
         for chain, spec in posed_hands.items():
+            keep = None
+            if spec.get("pin") and spec.get("pin_off") is not None:
+                if near_scan is None:
+                    near_scan = _distance_to_reference(
+                        model, character, rotation, translation, reference
+                    )
+                # the arm's vertices still near the scan's own arm stay fitted
+                keep = near_scan <= float(spec["pin_off"])
             hand, ring = hand_masks(
-                model, chain, spec.get("blend", 4), tuple(spec.get("pin", ()))
+                model, chain, spec.get("blend", 4), tuple(spec.get("pin", ())), keep
             )
             pinned |= hand
             band |= ring
@@ -419,6 +428,21 @@ def fit_statue(
     result.chains = report
     result.hands = hands_report
     return result
+
+
+def _distance_to_reference(model, character, rotation, translation, reference):
+    """The distance (V,) of each level-0 vertex of a posed card to the reference's surface
+    vertices (metres)."""
+    import torch
+    from scipy.spatial import cKDTree
+
+    from opensculptboy.statues.chains import _identity_pose, _Skinner
+
+    skin = _Skinner(model, character, rotation, translation)
+    pose = character.pose_parameters(model)
+    with torch.no_grad():
+        X = skin(_identity_pose(model) if pose is None else pose).numpy()
+    return cKDTree(np.asarray(reference.vertices)).query(X)[0]
 
 
 def _library_start(model, reference, start_pose, options):
