@@ -161,6 +161,58 @@ class TestApplyCard(unittest.TestCase):
                 anny[p["name"]]["position"], Rp @ x + t, atol=1e-5
             )
 
+    def test_a_point_saved_by_the_page_lands_on_the_same_spot(self):
+        """The page saves a point in its rest frame less the root bone's rest head (turned by
+        the root's turn), which is Anny's forward pass with the card's pose: through
+        apply-card and the fit's frame, the point lands where the placed card has that spot."""
+        import torch
+
+        from opensculptboy.character import Character
+        from opensculptboy.posing.pose_rig import PoseRig
+        from opensculptboy.posing.reference_points import load_points
+        from opensculptboy.statues.card_config import card_points
+        from opensculptboy.statues.points import in_anny
+
+        model = _model()
+        fields = {k: v for k, v in self.card.items() if k != "detail"}
+        character = Character.from_dict(fields)
+        pose = character.pose_parameters(model)
+        with torch.no_grad():
+            out = model(
+                pose_parameters=pose,
+                local_changes_kwargs=dict(character.local_changes) or None,
+            )
+        skin = out["vertices"][0].double().numpy()
+        root = int(np.nonzero(np.asarray(model.bone_parents) < 0)[0][0])
+        head = out["rest_bone_poses"][0, root, :3, 3].double().numpy()
+        turn = pose[0, root, :3, :3].double().numpy()
+        stored = {p["name"]: p for p in load_points()}
+        names = ["index_tip.R", "wrist.R", "elbow.R"]
+        # a spot on the body, as the page has it in its rest frame
+        spots = np.stack(
+            [
+                np.asarray(stored[n]["barycentric"]) @ skin[stored[n]["vertices"]]
+                for n in names
+            ]
+        )
+        rest = spots + turn @ head
+        saved = rest - turn @ head
+        card = json.loads(json.dumps(self.card))
+        card["detail"]["fit"]["reference"]["points"]["chains"] = {
+            "hand.r": [
+                {"name": n, "position": x.tolist()} for n, x in zip(names, saved)
+            ]
+        }
+        card["detail"]["fit"]["reference"]["pins"] = []
+        placed = {e["name"]: e["position"] for e in in_anny(card_points(card))["arm.r"]}
+        from opensculptboy.posing.reference_points import positions
+
+        Rp, t = _placement()
+        rig, rotations = PoseRig.from_card(model, character, Rp, t)
+        expected = positions(rig, rotations, [stored[n] for n in names])
+        for n, x in zip(names, expected):
+            np.testing.assert_allclose(placed[n], x, atol=1e-5)
+
     def test_pins_join_their_points_chain(self):
         from opensculptboy.fit.handoff import GLTF_TO_ANNY
 

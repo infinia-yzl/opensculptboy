@@ -11,8 +11,9 @@ page saves it:
 
 - ``detail.fit.reference.points`` (``opensculptboy.card-points/1``): by point chain (``hand.r``,
   ``arm.r``, ``leg.l``, ``neck``), each point's ``name`` (of ``data/posing/reference_points.json``),
-  ``position``, ``on`` and ``weight``, in the card's frame (``"frame": "card"``: Anny's axes of
-  the card's posed body) or in the masks' frame (``"frame": "scan"``: the frame of
+  ``position``, ``on`` and ``weight``, in the card's frame (``"frame": "card"``: Anny's forward
+  pass with the card's pose and an identity placement, the frame of the starter's ghost; the
+  page's rest frame is that frame moved by the root bone's rest head) or in the masks' frame (``"frame": "scan"``: the frame of
   ``replica.glb``, y up);
 - ``detail.fit.reference.pins``: contact pins (``name``, ``kind`` ``"point"`` with ``target`` or
   ``"plane"`` with ``point`` and ``normal``, ``weight``) in the same frame;
