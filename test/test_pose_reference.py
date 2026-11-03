@@ -42,6 +42,19 @@ def _rigid_residual(P, Q):
     return float(res.max()), float(turn)
 
 
+def _angles(A, B) -> np.ndarray:
+    """The angles (degrees) of the turns between two sets of rotations (B, 3, 3), from the
+    skew and the trace of A^T B, so that matrices a little off orthonormal (Anny's reference
+    orientations are stored to about 3e-7) do not read as turns."""
+    T = np.einsum("bji,bjk->bik", A, B)
+    w = np.stack(
+        [T[:, 2, 1] - T[:, 1, 2], T[:, 0, 2] - T[:, 2, 0], T[:, 1, 0] - T[:, 0, 1]], 1
+    )
+    return np.degrees(
+        np.arctan2(np.linalg.norm(w, axis=1), np.einsum("bii->b", T) - 1.0)
+    )
+
+
 def _turn(rng, scale):
     import roma
     import torch
@@ -249,16 +262,12 @@ class TestPoseReference(unittest.TestCase):
             with self.subTest(name):
                 C = reference_turns(self.model, character)
                 Cn = np.asarray(g["C"]).reshape(-1, 3, 3)
-                angle = np.degrees(
-                    np.arccos(
-                        np.clip((np.einsum("bij,bij->b", C, Cn) - 1) / 2, -1.0, 1.0)
-                    )
-                )
-                self.assertLess(angle.max(), 1e-3)
+                angle = _angles(C, Cn)
+                self.assertLess(angle.max(), 1e-4)
                 Rn = np.asarray(g["R"]).reshape(-1, 3, 3)
                 np.testing.assert_allclose(Rn, to_page(D, C, self.parents), atol=1e-5)
                 np.testing.assert_allclose(
-                    np.asarray(g["D"]).reshape(-1, 3, 3), D, atol=1e-9
+                    np.asarray(g["D"]).reshape(-1, 3, 3), D, atol=1e-5
                 )
                 residual, _ = _rigid_residual(
                     page_skin(self.model, character, Rn),

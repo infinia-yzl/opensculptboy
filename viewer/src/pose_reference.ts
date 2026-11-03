@@ -80,8 +80,10 @@ export function referenceDifference(reference: Record<string, number[]> | null |
     const v = reference?.[name];
     if (!Array.isArray(v) || v.length !== 4) return;
     const A = rotation(v.map((x) => x / Math.hypot(v[0], v[1], v[2], v[3]))), B = turnOf(C, b);
-    const T = mul(transpose(A), B), c = Math.min(1, Math.max(-1, (T[0] + T[4] + T[8] - 1) / 2));
-    worst = Math.max(worst, Math.acos(c) * 180 / Math.PI);
+    // the angle from the skew part and the trace, which a matrix a little off orthonormal does not upset (Anny's
+    // reference orientations are stored to about 3e-7)
+    const T = mul(transpose(A), B), w = Math.hypot(T[7] - T[5], T[2] - T[6], T[3] - T[1]);
+    worst = Math.max(worst, Math.atan2(w, T[0] + T[4] + T[8] - 1) * 180 / Math.PI);
   });
   return worst;
 }
