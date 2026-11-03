@@ -807,7 +807,9 @@ export class PoseEditor {
     const r = squeeze(this.skinnedBody(), S.rotations, g.hand === 'R' ? 'hand.r' : 'hand.l', [sdf], value);
     S.setPose(r.rotations);
     this.poseChanged();
-    this.publish({ squeeze: value });
+    // each finger's gap to the prop at the chosen squeeze (negative: inside it), for the panel
+    const report = FINGERS.map((f, k) => { const q = r.report[`finger${k + 1}`]; return { finger: f, clearance: q ? q.clearance_mm : NaN, inside: !!q && (q.inside || q.clearance_mm < 0) }; });
+    this.publish({ squeeze: value, grip_report: report });
     return true;
   }
 

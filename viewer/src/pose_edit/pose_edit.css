@@ -121,3 +121,9 @@ body:not(.pose-edit-on) .pe-inset, body.shot .pe-inset { display: none !importan
 .pe-save-hand { display: flex; gap: var(--space-2); align-items: center; margin: var(--space-2) 0; }
 .pe-save-hand input { flex: 1; min-width: 0; min-height: 32px; }
 .pe-blend { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2); }
+.pe-grip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pe-grip-fingers { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 2px; }
+.pe-grip-fingers li { display: flex; justify-content: space-between; font-size: 12.5px; padding: 3px 0; }
+.pe-grip-fingers li span:last-child { display: inline-flex; gap: 4px; align-items: center; color: var(--good, #4f9a5b); }
+.pe-grip-fingers li.is-bad span:last-child { color: var(--bad, #c4503c); }
+.pe-library-panel .osb-seg, .pe-grip-row .osb-seg { flex-wrap: wrap; height: auto; }

@@ -22,9 +22,11 @@ void main() {
 }`;
 const FS = `
 uniform float uOpacity; uniform float uSolid; uniform vec3 uCam; uniform sampler2D tDepth; uniform vec2 uDepthScale; uniform vec2 uRes;
-uniform float uUseDepth; uniform vec3 uTint;
+uniform float uUseDepth; uniform vec3 uTint; uniform vec3 uClip;
 varying vec3 vN; varying vec3 vW;
 void main() {
+  // the magnifier's disc: nothing outside it
+  if (uClip.z > 0.0 && distance(gl_FragCoord.xy, uClip.xy) > uClip.z) discard;
   vec3 n = normalize(vN), v = normalize(uCam - vW);
   if (dot(n, v) < 0.0) n = -n;
   float ndv = clamp(dot(n, v), 0.0, 1.0);
@@ -48,6 +50,14 @@ void main() {
   gl_FragColor = vec4(c * a, a);
 }`;
 
+// the magnifier's background: a dark disc over the square of its viewport (clip space, no camera)
+const DISC_VS = `void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+const DISC_FS = `uniform vec3 uClip;
+void main() {
+  if (distance(gl_FragCoord.xy, uClip.xy) > uClip.z) discard;
+  gl_FragColor = vec4(0.082, 0.09, 0.102, 1.0);
+}`;
+
 export type ScanLook = 'ghost' | 'solid';
 
 export class ScanView {
@@ -69,13 +79,19 @@ export class ScanView {
       uniforms: {
         uModel: { value: new T.Matrix4() }, uOpacity: { value: this.opacity }, uSolid: { value: 0 }, uCam: { value: new T.Vector3() },
         tDepth: { value: null }, uDepthScale: { value: new T.Vector2(1, 1) }, uRes: { value: new T.Vector2(1, 1) }, uUseDepth: { value: 1 },
-        uTint: { value: new T.Color(0.72, 0.78, 0.86) },
+        uTint: { value: new T.Color(0.72, 0.78, 0.86) }, uClip: { value: new T.Vector3(0, 0, 0) },
       },
       vertexShader: VS, fragmentShader: FS, transparent: true, premultipliedAlpha: true, depthWrite: true, depthTest: true, side: T.DoubleSide,
       blending: T.CustomBlending, blendEquation: T.AddEquation, blendSrc: T.OneFactor, blendDst: T.OneMinusSrcAlphaFactor,
     });
     this.magCam = new T.PerspectiveCamera();
+    const disc = new T.Mesh(new T.PlaneGeometry(2, 2), new T.ShaderMaterial({ uniforms: { uClip: { value: new T.Vector3() } }, vertexShader: DISC_VS, fragmentShader: DISC_FS,
+      depthTest: false, depthWrite: false }));
+    disc.frustumCulled = false;
+    this.discScene = new T.Scene(); this.discScene.add(disc); this.disc = disc;
   }
+  private discScene: THREE_NS.Scene;
+  private disc: THREE_NS.Mesh;
 
   setScan(scan: ScanMesh | null) {
     const T = this.THREE;
@@ -123,6 +139,8 @@ export class ScanView {
     const dpr = target.width / rect.width;
     const m = this.magCam;
     m.position.copy(cam.position); m.quaternion.copy(cam.quaternion); m.near = cam.near; m.far = cam.far;
+    // the studio's camera shifts its picture past the panels with a film offset; the magnifier keeps it
+    m.filmGauge = cam.filmGauge; m.filmOffset = cam.filmOffset; m.zoom = cam.zoom;
     // the narrower view: the full view's frustum offset so that the pointer's spot is its centre
     const W = rect.width, H = rect.height;
     m.fov = cam.fov; m.aspect = W / H;
@@ -137,11 +155,16 @@ export class ScanView {
     const vp = target.viewport.clone(), sc = target.scissor.clone(), test = target.scissorTest;
     target.viewport.set(x, y, s, s); target.scissor.set(x, y, s, s); target.scissorTest = true;
     r.setRenderTarget(target);
-    r.setClearColor(0x15171a, 1); r.clear(true, true, false);
+    // the square cleared, a dark disc, then the scan within the disc
+    r.setClearColor(0x000000, 0); r.clear(true, true, false);
+    const clip = [x + s / 2, y + s / 2, s / 2 - 1] as const;
+    (this.disc.material as THREE_NS.ShaderMaterial).uniforms.uClip.value.set(...clip);
+    r.render(this.discScene, m);
+    this.material.uniforms.uClip.value.set(...clip);
     r.render(this.scene, m);
+    this.material.uniforms.uClip.value.set(0, 0, 0);
     target.viewport.copy(vp); target.scissor.copy(sc); target.scissorTest = test;
     r.setRenderTarget(target);
-    r.setClearColor(0x000000, 0);
     m.clearViewOffset();
     const out = m;
     return out;

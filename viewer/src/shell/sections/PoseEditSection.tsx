@@ -341,6 +341,31 @@ function GesturePad({ st }: { st: EditState }) {
 
 // the Hands tool (artboard 2b): Fist, Spread, Thumb, Relax; each finger's Curl, with its spread behind a fold; the
 // presets, the gesture pad, and Copy to the other hand
+// Grip a prop (artboard 2c): the prop this hand holds, Squeeze, and each finger's touch
+function GripBlock({ st }: { st: EditState }) {
+  const ed = poseEditor()!, side = st.handSide, on = st.grip && st.grip.hand === side;
+  if (!st.props.length) return null;
+  const prop = (on && st.grip!.prop) || st.props[0];
+  return <>
+    <h3 className="osb-eyebrow pe-eyebrow">Grip a prop</h3>
+    <div className="pe-grip-row">
+      <Seg label="The prop" items={st.props.map((p) => ({ value: p, label: p.split('/').pop() || p }))} value={prop} onPick={(v) => ed.setGrip({ hand: side, prop: v })} />
+      <TextButton label={on ? 'Let go' : 'Grip'} icon="hand" primary={!on} onClick={() => { if (on) ed.setGrip(null); else { ed.setGrip({ hand: side, prop }); ed.setSqueeze(st.squeeze || 0.8); } }} />
+    </div>
+    {on ? <>
+      <Range key="squeeze" id="grip-squeeze" label="Squeeze" value={Math.round(st.squeeze * 100)} min={0} max={100} step={1} unit="%" ends={['Looser', 'Tighter']}
+        onInput={(v) => ed.setSqueeze(v / 100, false)} />
+      <ul className="pe-grip-fingers">
+        {st.grip_report.map((f, k) => (
+          <li key={f.finger} className={f.inside ? 'is-bad' : ''}><span>{FINGER_NAMES[k]}</span>
+            <span>{!isFinite(f.clearance) ? '' : f.inside ? <><Icon name="alert" size={14} /> {Math.abs(f.clearance).toFixed(0)} mm inside</> : f.clearance <= 1.5 ? <><Icon name="check" size={14} /> Touching</> : `${f.clearance.toFixed(0)} mm off`}</span></li>
+        ))}
+      </ul>
+      <Note>The fingers close joint by joint until each one touches the prop with 1 mm to spare.</Note>
+    </> : null}
+  </>;
+}
+const FINGER_NAMES = ['Thumb', 'Index finger', 'Middle finger', 'Ring finger', 'Little finger'];
 function HandsPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!, h = st.handShape, side = st.handSide;
   const started = useState({ on: false })[0];
@@ -352,6 +377,7 @@ function HandsPanel({ st }: { st: EditState }) {
     <div className="osb-section pe-hands">
       <div className="pe-hand-head"><p className="pe-point-name">{side === 'R' ? 'Right hand' : 'Left hand'}</p>
         <Seg label="The hand" items={[{ value: 'L', label: 'Left' }, { value: 'R', label: 'Right' }]} value={side} onPick={(v) => ed.setHandSide(v as 'L' | 'R')} /></div>
+      <GripBlock st={st} />
       <h3 className="osb-eyebrow pe-eyebrow">Whole hand</h3>
       <Range key={side + 'fist' + st.version} id="fist" label="Fist" unit="%" value={pct(h.fist)} min={-10} max={110} step={1} ends={['Open', 'Closed']}
         onStart={() => start('Fist')} onEnd={end} onInput={(v) => ed.setHand('fist', 0, v / 100, false)} />
