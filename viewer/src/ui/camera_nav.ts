@@ -33,6 +33,8 @@ const ZOOM_NOTCH = 0.12, ZOOM_FINE = 0.03, NEAR_SURFACE = 0.04;
 const HISTORY = 50;
 // the cut-away works within this distance of the pivot (metres)
 const CUT_RANGE = 0.9;
+// the distance a double-click on the body flies in to, when the camera is farther (metres)
+const POI_DISTANCE = 0.8;
 
 export interface CameraNav {
   before(): void;
@@ -429,19 +431,22 @@ export function cameraNav(app: App): CameraNav {
       emitChange();
     },
     doubleClick(e, surface) {
-      if (surface) { pivotLabel = 'this spot'; setPivotAt(surface.point, true); }
+      if (surface) { pivotLabel = 'this spot'; setPivotAt(surface.point, true, 300, true, true); }
       else N.frameFigure();
     },
     cursor: () => (gest.kind === 'zoom' ? 'ns-resize' : gest.kind === 'right' ? 'crosshair' : 'grabbing'),
   });
 
   // the pivot on a point; with `centre`, the camera moves so the point stands in the middle of the view, at the same angle
-  function setPivotAt(p: Vec3Like, centre: boolean, ms = 300, history = true) {
+  function setPivotAt(p: Vec3Like, centre: boolean, ms = 300, history = true, approach = false) {
     const t1 = new THREE.Vector3(p.x, p.y, p.z);
     if (history) pushView();
     if (!centre) { controls.target.copy(t1); camera.lookAt(controls.target); controls.update(); emitChange(); return; }
     const dir = camera.position.clone().sub(controls.target).normalize();
-    const d = Math.max(0.05, camera.position.distanceTo(t1));
+    // a double-click also comes in to working distance, as Sketchfab's does (the point of interest of Mackinlay, Card
+    // and Robertson): from the whole figure to a hand in one flight; closer views keep their distance
+    const d0 = camera.position.distanceTo(t1);
+    const d = Math.max(0.05, approach ? Math.min(d0, POI_DISTANCE) : d0);
     V.userMoved = true;
     app.tweenTo(t1, t1.clone().addScaledVector(dir, d), ms);
     N.onView(); changed();

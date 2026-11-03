@@ -101,11 +101,11 @@ export function helpSheet(): Help {
     empty.hidden = any;
   }
   search.addEventListener('input', render);
-  // Esc in the search: clears a query, else closes the help
+  // Esc closes the help at once, also with a query in the search (which a search field would clear first)
   search.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
     e.preventDefault(); e.stopPropagation();
-    if (search.value) { search.value = ''; render(); } else dlg.close();
+    dlg.close();
   });
   close.addEventListener('click', () => dlg.close());
   dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
