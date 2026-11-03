@@ -1316,7 +1316,7 @@ export class PoseEditor {
     else { this.jointScreens = []; this.dial = null; }
     if (st.section === 'limbs') { f.points = []; f.anny = []; f.clusters = []; this.drawHandles(f, st); } else this.handleScreens = [];
     // the label of the selected or hovered point
-    const lab = this.hovered || st.selected;
+    const lab = st.section === 'points' ? this.hovered || st.selected : null;
     if (lab && this.screen.has(lab)) {
       const p = POINT_BY_NAME.get(lab)!, s = this.screen.get(lab)!, t = S.targets.get(lab);
       const line = st.dragging ? 'Slides on the scan. The hand follows.' : !t ? 'Not placed yet'
@@ -1335,12 +1335,13 @@ export class PoseEditor {
       const b = this.bal, c = toS(b.centre as V3), m = toS(b.mark as V3);
       f.balance = { centre: [c.x, c.y], mark: [m.x, m.y], polygon: b.polygon.map((q) => { const s = toS(q as V3); return [s.x, s.y] as [number, number]; }), inside: b.inside };
     }
-    if (this.magCam && this.magAt && this.drag) {
-      const t = S.targets.get(this.drag.name)!, w = this.frames.toWorld(t.position);
-      const T = this.host.THREE, v = new T.Vector3(w[0], w[1], w[2]).project(this.magCam);
-      const half = MAG_SIZE / 2;
+    if (this.magCam && this.magAt && this.drag && this.mag) {
+      // the magnifier shows the spot under the pointer MAG_ZOOM times larger, so a point lies at its offset from the
+      // pointer times the zoom
+      const t = S.targets.get(this.drag.name)!, q = toS(t.position), half = MAG_SIZE / 2;
+      const px = this.magAt.cx + (q.x - this.mag.x) * MAG_ZOOM, py = this.magAt.cy + (q.y - this.mag.y) * MAG_ZOOM;
       f.magnifier = { cx: this.magAt.cx, cy: this.magAt.cy, r: half, zoom: MAG_ZOOM,
-        point: { x: this.magAt.cx + v.x * half, y: this.magAt.cy - v.y * half, number: POINT_BY_NAME.get(this.drag.name)!.number, state: 'placed' } };
+        point: Math.hypot(px - this.magAt.cx, py - this.magAt.cy) < half - 8 ? { x: px, y: py, number: POINT_BY_NAME.get(this.drag.name)!.number, state: 'placed' } : undefined };
     }
     this.layer!.draw(f);
   }
@@ -1401,8 +1402,8 @@ export class PoseEditor {
         for (let i = 0; i <= 48; i++) arc.push(at(lo + (hi - lo) * i / 48));
         strokes.push({ d: 'M' + arc.map((p) => p.map((x) => x.toFixed(1)).join(' ')).join(' L'), colour: AXES[k].colour, width: 6, opacity: 0.85 });
       }
-      const tp = at(Math.PI / 4 + k * 0.6);
-      tags.push({ x: tp[0] + 34, y: tp[1], text: `${AXES[k].label} ${Math.round(jv.value[k])}°`, colour: AXES[k].colour });
+      // the tags stand outside the dial, one above another
+      tags.push({ x: sc.x + R0 + 70 * f.scale, y: sc.y - 28 + 28 * k, text: `${AXES[k].label} ${Math.round(jv.value[k])}°`, colour: AXES[k].colour });
     });
     // the outer ring: a free turn
     const outer = R0 + 22 * f.scale;

@@ -448,9 +448,10 @@ export function PoseEditSection() {
       {!hand ? <div className="osb-section pe-contact"><ContactFolds st={st} /></div> : null}
       </>}
       <div className="pe-foot">
-        {hand ? <TextButton label="Reset the hand" icon="reset" quiet onClick={() => { const s = st.selected || `wrist.${hand}`; ed.resetPoint(s, true); }} />
+        {st.section !== 'points' ? <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />
+          : hand ? <TextButton label="Reset the hand" icon="reset" quiet onClick={() => { const s = st.selected || `wrist.${hand}`; ed.resetPoint(s, true); }} />
           : st.counts.placed || st.counts.look ? <TextButton label="Place again" icon="sparkle" quiet disabled={!st.scan.available} onClick={() => ed.placeAll()} /> : <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />}
-        <TextButton label="Save points" icon="saveCard" primary disabled={legacy.hosted} onClick={() => ed.savePoints(legacy.saveCard)} />
+        <TextButton label={st.section === 'points' ? 'Save points' : 'Save the pose'} icon="saveCard" primary disabled={legacy.hosted} onClick={() => ed.savePoints(legacy.saveCard)} />
       </div>
     </div>
   );

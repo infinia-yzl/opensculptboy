@@ -133,17 +133,17 @@ export class ScanView {
     this.prepare(m, model, target, false);
     this.look = was;
     const x = Math.round((cx - rect.left - size / 2) * dpr), y = Math.round((rect.bottom - cy - size / 2) * dpr), s = Math.round(size * dpr);
+    // a render target draws into its own viewport and scissor (the renderer's are for the canvas)
+    const vp = target.viewport.clone(), sc = target.scissor.clone(), test = target.scissorTest;
+    target.viewport.set(x, y, s, s); target.scissor.set(x, y, s, s); target.scissorTest = true;
     r.setRenderTarget(target);
-    r.setScissorTest(true); r.setScissor(x, y, s, s); r.setViewport(x, y, s, s);
     r.setClearColor(0x15171a, 1); r.clear(true, true, false);
     r.render(this.scene, m);
-    r.setScissorTest(false); r.setViewport(0, 0, target.width, target.height);
+    target.viewport.copy(vp); target.scissor.copy(sc); target.scissorTest = test;
+    r.setRenderTarget(target);
     r.setClearColor(0x000000, 0);
     m.clearViewOffset();
-    // a copy that projects like the drawn view, for the layer
-    const out = m.clone();
-    out.setViewOffset(W * zoom, H * zoom, (px - rect.left) * zoom - size / 2, (py - rect.top) * zoom - size / 2, size, size);
-    out.updateProjectionMatrix(); out.updateMatrixWorld();
+    const out = m;
     return out;
   }
 }
