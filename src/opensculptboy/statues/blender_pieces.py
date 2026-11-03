@@ -199,7 +199,7 @@ def rebuild(mesh_dir: str, out_dir: str, settings: dict) -> dict:
             export_triangulated_mesh=True,
             ascii_format=False,
         )
-    with open(os.path.join(out_dir, "report.json"), "w") as f:
+    with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     return report
 
