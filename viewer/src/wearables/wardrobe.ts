@@ -7,10 +7,14 @@
 // replacement; accessory pieces never replace). Last, the hides rules of the shown pieces hide the named groups of
 // other shown pieces.
 
-export const NO_OUTFIT = 'none';
+import { placeProblem, type Place } from './place.ts';
 
-export interface CardEntry { ref: string; piece: string; outfit: string | null; file: string; enabled: boolean }
-export interface WornRef { ref: string; piece: string; outfit: string | null; file: string; shown: boolean; hiddenGroups: string[]; hideableGroups: string[] }
+export const NO_OUTFIT = 'none';
+const placeOf = (e: any): Place | null => (e && e.place && !placeProblem(e.place) ? e.place : null);
+
+// place: a rigid piece's place on the card (wearables/place.ts, card schema 6), or null
+export interface CardEntry { ref: string; piece: string; outfit: string | null; file: string; enabled: boolean; place: Place | null }
+export interface WornRef { ref: string; piece: string; outfit: string | null; file: string; shown: boolean; hiddenGroups: string[]; hideableGroups: string[]; place: Place | null }
 export interface Choices { outfit?: string | null; show?: string[]; hide?: string[] }
 // the slot and the hides rules of each piece's package
 export interface PieceInfo { slot: string; hides: { piece: string; groups: string[] }[] }
@@ -25,10 +29,10 @@ export function cardOutfit(card: any): string | null {
 export function cardEntries(card: any): CardEntry[] {
   const out: CardEntry[] = [];
   for (const outfit of card.outfits || [])
-    for (const p of outfit.pieces || []) out.push({ ref: `${outfit.id}/${p.piece}`, piece: p.piece, outfit: outfit.id, file: p.file, enabled: p.enabled !== false });
+    for (const p of outfit.pieces || []) out.push({ ref: `${outfit.id}/${p.piece}`, piece: p.piece, outfit: outfit.id, file: p.file, enabled: p.enabled !== false, place: placeOf(p) });
   for (const e of card.wearables || []) {
     const ref = e.id || String(e.file).split('/').pop()!.split('.')[0];
-    out.push({ ref, piece: ref, outfit: null, file: e.file, enabled: e.enabled !== false });
+    out.push({ ref, piece: ref, outfit: null, file: e.file, enabled: e.enabled !== false, place: placeOf(e) });
   }
   return out;
 }
@@ -66,7 +70,7 @@ export function wornPieces(card: any, info: (ref: string) => PieceInfo, choices:
       if (o.ref !== ref && shown[o.ref] && o.outfit !== source && info(o.ref).slot === slot && !replacers.includes(o.ref)) shown[o.ref] = false;
   }
   const pieces: WornRef[] = entries.filter((e) => shown[e.ref] || every)
-    .map((e) => ({ ref: e.ref, piece: e.piece, outfit: e.outfit, file: e.file, shown: !!shown[e.ref], hiddenGroups: [], hideableGroups: [] }));
+    .map((e) => ({ ref: e.ref, piece: e.piece, outfit: e.outfit, file: e.file, shown: !!shown[e.ref], hiddenGroups: [], hideableGroups: [], place: e.place }));
   const byRef = Object.fromEntries(pieces.map((p) => [p.ref, p]));
   for (const p of pieces) {
     for (const rule of info(p.ref).hides) {

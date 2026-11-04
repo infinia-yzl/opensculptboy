@@ -39,7 +39,7 @@ def node_available():
 
 class TestLookBlock(unittest.TestCase):
     def test_schema(self):
-        self.assertEqual(SCHEMA_VERSION, 5)
+        self.assertEqual(SCHEMA_VERSION, 6)
         plain = Character(name="a")
         self.assertEqual(plain.to_dict()["schema"], 1)
         self.assertNotIn("look", plain.to_dict())

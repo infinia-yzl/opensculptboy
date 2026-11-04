@@ -18,7 +18,9 @@ page saves it:
 - ``detail.fit.reference.pins``: contact pins (``name``, ``kind`` ``"point"`` with ``target`` or
   ``"plane"`` with ``point`` and ``normal``, ``weight``) in the same frame;
 - ``pose.bones``: each bone's ``local-ref`` turn as a unit quaternion (x, y, z, w);
-- ``local_changes``: the hands' shape (``r-hand-*``, ``l-hand-*``).
+- ``local_changes``: the hands' shape (``r-hand-*``, ``l-hand-*``);
+- ``place`` on the pieces of its props (card schema 6): a prop moved in the studio and the
+  bone that carries it (:mod:`opensculptboy.wearables.place`).
 
 :func:`apply_card` writes, in the masks' frame:
 
@@ -29,7 +31,10 @@ page saves it:
 - ``posed_hands.hand.<side>.key``: ``bones``, the turns of every bone of the side from
   ``shoulder01`` down as rotation vectors in degrees, ``local_changes`` (the hand's), and the
   hand's ``after_fit`` (:data:`AFTER_FIT`: the right hand before the fit, the left after it, as
-  David's runs chose). The rest of the hand's entry (its stone, ``clear_body``, ``pin``) stays.
+  David's runs chose). The rest of the hand's entry (its stone, ``clear_body``, ``pin``) stays;
+- ``prop_places``: the places of the moved props by piece id, which the starter's build applies
+  to each prop's rest and binding (:func:`opensculptboy.statues.starter.placed_rest`), so that the
+  rebuilt starter carries the prop where the card put it.
 
 The forearm's twist is shared as the posing solve shares it (:func:`share_twist`): the twist
 coordinates of ``lowerarm01``, ``lowerarm02`` and the wrist (each bone's turn about its own
@@ -135,6 +140,26 @@ def card_points(card: dict) -> dict:
         if "weight" in e:
             pin["weight"] = float(e["weight"])
         out.setdefault(_solve_chain(chain_of[e["name"]]), []).append(pin)
+    return out
+
+
+def card_places(card: dict) -> dict:
+    """The places of the card's moved props (``place`` on a piece of an outfit or a loose
+    piece, :mod:`opensculptboy.wearables.place`), by piece id: the config's ``prop_places``,
+    which the starter's build applies to the prop of that name."""
+    from opensculptboy.wearables.place import check_place
+
+    out = {}
+    for outfit in card.get("outfits") or []:
+        for piece in outfit.get("pieces") or []:
+            if "place" in piece:
+                check_place(piece["place"], piece["piece"])
+                out[piece["piece"]] = dict(piece["place"])
+    for entry in card.get("wearables") or []:
+        if "place" in entry:
+            ref = entry.get("id") or pathlib.Path(entry["file"]).name.split(".")[0]
+            check_place(entry["place"], ref)
+            out[ref] = dict(entry["place"])
     return out
 
 
@@ -292,6 +317,12 @@ def apply_card(
 
     out = json.loads(json.dumps(config))
     report: dict = {}
+    places = card_places(card)
+    if places:
+        merged = dict(out.get("prop_places") or {})
+        merged.update(places)
+        out["prop_places"] = merged
+        report["prop_places"] = {k: v["bone"] for k, v in places.items()}
     points = card_points(card)
     if points:
         check(points)
@@ -316,9 +347,13 @@ def apply_card(
             out["reference_points"] = merged
         report["skipped_chains"] = idle
     if hands:
-        fields = {k: v for k, v in card.items() if k != "look"}
-        # the card without its look block, in the schema that holds a detail layer and a
-        # wardrobe
+        # the card without its look block and its wardrobe (the hands need neither), in the
+        # schema that holds a detail layer
+        fields = {
+            k: v
+            for k, v in card.items()
+            if k not in ("look", "wearables", "outfits", "active_outfit", "wearable_overrides")
+        }
         fields["schema"] = 4
         character = Character.from_dict(fields)
         if model is None:
@@ -349,7 +384,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m opensculptboy.statues apply-card",
         description="Apply a character card saved in the studio to its statue's config: "
-        "the placed points become reference_points and the hand poses posed_hands keys.",
+        "the placed points become reference_points, the hand poses posed_hands keys and the "
+        "moved props prop_places.",
     )
     parser.add_argument(
         "card", help="the saved card (character.json, or a starter .zip)"

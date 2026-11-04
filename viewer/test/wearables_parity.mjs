@@ -46,7 +46,10 @@ for (const c of inp.cases) {
     const m = P.subarray(bone * 16, bone * 16 + 16), R = Float64Array.from([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]);
     return { R: rot(A, R), t: Float64Array.from(toFrame(m[3], m[7], m[11])) };
   };
-  const bodyArgs = { vertices: V, triangles, weights, indices, K: inp.K, bones: inp.bone_labels, frame, pose: exact };
+  // the bones' rest heads in the frame, for the pieces' places
+  const heads = new Float64Array(inp.bone_labels.length * 3);
+  for (let b = 0; b < inp.bone_labels.length; b++) heads.set(exact(b).t, b * 3);
+  const bodyArgs = { vertices: V, triangles, weights, indices, K: inp.K, bones: inp.bone_labels, frame, pose: exact, heads };
   const surface = new BodySurface(bodyArgs);
   const card = JSON.parse(fs.readFileSync(path.join(inp.folder, c.card), 'utf8'));
   const info = {};

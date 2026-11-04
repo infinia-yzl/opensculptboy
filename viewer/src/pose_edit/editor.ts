@@ -37,6 +37,9 @@ import { FINGERS, FINGER_LABELS, HandControls, PRESETS, RELAXED, copyMirrored, m
 import { transforms, coordinatesOf, rotationOf, expRotation, mul3, buildProblem, type PointInput, type PinInput } from './problem.ts';
 import { PointSolver, logRotation as logOf } from './solve.ts';
 import { cardTurns } from '../pose_reference.ts';
+import { apply4, fromColumnMajor, movedInPose, mul4, pageMove, placeAmount, rehold, rotationOf as rot4, type M4, type Place } from '../wearables/place.ts';
+import { alongAxis, heldByChoices, hitHandles, isRest, onPlane, pageNumbers, placeFromNumbers, sweep, translation, turnAbout, type HandlePart, type HeldBy } from './props.ts';
+import type { PropRig } from './host.ts';
 
 export type Tool = 'select' | 'move' | 'turn';
 export type Section = 'points' | 'joints' | 'hands' | 'limbs' | 'library';
@@ -90,8 +93,18 @@ export interface EditState {
   poses: SavedPose[];
   blend: { a: string; b: string; t: number } | null;
   applyTo: string;
+  // the props (moved by hand): the selected one, every rigid prop shown, the point turns go round, the skin inside the
+  // selected prop
+  prop: string | null;
+  propList: PropInfo[];
+  propPivot: 'carrier' | 'centre';
+  propInside: { mm: number; part: string } | null;
   version: number;
 }
+// a prop of the panel's list: its reference and label, the bone that carries it and its plain name, the bone it was made
+// on, how far its place moves it, its place as the panel's numbers, the choices of Held by, and the hand that holds it
+export interface PropInfo { ref: string; label: string; carrier: string; carrierName: string; made: string | null; moved: { mm: number; deg: number };
+  numbers: { mm: number[]; deg: number[] }; choices: HeldBy[]; side: 'L' | 'R' | null }
 
 const init = (): EditState => ({
   on: false, tool: 'select', section: 'points',
@@ -101,6 +114,7 @@ const init = (): EditState => ({
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
   joint: null, jv: null, limits: true, handSide: 'R', handShape: { curl: [0, 0, 0, 0, 0], spread: 0, fist: 0, thumb: 0 }, preset: null, userPresets: loadPresets(),
   grip_report: [], grip_blocked: false, grip_carried: false, kept: [], clip: '', limb: null, pinned: [], follow: false, poses: loadPoses(), blend: null, applyTo: 'all',
+  prop: null, propList: [], propPivot: 'carrier', propInside: null,
 });
 
 // a chain's plain name ("arm.l" -> "Left arm")
@@ -232,6 +246,7 @@ export class PoseEditor {
       counts, looks: all.filter((p) => p.state === 'look'), point,
       hands: { R: handPoints('R').map(info), L: handPoints('L').map(info) }, body: POINTS.filter((p) => p.group === 'body').map(info),
       pins: (s?.pins || []).map((q) => ({ name: q.name })), undo: s?.undoStack.at(-1)?.label || '', redo: s?.redoStack.at(-1)?.label || '',
+      propList: this.propInfos(),
       version: st.version + 1, ...patch,
     });
     this.dirty = true;
@@ -259,6 +274,8 @@ export class PoseEditor {
       this.session.undoStack.length = 0; this.session.redoStack.length = 0;
       fresh = true;
     }
+    // the props' places as the card holds them (the history keeps them with the pose)
+    this.session.places = Object.fromEntries(this.rigs().map((r) => [r.ref, r.place ? JSON.parse(JSON.stringify(r.place)) : null]));
     // the state as opened: edits after it are unsaved until Save points or Save the pose
     if (fresh) this.savedSig = this.signature();
     if (!this.layer) this.layer = new PointLayer((this.host.canvas.parentElement as HTMLElement) || document.body);
@@ -273,6 +290,7 @@ export class PoseEditor {
 
   private leave() {
     this.cancelGrab();
+    if (this.propDrag) this.cancelPropDrag();
     for (const off of this.offs.splice(0)) off();
     this.host.setOverlay(null); this.host.onFrame(null);
     this.layer?.hide();
@@ -344,6 +362,7 @@ export class PoseEditor {
   private poseChanged() {
     if (!this.session) return;
     this.host.setPose(this.frames.pageQuaternions(this.session.rotations));
+    this.syncPlaces();
     this.bal = null;
     this.dirty = true;
   }
@@ -456,8 +475,8 @@ export class PoseEditor {
   select(name: string | null, opts: { frame?: boolean } = {}) {
     const p = name ? POINT_BY_NAME.get(name) : null;
     const hand = p && p.group !== 'body' ? (p.side as 'L' | 'R') : editStore.get().hand;
-    this.publish({ selected: name, hand: name ? hand : editStore.get().hand });
-    if (!p) { setSelection(null); this.statusIdle(); return; }
+    this.publish({ selected: name, hand: name ? hand : editStore.get().hand, ...(name ? { prop: null } : {}) });
+    if (!p) { if (!editStore.get().prop) { setSelection(null); this.statusIdle(); } return; }
     setSelection({
       label: `Point ${p.number}`,
       bones: [p.joint],
@@ -915,14 +934,18 @@ export class PoseEditor {
   // finger can clear the prop; then the grip closes from there. The way out is the hand's depenetration direction (as a
   // physics engine separates two bodies in contact): the sum over the hand's vertices inside the prop of their depth
   // times the direction to their closest point on the prop's surface, with the palm's normal both ways after it. A prop
-  // that moves with the hand's arm moves with the lift, so Lift out leaves such a prop alone.
-  liftHand(): boolean {
+  // that moves with the hand's arm moves with the lift: `keepProp` then puts it back where it stood, as a new place relative
+  // to the bone that carries it (the hand leaves the prop); without it Lift out leaves such a prop alone, and Move it out
+  // (moveOut) moves the prop off the hand instead.
+  liftHand(keepProp = false): boolean {
     const S = this.session, g = editStore.get().grip;
     if (!S || !g) return false;
     const sdf = this.propSdf();
     if (!sdf) return false;
     const label = g.prop.split('/').pop() || 'prop';
-    if (this.carries(g.hand, g.prop)) { this.host.toast(`The ${label} moves with this hand, so lifting the hand takes it along.`); return false; }
+    const carried = this.carries(g.hand, g.prop);
+    if (carried && !keepProp) { this.host.toast(`The ${label} moves with this hand, so lifting the hand takes it along.`); return false; }
+    const rig = carried ? this.rigOf(g.prop) : null, held = rig ? { place: rig.place, carrier: rig.carrier, skin: this.host.skinMatrix(rig.carrier), head: this.headPage(rig.carrier) } : null;
     if (!this.gripStart) this.gripStart = S.rotations.map((r) => r.slice());
     const side = g.hand, end = ('hand.' + side) as End, before = S.snapshot(), start = this.gripStart;
     S.setPose(start);
@@ -972,10 +995,510 @@ export class PoseEditor {
     this.record('Lift the hand out');
     this.gripStart = found;
     S.setPose(found);
+    if (rig && held?.skin && held.head) {
+      // the hand moved off the prop that it carries: the prop stays where it stood, on the same bone
+      const now = this.host.skinMatrix(held.carrier);
+      if (now) { const p = rehold(held.place, held.skin, now, held.head, held.head, held.carrier, this.host.frame()); this.putPlace(rig.ref, isRest(p, rig.made) ? null : p); }
+    }
     return this.setSqueeze(editStore.get().squeeze, false);
   }
 
   setBalance(shown: boolean) { this.bal = null; this.publish({ balance: { ...editStore.get().balance, shown } }); }
+
+  // ---------------------------------------------------------------- props, moved by hand (DESIGN-0013, "Props")
+  // A prop worn as a rigid piece (a statue's sword, its base) moves by hand. A click selects it in the view (a ray onto
+  // its triangles when no skin lies in front of them) or in the panel's list. The Move tool's drag takes it along the
+  // view's plane through its pivot and the move handle's arrows along one axis of the view; the Turn tool's rings turn it
+  // round one axis through the pivot (the head of the bone that carries it, or its centre) and its outer ring round the
+  // line of sight; G and R grab and turn it with the studio's modal keys (X, Y, Z, typed millimetres and degrees); the
+  // arrows nudge it 1 mm across the view and Page Up and Down 1 mm towards and away from the camera; the panel takes
+  // typed values. Every move is one step of the history and goes into the card at once as the piece's place
+  // (wearables/place.ts), relative to the bone that carries it, so the prop follows the hand. Held by gives it to another
+  // bone, or to the root, where it stands in the pose shown.
+  private propBvhs = new WeakMap<Float64Array, { bvh: TriangleBVH; outside: number; centre: number[]; lo: number[]; hi: number[] }>();
+  private propDrag: { ref: string; part: HandlePart; start: Place | null; before: any; pivot: number[]; x0: number; y0: number; ex: number; ey: number;
+    sweep: number; axes: number[][]; moved: boolean; label: string } | null = null;
+  private propHandles: { centre: { x: number; y: number }; arrows?: [number, number][][]; rings?: [number, number][][]; outer?: number; axes: number[][] } | null = null;
+  private hoverProp: string | null = null;
+  private insideAt: number[] | null = null;
+  private insideTime = 0;
+
+  private rigs(): PropRig[] { return this.host.ready() && typeof this.host.propRigs === 'function' ? this.host.propRigs() : []; }
+  private rigOf(ref: string | null | undefined): PropRig | null { return ref ? this.rigs().find((r) => r.ref === ref) || null : null; }
+  private holderM(): M4 { return fromColumnMajor(this.host.holder().elements); }
+  private inv4(M: ArrayLike<number>): M4 { const m = new this.host.THREE.Matrix4().set(...(Array.from(M) as [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number])).invert(); return fromColumnMajor(m.elements); }
+  private headPage(bone: string): number[] | null { const i = this.host.bones().indexOf(bone); return i < 0 ? null : this.host.restHeads()[i]; }
+  boneName(b: string): string { return b === 'root' ? 'The ground' : jointName(b).name; }
+  // the matrix that takes a prop's rest vertices (the page's frame) to the world in the pose shown
+  private propWorld(r: PropRig): M4 | null { const S = this.host.skinMatrix(r.carrier); return S ? mul4(this.holderM(), S) : null; }
+  // a prop's triangles as a BVH of its rest vertices, the side its faces' winding calls outside, and its box
+  private restOf(r: PropRig) {
+    let c = this.propBvhs.get(r.vertices);
+    if (!c) {
+      const P = r.vertices, I = r.triangles, lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < P.length; i += 3) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], P[i + k]); hi[k] = Math.max(hi[k], P[i + k]); }
+      let vol = 0;
+      for (let t = 0; t + 2 < I.length; t += 3) {
+        const a = I[t] * 3, b = I[t + 1] * 3, cc = I[t + 2] * 3;
+        vol += P[a] * (P[b + 1] * P[cc + 2] - P[b + 2] * P[cc + 1]) - P[a + 1] * (P[b] * P[cc + 2] - P[b + 2] * P[cc]) + P[a + 2] * (P[b] * P[cc + 1] - P[b + 1] * P[cc]);
+      }
+      c = { bvh: new TriangleBVH(P, I), outside: vol < 0 ? -1 : 1, centre: lo.map((x, k) => (x + hi[k]) / 2), lo, hi };
+      this.propBvhs.set(r.vertices, c);
+    }
+    return c;
+  }
+  private sideOf(bone: string): 'L' | 'R' | null { const m = /^(wrist|metacarpal|finger)[0-9-]*\.(L|R)$/.exec(bone); return m ? (m[2] as 'L' | 'R') : null; }
+  private propInfos(): PropInfo[] {
+    if (!this.host.ready() || typeof this.host.propRigs !== 'function') return [];
+    const bones = this.host.bones(), F = this.host.frame();
+    return this.rigs().map((r) => ({ ref: r.ref, label: r.label, carrier: r.carrier, carrierName: this.boneName(r.carrier), made: r.made, moved: placeAmount(r.place),
+      numbers: pageNumbers(r.place, F), choices: heldByChoices(r.made, bones, (b) => this.boneName(b)), side: this.sideOf(r.carrier) }));
+  }
+  // the view's hits on the props: the first triangle along the ray in each prop's rest frame, unless skin lies in front
+  private hitProps(p: PointerInfo): PickHit[] {
+    const out: PickHit[] = [], rigs = this.rigs();
+    if (!rigs.length) return out;
+    const o = [p.ray.origin.x, p.ray.origin.y, p.ray.origin.z], d = [p.ray.direction.x, p.ray.direction.y, p.ray.direction.z];
+    const skin = this.host.bodyRay(p.ray.origin, p.ray.direction);
+    for (const r of rigs) {
+      const T = this.propWorld(r);
+      if (!T) continue;
+      const Ti = this.inv4(T), ro = apply4(Ti, o), R = rot4(Ti), rd = [0, 1, 2].map((k) => R[k * 3] * d[0] + R[k * 3 + 1] * d[1] + R[k * 3 + 2] * d[2]);
+      const h = this.restOf(r).bvh.ray(ro, rd);
+      if (!h || (skin && skin.distance < h.t - 1e-4)) continue;
+      out.push({ item: r.ref, distPx: 0, depth: h.t, label: r.label });
+    }
+    return out;
+  }
+  // where turns of the prop go round (the world): the carrying bone's head, else the prop's centre
+  private propPivotWorld(r: PropRig): number[] | null {
+    const T = this.propWorld(r);
+    if (!T) return null;
+    if (editStore.get().propPivot === 'carrier' && r.carrier !== 'root') { const h = this.headPage(r.carrier); if (h) return apply4(T, h); }
+    return apply4(T, this.restOf(r).centre);
+  }
+  private propCorners(r: PropRig): { x: number; y: number; z: number }[] {
+    const T = this.propWorld(r), c = this.restOf(r);
+    if (!T) return [];
+    const out: { x: number; y: number; z: number }[] = [];
+    for (let i = 0; i < 8; i++) { const w = apply4(T, [i & 1 ? c.hi[0] : c.lo[0], i & 2 ? c.hi[1] : c.lo[1], i & 4 ? c.hi[2] : c.lo[2]]); out.push({ x: w[0], y: w[1], z: w[2] }); }
+    return out;
+  }
+  // F's steps from a prop: the prop, the prop with the bone that holds it, then the whole figure
+  private propFraming(ref: string, step: number) {
+    const r = this.rigOf(ref);
+    if (!r) return null;
+    if (step === 0) return { box: this.propCorners(r), label: r.label };
+    if (step === 1 && r.carrier !== 'root') {
+      const T = this.propWorld(r), h = this.headPage(r.carrier);
+      if (T && h) { const w = apply4(T, h); return { box: [...this.propCorners(r), { x: w[0], y: w[1], z: w[2] }], label: `${r.label} and ${this.boneName(r.carrier).toLowerCase()}` }; }
+    }
+    return null;
+  }
+
+  selectProp(ref: string | null, frame = false) {
+    const r = this.rigOf(ref);
+    if (!r) {
+      if (editStore.get().prop) { this.insideAt = null; this.publish({ prop: null, propInside: null }); setSelection(null); this.statusIdle(); }
+      return;
+    }
+    this.publish({ prop: r.ref, selected: null, joint: null });
+    setSelection({ label: r.label, frame: (step) => this.propFraming(r.ref, step) });
+    const c = this.propPivotWorld(r);
+    if (frame) { const f = this.propFraming(r.ref, 0); if (f) cam().frameBounds(f.box, { label: f.label }); }
+    else if (c) cam().setPivot({ x: c[0], y: c[1], z: c[2] }, { history: false });
+    this.updateInside();
+    this.statusProp();
+  }
+  setPropPivot(pivot: 'carrier' | 'centre') { this.publish({ propPivot: pivot }); }
+
+  // a prop's place, into the history's state and the card (the page shows it at once)
+  private putPlace(ref: string, place: Place | null) {
+    if (this.session) this.session.places[ref] = place ? JSON.parse(JSON.stringify(place)) : null;
+    this.host.setPropPlace(ref, place);
+    this.propBvh = null;
+    this.dirty = true;
+  }
+  // the card's places shown again after an undo or a redo
+  private syncPlaces() {
+    const S = this.session;
+    if (!S) return;
+    for (const r of this.rigs()) {
+      if (!(r.ref in S.places)) continue;
+      const want = S.places[r.ref] ?? null;
+      if (JSON.stringify(want) !== JSON.stringify(r.place ?? null)) { this.host.setPropPlace(r.ref, want); this.propBvh = null; }
+    }
+  }
+  // the place after a rigid move W of the world (row-major) of the prop as it stood with the place `from`
+  private placeAfter(r: PropRig, from: Place | null, W: M4): Place | null {
+    const S = this.host.skinMatrix(r.carrier), head = this.headPage(r.carrier);
+    if (!S || !head) return from;
+    const H = this.holderM(), p = movedInPose(from, r.carrier, S, mul4(mul4(this.inv4(H), W), H), head, this.host.frame());
+    return isRest(p, r.made) ? null : p;
+  }
+  private propEdit(label: string, fn: (r: PropRig) => Place | null | undefined): boolean {
+    const r = this.rigOf(editStore.get().prop), S = this.session;
+    if (!r || !S) return false;
+    const next = fn(r);
+    if (next === undefined) return false;
+    this.record(label);
+    this.putPlace(r.ref, next);
+    this.publish();
+    this.updateInside();
+    return true;
+  }
+  // the world's length of a millimetre of the card (the page draws the figure scaled)
+  private unit(): number { return this.host.frame().scale; }
+  // Held by: the prop goes to another bone (or to the root), keeping its place in the world in the pose shown
+  setHeldBy(bone: string): boolean {
+    const F = this.host.frame();
+    return this.propEdit(`Held by: ${this.boneName(bone).toLowerCase()}`, (r) => {
+      const sOld = this.host.skinMatrix(r.carrier), sNew = this.host.skinMatrix(bone), hOld = this.headPage(r.carrier), hNew = this.headPage(bone);
+      if (!sOld || !sNew || !hOld || !hNew || bone === r.carrier) return undefined;
+      const p = rehold(r.place, sOld, sNew, hOld, hNew, bone, F);
+      return isRest(p, r.made) ? null : p;
+    });
+  }
+  // back to the starter's placement, on the bone it was made on
+  resetProp(): boolean { return this.propEdit('Put the prop back', (r) => (r.place ? null : undefined)); }
+  clearPropMove(): boolean {
+    return this.propEdit('Clear the prop\'s move', (r) => { if (!r.place) return undefined; const p = { ...r.place, translation: [0, 0, 0] }; return isRest(p, r.made) ? null : p; });
+  }
+  clearPropTurn(): boolean {
+    return this.propEdit('Clear the prop\'s turn', (r) => { if (!r.place) return undefined; const p = { ...r.place, rotation: [0, 0, 0, 1] }; return isRest(p, r.made) ? null : p; });
+  }
+  // the panel's typed values: the move in millimetres and the turn in degrees about the page's axes
+  setPropNumbers(mm: number[], deg: number[]): boolean {
+    const F = this.host.frame();
+    return this.propEdit('Type the prop\'s place', (r) => { const p = placeFromNumbers(r.carrier, mm, deg, F); return isRest(p, r.made) ? null : p; });
+  }
+  // the arrows (across the view) and Page Up and Down (along the line of sight), 1 mm or 0.2 mm with Shift
+  nudgeProp(dx: number, dy: number, dz: number, mm: number): boolean {
+    const r = this.rigOf(editStore.get().prop);
+    if (!r) return false;
+    const e = this.host.camera.matrixWorld.elements, k = mm / 1000 * this.unit();
+    const v = [0, 1, 2].map((i) => (e[i] * dx + e[4 + i] * dy - e[8 + i] * dz) * k);
+    return this.propEdit('Nudge the prop', (q) => this.placeAfter(q, q.place, translation(v)));
+  }
+
+  // ---- drags
+  private propAxes(r: PropRig): number[][] {
+    const T = this.propWorld(r), head = this.headPage(r.carrier);
+    if (!T || !head) return [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const A = mul4(T, this.pageMoveOf(r, head)), R = rot4(A);
+    return [0, 1, 2].map((k) => { const a = [R[k], R[3 + k], R[6 + k]], l = Math.hypot(a[0], a[1], a[2]) || 1; return a.map((x) => x / l); });
+  }
+  // the place's move in the page's frame (its turn gives the prop's own axes)
+  private pageMoveOf(r: PropRig, head: number[]): M4 { return pageMove(r.place, head, this.host.frame()); }
+  private beginPropDrag(ref: string, part: HandlePart, x: number, y: number): boolean {
+    const r = this.rigOf(ref), S = this.session;
+    if (!r || !S || this.propDrag) return false;
+    const pivot = this.propPivotWorld(r);
+    if (!pivot) return false;
+    this.propDrag = { ref, part, start: r.place ? JSON.parse(JSON.stringify(r.place)) : null, before: S.snapshot(), pivot, x0: x, y0: y, ex: 0, ey: 0, sweep: 0,
+      axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], moved: false, label: r.label };
+    return true;
+  }
+  // the move of the drag so far as a rigid move of the world, and its text for the status line
+  private propMove(D: NonNullable<PoseEditor['propDrag']>, snap: boolean, typed: number | null = null, axis: number[] | null = null): { W: M4; text: string } {
+    const c = this.v3(D.pivot), sc = cam().toScreen(c), u = this.unit();
+    const part = D.part;
+    if (part.kind === 'free' && !axis) {
+      const n = this.host.camera.getWorldDirection(new this.host.THREE.Vector3()), N = [n.x, n.y, n.z];
+      const ray = (x: number, y: number) => { const q = cam().rayAt(x, y); return onPlane([q.origin.x, q.origin.y, q.origin.z], [q.direction.x, q.direction.y, q.direction.z], D.pivot, N); };
+      const a = ray(D.x0, D.y0), b = ray(D.x0 + D.ex, D.y0 + D.ey);
+      let v = a && b ? [b[0] - a[0], b[1] - a[1], b[2] - a[2]] : [0, 0, 0];
+      if (snap) v = v.map((x) => Math.round(x / u * 1000) / 1000 * u);
+      return { W: translation(v), text: `${(Math.hypot(v[0], v[1], v[2]) / u * 1000).toFixed(1)} mm` };
+    }
+    if (part.kind === 'axis' || axis) {
+      const a = axis || D.axes[(part as any).k];
+      const q = cam().toScreen({ x: D.pivot[0] + a[0], y: D.pivot[1] + a[1], z: D.pivot[2] + a[2] });
+      let m = typed !== null ? typed / 1000 * u : alongAxis(D.ex, D.ey, q.x - sc.x, q.y - sc.y);
+      if (snap && typed === null) m = Math.round(m / u * 1000) / 1000 * u;
+      return { W: translation(a.map((x) => x * m)), text: `${(m / u * 1000).toFixed(1)} mm` };
+    }
+    // a turn: round one axis (a ring) or round the line of sight (the outer ring, a drag on the prop with the Turn tool)
+    const cp = this.host.camera.position, toCam = [cp.x - D.pivot[0], cp.y - D.pivot[1], cp.z - D.pivot[2]], l = Math.hypot(toCam[0], toCam[1], toCam[2]) || 1;
+    const ax = part.kind === 'ring' ? D.axes[part.k] : toCam.map((x) => x / l);
+    const facing = ax[0] * toCam[0] + ax[1] * toCam[1] + ax[2] * toCam[2] > 0 ? -1 : 1;
+    let deg = typed !== null ? typed : facing * D.sweep * 180 / Math.PI;
+    if (snap && typed === null) deg = Math.round(deg / 5) * 5;
+    return { W: turnAbout(D.pivot, ax, deg * Math.PI / 180), text: `${Math.round(deg * 10) / 10}°` };
+  }
+  private propDragTo(dx: number, dy: number, snap: boolean, typed: number | null = null, axis: number[] | null = null): string {
+    const D = this.propDrag;
+    if (!D) return '';
+    const sc = cam().toScreen(this.v3(D.pivot));
+    D.sweep += sweep(sc.x, sc.y, D.x0 + D.ex, D.y0 + D.ey, D.x0 + D.ex + dx, D.y0 + D.ey + dy);
+    D.ex += dx; D.ey += dy;
+    const r = this.rigOf(D.ref);
+    if (!r) return '';
+    const { W, text } = this.propMove(D, snap, typed, axis);
+    this.putPlace(D.ref, this.placeAfter(r, D.start, W));
+    D.moved = true;
+    const now = performance.now();
+    if (now - this.insideTime > 120) this.updateInside(true);
+    const inside = editStore.get().propInside;
+    setStatus('pose-edit-drag', [{ text: `${D.label} · ${text}${inside && inside.mm > 0.5 ? ` · skin ${inside.mm.toFixed(1)} mm inside` : ''}` }, { keys: 'Shift', text: 'fine' },
+      { keys: 'Ctrl', text: D.part.kind === 'ring' || D.part.kind === 'view' ? 'snap to 5°' : 'snap to 1 mm' }, { keys: 'Esc', text: 'put it back' }], { priority: PRIORITY.drag });
+    return text;
+  }
+  private endPropDrag() {
+    const D = this.propDrag, S = this.session;
+    this.propDrag = null;
+    clearStatus('pose-edit-drag');
+    if (!D || !S) return;
+    if (D.moved) {
+      S.undoStack.push({ label: D.part.kind === 'ring' || D.part.kind === 'view' ? `Turn the ${D.label}` : `Move the ${D.label}`, snap: D.before });
+      S.redoStack.length = 0;
+    }
+    this.publish();
+    this.updateInside();
+    this.statusProp();
+  }
+  private cancelPropDrag() {
+    const D = this.propDrag, S = this.session;
+    this.propDrag = null;
+    clearStatus('pose-edit-drag');
+    if (!D || !S) return;
+    if (D.moved) S.restore(D.before);
+    this.publish();
+    this.updateInside();
+  }
+  // G: the prop follows the mouse until a click or Enter (X, Y or Z: along that axis of the view, again: of the prop
+  // itself; a typed number: that many millimetres along it, along X without an axis); R: it turns round the line of
+  // sight through its pivot (X, Y or Z: round that axis; a typed number: degrees). Esc or a right-click puts it back.
+  private propModal(kind: 'grab' | 'turn'): boolean {
+    const r = this.rigOf(editStore.get().prop);
+    if (!r || this.propDrag) return false;
+    const pivot = this.propPivotWorld(r);
+    if (!pivot) return false;
+    const sc = cam().toScreen(this.v3(pivot));
+    const at = this.pointer && Math.hypot(this.pointer.x - sc.x, this.pointer.y - sc.y) > 12 ? { ...this.pointer } : { x: sc.x + 80, y: sc.y };
+    if (!this.beginPropDrag(r.ref, kind === 'grab' ? { kind: 'free' } : { kind: 'view' }, at.x, at.y)) return false;
+    const own = this.propAxes(r), world = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    let lx = 0, ly = 0;
+    startModal({
+      kind, label: r.label,
+      update: (v) => {
+        const D = this.propDrag;
+        if (!D) return;
+        const k = v.axis === 'free' ? -1 : { x: 0, y: 1, z: 2 }[v.axis];
+        const ax = k >= 0 ? (v.local ? own : world)[k] : kind === 'grab' && v.typed !== null ? world[0] : null;
+        if (kind === 'turn') D.part = ax ? { kind: 'ring', k: 0 } : { kind: 'view' };
+        if (ax && kind === 'turn') D.axes = [ax, ax, ax];
+        const text = this.propDragTo(v.dx - lx, v.dy - ly, v.snap, v.typed, kind === 'grab' ? ax : null);
+        lx = v.dx; ly = v.dy;
+        return text;
+      },
+      confirm: () => this.endPropDrag(),
+      cancel: () => this.cancelPropDrag(),
+    }, at);
+    return true;
+  }
+  startPropGrab(): boolean { return this.propModal('grab'); }
+  startPropTurn(): boolean { return this.propModal('turn'); }
+
+  // ---- the skin inside the selected prop (contact shading): its deepest point and the part of the body there
+  private cardSdf(r: PropRig): ((X: Float64Array) => Float64Array) | null {
+    const T = this.propWorld(r);
+    if (!T) return null;
+    const Ti = this.inv4(T), c = this.restOf(r), u = this.unit(), w = [0, 0, 0];
+    return (X: Float64Array) => {
+      const out = new Float64Array(X.length / 3);
+      for (let i = 0; i < out.length; i++) {
+        this.frames.toWorld([X[i * 3], X[i * 3 + 1], X[i * 3 + 2]], w);
+        const p = apply4(Ti, w), q = c.bvh.closest(p);
+        if (!q) { out[i] = Infinity; continue; }
+        const n = c.bvh.normal(q.tri), s = (p[0] - q.point[0]) * n[0] + (p[1] - q.point[1]) * n[1] + (p[2] - q.point[2]) * n[2];
+        let inside = s * c.outside < 0;
+        if (q.distance < 0.03 * u) { let odd = 0; for (const d of PARITY_RAYS) if (c.bvh.rayAll(p, d).length % 2 === 1) odd++; inside = odd >= 2; }
+        out[i] = (inside ? -q.distance : q.distance) / u;
+      }
+      return out;
+    };
+  }
+  private updateInside(quiet = false) {
+    this.insideTime = typeof performance !== 'undefined' ? performance.now() : 0;
+    const st = editStore.get(), r = this.rigOf(st.prop), S = this.session;
+    const none = () => { this.insideAt = null; if (st.propInside) { if (quiet) editStore.set({ propInside: null }); else this.publish({ propInside: null }); } };
+    if (!r || !S) { none(); return; }
+    const sdf = this.cardSdf(r), T = this.propWorld(r);
+    if (!sdf || !T) { none(); return; }
+    // the skin within the prop's box (the card frame), then its signed distance
+    const corners = this.propCorners(r).map((q) => this.frames.fromWorld([q.x, q.y, q.z]));
+    const lo = [0, 1, 2].map((k) => Math.min(...corners.map((q) => q[k])) - 0.005), hi = [0, 1, 2].map((k) => Math.max(...corners.map((q) => q[k])) + 0.005);
+    const body = this.skinnedBody(), V = body.vertices(S.rotations), rows: number[] = [];
+    for (let v = 0; v < body.n; v++) { const x = V[v * 3], y = V[v * 3 + 1], z = V[v * 3 + 2]; if (x >= lo[0] && x <= hi[0] && y >= lo[1] && y <= hi[1] && z >= lo[2] && z <= hi[2]) rows.push(v); }
+    if (!rows.length) { none(); return; }
+    const X = new Float64Array(rows.length * 3);
+    rows.forEach((v, i) => { X[i * 3] = V[v * 3]; X[i * 3 + 1] = V[v * 3 + 1]; X[i * 3 + 2] = V[v * 3 + 2]; });
+    const d = sdf(X);
+    let best = -1, bd = 0;
+    for (let i = 0; i < d.length; i++) if (d[i] < bd) { bd = d[i]; best = i; }
+    if (best < 0) { none(); return; }
+    this.insideAt = this.frames.toWorld([X[best * 3], X[best * 3 + 1], X[best * 3 + 2]]);
+    const res = { mm: Math.round(-bd * 10000) / 10, part: jointName(S.rig.labels[body.strongest[rows[best]]]).name };
+    if (quiet) editStore.set({ propInside: res }); else this.publish({ propInside: res });
+    this.dirty = true;
+  }
+  propReport() {
+    const st = editStore.get(), r = this.rigOf(st.prop);
+    return { prop: st.prop, place: r?.place ?? null, carrier: r?.carrier ?? null, inside: st.propInside, pivot: r ? this.propPivotWorld(r) : null,
+      handles: this.propHandles ? { centre: this.propHandles.centre, arrows: this.propHandles.arrows, rings: this.propHandles.rings?.map((q) => q.filter((_, i) => i % 6 === 0)), outer: this.propHandles.outer } : null };
+  }
+  // Move it out: the prop moves off the hand that holds it, along the way out of the skin inside it (the depth times the
+  // direction to the prop's surface, summed over the hand's skin inside, as a physics engine separates two bodies),
+  // 1 mm at a time up to 60 mm, until the palm is clear and every finger can clear it; then a grip closes from there
+  moveOut(): boolean {
+    const st = editStore.get(), S = this.session, ref = st.grip?.prop || st.prop, r = this.rigOf(ref);
+    const side = st.grip && st.grip.prop === ref ? st.grip.hand : r ? this.sideOf(r.carrier) : null;
+    if (!r || !S || !side) { this.host.toast('Select a prop that a hand holds first.'); return false; }
+    const sdf = this.cardSdf(r);
+    if (!sdf) return false;
+    const body = this.skinnedBody(), bones = (re: RegExp) => S.rig.labels.map((l, i) => [l, i] as [string, number]).filter(([l]) => re.test(l)).map(([, i]) => i);
+    const rows = body.rowsOf(bones(new RegExp(`^(wrist|metacarpal|finger)[0-9-]*\\.${side}$`))), palm = new Set(Array.from(body.rowsOf(bones(new RegExp(`^(wrist|metacarpal)[0-9-]*\\.${side}$`)))));
+    const V = body.vertices(S.rotations, rows), d = sdf(V);
+    const c = this.restOf(r), T = this.propWorld(r)!, Ti = this.inv4(T), dir = [0, 0, 0], w = [0, 0, 0];
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] >= 0) continue;
+      const x = [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]], q = c.bvh.closest(apply4(Ti, this.frames.toWorld(x, w)))!, s = this.frames.fromWorld(apply4(T, q.point));
+      const l = Math.hypot(s[0] - x[0], s[1] - x[1], s[2] - x[2]) || 1;
+      for (let k = 0; k < 3; k++) dir[k] += -d[i] * (s[k] - x[k]) / l;
+    }
+    const n = Math.hypot(dir[0], dir[1], dir[2]);
+    if (!(n > 0)) { this.host.toast(`No skin of the hand is inside the ${r.label}.`); return false; }
+    const u = dir.map((x) => x / n);
+    let found = 0;
+    for (let mm = 1; mm <= 60 && !found; mm++) {
+      const k = mm / 1000, shifted = (X: Float64Array) => { const Y = X.slice(); for (let i = 0; i < Y.length; i += 3) { Y[i] += k * u[0]; Y[i + 1] += k * u[1]; Y[i + 2] += k * u[2]; } return sdf(Y); };
+      const dk = shifted(V);
+      let palmClear = true;
+      for (let i = 0; i < dk.length; i++) if (palm.has(rows[i]) && dk[i] < 0) { palmClear = false; break; }
+      if (!palmClear) continue;
+      const g = this.gripOf(S.rotations, side, shifted, 0);
+      if (!Object.values(g.report).some((f) => f.blocked)) found = mm;
+    }
+    if (!found) { this.host.toast(`The ${r.label} does not come off the hand within 60 mm.`); return false; }
+    // the prop moves the other way: -found mm along u (the card frame) as a move of the world
+    const wd = this.frames.dirToWorld(u), m = -found / 1000 * this.unit();
+    this.record(`Move the ${r.label} out of the hand`);
+    this.putPlace(r.ref, this.placeAfter(r, r.place, translation(wd.map((x) => x * m))));
+    this.lastMoveOut = { mm: found, direction: u };
+    this.host.toast(`Moved the ${r.label} ${found} mm off the hand.`);
+    this.publish();
+    this.updateInside();
+    if (st.grip && st.grip.prop === r.ref) { this.gripStart = null; this.setSqueeze(st.squeeze, false); }
+    return true;
+  }
+  lastMoveOut: { mm: number; direction: number[] } | null = null;
+
+  // the prop's handles over the view: the move handle (three arrows and a centre) with the Move tool, the turn rings (and
+  // an outer ring) with the Turn tool, the prop's name and the bone that holds it, and the deepest skin inside it
+  private drawPropHandles(f: Frame, st: EditState) {
+    this.propHandles = null;
+    const r = this.rigOf(st.prop);
+    if (!r) return;
+    const pivot = this.propPivotWorld(r);
+    if (!pivot) return;
+    const sc = cam().toScreen(this.v3(pivot));
+    if (sc.depth <= 0) return;
+    const H = this.host.canvas.clientHeight || 800, R0 = 70 * f.scale, lw = R0 * sc.depth * 2 * Math.tan((this.host.camera.fov * Math.PI / 180) / 2) / H;
+    const COL = ['#d0553a', '#3fa66b', '#2f6fd6'], NAMES = ['X', 'Y', 'Z'], axes = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const strokes = f.strokes || (f.strokes = []), tags = f.tags || (f.tags = []);
+    const toS = (p: number[]) => cam().toScreen({ x: p[0], y: p[1], z: p[2] });
+    const path = (pts: [number, number][]) => 'M' + pts.map((p) => p.map((x) => x.toFixed(1)).join(' ')).join(' L');
+    const hot = (key: string) => this.hoverProp === key || (this.propDrag && JSON.stringify(this.propDrag.part) === key);
+    if (st.tool === 'move') {
+      const arrows: [number, number][][] = [];
+      axes.forEach((a, k) => {
+        const e = toS(pivot.map((x, i) => x + a[i] * lw)), pts: [number, number][] = [[sc.x, sc.y], [e.x, e.y]];
+        arrows.push(pts);
+        const key = JSON.stringify({ kind: 'axis', k }), wd = hot(key) ? 3.4 : 2.2;
+        strokes.push({ d: path(pts), colour: COL[k], width: wd, opacity: 0.95 });
+        const dx = e.x - sc.x, dy = e.y - sc.y, l = Math.hypot(dx, dy) || 1, ux = dx / l, uy = dy / l, s = 9 * f.scale;
+        strokes.push({ d: `M${(e.x - ux * s - uy * s * 0.5).toFixed(1)} ${(e.y - uy * s + ux * s * 0.5).toFixed(1)} L${e.x.toFixed(1)} ${e.y.toFixed(1)} L${(e.x - ux * s + uy * s * 0.5).toFixed(1)} ${(e.y - uy * s - ux * s * 0.5).toFixed(1)}`, colour: COL[k], width: wd, opacity: 0.95 });
+        tags.push({ x: e.x + ux * 14, y: e.y + uy * 14, text: NAMES[k], colour: COL[k] });
+      });
+      let cd = '';
+      for (let i = 0; i <= 32; i++) { const t = i / 32 * 2 * Math.PI, rr = 9 * f.scale; cd += (i ? ' L' : 'M') + (sc.x + rr * Math.cos(t)).toFixed(1) + ' ' + (sc.y + rr * Math.sin(t)).toFixed(1); }
+      strokes.push({ d: cd, colour: '#d4ae52', width: hot(JSON.stringify({ kind: 'free' })) ? 3.4 : 2.2, opacity: 0.95 });
+      this.propHandles = { centre: { x: sc.x, y: sc.y }, arrows, axes };
+    } else if (st.tool === 'turn') {
+      const rings: [number, number][][] = [];
+      axes.forEach((a, k) => {
+        const ref = Math.abs(a[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+        let u = [a[1] * ref[2] - a[2] * ref[1], a[2] * ref[0] - a[0] * ref[2], a[0] * ref[1] - a[1] * ref[0]];
+        const lu = Math.hypot(u[0], u[1], u[2]); u = u.map((x) => x / lu);
+        const v = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]], rr = lw * (1 - 0.1 * k);
+        const pts: [number, number][] = [];
+        for (let i = 0; i <= 72; i++) { const t = i / 72 * 2 * Math.PI, q = toS([0, 1, 2].map((j) => pivot[j] + rr * (Math.cos(t) * u[j] + Math.sin(t) * v[j]))); pts.push([q.x, q.y]); }
+        rings.push(pts);
+        strokes.push({ d: path(pts), colour: COL[k], width: hot(JSON.stringify({ kind: 'ring', k })) ? 3.2 : 1.8, opacity: 0.95 });
+      });
+      const outer = R0 + 22 * f.scale;
+      let od = '';
+      for (let i = 0; i <= 96; i++) { const t = i / 96 * 2 * Math.PI; od += (i ? ' L' : 'M') + (sc.x + outer * Math.cos(t)).toFixed(1) + ' ' + (sc.y + outer * Math.sin(t)).toFixed(1); }
+      strokes.push({ d: od, colour: '#c9c2b7', width: hot(JSON.stringify({ kind: 'view' })) ? 2.6 : 1.4, dash: '4 4', opacity: 0.9 });
+      this.propHandles = { centre: { x: sc.x, y: sc.y }, rings, outer, axes };
+    } else {
+      let cd = '';
+      for (let i = 0; i <= 24; i++) { const t = i / 24 * 2 * Math.PI, rr = 5 * f.scale; cd += (i ? ' L' : 'M') + (sc.x + rr * Math.cos(t)).toFixed(1) + ' ' + (sc.y + rr * Math.sin(t)).toFixed(1); }
+      strokes.push({ d: cd, colour: '#d4ae52', width: 2, opacity: 0.95 });
+    }
+    f.labels.push({ x: sc.x, y: sc.y - R0 - 30 * f.scale, title: r.label, line: `Held by: ${this.boneName(r.carrier).toLowerCase()}`, side: 'right' });
+    const inside = st.propInside;
+    if (inside && inside.mm > 0.5 && this.insideAt) {
+      const s = toS(this.insideAt);
+      if (s.depth > 0) (f.alerts || (f.alerts = [])).push({ x: s.x, y: s.y, title: `Skin ${inside.mm.toFixed(1)} mm inside the ${r.label}`, line: inside.part });
+    }
+  }
+
+  private registerPropPickers() {
+    const on = () => { const st = editStore.get(); return st.on && !st.pinDraft && !(st.section === 'points' && st.tool === 'move' && !!st.selected); };
+    const clear = () => { if (editStore.get().prop) this.selectProp(null); };
+    const drag = {
+      onDrag: (_h: PickHit, _p: PointerInfo, d: DragInfo) => { if (this.propDrag) this.propDragTo(d.ddx * d.scale, d.ddy * d.scale, d.snap); },
+      onUp: () => this.endPropDrag(),
+      onCancel: () => this.cancelPropDrag(),
+    };
+    this.offs.push(registerPicker({
+      id: 'pose-prop-handles', priority: 25, enabled: () => on() && !!editStore.get().prop && editStore.get().tool !== 'select' && !!this.propHandles,
+      hit: (p) => { const part = this.propHandles ? hitHandles(p, this.propHandles, 9 * settings.targetScale()) : null;
+        return part ? { item: part, distPx: 0, label: part.kind === 'free' ? 'Move along the view' : part.kind === 'view' ? 'Turn round the line of sight' : `${part.kind === 'axis' ? 'Move along' : 'Turn round'} ${'XYZ'[part.k]}` } : null; },
+      onDown: (h, p) => { const ref = editStore.get().prop; if (!ref || !this.beginPropDrag(ref, h.item as HandlePart, p.x, p.y)) return false; if (this.propHandles) this.propDrag!.axes = this.propHandles.axes; return true; },
+      ...drag,
+      onClick: () => this.endPropDrag(),
+      onHover: (h) => { this.hoverProp = h ? JSON.stringify(h.item) : null; this.dirty = true; },
+      cursor: 'grab',
+    }));
+    this.offs.push(registerPicker({
+      id: 'pose-props', priority: 3, enabled: () => on() && editStore.get().tool === 'select', hit: (p) => this.hitProps(p),
+      onClick: (h) => this.selectProp(h.item as string), onBackground: clear, cursor: 'pointer',
+    }));
+    this.offs.push(registerPicker({
+      id: 'pose-props-drag', priority: 3, enabled: () => on() && editStore.get().tool !== 'select', hit: (p) => this.hitProps(p),
+      onDown: (h, p) => {
+        const st = editStore.get(), ref = h.item as string;
+        // the Move tool drags any prop; the Turn tool turns the selected prop only (a click selects another)
+        if (st.tool === 'turn' && st.prop !== ref) return true;
+        if (st.prop !== ref) this.selectProp(ref);
+        this.beginPropDrag(ref, st.tool === 'turn' ? { kind: 'view' } : { kind: 'free' }, p.x, p.y);
+        return true;
+      },
+      ...drag,
+      onClick: (h) => { this.endPropDrag(); this.selectProp(h.item as string); },
+      onBackground: clear, cursor: 'grab',
+    }));
+  }
+  statusProp() {
+    const st = editStore.get(), r = this.rigOf(st.prop);
+    if (!r) { this.statusIdle(); return; }
+    setStatus('pose-edit', [{ text: `${r.label} selected` }, { keys: 'Drag', text: st.tool === 'move' ? 'move it' : st.tool === 'turn' ? 'turn it' : 'turn the view (W: move it)' },
+      { keys: 'G', text: 'grab' }, { keys: 'R', text: 'turn' }, { keys: 'Arrows', text: 'nudge 1 mm', shift: { keys: 'Arrows', text: 'nudge 0.2 mm' } },
+      { keys: 'Alt+G', text: 'clear the move' }, { keys: 'Alt+R', text: 'clear the turn' }, { keys: 'F', text: 'frame' }], { priority: PRIORITY.tool });
+  }
 
   // ---------------------------------------------------------------- the card
   // the points, the pins and the pose into the open card, then Save card
@@ -1001,7 +1524,7 @@ export class PoseEditor {
   private signature(): string {
     const S = this.session;
     if (!S) return '';
-    return JSON.stringify([S.cardPoints(), S.cardPins(), S.rotations.map((r) => r.map((x) => Math.round(x * 1e6)))]);
+    return JSON.stringify([S.cardPoints(), S.cardPins(), S.rotations.map((r) => r.map((x) => Math.round(x * 1e6))), S.places]);
   }
   unsavedEdits(): boolean { return !!this.session && this.savedSig !== null && this.signature() !== this.savedSig; }
   // the prompt before leaving the page: on unless View › Controls turns it off or the URL carries noprompt (the page
@@ -1022,7 +1545,7 @@ export class PoseEditor {
   hands(): HandControls { this.joints(); return this.jointsCache!.hands; }
 
   selectJoint(label: string | null) {
-    this.publish({ joint: label, selected: null });
+    this.publish({ joint: label, selected: null, ...(label ? { prop: null } : {}) });
     if (!label) { setSelection(null); this.statusIdle(); return; }
     const J = this.joints(), b = J.bone(label);
     if (b === undefined) return;
@@ -1551,6 +2074,7 @@ export class PoseEditor {
       const b = this.bal, c = toS(b.centre as V3), m = toS(b.mark as V3);
       f.balance = { centre: [c.x, c.y], mark: [m.x, m.y], polygon: b.polygon.map((q) => { const s = toS(q as V3); return [s.x, s.y] as [number, number]; }), inside: b.inside };
     }
+    if (st.prop) this.drawPropHandles(f, st); else this.propHandles = null;
     if (this.magCam && this.magAt && this.drag && this.mag) {
       // the magnifier shows the spot under the pointer MAG_ZOOM times larger, so a point lies at its offset from the
       // pointer times the zoom
@@ -1762,6 +2286,7 @@ export class PoseEditor {
   statusIdle() {
     if (!editStore.get().on) return;
     const st = editStore.get();
+    if (st.prop) { this.statusProp(); return; }
     const parts: StatusPart[] = [{ text: st.tool === 'move' ? 'Drag a point: slide it on the scan' : 'Click a point to select it' },
       { keys: 'Left-drag', text: 'turn', shift: { keys: 'Left-drag', text: 'turn finely' } }, { keys: 'Middle-drag', text: 'move the view' }, { keys: 'Wheel', text: 'zoom' }, { keys: 'F', text: 'frame' }];
     setStatus('pose-edit', parts, { priority: PRIORITY.tool });
@@ -1794,6 +2319,7 @@ export class PoseEditor {
     defineScope({ id: 'pose-edit', parent: 'pose', active: () => editStore.get().on });
     defineScope({ id: 'pose-select', parent: 'pose-edit', active: () => !!editStore.get().selected });
     defineScope({ id: 'pose-joint', parent: 'pose-edit', active: () => !!editStore.get().joint && (editStore.get().section === 'joints' || editStore.get().tool === 'turn') });
+    defineScope({ id: 'pose-prop', parent: 'pose-edit', active: () => !!editStore.get().prop });
     const sel = () => editStore.get().selected;
     const tool = (t: Tool, label: string, key: string, desc: string, live = true): ActionDef => ({
       id: 'pose.tool.' + t, label, desc, keys: [key], group: 'Posing tools', tier: 'frequent', scope: 'pose-edit', place: 'Pose › Edit, the view\'s tools',
@@ -1855,11 +2381,32 @@ export class PoseEditor {
       { id: 'pose.redo', label: 'Redo the pose edit', keys: ['Ctrl+Shift+Z', 'Ctrl+Y'], group: 'History', tier: 'constant', scope: 'pose-edit', help: false, run: () => this.redo() },
       { id: 'pose.place', label: 'Place points', desc: 'Every point on the scan, from the fitted character', group: 'Points', tier: 'occasional', scope: 'pose-edit', place: 'Pose › Edit',
         run: () => { this.placeAll(); } },
+
+      // the props (DESIGN-0013, "Props"): live while a prop is selected, in place of the point's and the joint's keys
+      { id: 'pose.prop.grab', label: 'Grab the prop', desc: 'The selected prop follows the mouse until a click or Enter; X, Y or Z keep to one axis, a number moves it that many millimetres',
+        keys: ['G'], group: 'Props', tier: 'frequent', scope: 'pose-prop', run: () => this.startPropGrab() },
+      { id: 'pose.prop.turn', label: 'Turn the prop', desc: 'The selected prop turns round its pivot with the mouse until a click or Enter; X, Y or Z keep to one axis, a number turns it that many degrees',
+        keys: ['R'], group: 'Props', tier: 'frequent', scope: 'pose-prop', run: () => this.startPropTurn() },
+      { id: 'pose.prop.clear-move', label: 'Clear the prop\'s move', desc: 'Its turn stays', keys: ['Alt+G'], group: 'Props', tier: 'frequent', scope: 'pose-prop',
+        hint: 'The prop is where it was made', run: () => this.clearPropMove() },
+      { id: 'pose.prop.clear-turn', label: 'Clear the prop\'s turn', desc: 'Its move stays', keys: ['Alt+R'], group: 'Props', tier: 'frequent', scope: 'pose-prop',
+        hint: 'The prop is where it was made', run: () => this.clearPropTurn() },
+      { id: 'pose.prop.nudge', label: 'Nudge the prop', desc: '1 mm across the view (Shift: 0.2 mm)', keys: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Shift+ArrowLeft',
+        'Shift+ArrowRight', 'Shift+ArrowUp', 'Shift+ArrowDown'], group: 'Props', tier: 'frequent', scope: 'pose-prop', repeat: true,
+        run: (c) => { const k = c.event?.key || c.chord.replace('Shift+', ''); return this.nudgeProp(k === 'ArrowLeft' ? -1 : k === 'ArrowRight' ? 1 : 0, k === 'ArrowUp' ? 1 : k === 'ArrowDown' ? -1 : 0, 0, c.shift ? 0.2 : 1); } },
+      { id: 'pose.prop.push', label: 'Move the prop away', desc: '1 mm away from the camera (Shift: 0.2 mm)', keys: ['PageDown', 'Shift+PageDown'], group: 'Props', tier: 'frequent',
+        scope: 'pose-prop', repeat: true, run: (c) => this.nudgeProp(0, 0, 1, c.shift ? 0.2 : 1) },
+      { id: 'pose.prop.pull', label: 'Move the prop nearer', desc: '1 mm towards the camera (Shift: 0.2 mm)', keys: ['PageUp', 'Shift+PageUp'], group: 'Props', tier: 'frequent',
+        scope: 'pose-prop', repeat: true, run: (c) => this.nudgeProp(0, 0, -1, c.shift ? 0.2 : 1) },
+      { id: 'pose.prop.reset', label: 'Put the prop back', desc: 'Back to the starter\'s placement, on the bone it was made on', group: 'Props', tier: 'occasional', scope: 'pose-prop',
+        place: 'Pose › Edit, Props', run: () => this.resetProp() },
+      { id: 'pose.prop.clear', label: 'Clear the prop selection', keys: ['Escape'], group: 'Props', tier: 'constant', scope: 'pose-prop', help: false, run: () => { this.selectProp(null); } },
     ];
     registerActions(list);
     this.registerPickers();
     this.registerJointPickers();
     this.registerLimbPickers();
+    this.registerPropPickers();
     // the pickers stay registered; enabled() keeps them out while Edit is off
     this.offs = [];
   }
@@ -1880,7 +2427,7 @@ export function editorReport(ed: PoseEditor) {
     pts[p.name] = { number: p.number, target: t ? t.position : null, on: t ? t.on : null, confidence: t ? t.confidence : null, depth: t ? t.depth_mm : 0,
       placed: t ? t.placed : null, anny: a || null, screen: s || null, visible: (ed as any).visible.get(p.name) ?? null, onScan, annyGap };
   }
-  return { state: { ...editStore.get(), hands: undefined, body: undefined }, lift: ed.lastLift, points: pts, magnifier: (ed as any).mag,
+  return { state: { ...editStore.get(), hands: undefined, body: undefined }, lift: ed.lastLift, points: pts, magnifier: (ed as any).mag, props: ed.propReport(), moveOut: ed.lastMoveOut,
     unsaved: ed.unsavedEdits(), prompt: ed.promptOn(), rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
     labels: S ? S.rig.labels : [] };
 }

@@ -6,6 +6,12 @@
 // the picture. main.ts implements it; the editor (editor.ts) holds no reference to main.ts's globals.
 
 import type * as THREE from 'three';
+import type { Place } from '../wearables/place.ts';
+
+// a prop worn as a rigid piece, as the studio moves it: its reference and label, the bone its package binds it to, its
+// place on the card (or null), the bone that carries it now, and its rest vertices (the page's frame, with its place)
+// and triangles
+export interface PropRig { ref: string; label: string; made: string | null; place: Place | null; carrier: string; vertices: Float64Array; triangles: Uint32Array }
 
 export interface PoseHost {
   THREE: typeof THREE;
@@ -47,6 +53,13 @@ export interface PoseHost {
   // the props worn (the wardrobe's shown pieces of the slot prop), as triangle meshes in the page's frame, with the bone
   // that carries a rigid prop
   props(): { name: string; positions: Float32Array; indices: Uint32Array; bone?: string }[];
+  // the shown props that are rigid pieces, which the studio moves (PropRig)
+  propRigs(): PropRig[];
+  // the skinning matrix of a bone in the pose shown (rest to posed, the page's frame before the holder's turn, row-major
+  // 4 x 4), or null for a bone the rig lacks
+  skinMatrix(bone: string): Float64Array | null;
+  // a prop's place on the card (null: the place its package binds it to), shown at once
+  setPropPlace(ref: string, place: Place | null): boolean;
   // the page's library of poses (the 50 built-in poses: name, label, group and credit), and one of them as the page's
   // quaternions (its first frame), or null
   builtinPoses(): { name: string; label: string; group?: string; credit?: string }[];

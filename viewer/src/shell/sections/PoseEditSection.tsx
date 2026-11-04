@@ -378,10 +378,17 @@ function GripBlock({ st }: { st: EditState }) {
     </div>
     {on && st.grip_blocked ? <div className="pe-grip-blocked" role="status">
       <p><Icon name="alert" size={16} /> The {st.grip_report.filter((f) => f.blocked).map((f) => FINGER_NAMES[FINGERS_ORDER.indexOf(f.finger)].toLowerCase()).join(', ') || 'a finger'} stays inside the {label}, at its present curl and straight alike.</p>
-      {st.grip_carried ? <Note>The {label} moves with this hand, so lifting the hand takes it along. Turn that finger in Joints.</Note> : <>
+      {st.grip_carried ? null : <>
         <TextButton label="Lift the hand out" icon="hand" onClick={() => ed.liftHand()} />
         <Note>Lift the hand out moves the hand off the {label}, and the arm follows, until every finger can clear it. You can also drag the hand's handle in Limbs.</Note>
       </>}
+    </div> : null}
+    {on && st.grip_carried ? <div className="pe-grip-carried">
+      <Note>This hand holds the {label}, so it moves with the hand. Move it out of the hand, or lift the hand out and leave the {label} where it stands.</Note>
+      <div className="btn-row">
+        <TextButton label={`Move the ${label} out`} icon="move" onClick={() => ed.moveOut()} />
+        <TextButton label="Lift the hand out" icon="hand" quiet onClick={() => ed.liftHand(true)} />
+      </div>
     </div> : null}
     {on ? <>
       <Range key="squeeze" id="grip-squeeze" label="Squeeze" value={Math.round(st.squeeze * 100)} min={0} max={100} step={1} unit="%" ends={['Looser', 'Tighter']}
@@ -394,6 +401,64 @@ function GripBlock({ st }: { st: EditState }) {
       </ul>
       <Note>Each finger starts where it stands, opens first if it is inside the {label}, and closes joint by joint until it touches with 1 mm to spare. Squeeze loosens the grip back to that start.</Note>
     </> : null}
+  </>;
+}
+// the props (moved by hand): the list of the rigid props shown, and the selected prop's panel (artboard 2c's Grip has
+// the hand's side): Held by, the point turns go round, its move and turn as typed values, Put it back, and the skin
+// inside it
+function PropsBlock({ st }: { st: EditState }) {
+  const ed = poseEditor()!;
+  if (!st.propList.length) return null;
+  const sel = st.propList.find((p) => p.ref === st.prop) || null;
+  return (
+    <div className="osb-section pe-props" data-props="">
+      <Fold title="Props" count={sel ? sel.label : `${st.propList.length}`} className="pe-fold" open={!!sel} >
+        <ul className="pe-prop-list" aria-label="Props">
+          {st.propList.map((p) => (
+            <li key={p.ref}><button type="button" className="pe-prop-row" aria-pressed={p.ref === st.prop} onClick={() => ed.selectProp(p.ref === st.prop ? null : p.ref, p.ref !== st.prop)}>
+              <Icon name="cube" size={16} /><span><b>{p.label}</b><small>Held by: {p.carrierName.toLowerCase()}{p.moved.mm > 0.05 || p.moved.deg > 0.05 ? ` · moved ${p.moved.mm.toFixed(1)} mm, turned ${p.moved.deg.toFixed(1)}°` : ''}</small></span></button></li>
+          ))}
+        </ul>
+        {sel ? <PropPanel st={st} p={sel} /> : <Note>Click a prop in the view or here to move it. The Move tool (W) drags it, the Turn tool (E) turns it, and G and R grab and turn it by the keys.</Note>}
+      </Fold>
+    </div>
+  );
+}
+function PropPanel({ st, p }: { st: EditState; p: EditState['propList'][number] }) {
+  const ed = poseEditor()!;
+  const AX = ['X', 'Y (up)', 'Z (forward)'];
+  const set = (kind: 'mm' | 'deg', k: number, v: number) => {
+    const mm = p.numbers.mm.slice(), deg = p.numbers.deg.slice();
+    (kind === 'mm' ? mm : deg)[k] = v;
+    ed.setPropNumbers(mm, deg);
+  };
+  return <>
+    <label className="pe-held-by"><span className="osb-eyebrow">Held by</span>
+      <select aria-label="Held by" value={p.carrier} onChange={(e) => ed.setHeldBy(e.target.value)}>
+        {p.choices.map((c) => <option key={c.bone} value={c.bone}>{c.label}</option>)}
+      </select></label>
+    <Note>The {p.label} follows the bone that holds it. A new bone takes it where it stands now.</Note>
+    <Seg label="Turn round" items={[{ value: 'carrier', label: 'The holding bone' }, { value: 'centre', label: 'Its centre' }]} value={st.propPivot} onPick={(v) => ed.setPropPivot(v as any)} />
+    <h3 className="osb-eyebrow pe-eyebrow">Move <span className="osb-eyebrow-val">mm, at rest</span></h3>
+    <div className="pe-prop-nums">
+      {[0, 1, 2].map((k) => <label key={'m' + k}><span>{AX[k]}</span><input type="number" className="pe-num" aria-label={`Move ${AX[k]}`} step={0.5} value={Number(p.numbers.mm[k].toFixed(1))}
+        onChange={(e) => { const x = parseFloat(e.target.value); if (isFinite(x)) set('mm', k, x); }} /></label>)}
+    </div>
+    <h3 className="osb-eyebrow pe-eyebrow">Turn <span className="osb-eyebrow-val">degrees</span></h3>
+    <div className="pe-prop-nums">
+      {[0, 1, 2].map((k) => <label key={'d' + k}><span>{AX[k]}</span><input type="number" className="pe-num" aria-label={`Turn ${AX[k]}`} step={1} value={Number(p.numbers.deg[k].toFixed(1))}
+        onChange={(e) => { const x = parseFloat(e.target.value); if (isFinite(x)) set('deg', k, x); }} /></label>)}
+    </div>
+    {st.propInside && st.propInside.mm > 0.5 ? <div className="pe-grip-blocked" role="status">
+      <p><Icon name="alert" size={16} /> Skin {st.propInside.mm.toFixed(1)} mm inside the {p.label}: {st.propInside.part.toLowerCase()}.</p>
+      {p.side ? <TextButton label={`Move the ${p.label} out of the hand`} icon="move" onClick={() => ed.moveOut()} /> : null}
+    </div> : <Note>No skin lies inside the {p.label}.</Note>}
+    <div className="btn-row">
+      <Tip action="pose.prop.reset"><button type="button" className="tb osb-btn" disabled={p.moved.mm === 0 && p.moved.deg === 0 && p.carrier === p.made} onClick={() => ed.resetProp()}>
+        <Icon name="reset" size={16} /><span>Put it back</span></button></Tip>
+      <Tip action="pose.prop.clear-move"><button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.clearPropMove()}><span>Clear the move</span></button></Tip>
+      <Tip action="pose.prop.clear-turn"><button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.clearPropTurn()}><span>Clear the turn</span></button></Tip>
+    </div>
   </>;
 }
 const FINGER_NAMES = ['Thumb', 'Index finger', 'Middle finger', 'Ring finger', 'Little finger'];
@@ -505,6 +570,7 @@ export function PoseEditSection() {
       {st.point ? <div className="osb-section"><PointPanel p={st.point} st={st} /></div> : null}
       {!hand ? <div className="osb-section pe-contact"><ContactFolds st={st} /></div> : null}
       </>}
+      <PropsBlock st={st} />
       <div className="pe-foot">
         {st.section !== 'points' ? <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />
           : hand ? <TextButton label="Reset the hand" icon="reset" quiet onClick={() => { const s = st.selected || `wrist.${hand}`; ed.resetPoint(s, true); }} />

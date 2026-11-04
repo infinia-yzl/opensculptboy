@@ -412,6 +412,26 @@ def _write_prop_glb(path, vertices, triangles, name):
     doc.write(path)
 
 
+def prop_place(config, name: str) -> dict | None:
+    """The config's place of a prop (``prop_places``, by the prop's name or its piece id)."""
+    places = getattr(config, "prop_places", None) or {}
+    return places.get(name) or places.get(_slug(name))
+
+
+def placed_rest(rest, place: dict, body, labels) -> tuple:
+    """A prop's rest vertices moved by a place (:mod:`opensculptboy.wearables.place`) about
+    the rest head of its carrying bone on ``body`` (a :class:`BodySurface`), and that bone's
+    index in ``labels``."""
+    from opensculptboy.wearables.place import place_matrix
+
+    if place["bone"] not in labels:
+        raise ValueError(f"Unknown bone {place['bone']!r} in a prop's place.")
+    bone = labels.index(place["bone"])
+    head = body.bone_poses[body.bone_labels.index(place["bone"])][:3, 3]
+    M = place_matrix(place, head)
+    return np.asarray(rest, np.float64) @ M[:3, :3].T + M[:3, 3], bone
+
+
 def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> list:
     """
     Write the statue's props (:func:`statue_props`) as wearable packages of the slot
@@ -422,7 +442,8 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
     rigidly to that bone, so that the viewer
     poses it with the figure. A prop that stands on the ground (within :data:`GROUND_REACH`
     of the base's top) is bound to the root as the base is; the others to the bone of the
-    skin nearest their closest points.
+    skin nearest their closest points. A prop of the config's ``prop_places`` (moved in the
+    studio) moves by its place and binds to the place's bone (:func:`placed_rest`).
     """
     import torch
     from scipy.spatial import cKDTree
@@ -493,6 +514,10 @@ def prop_packages(root, card: dict, config, out_dir, props=None, log=print) -> l
         idx = np.zeros((len(V), indices.shape[1]), indices.dtype)
         idx[:, 0] = bone
         rest = R_.unpose(V, one, idx, transforms, R, t)
+        place = prop_place(config, name)
+        if place:
+            # moved in the studio: the card's place about its carrying bone's rest head
+            rest, bone = placed_rest(rest, place, body, labels)
         budget = PIECE_TRIANGLES.get(role, PROP_TRIANGLES)
         if len(T) > budget:
             reduced = decimate(rest, T, budget)

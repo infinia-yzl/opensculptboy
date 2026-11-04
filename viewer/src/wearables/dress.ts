@@ -13,6 +13,7 @@
 import { maskedSolid } from './alpha.ts';
 import { adjacency, CANDIDATES, frames, interpolate, linePartnersSteps, norm3, QUERY_SLICE, rayHitsSteps, runSteps, Surface, unitRows, vertexNormals, vertexScales, type F64, type I32, type Steps } from './geometry.ts';
 import type { Garment, Wearable } from './package.ts';
+import { applyPlace, type Place } from './place.ts';
 
 export const GAP = 0.001;        // metres between a piece and what lies under it
 export const DEPTH = 0.03;       // metres: a vertex deeper inside a surface than this is left alone
@@ -62,10 +63,12 @@ export interface BonePose { R: F64; t: F64 }   // the bone's rest rotation (row-
 export class BodySurface {
   vertices: F64; n: number; triangles: I32; weights: F64; indices: I32; K: number; bones: string[]; frame: Frame;
   pose: (bone: number, body: BodySurface, wearable: Wearable) => BonePose;
+  heads: ArrayLike<number> | null;   // the bones' rest heads (bones * 3, the body's frame), for the pieces' places
   private _surface: Surface | null = null;
-  constructor(o: { vertices: F64; triangles: I32; weights: F64; indices: I32; K: number; bones: string[]; frame: Frame; pose: (bone: number, body: BodySurface, wearable: Wearable) => BonePose }) {
+  constructor(o: { vertices: F64; triangles: I32; weights: F64; indices: I32; K: number; bones: string[]; frame: Frame; pose: (bone: number, body: BodySurface, wearable: Wearable) => BonePose;
+    heads?: ArrayLike<number> | null }) {
     this.vertices = o.vertices; this.n = o.vertices.length / 3; this.triangles = o.triangles; this.weights = o.weights; this.indices = o.indices;
-    this.K = o.K; this.bones = o.bones; this.frame = o.frame; this.pose = o.pose;
+    this.K = o.K; this.bones = o.bones; this.frame = o.frame; this.pose = o.pose; this.heads = o.heads || null;
   }
   get surface(): Surface { return this._surface || (this._surface = new Surface(this.vertices, this.triangles)); }
   get normals(): F64 { return this.surface.N; }
@@ -73,7 +76,7 @@ export class BodySurface {
   get unit(): number { return this.frame.scale; }
   // the same skin with other rest vertices (the bones stay)
   withVertices(vertices: F64): BodySurface {
-    return new BodySurface({ vertices, triangles: this.triangles, weights: this.weights, indices: this.indices, K: this.K, bones: this.bones, frame: this.frame, pose: this.pose });
+    return new BodySurface({ vertices, triangles: this.triangles, weights: this.weights, indices: this.indices, K: this.K, bones: this.bones, frame: this.frame, pose: this.pose, heads: this.heads });
   }
 }
 
@@ -388,8 +391,11 @@ function* pushOut(V: F64, N: F64, T: I32, colliders: Surface[], targets: F64[], 
 }
 
 // ------------------------------------------------------------------ dressing
-export interface WornPiece { ref: string; piece: string; outfit: string | null; wearable: Wearable; shown: boolean; hiddenGroups: string[]; hideableGroups: string[] }
-export interface DressedPiece extends WornPiece { vertices: F64; normals: F64; weights: Float32Array; joints: Uint16Array; pushed: number; pushMm: number }
+// `place`: the card's place of a rigid piece (wearables/place.ts), which moves it about its carrying bone's rest head
+export interface WornPiece { ref: string; piece: string; outfit: string | null; wearable: Wearable; shown: boolean; hiddenGroups: string[]; hideableGroups: string[]; place?: Place | null }
+// `base`: a placed piece's rest vertices, normals, weights and joints before its place (the studio moves it from them)
+export interface DressedPiece extends WornPiece { vertices: F64; normals: F64; weights: Float32Array; joints: Uint16Array; pushed: number; pushMm: number;
+  base?: { vertices: F64; normals: F64; weights: Float32Array; joints: Uint16Array } }
 
 // whether each triangle of a garment hides the skin: those of opaque materials, and those of a masked material whose
 // alpha reaches the cutoff all over them (wearables/alpha.ts maskedSolid); a blended material (a sheer stocking) and
@@ -531,13 +537,33 @@ export function* dressSteps(body: BodySurface, pieces: WornPiece[], opts: DressO
     t0 = now();
     let sw = cache.weights.get(w);
     if (!sw || sw.source !== body.weights) { sw = { source: body.weights, ...bodyWeights(w, body) }; cache.weights.set(w, sw); }
-    const { weights, joints } = sw;
+    let { weights, joints } = sw;
     timing.weights = (timing.weights || 0) + now() - t0;
-    const piece: DressedPiece = { ...worn, hiddenGroups: [...worn.hiddenGroups], hideableGroups: [...worn.hideableGroups], vertices, normals, weights, joints, pushed, pushMm };
+    let base: DressedPiece['base'];
+    if (worn.place) {
+      base = { vertices, normals, weights, joints };
+      ({ vertices, normals, weights, joints } = placedPiece(worn, body, vertices, normals));
+    }
+    const piece: DressedPiece = { ...worn, hiddenGroups: [...worn.hiddenGroups], hideableGroups: [...worn.hideableGroups], vertices, normals, weights, joints, pushed, pushMm, base };
     out[k] = piece;
     if (worn.shown) placed.push([w.layer, piece]);
   }
   return out;
+}
+
+// a rigid piece moved by its place about its carrying bone's rest head, on that bone alone
+// (opensculptboy.wearables.fit._placed)
+export function placedPiece(worn: WornPiece, body: BodySurface, vertices: F64, normals: F64): { vertices: F64; normals: F64; weights: Float32Array; joints: Uint16Array } {
+  const p = worn.place!;
+  if (worn.wearable.binding.method !== 'rigid') throw new Error(`Piece ${worn.ref} has a place, which only a rigidly bound piece can have.`);
+  const bone = bodyBone(p.bone, body.bones);
+  if (bone < 0) throw new Error(`The place of piece ${worn.ref} names the unknown bone ${p.bone}.`);
+  if (!body.heads) throw new Error('The body has no bone heads for the place of a piece.');
+  const head = [body.heads[bone * 3], body.heads[bone * 3 + 1], body.heads[bone * 3 + 2]];
+  const moved = applyPlace(p, vertices, normals, head, body.frame), n = vertices.length / 3, k = MAX_INFLUENCES;
+  const weights = new Float32Array(n * k), joints = new Uint16Array(n * k);
+  for (let i = 0; i < n; i++) { weights[i * k] = 1; joints[i * k] = bone; }
+  return { vertices: moved.vertices, normals: moved.normals, weights, joints };
 }
 
 // ------------------------------------------------------------------ covered skin

@@ -11,11 +11,12 @@ import torch
 
 # Schema 2 adds the optional ``detail`` field, schema 3 the optional ``material`` field,
 # schema 4 the wardrobe fields (``wearables``, ``outfits``, ``active_outfit`` and
-# ``wearable_overrides``) and schema 5 the ``look`` field of the web viewer. A card is written
-# with the lowest schema that holds its fields, so that a card without them stays byte for byte
-# what earlier versions wrote and read.
-SCHEMA_VERSION = 5
-SCHEMA_VERSIONS = (1, 2, 3, 4, 5)
+# ``wearable_overrides``), schema 5 the ``look`` field of the web viewer and schema 6 the
+# ``place`` of a rigid piece (a prop moved in the studio, opensculptboy.wearables.place). A card
+# is written with the lowest schema that holds its fields, so that a card without them stays
+# byte for byte what earlier versions wrote and read.
+SCHEMA_VERSION = 6
+SCHEMA_VERSIONS = (1, 2, 3, 4, 5, 6)
 WARDROBE_FIELDS = ("wearables", "outfits", "active_outfit", "wearable_overrides")
 
 
@@ -63,7 +64,9 @@ class Character:
     file a wearable package), ``outfits`` holds outfits (``{"id", "label", "pieces":
     [{"piece", "file", "enabled"}]}``), ``active_outfit`` names the outfit worn and
     ``wearable_overrides`` switches single pieces (``{"<outfit>/<piece>": {"enabled":
-    false}}``).
+    false}}``). A rigid piece's entry may hold ``place`` (schema 6): ``{"bone", "rotation",
+    "translation"}``, the bone that carries it and its move about that bone's rest head in the
+    card's rest frame (:mod:`opensculptboy.wearables.place`).
 
     ``look`` (schema 5) holds what the web viewer shows of the character beyond the model's
     parameters: ``"skin"`` (``tone`` 0 to 1, ``undertone`` -1 to 1, and for a statue ``stone``,
@@ -266,7 +269,8 @@ class Character:
     def to_dict(self) -> dict[str, Any]:
         """The card as a JSON object in the lowest schema that holds it: a card without
         detail, material and wardrobe keeps schema 1, one without material and wardrobe
-        schema 2, and one without wardrobe schema 3"""
+        schema 2, one without wardrobe schema 3, and a card whose pieces hold a place
+        schema 6"""
         data = dataclasses.asdict(self)
         schema = 1
         if self.detail:
@@ -286,6 +290,10 @@ class Character:
             schema = 5
         else:
             del data["look"]
+        from opensculptboy.wearables.place import PLACE_SCHEMA, card_has_places
+
+        if card_has_places(data):
+            schema = PLACE_SCHEMA
         return {"schema": schema, **data}
 
     @classmethod
@@ -309,6 +317,12 @@ class Character:
             raise ValueError(f"The fields {wardrobe} need character schema 4.")
         if schema in (1, 2, 3, 4) and "look" in data:
             raise ValueError("The look field needs character schema 5.")
+        from opensculptboy.wearables.place import PLACE_SCHEMA, card_has_places
+
+        if schema < PLACE_SCHEMA and card_has_places(data):
+            raise ValueError(
+                f"A piece's place needs character schema {PLACE_SCHEMA}."
+            )
         fields = {f.name for f in dataclasses.fields(cls)}
         unknown = sorted(set(data) - fields - {"schema"})
         if unknown:

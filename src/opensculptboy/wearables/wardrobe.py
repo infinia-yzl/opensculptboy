@@ -6,7 +6,9 @@ What a character wears: the card's outfits, its loose wearables and the choices 
 A card (schema 4) lists loose pieces in ``wearables`` (``{"id", "file", "enabled"}``) and
 outfits in ``outfits`` (``{"id", "label", "pieces": [{"piece", "file", "enabled"}]}``), names
 the outfit it wears in ``active_outfit`` and may switch single pieces in
-``wearable_overrides`` (``{"<outfit>/<piece>" or "<piece>": {"enabled": bool}}``). A piece is
+``wearable_overrides`` (``{"<outfit>/<piece>" or "<piece>": {"enabled": bool}}``). A rigid piece's
+entry may hold a ``place`` (schema 6, :mod:`opensculptboy.wearables.place`): the bone that carries
+it and its move from the place its package binds it to. A piece is
 named by its reference: ``<outfit>/<piece>`` for a piece of an outfit, the bare id for a
 loose piece; a bare id also names the piece of that id in the worn outfit.
 
@@ -30,7 +32,7 @@ from opensculptboy.wearables.format import read_wearable
 NO_OUTFIT = "none"
 # the keys of an outfit on a card, and of each of its pieces
 OUTFIT_KEYS = {"id", "label", "description", "tags", "source", "pieces"}
-PIECE_KEYS = {"piece", "file", "enabled", "overrides", "hides", "springs"}
+PIECE_KEYS = {"piece", "file", "enabled", "overrides", "hides", "springs", "place"}
 OVERRIDE_KEYS = {"layer", "label"}
 
 
@@ -38,7 +40,7 @@ def check_piece_settings(entry: dict, ref: str) -> None:
     """Raise ValueError for settings of an outfit's piece on a card that do not hold:
     ``overrides`` (``layer`` 0 to 100, ``label``), ``hides`` (rules in the form of a package's
     ``hides``, added to its own) and ``springs`` (spring entries in the form of a package's
-    ``springs``, in place of its own)."""
+    ``springs``, in place of its own) and ``place`` (:func:`opensculptboy.wearables.place.check_place`)."""
     unknown = set(entry) - PIECE_KEYS
     if unknown:
         raise ValueError(f"Unknown keys {sorted(unknown)} in piece {ref!r}.")
@@ -77,6 +79,10 @@ def check_piece_settings(entry: dict, ref: str) -> None:
         isinstance(s, dict) and isinstance(s.get("name"), str) for s in springs
     ):
         raise ValueError(f"springs of piece {ref!r} must be a list of named entries.")
+    if "place" in entry:
+        from opensculptboy.wearables.place import check_place
+
+        check_place(entry["place"], ref)
 
 
 def with_settings(wearable, entry: dict):
@@ -115,6 +121,8 @@ class WornPiece:
     shown: bool
     hidden_groups: list = dataclasses.field(default_factory=list)
     hideable_groups: list = dataclasses.field(default_factory=list)
+    # the card's place of a rigid piece (opensculptboy.wearables.place), or None
+    place: dict | None = None
 
 
 def check_wardrobe(character) -> None:
@@ -123,10 +131,14 @@ def check_wardrobe(character) -> None:
     for entry in character.wearables:
         if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
             raise ValueError(f"Each wearables entry needs a 'file': {entry!r}.")
-        unknown = set(entry) - {"id", "file", "enabled", "params"}
+        unknown = set(entry) - {"id", "file", "enabled", "params", "place"}
         if unknown:
             raise ValueError(f"Unknown keys {sorted(unknown)} in a wearables entry.")
         ref = entry.get("id") or pathlib.Path(entry["file"]).name.split(".")[0]
+        if "place" in entry:
+            from opensculptboy.wearables.place import check_place
+
+            check_place(entry["place"], ref)
         if ref in seen:
             raise ValueError(f"Two loose wearables share the id {ref!r}.")
         seen.add(ref)
@@ -247,6 +259,10 @@ def worn_pieces(
         for o in character.outfits
         for p in o.get("pieces", [])
     }
+    places = {ref: entry.get("place") for ref, entry in settings.items()}
+    for entry in character.wearables:
+        ref = entry.get("id") or pathlib.Path(entry["file"]).name.split(".")[0]
+        places[ref] = entry.get("place")
 
     def load(ref):
         if ref not in loaded:
@@ -283,7 +299,15 @@ def worn_pieces(
     for ref, piece, owner, _, _ in candidates:
         wearable = load(ref)
         pieces.append(
-            WornPiece(ref, piece, owner, loaded[ref][1], wearable, bool(shown[ref]))
+            WornPiece(
+                ref,
+                piece,
+                owner,
+                loaded[ref][1],
+                wearable,
+                bool(shown[ref]),
+                place=places.get(ref),
+            )
         )
     by_ref = {p.ref: p for p in pieces}
     rules = []  # (hiding piece, hidden piece, group)

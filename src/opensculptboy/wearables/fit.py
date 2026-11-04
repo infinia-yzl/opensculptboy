@@ -139,6 +139,8 @@ class DressedPiece:
     source: str | None = None
     colors: np.ndarray | None = None
     groom: object = None
+    # the card's place of the piece (opensculptboy.wearables.place), or None
+    place: dict | None = None
 
     @property
     def garment(self) -> Garment:
@@ -170,6 +172,8 @@ class DressedPiece:
         }
         if w.licence:
             out["licence"] = dict(w.licence)
+        if self.place:
+            out["place"] = dict(self.place)
         return out
 
 
@@ -341,6 +345,24 @@ def _push(
     return vertices, normals, int((shift > 1e-7).sum()), float(shift.max(initial=0.0))
 
 
+def _placed(ref, wearable, place, body: BodySurface, vertices, normals, max_influences):
+    """A rigid piece moved by the card's ``place`` about its carrying bone's rest head on
+    ``body``, on that bone alone (:mod:`opensculptboy.wearables.place`)."""
+    from opensculptboy.wearables.place import apply_place, carrier_weights
+
+    if wearable.binding.method != "rigid":
+        raise ValueError(
+            f"Piece {ref!r} has a place, which only a rigidly bound piece can have."
+        )
+    bone = place["bone"]
+    if bone not in body.bone_labels:
+        raise ValueError(f"The place of piece {ref!r} names the unknown bone {bone!r}.")
+    b = body.bone_labels.index(bone)
+    vertices, normals = apply_place(place, vertices, normals, body.bone_poses[b][:3, 3])
+    weights, joints = carrier_weights(b, len(vertices), max_influences)
+    return vertices, normals, weights, joints
+
+
 def dress(
     body: BodySurface,
     pieces: list,
@@ -443,6 +465,11 @@ def dress(
             )
             push_mm *= 1000.0
         weights, joints = body_weights(wearable.binding, weight_body, max_influences)
+        place = getattr(worn, "place", None)
+        if place:
+            vertices, normals, weights, joints = _placed(
+                worn.ref, wearable, place, body, vertices, normals, max_influences
+            )
         piece = DressedPiece(
             ref=worn.ref,
             piece=worn.piece,
@@ -458,6 +485,7 @@ def dress(
             pushed=pushed,
             push_mm=push_mm,
             source=getattr(worn, "path", None),
+            place=place or None,
         )
         dressed[k] = piece
         if worn.shown:

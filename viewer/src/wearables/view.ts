@@ -9,7 +9,8 @@
 // Nothing of the user's files is stored or sent: the packages live in this page's memory until it closes.
 
 import type * as THREE_NS from 'three';
-import { BodySurface, DressCache, dress, dressSteps, estimatedPose, MOUTH_ANCESTOR, packageBones, outfitCoverSteps, runSteps, visibleTriangles, type DressedPiece, type Frame, type Steps, type WornPiece } from './dress.ts';
+import { BodySurface, DressCache, dress, dressSteps, estimatedPose, MOUTH_ANCESTOR, packageBones, outfitCoverSteps, placedPiece, runSteps, visibleTriangles, type DressedPiece, type Frame, type Steps, type WornPiece } from './dress.ts';
+import { setCardPlace, type Place } from './place.ts';
 import { dirname, FileSet, type PickedFile } from './files.ts';
 import { readSafetensors, readWearable, type Material, type Wearable } from './package.ts';
 import { BLEND_SHADOW_CUTOFF, GARMENT_DEPTH_FS, GARMENT_DEPTH_VS, GARMENT_FS, GARMENT_VS } from './shading.ts';
@@ -42,7 +43,8 @@ export interface WardrobeHost {
 
 export interface SparseRows { rows: number; start: Uint32Array; index: Uint32Array; value: Float32Array }
 export interface PieceRow { ref: string; piece: string; outfit: string | null; label: string; slot: string; layer: number; shown: boolean;
-  hiddenGroups: string[]; groups: string[]; provenance: string; pushed: number; pushMm: number; vertices: number }
+  hiddenGroups: string[]; groups: string[]; provenance: string; pushed: number; pushMm: number; vertices: number;
+  rigid: boolean; bone: string | null; place: Place | null }   // a rigid piece's bone (its package's) and its place on the card
 
 const SETTLE_MS = 250;   // the push-out and the covered skin follow a slider edit after this rest
 const SLICE_MS = 8;      // the longest run of the settled dress on the main thread before it yields to the browser
@@ -192,7 +194,8 @@ export class Wardrobe {
     return every.map((p) => {
       const w = this.packages.get(p.ref)!, d = dressed.get(p.ref);
       return { ref: p.ref, piece: p.piece, outfit: p.outfit, label: w.label || w.name, slot: w.slot, layer: w.layer, shown: p.shown,
-        hiddenGroups: p.hiddenGroups, groups: w.garment.groups, provenance: w.provenance, pushed: d?.pushed || 0, pushMm: d?.pushMm || 0, vertices: w.garment.count };
+        hiddenGroups: p.hiddenGroups, groups: w.garment.groups, provenance: w.provenance, pushed: d?.pushed || 0, pushMm: d?.pushMm || 0, vertices: w.garment.count,
+        rigid: w.binding.method === 'rigid', bone: w.binding.method === 'rigid' ? w.binding.bone || null : null, place: p.place };
     });
   }
   private choices() { return { outfit: this.outfit ?? NO_OUTFIT, show: this.show, hide: this.hide }; }
@@ -208,7 +211,7 @@ export class Wardrobe {
       this.weights = W; this.indices = I;
     }
     const V = Float64Array.from(b.coarse.subarray(0, n * 3)), J = b.joints;
-    const surface: BodySurface = new BodySurface({ vertices: V, triangles: this.skin, weights: this.weights!, indices: this.indices!, K: 8, bones: b.bones, frame: b.frame,
+    const surface: BodySurface = new BodySurface({ vertices: V, triangles: this.skin, weights: this.weights!, indices: this.indices!, K: 8, bones: b.bones, frame: b.frame, heads: J,
       // rigid pieces turn with their bone's skin on the current body (also when the push-out evaluates them on a binding body)
       pose: (bone, _body, w) => estimatedPose(w, surface, J.subarray(bone * 3, bone * 3 + 3)) });
     return surface;
@@ -333,6 +336,37 @@ export class Wardrobe {
   }
   private cover: Uint8Array | null = null;
 
+  // ---------------------------------------------------------------- the props' places (the studio's moves)
+  // a rigid piece's place on the card (wearables/place.ts), or null for the place its package binds it to: written into
+  // the card shown and the card as opened (Save card writes it), and the piece's mesh moves at once without a new dress
+  setPlace(ref: string, place: Place | null): boolean {
+    if (!this.card) return false;
+    if (!setCardPlace(this.card, ref, place)) return false;
+    if (this.source) setCardPlace(this.source, ref, place);
+    const w = this.worn.find((p) => p.ref === ref);
+    if (w) w.place = place ? { ...place } : null;
+    const p = this.pieces.find((q) => q.ref === ref);
+    if (!p) { this.notify(); return true; }
+    this.place(p, w?.place ?? null);
+    this.uploadOne(p, false);
+    this.host.ground(); this.host.changed(); this.notify();
+    return true;
+  }
+  placeOf(ref: string): Place | null { return this.worn.find((p) => p.ref === ref)?.place ?? null; }
+  // a dressed piece moved to a place (from its rest before any place)
+  private place(p: DressedPiece, place: Place | null) {
+    const base = p.base || { vertices: p.vertices, normals: p.normals, weights: p.weights, joints: p.joints };
+    if (place) Object.assign(p, placedPiece({ ...p, place }, this.bodySurface(), base.vertices, base.normals), { base, place });
+    else Object.assign(p, base, { base: undefined, place: null });
+  }
+  // a dress that started before the last place change holds the old place: the pieces take the card's places again
+  private syncPlaces() {
+    for (const p of this.pieces) {
+      const now = this.worn.find((w) => w.ref === p.ref)?.place ?? null;
+      if (JSON.stringify(now) !== JSON.stringify(p.place ?? null)) this.place(p, now);
+    }
+  }
+
   // ---------------------------------------------------------------- meshes
   // the dressed pieces into their meshes; `settled` also renews the tangents of the normal maps for the new body
   private upload(settled = false) {
@@ -344,12 +378,16 @@ export class Wardrobe {
     return lowestPieces(this.pieces.map((p) => ({ slot: p.wearable.slot, vertices: p.vertices, joints: p.joints, weights: p.weights })), boneMats);
   }
   private uploadMeshes(settled: boolean) {
+    this.syncPlaces();
     const keep = new Set(this.pieces.map((p) => p.ref));
     for (const [ref, m] of this.meshes) {
       if (m.wearable !== this.packages.get(ref)) this.dropMesh(ref);
       else if (!keep.has(ref)) m.mesh.visible = false;   // a hidden piece keeps its mesh for the next time it shows
     }
-    for (const p of this.pieces) {
+    for (const p of this.pieces) this.uploadOne(p, settled);
+  }
+  private uploadOne(p: DressedPiece, settled: boolean) {
+    {
       let m = this.meshes.get(p.ref);
       if (!m) m = this.makeMesh(p);
       const at = m.geo.attributes as any;

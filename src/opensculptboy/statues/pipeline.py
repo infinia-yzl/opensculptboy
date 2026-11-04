@@ -105,6 +105,10 @@ class StatueConfig:
     prop_shapes: dict = dataclasses.field(default_factory=dict)
     # the bone each named prop is bound to in a starter (default: the bone at its contact)
     prop_bones: dict = dataclasses.field(default_factory=dict)
+    # props moved in the studio (apply-card from a card's piece places): prop name or piece id
+    # -> {"bone", "rotation", "translation"} (opensculptboy.wearables.place), applied to the
+    # prop's rest in the starter, which then carries it on that bone
+    prop_places: dict = dataclasses.field(default_factory=dict)
     # export_props also gives the props the skin that the final fit leaves far away (default
     # off: on David it put torn pieces of the body's skin on the props)
     prop_far_skin: bool = False
@@ -167,6 +171,10 @@ class StatueConfig:
         unknown = set(config.fit) - options
         if unknown:
             raise ValueError(f"Unknown fit options {sorted(unknown)}.")
+        for name, place in config.prop_places.items():
+            from opensculptboy.wearables.place import check_place
+
+            check_place(place, name)
         if config.reference_points:
             from opensculptboy.statues.points import check
 

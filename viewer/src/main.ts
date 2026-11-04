@@ -3602,6 +3602,25 @@ function shownProps() {
     return { name: p.ref, positions: out, indices: Uint32Array.from(p.wearable.garment.triangles), bone };
   });
 }
+// the shown props that are rigid pieces, for the studio's prop tool (pose_edit/host.ts PropRig)
+const PROP_TRIANGLES = new WeakMap<object, Uint32Array>();
+function propRigs() {
+  if (!WEAR?.pieces.length || !RIG.ready) return [];
+  return WEAR.pieces.filter((p: any) => p.wearable.slot === 'prop' && p.wearable.binding.method === 'rigid').map((p: any) => {
+    const g = p.wearable.garment;
+    let tris = PROP_TRIANGLES.get(g);
+    if (!tris) { tris = Uint32Array.from(g.triangles); PROP_TRIANGLES.set(g, tris); }
+    const made = p.wearable.binding.bone || null, place = p.place || null;
+    return { ref: p.ref, label: p.wearable.label || p.wearable.name, made, place, carrier: place ? place.bone : made || 'root', vertices: p.vertices, triangles: tris };
+  });
+}
+function skinMatrix(bone: string): Float64Array | null {
+  const i = RIG.bones.findIndex((b: any) => b.name === bone);
+  if (i < 0) return null;
+  const M = poseMatrices(MOTION.q, MOTION.rootOff), out = new Float64Array(16);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) out[r * 4 + c] = M[i * 16 + c * 4 + r];
+  return out;
+}
 const POSE_HOST: PoseHost = {
   THREE, renderer, camera, canvas,
   ready: () => RIG.ready && BODY.ready && !!MOTION.nb,
@@ -3629,6 +3648,9 @@ const POSE_HOST: PoseHost = {
   redraw: () => redisplay(),
   onFrame: (fn) => { POSE_EDIT.frame = fn; },
   props: () => shownProps(),
+  propRigs: () => propRigs(),
+  skinMatrix: (bone) => skinMatrix(bone),
+  setPropPlace: (ref, place) => !!WEAR && WEAR.setPlace(ref, place),
   builtinPoses: () => MOTION.clips.filter((c: any) => c.kind === 'pose').map((c: any) => ({ name: c.name, label: c.label, group: c.group, credit: c.credit })),
   builtinPose: (name: string) => {
     const c = MOTION.byName[name];

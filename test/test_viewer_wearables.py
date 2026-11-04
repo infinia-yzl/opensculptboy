@@ -57,7 +57,13 @@ CASES = [
     # a coat inside a vest, both bound on one card's body: made together, so the coat keeps
     # its place inside the vest
     {"name": "made_together", "body": "random", "card": "together"},
+    # the circlet moved by hand in the studio and given to the right wrist (a place, card
+    # schema 6), in Anny's frame and in the page's
+    {"name": "placed", "body": "random", "card": "placed"},
+    {"name": "placed_frame", "body": "thin", "card": "placed", "frame": True},
 ]
+# the circlet's place on the card "placed" (opensculptboy.wearables.place)
+PLACE = {"bone": "wrist.R", "rotation": [0.1, -0.2, 0.15, 0.9605], "translation": [0.012, -0.03, 0.05]}
 
 
 def _packages(folder: pathlib.Path):
@@ -183,7 +189,13 @@ class TestViewerWearables(unittest.TestCase):
                 card, wearable_overrides={"work/smock": {"enabled": True}}
             ),
         }
-        for name in ("bare", "override"):
+        placed = card.to_dict()
+        placed["outfits"][0]["pieces"][2]["place"] = dict(
+            PLACE, rotation=list(np.asarray(PLACE["rotation"]) / np.linalg.norm(PLACE["rotation"]))
+        )
+        placed["schema"] = 6
+        cards["placed"] = Character.from_dict(placed)
+        for name in ("bare", "override", "placed"):
             text = json.dumps(cards[name].to_dict(), indent=1)
             (folder / f"{name}.json").write_text(text)
         model = template_model()
@@ -308,6 +320,7 @@ class TestViewerWearables(unittest.TestCase):
             "no_outfit",
             "override_swap",
             "made_together",
+            "placed",
         ):
             self.compare(case)
 
@@ -346,6 +359,17 @@ class TestViewerWearables(unittest.TestCase):
 
     def test_page_frame(self):
         self.compare("page_frame", frame=True, vertex_tolerance=1e-6)
+        self.compare("placed_frame", frame=True, vertex_tolerance=1e-6)
+
+    def test_placed_piece(self):
+        """The circlet with a place moves about the right wrist's head and follows that bone
+        alone, in the page as in opensculptboy.wearables."""
+        pieces, _ = self.expected["placed"]
+        k = [p.ref for p in pieces].index("travel/circlet")
+        self.assertEqual(pieces[k].place["bone"], "wrist.R")
+        wrist = self.bodies["random"].bone_labels.index("wrist.R")
+        J = self.page("placed", k, "joints.u16", np.uint16).reshape(-1, 4)
+        self.assertTrue(np.all(J[:, 0] == wrist))
 
     def test_cases_move_and_hide(self):
         thin = {p["ref"]: p for p in self.out["thin"]["pieces"]}

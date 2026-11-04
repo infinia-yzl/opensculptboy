@@ -8,7 +8,10 @@
 // node tests (viewer/test/card_file.mjs) run them as the page does.
 
 import type { Look } from '../ui/app.ts';
+import { cardHasPlaces, PLACE_SCHEMA } from '../wearables/place.ts';
 
+// the schema the page writes: 5 (the look block), or 6 when a piece holds a place (a prop moved in the studio,
+// wearables/place.ts), as opensculptboy.Character writes the lowest schema that holds the card
 export const CARD_SCHEMA = 5;
 
 // ------------------------------------------------------------------ the look block
@@ -55,7 +58,7 @@ export function cardOf(L: Look, base: any = null, extra: { facial_actions?: Reco
   // the order of the Python card's fields, with the schema first
   const order = ['name', 'rig', 'topology', 'phenotypes', 'phenotype', 'local_changes', 'face_shapes', 'facial_actions', 'pose', 'detail', 'material',
     'wearables', 'outfits', 'active_outfit', 'wearable_overrides', 'look'];
-  const out: any = { schema: CARD_SCHEMA };
+  const out: any = { schema: cardHasPlaces(card) ? PLACE_SCHEMA : CARD_SCHEMA };
   for (const k of order) if (k in card) out[k] = card[k];
   for (const k of Object.keys(card)) if (!(k in out)) out[k] = card[k];
   return out;

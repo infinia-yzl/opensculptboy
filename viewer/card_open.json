@@ -1,0 +1,65 @@
+{
+  "schema": 5,
+  "name": "Spear Bearer",
+  "rig": "anny-mouth",
+  "topology": "anny",
+  "phenotypes": "all",
+  "phenotype": {
+    "gender": 0,
+    "age": 0.8,
+    "muscle": 0.723,
+    "weight": 0.5,
+    "height": 0.6,
+    "proportions": 0.66,
+    "african": 0,
+    "asian": 1,
+    "caucasian": 1
+  },
+  "local_changes": {
+    "nose-scale": 0.2
+  },
+  "face_shapes": {
+    "nose-hump": 0.2
+  },
+  "detail": {
+    "levels": [
+      {
+        "subdiv": 0,
+        "offsets": "card.detail0.safetensors"
+      }
+    ]
+  },
+  "outfits": [
+    {
+      "id": "travel",
+      "label": "Travel",
+      "pieces": [
+        {
+          "piece": "cape",
+          "file": "wear/cape.wearable.json",
+          "enabled": true
+        }
+      ]
+    }
+  ],
+  "active_outfit": "travel",
+  "look": {
+    "skin": {
+      "tone": 0.35,
+      "undertone": 0,
+      "stone": "carrara",
+      "polish": 0.45
+    },
+    "hair": {
+      "style": "curly_top_taper",
+      "color": "#dcd7cf",
+      "length": 0.8,
+      "curl": 0.6,
+      "volume": 1,
+      "density": 1
+    },
+    "eyes": {
+      "color": "#dcd7cf"
+    }
+  }
+}

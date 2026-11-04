@@ -33,7 +33,8 @@ export interface Pin {
   weight: number;
 }
 
-export interface Snapshot { rotations: number[][]; targets: [string, Target][]; pins: Pin[] }
+// places: the props' places on the card by reference (wearables/place.ts), which the history keeps with the pose
+export interface Snapshot { rotations: number[][]; targets: [string, Target][]; pins: Pin[]; places?: Record<string, any> }
 
 export const DRAG_STEPS = 8;
 // the automatic placement turns a chain only with at least MIN_POINTS points on, spread over MIN_BONES bones
@@ -66,6 +67,8 @@ export class EditSession {
   readonly undoStack: { label: string; snap: Snapshot }[] = [];
   readonly redoStack: { label: string; snap: Snapshot }[] = [];
   onChange: () => void = () => {};
+  // the props' places by reference (null: where the package binds it), kept in the history with the pose
+  places: Record<string, any> = {};
 
   constructor(rig: RigSpace, skin: SkinSource, rotations: number[][]) {
     this.rig = rig; this.skin = skin; this.rotations = rotations.map((r) => r.slice());
@@ -213,12 +216,13 @@ export class EditSession {
   // ---------------------------------------------------------------- history
   snapshot(): Snapshot {
     return { rotations: this.rotations.map((r) => r.slice()), targets: [...this.targets].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]),
-      pins: JSON.parse(JSON.stringify(this.pins)) };
+      pins: JSON.parse(JSON.stringify(this.pins)), places: JSON.parse(JSON.stringify(this.places)) };
   }
   restore(s: Snapshot) {
     this.rotations = s.rotations.map((r) => r.slice());
     this.targets = new Map(s.targets.map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]));
     this.pins = JSON.parse(JSON.stringify(s.pins));
+    if (s.places) this.places = JSON.parse(JSON.stringify(s.places));
     this.drag = null;
     this.onChange();
   }
