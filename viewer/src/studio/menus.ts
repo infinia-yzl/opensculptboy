@@ -85,7 +85,8 @@ export function ringMenu(): RingMenu {
     const it = items[lit], why = it ? reasonOf(it) : '';
     const parts: StatusPart[] = [{ text: title + ' menu' }];
     if (why) parts.push({ text: (it.a.menuLabel || it.a.label) + ': ' + why });
-    parts.push({ keys: 'Move', text: 'light a choice' }, { keys: 'Click', text: 'pick it; a switch flips and the menu stays' },
+    const switches = items.some((x) => !!x.a.checked);
+    parts.push({ keys: 'Move', text: 'light a choice' }, { keys: 'Click', text: switches ? 'pick it; a switch flips and the menu stays' : 'go there' },
       { keys: keyCap + ' or Esc', text: 'close' });
     setStatus('ring', parts, { priority: PRIORITY.drag + 5 });
   };
