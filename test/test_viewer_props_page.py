@@ -266,8 +266,9 @@ class TestPropsPage(unittest.TestCase):
             np.testing.assert_allclose(world(tab), before, atol=1e-6)
             key("g", "pose.prop.grab")
             key("Escape", "modal.cancel")
-            key("Alt+g", "pose.prop.clear-move")
+            # the turn first: with the move cleared as well, the place is gone and Alt+R has nothing to clear
             key("Alt+r", "pose.prop.clear-turn")
+            key("Alt+g", "pose.prop.clear-move")
             self.assertIsNone(report(tab)["props"]["place"])
             key("Escape", "pose.prop.clear")
             self.assertIsNone(report(tab)["state"]["prop"])
