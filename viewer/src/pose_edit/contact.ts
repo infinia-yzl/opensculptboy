@@ -173,7 +173,8 @@ export const WEDGE_STEP = 0.01;
 // steps of SCAN_STEP until it clears them by the clearance (the finger is "opened"). A finger outside the objects that
 // clears them by the clearance at no curl down to straight lies between two of their parts (a finger between a
 // sword's grip and its guard): it is "wedged" and takes the curl, among those it reaches from the present one without
-// entering the objects, at which it lies farthest from them. A finger inside them at every curl down to straight is
+// entering the objects, at which it lies farthest from them; first, though, it curls on past the part it touches when
+// a little more curl clears it, and closes from there. A finger inside them at every curl down to straight is
 // "blocked" and keeps its present curl. From its start each finger closes until it comes
 // within the clearance (bisection, as squeeze), and value from 0 to 1 sets each finger between its start and its
 // contact, so Squeeze loosens the grip back to the start and never through the prop. GraspIt's AutoGrasp closes the
@@ -210,9 +211,23 @@ export function gripFrom(body: SkinnedBody, rotations: ArrayLike<number>[], hand
     } else {
       // touching or inside: open along the curl until the finger clears the prop
       let clear: number | null = null;
-      for (let s = present - SCAN_STEP; s > -1e-9; s -= SCAN_STEP) if (gap(Math.max(s, 0)) > clearance) { clear = Math.max(s, 0); break; }
+      // (a finger outside the prop never opens through another part of it)
+      for (let s = present - SCAN_STEP; s > -1e-9; s -= SCAN_STEP) {
+        const g = gap(Math.max(s, 0));
+        if (g > clearance) { clear = Math.max(s, 0); break; }
+        if (g0 >= 0 && g < 0) break;
+      }
+      // a finger outside the prop that touches it: a little more curl may take it off this part of the prop (the
+      // index finger off a sword's guard), and it then closes to the next contact (the grip)
+      let further: number | null = null;
+      if (clear === null && g0 >= 0) {
+        for (let s = present + SCAN_STEP; s <= MAX_SCALE + 1e-9; s += SCAN_STEP) { const g = gap(s); if (g < 0) break; if (g > clearance) { further = s; break; } }
+      }
       if (clear !== null) { opened = true; contact = boundary(clear, Math.min(clear + SCAN_STEP, present)); start = clear; }
-      else if (g0 >= 0) {
+      else if (further !== null) {
+        start = further;
+        for (let s = further + SCAN_STEP; s <= MAX_SCALE + 1e-9; s += SCAN_STEP) if (gap(s) <= clearance) { contact = boundary(s - SCAN_STEP, s); break; }
+      } else if (g0 >= 0) {
         // wedged: the curl farthest from the objects within the stretch round the present one that stays outside
         let best = present, bestGap = g0;
         for (const dir of [-1, 1]) {
