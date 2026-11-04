@@ -236,6 +236,51 @@ class TestPropsPage(unittest.TestCase):
             )
             self.assertEqual(report(tab)["undo"][-1], "Move the Rod")
 
+            # every key of the props: each runs its action (the registry's record of the actions that ran)
+            pressed = set()
+
+            def key(chord, action):
+                tab.evaluate("() => { window.__studio.ran.length = 0; }")
+                press_in_view(tab, chord)
+                settle(tab, 2)
+                self.assertIn(
+                    action, tab.evaluate("() => window.__studio.ran.slice()"), chord
+                )
+                pressed.add(action)
+
+            before = world(tab)
+            key("ArrowLeft", "pose.prop.nudge")
+            nudge = np.linalg.norm((world(tab) - before).mean(axis=0)) / unit
+            self.assertAlmostEqual(nudge, 0.001, delta=1e-5)
+            nudged = world(tab)
+            key("PageDown", "pose.prop.push")
+            self.assertGreater(np.abs(world(tab) - nudged).max(), 0.0005 * unit)
+            key("PageUp", "pose.prop.pull")
+            np.testing.assert_allclose(world(tab), nudged, atol=1e-5)
+            before = world(tab)
+            key("r", "pose.prop.turn")
+            for k in range(1, 6):
+                tab.mouse.move(960 + 8 * k, 540 - 6 * k)
+                settle(tab, 1)
+            key("Escape", "modal.cancel")
+            np.testing.assert_allclose(world(tab), before, atol=1e-6)
+            key("g", "pose.prop.grab")
+            key("Escape", "modal.cancel")
+            key("Alt+g", "pose.prop.clear-move")
+            key("Alt+r", "pose.prop.clear-turn")
+            self.assertIsNone(report(tab)["props"]["place"])
+            key("Escape", "pose.prop.clear")
+            self.assertIsNone(report(tab)["state"]["prop"])
+            actions = tab.evaluate("() => window.__studio.actions()")
+            want = {
+                a["id"]
+                for a in actions
+                if a["id"].startswith("pose.prop.") and a["keys"]
+            }
+            self.assertEqual(want - pressed, set())
+            tab.evaluate(f"() => window.__poseEdit.selectProp('{REF}')")
+            settle(tab)
+
             # Held by: the ground, where the rod stands; a turn of the right wrist then leaves it in place
             before = world(tab)
             tab.locator(".pe-held-by select").select_option("root")
@@ -251,7 +296,9 @@ class TestPropsPage(unittest.TestCase):
             press_in_view(tab, "Control+z")
             press_in_view(tab, "Control+z")
             settle(tab)
-            self.assertEqual(report(tab)["state"]["propList"][0]["carrier"], "metacarpal4.R")
+            self.assertEqual(
+                report(tab)["state"]["propList"][0]["carrier"], "metacarpal4.R"
+            )
             tab.evaluate(TURN_WRIST)
             settle(tab)
             self.assertGreater(np.abs(world(tab) - before).max(), 0.005)
@@ -295,6 +342,10 @@ class TestPropsPage(unittest.TestCase):
             drop(tab, files, {"character.json": json.dumps(saved).encode()})
             edit_on(tab)
             tab.evaluate("() => window.__poseEdit.restPose()")
+            # the floor under this pose, as before the save (a place set to where the rod stands grounds it)
+            tab.evaluate(
+                f"() => {{ const e = window.__poseEdit; e.host.setPropPlace('{REF}', e.rigOf('{REF}').place); }}"
+            )
             settle(tab)
             r = report(tab)
             self.assertEqual(r["state"]["propList"][0]["carrier"], "root")

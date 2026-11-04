@@ -443,10 +443,15 @@ class TestPoseEditPage(unittest.TestCase):
                 key(chord, action)
             self.assertFalse(report(tab)["state"]["on"])
 
-            # every registered key of the pose editor was pressed
+            # every registered key of the pose editor was pressed; the props' keys need a prop, and
+            # test_viewer_props_page presses them
             actions = tab.evaluate("() => window.__studio.actions()")
             want = {
-                a["id"] for a in actions if a["id"].startswith("pose.") and a["keys"]
+                a["id"]
+                for a in actions
+                if a["id"].startswith("pose.")
+                and not a["id"].startswith("pose.prop.")
+                and a["keys"]
             }
             self.assertEqual(want - pressed, set())
             browser.close()
