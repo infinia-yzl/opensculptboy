@@ -23,6 +23,7 @@ file page it names the server).
 
 import contextlib
 import errno
+import io
 import json
 import pathlib
 import shutil
@@ -123,6 +124,67 @@ def fetch(url: str, host: str | None = None):
         return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
+
+
+class TestServeStop(unittest.TestCase):
+    """serve_viewer.py stops on Ctrl+C, and a launcher's window waits on an error alone"""
+
+    def test_interrupt_stops_the_server(self):
+        # Ctrl+C reaches Python as KeyboardInterrupt between waits, on Windows through the console's
+        # control event; the child turns the signal the test can send to a process of its own group
+        # (SIGBREAK on Windows, SIGINT elsewhere) into KeyboardInterrupt, as Ctrl+C is, so that a wait
+        # without a time limit, which never returns to Python, fails the test on both systems
+        import signal
+        import sys
+        import time
+
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            shutil.copy(REPO / "viewer" / "serve_viewer.py", d / "serve_viewer.py")
+            (d / "serve.json").write_text(json.dumps({"port": free_port()}))
+            (d / "page.html").write_text("<p>page</p>", encoding="utf-8")
+            child = (
+                "import signal, sys, runpy\n"
+                "sig = getattr(signal, 'SIGBREAK', signal.SIGINT)\n"
+                "signal.signal(sig, signal.default_int_handler)\n"
+                "sys.argv = ['serve_viewer.py', 'page.html']\n"
+                "runpy.run_path('serve_viewer.py', run_name='__main__')\n"
+            )
+            win = sys.platform == "win32"
+            proc = subprocess.Popen(
+                [sys.executable, "-c", child],
+                cwd=d,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if win else 0,
+            )
+            try:
+                line = proc.stdout.readline()
+                self.assertIn("Press Ctrl+C to stop", line)
+                time.sleep(1.0)  # in the wait
+                proc.send_signal(signal.CTRL_BREAK_EVENT if win else signal.SIGINT)
+                out, err = proc.communicate(timeout=10)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.communicate()
+            self.assertEqual(proc.returncode, 0, err)
+            self.assertIn("Stopped.", out)
+
+    def test_waits_on_error_when_asked(self):
+        from unittest import mock
+
+        mod = serve_module()
+        with tempfile.TemporaryDirectory() as d:
+            missing = str(pathlib.Path(d) / "none.html")
+            with contextlib.redirect_stderr(io.StringIO()):
+                with mock.patch("builtins.input", return_value="") as asked:
+                    self.assertEqual(mod.main([missing, "--wait-on-error"]), 2)
+                self.assertEqual(asked.call_count, 1)
+                with mock.patch("builtins.input", return_value="") as asked:
+                    self.assertEqual(mod.main([missing]), 2)
+                self.assertEqual(asked.call_count, 0)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

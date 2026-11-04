@@ -6,6 +6,9 @@ Serve the viewer page on this computer, for the AI providers' passkeys (docs/vie
     python serve_viewer.py                    # anny_viewer.html next to this script
     python serve_viewer.py PAGE.html --open   # another page file, and open it in the browser
 
+Ctrl+C stops the server. A launcher that opens a console window of its own passes
+--wait-on-error, so that the window stays open with the message when the server cannot start.
+
 Passkeys need the page at http://localhost. This server:
 
 - serves the page file alone, plus MediaPipe's files beside it (mediapipe/*.js, *.wasm and
@@ -32,6 +35,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import webbrowser
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -192,7 +196,23 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--open", action="store_true", help="open the page in the browser"
     )
+    parser.add_argument(
+        "--wait-on-error",
+        action="store_true",
+        help="on an error, wait for Enter before closing (for a launcher's own window)",
+    )
     args = parser.parse_args(argv)
+    code = serve(args)
+    if code and args.wait_on_error:
+        try:
+            input("Press Enter to close this window.")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    return code
+
+
+def serve(args) -> int:
+    """serve the page until Ctrl+C; 0 after a stop, 1 when the port is taken, 2 without a page"""
     page = (
         pathlib.Path(args.page)
         if args.page
@@ -225,10 +245,13 @@ def main(argv=None) -> int:
     )
     if args.open:
         webbrowser.open(url)
+    # short sleeps, because Windows delivers Ctrl+C to Python only between waits: a wait with no
+    # time limit, such as threading.Event().wait(), never sees it
     try:
-        threading.Event().wait()
+        while True:
+            time.sleep(0.5)
     except KeyboardInterrupt:
-        pass
+        print("Stopped.", flush=True)
     for s in servers:
         s.shutdown()
         s.server_close()
