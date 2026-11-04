@@ -1425,7 +1425,7 @@ export class PoseEditor {
     const test = (PARTS.find((x) => x.id === part) || PARTS[0]).test, root = this.host.root();
     this.change(`Apply ${this.poseLabel(id)}`, (cur) => { S.rig.labels.forEach((l, i) => { if (i !== root && test(l)) cur[i] = R[i]; }); });
   }
-  setApplyTo(part: string) { this.publish({ applyTo: part }); }
+  setApplyTo(part: string) { if (PARTS.some((p) => p.id === part)) this.publish({ applyTo: part }); }
   // two library poses (saved or built-in) blended by t (a turn per bone, along the shortest arc)
   blendPoses(a: string, b: string, t: number, record = true) {
     const S = this.session, RA = S ? this.poseRotations(a) : null, RB = S ? this.poseRotations(b) : null;

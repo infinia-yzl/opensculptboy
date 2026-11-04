@@ -617,10 +617,10 @@ class TestPoseEditPage(unittest.TestCase):
                 tab.locator(".pe-builtin [data-pose]").count(), len(builtin)
             )
             tab.get_by_placeholder(f"Search {len(builtin)} poses").fill("")
-            # one part: a built-in pose on the right arm leaves the left arm and the legs
+            # one part: a built-in pose on the right hand leaves the rest of the figure
             r0 = report(tab)
             rot0 = dict(zip(r0["labels"], r0["rotations"]))
-            tab.evaluate("() => window.__poseEdit.setApplyTo('arm.R')")
+            tab.evaluate("() => window.__poseEdit.setApplyTo('hand.R')")
             moving = None
             for c in builtin:
                 # a chip in a closed fold: the fold opened and the chip clicked
@@ -635,7 +635,13 @@ class TestPoseEditPage(unittest.TestCase):
                     moving = c
                     break
             self.assertIsNotNone(moving)
-            self.assertTrue(all(n.endswith(".R") for n in changed), changed)
+            self.assertTrue(
+                all(
+                    n.endswith(".R") and n.startswith(("finger", "metacarpal"))
+                    for n in changed
+                ),
+                changed,
+            )
             self.assertTrue(r["undo"][-1].startswith("Apply "))
             # a blend of two built-in poses on the whole body, half way
             tab.evaluate("() => window.__poseEdit.setApplyTo('all')")
