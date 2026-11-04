@@ -518,8 +518,8 @@ class TestPoseEditPage(unittest.TestCase):
             tab.evaluate("() => window.__poseEdit.restPose()")
             settle(tab)
 
-            # Grip: a rod across the palm side of the straight fingers; each finger closes to 1 mm
-            tab.evaluate(ROD, {"out": 0.035, "radius": 0.012, "bone": "root"})
+            # Grip: a rod on the palm's side of the fingers in the reference pose; each finger closes to 1 mm
+            tab.evaluate(ROD, {"out": 0.022, "radius": 0.012, "bone": "root"})
             tab.evaluate(
                 "() => { const e = window.__poseEdit; e.setSection('hands'); e.setHandSide('R'); "
                 "e.setGrip({ hand: 'R', prop: 'test/rod' }); e.setSqueeze(1); }"
@@ -546,7 +546,7 @@ class TestPoseEditPage(unittest.TestCase):
             # a rod in the plane of the straight fingers: inside at every curl, so the grip blocks; Lift out moves
             # the hand off the rod (the rod stands on the root) and the grip closes from there
             tab.evaluate("() => window.__poseEdit.restPose()")
-            tab.evaluate(ROD, {"out": 0.0, "radius": 0.012, "bone": "root"})
+            tab.evaluate(ROD, {"out": None, "radius": 0.012, "bone": "root"})
             tab.evaluate(GRIP)
             settle(tab)
             st = report(tab)["state"]
@@ -562,7 +562,7 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertEqual(r["undo"][-1], "Lift the hand out")
             # the same rod carried by the hand: lifting the hand takes it along, so Lift out leaves it
             tab.evaluate("() => window.__poseEdit.restPose()")
-            tab.evaluate(ROD, {"out": 0.0, "radius": 0.012, "bone": "metacarpal4.R"})
+            tab.evaluate(ROD, {"out": None, "radius": 0.012, "bone": "metacarpal4.R"})
             tab.evaluate(GRIP)
             settle(tab)
             self.assertTrue(report(tab)["state"]["grip_carried"])
@@ -660,8 +660,8 @@ class TestPoseEditPage(unittest.TestCase):
             browser.close()
 
 
-# a rod across the right hand for Grip (card frame): through the knuckles' line moved 3 cm along the fingers and
-# `out` metres to the palm's side, 14 cm long, as a closed capsule; the editor's host shows it as the prop test/rod
+# a rod across the right hand's fingers for Grip (card frame), 14 cm long, as a closed capsule; the editor's host
+# shows it as the prop test/rod
 ROD = """(o) => {
   const e = window.__poseEdit, F = e.frames, head = (l) => e.headOf(l);
   const w = head('wrist.R'), m = head('finger3-1.R');
@@ -679,7 +679,20 @@ ROD = """(o) => {
   const tip1 = head('finger3-3.R'); S.setPose(R0);
   const d = sub(tip1, tip0);
   if (d[0] * n[0] + d[1] * n[1] + d[2] * n[2] < 0) n = n.map((x) => -x);
-  const c = [0, 1, 2].map((k) => (i[k] + l[k]) / 2 + along[k] * 0.03 + n[k] * o.out);
+  // across the middle joints (the reference hand's fingers curl a little); `out` metres past the joint centres of
+  // the four fingers on the palm's side, or through the middle finger's middle joint when out is null
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const k0 = [0, 1, 2].map((k) => (i[k] + l[k]) / 2), pip = head('finger3-2.R');
+  const base = [0, 1, 2].map((k) => k0[k] + along[k] * dot(sub(pip, k0), along));
+  let off = dot(sub(pip, base), n);
+  if (o.out !== null) {
+    off = -Infinity;
+    for (const f of [2, 3, 4, 5]) {
+      for (const j of [1, 2, 3]) off = Math.max(off, dot(sub(head(`finger${f}-${j}.R`), base), n));
+    }
+    off += o.out;
+  }
+  const c = [0, 1, 2].map((k) => base[k] + n[k] * off);
   const b = cross(across, n), r = o.radius, half = 0.07, ring = 16, P = [], I = [];
   const at = (t, a, s) => [0, 1, 2].map((k) => c[k] + across[k] * t
     + (n[k] * Math.cos(a) + b[k] * Math.sin(a)) * s);
