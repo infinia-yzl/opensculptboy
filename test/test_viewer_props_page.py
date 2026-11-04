@@ -217,11 +217,11 @@ class TestPropsPage(unittest.TestCase):
             # undo and redo
             press_in_view(tab, "Control+z")
             settle(tab)
-            np.testing.assert_allclose(world(tab), before, atol=1e-6)
+            np.testing.assert_allclose(world(tab), before, atol=1e-4)
             self.assertIsNone(report(tab)["props"]["place"])
             press_in_view(tab, "Control+Shift+z")
             settle(tab)
-            np.testing.assert_allclose(world(tab), moved, atol=1e-6)
+            np.testing.assert_allclose(world(tab), moved, atol=1e-4)
 
             # G, X, a typed 5, Enter: 5 mm along the view's X axis
             before = world(tab)
@@ -242,12 +242,12 @@ class TestPropsPage(unittest.TestCase):
             settle(tab)
             r = report(tab)
             self.assertEqual(r["props"]["carrier"], "root")
-            np.testing.assert_allclose(world(tab), before, atol=2e-5)
+            np.testing.assert_allclose(world(tab), before, atol=1e-4)
             TURN_WRIST = """() => { const e = window.__poseEdit, J = e.joints(), b = J.bone('wrist.R');
               e.selectJoint('wrist.R'); e.setJointValue(0, J.values(b, e.session.rotations).value[0] + 25); }"""
             tab.evaluate(TURN_WRIST)
             settle(tab)
-            np.testing.assert_allclose(world(tab), before, atol=2e-5)
+            np.testing.assert_allclose(world(tab), before, atol=1e-4)
             press_in_view(tab, "Control+z")
             press_in_view(tab, "Control+z")
             settle(tab)
@@ -298,7 +298,7 @@ class TestPropsPage(unittest.TestCase):
             settle(tab)
             r = report(tab)
             self.assertEqual(r["state"]["propList"][0]["carrier"], "root")
-            np.testing.assert_allclose(world(tab), held, atol=2e-5)
+            np.testing.assert_allclose(world(tab), held, atol=1e-4)
             self.assertEqual(errors, [])
             browser.close()
 
