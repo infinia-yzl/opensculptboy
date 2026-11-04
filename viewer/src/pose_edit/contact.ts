@@ -165,12 +165,16 @@ export function squeeze(body: SkinnedBody, rotations: ArrayLike<number>[], hand:
   return { rotations: D, report };
 }
 
-export interface GripFinger { start: number; contact: number | null; scale: number; clearance_mm: number; opened: boolean; blocked: boolean }
+export interface GripFinger { start: number; contact: number | null; scale: number; clearance_mm: number; opened: boolean; wedged: boolean; blocked: boolean }
+export const WEDGE_STEP = 0.01;
 
 // Grip from the hand as it stands (the editor's Grip): each finger of hand ("hand.r") starts from its present curl.
 // A finger clear of the objects keeps that start; a finger that touches or enters them opens along its own curl in
-// steps of SCAN_STEP until it clears them by the clearance (the finger is "opened"), and a finger that clears them at
-// no curl down to straight is "blocked" and keeps its present curl. From its start each finger closes until it comes
+// steps of SCAN_STEP until it clears them by the clearance (the finger is "opened"). A finger outside the objects that
+// clears them by the clearance at no curl down to straight lies between two of their parts (a finger between a
+// sword's grip and its guard): it is "wedged" and takes the curl, among those it reaches from the present one without
+// entering the objects, at which it lies farthest from them. A finger inside them at every curl down to straight is
+// "blocked" and keeps its present curl. From its start each finger closes until it comes
 // within the clearance (bisection, as squeeze), and value from 0 to 1 sets each finger between its start and its
 // contact, so Squeeze loosens the grip back to the start and never through the prop. GraspIt's AutoGrasp closes the
 // fingers from a pre-shape clear of the object (A. T. Miller and P. K. Allen, 2004); the present pose serves as that
@@ -198,22 +202,34 @@ export function gripFrom(body: SkinnedBody, rotations: ArrayLike<number>[], hand
     const gap = (scale: number) => { const d = signedDistance(body.vertices(posed(scale), rows), objects); let m = Infinity; for (const x of d) if (x < m) m = x; return m; };
     // the boundary between a clear scale lo and a touching scale hi
     const boundary = (lo: number, hi: number) => { for (let it = 0; it < BISECTION; it++) { const mid = 0.5 * (lo + hi); if (gap(mid) > clearance) lo = mid; else hi = mid; } return lo; };
-    let start = present, contact: number | null = null, opened = false, blocked = false;
-    if (gap(present) > clearance) {
+    let start = present, contact: number | null = null, opened = false, blocked = false, wedged = false;
+    const g0 = gap(present);
+    if (g0 > clearance) {
       // clear: close from here
       for (let s = present + SCAN_STEP; s <= MAX_SCALE + 1e-9; s += SCAN_STEP) if (gap(s) <= clearance) { contact = boundary(s - SCAN_STEP, s); break; }
     } else {
       // touching or inside: open along the curl until the finger clears the prop
       let clear: number | null = null;
       for (let s = present - SCAN_STEP; s > -1e-9; s -= SCAN_STEP) if (gap(Math.max(s, 0)) > clearance) { clear = Math.max(s, 0); break; }
-      if (clear === null) blocked = true;
-      else { opened = true; contact = boundary(clear, Math.min(clear + SCAN_STEP, present)); start = clear; }
+      if (clear !== null) { opened = true; contact = boundary(clear, Math.min(clear + SCAN_STEP, present)); start = clear; }
+      else if (g0 >= 0) {
+        // wedged: the curl farthest from the objects within the stretch round the present one that stays outside
+        let best = present, bestGap = g0;
+        for (const dir of [-1, 1]) {
+          for (let s = present + dir * WEDGE_STEP; s >= 0 && s <= MAX_SCALE + 1e-9; s += dir * WEDGE_STEP) {
+            const g = gap(s);
+            if (g < 0) break;
+            if (g > bestGap) { bestGap = g; best = s; }
+          }
+        }
+        wedged = true; start = best; contact = best;
+      } else blocked = true;
     }
     const end = contact === null ? MAX_SCALE : contact;
-    const chosen = blocked ? present : start + value * (end - start);
+    const chosen = blocked ? present : wedged ? start : start + value * (end - start);
     const now = posed(chosen);
     for (const b of bones) D[b] = now[b];
-    report[finger] = { start: r4(start), contact: contact === null ? null : r4(contact), scale: r4(chosen), clearance_mm: Math.round(1000 * gap(chosen) * 100) / 100, opened, blocked };
+    report[finger] = { start: r4(start), contact: contact === null ? null : r4(contact), scale: r4(chosen), clearance_mm: Math.round(1000 * gap(chosen) * 100) / 100, opened, wedged, blocked };
   }
   return { rotations: D, report };
 }

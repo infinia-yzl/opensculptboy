@@ -389,7 +389,7 @@ function GripBlock({ st }: { st: EditState }) {
       <ul className="pe-grip-fingers">
         {st.grip_report.map((f, k) => (
           <li key={f.finger} className={f.inside ? 'is-bad' : ''}><span>{FINGER_NAMES[k]}</span>
-            <span>{!isFinite(f.clearance) ? '' : f.inside ? <><Icon name="alert" size={14} /> {Math.abs(f.clearance).toFixed(0)} mm inside</> : f.clearance <= 1.5 ? <><Icon name="check" size={14} /> Touching{f.opened ? ', opened first' : ''}</> : `${f.clearance.toFixed(0)} mm off`}</span></li>
+            <span>{!isFinite(f.clearance) ? '' : f.inside ? <><Icon name="alert" size={14} /> {Math.abs(f.clearance).toFixed(0)} mm inside</> : f.clearance <= 1.5 ? <><Icon name="check" size={14} /> {f.wedged ? 'Between two parts' : 'Touching'}{f.opened ? ', opened first' : ''}</> : `${f.clearance.toFixed(0)} mm off`}</span></li>
         ))}
       </ul>
       <Note>Each finger starts where it stands, opens first if it is inside the {label}, and closes joint by joint until it touches with 1 mm to spare. Squeeze loosens the grip back to that start.</Note>

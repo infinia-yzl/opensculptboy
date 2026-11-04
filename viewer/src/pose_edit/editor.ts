@@ -77,7 +77,7 @@ export interface EditState {
   handShape: HandShape & { fist: number; thumb: number };
   preset: string | null;
   userPresets: { id: string; label: string; shape: HandShape }[];
-  grip_report: { finger: string; clearance: number; inside: boolean; opened?: boolean; blocked?: boolean }[];
+  grip_report: { finger: string; clearance: number; inside: boolean; opened?: boolean; wedged?: boolean; blocked?: boolean }[];
   grip_blocked: boolean;            // a finger is inside the prop at every curl from its present one to straight
   grip_carried: boolean;            // the prop moves with the gripping hand (it is bound to a bone of that arm)
   kept: string[];                   // the chains the last placement left as they stood
@@ -902,7 +902,7 @@ export class PoseEditor {
     // each finger's gap to the prop at the chosen squeeze (negative: inside it), for the panel
     const report = FINGERS.map((f, k) => {
       const q = r.report[`finger${k + 1}`];
-      return { finger: f, clearance: q ? q.clearance_mm : NaN, inside: !!q && q.clearance_mm < 0, opened: !!q?.opened, blocked: !!q?.blocked };
+      return { finger: f, clearance: q ? q.clearance_mm : NaN, inside: !!q && q.clearance_mm < 0, opened: !!q?.opened, wedged: !!q?.wedged, blocked: !!q?.blocked };
     });
     this.publish({ squeeze: value, grip_report: report, grip_blocked: report.some((x) => x.blocked) });
     return true;
