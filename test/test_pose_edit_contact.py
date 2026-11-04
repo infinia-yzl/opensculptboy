@@ -64,13 +64,16 @@ class TestPageContact(unittest.TestCase):
             {"kind": "balance", "rotations": rest},
             {"kind": "balance", "rotations": bent},
         ]
-        # the fingers clenched beyond the ball (1.4 times the fist's bends), and a ball that holds the whole hand
+        # the fingers clenched past their contact with the ball (a quarter of the fist's curl further), and a ball
+        # that holds the whole hand
+        _, reach = contact.squeeze(rig, rest, "hand.r", [ball], 1.0, fingers=fingers)
         clenched = rest.copy()
         for f in fingers:
+            scale = (reach[f]["contact"] or 0.0) + 0.25
             for j in range(3):
                 b = ix[f"{f}-{j + 1}.R"]
                 fr = frames[b]
-                bend = np.radians(contact.FIST_BENDS[f][j]) * 1.4
+                bend = np.radians(contact.FIST_BENDS[f][j]) * scale
                 clenched[b] = ps._exp(
                     fr["axes"] @ (fr["sign"] * np.array([bend, 0.0, 0.0]))
                 )
