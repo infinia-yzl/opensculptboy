@@ -1933,6 +1933,14 @@ function slerpInto(out: Float32Array, o: number, a: Float32Array, ao: number, b:
 const _qa = new Float32Array(4), _qb = new Float32Array(4);
 // one frame of a clip: rotations into outQ, and the root offset of this body (with its ground) into outRoot
 function sampleClip(c: any, t: number, outQ: Float32Array, outRoot: number[], ground = MOTION.ground) {
+  // the pose editor's pose keeps its rotations and its root as the editor gave them (setEditPose), unrounded
+  if (c.exact) {
+    outQ.set(c.exact.q);
+    const hip = hipHeight();
+    for (let k = 0; k < 3; k++) outRoot[k] = c.exact.root[k] * hip;
+    outRoot[1] += ground;
+    return;
+  }
   const nb = MOTION.nb, Q = MOTION.Q, R = MOTION.R;
   let f0 = 0, f1 = 0, a = 0;
   if (c.count > 1) {
@@ -3564,14 +3572,26 @@ const SHEET_HOST = {
 // ------------------------------------------------------------------ what the interface sees of the renderer
 // ------------------------------------------------------------------ the pose editor's host (pose_edit/host.ts)
 // The editor (DESIGN-0013) reads the rig, the coarse body and the card, shows its edited pose at once as the clip
-// 'edit' (the root keeps its offset: an edit never grounds the figure again), and draws its scan over the picture.
+// 'edit', and draws its scan over the picture. The edit's root keeps the offset of the pose it began from, less that
+// pose's floor, and each edit stands the figure on the floor that its own pose finds (groundFor, as a pose of the
+// library and a card's pose stand), so the same pose always stands at the same height, and an undo or a redo gives
+// the height back exactly. While the editor holds the floor (a drag, or a modal grab or turn, is live), the floor
+// stays where it was; the editor's next edit after the gesture settles it. A prop's move never grounds the figure:
+// the floor takes the props where their packages bind them (wearables/view.ts lowestProps).
 const POSE_EDIT: { overlay: ((rt: any) => void) | null; frame: (() => void) | null } = { overlay: null, frame: null };
-function setEditPose(q: Float32Array, label = 'Edited pose') {
+function setEditPose(q: Float32Array, label = 'Edited pose', hold = false) {
   if (!RIG.ready || !MOTION.nb) return;
+  const from = MOTION.cur;
   writePoseFrame('edit', label, q);
-  const c = MOTION.byName.edit;
-  if (MOTION.cur !== c) { MOTION.cur = c; MOTION.t = 0; MOTION.playing = false; HOOKS.motion(); }
+  const c = MOTION.byName.edit, hip = hipHeight();
+  // the root's offset of the pose shown, less its floor, in hip heights (as the library's roots)
+  if (from !== c || !c.exact) c.exact = { q: null, root: [0, 1, 2].map((k) => (MOTION.rootOff[k] - (k === 1 ? MOTION.ground : 0)) / hip) };
+  c.exact.q = Float32Array.from(q);
+  if (from !== c) { MOTION.cur = c; MOTION.t = 0; MOTION.playing = false; }
   MOTION.fade = 1;
+  if (!hold) MOTION.ground = groundFor(c);
+  for (let k = 0; k < 3; k++) MOTION.rootOff[k] = c.exact.root[k] * hip + (k === 1 ? MOTION.ground : 0);
+  if (from !== c) HOOKS.motion();
   MOTION.q.set(q);
   RIG.bones.forEach((b: any, i: number) => b.quaternion.set(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]));
   turnHead();
@@ -3634,7 +3654,7 @@ const POSE_HOST: PoseHost = {
   rootOffset: () => MOTION.rootOff.slice(),
   holder: () => { RIG.holder.updateMatrixWorld(true); return RIG.holder.matrixWorld.clone(); },
   pose: () => Float32Array.from(MOTION.q),
-  setPose: (q, label) => setEditPose(q, label),
+  setPose: (q, label, hold) => setEditPose(q, label, !!hold),
   body: () => ({ coarse: BODY.anny.coarse, skin: BODY.anny.coarseSkin, nBody: BODY.anny.nBody, quads: BODY.anny.quads }),
   annyRows: () => { const b = (window as any).__BUFFERS?.card_coarse; return b ? new Uint32Array(b.data.buffer.slice(b.data.byteOffset, b.data.byteOffset + b.data.byteLength)) : null; },
   card: () => {
@@ -3866,6 +3886,17 @@ window.groundInfo = () => {
   const M = poseMatrices(MOTION.q, MOTION.rootOff);
   const props = WEAR?.pieces.length ? WEAR.lowestProps(M) : Infinity;
   return { floor: BODY.anny.floor, plane: GROUND_Y, ground: MOTION.ground, lift: MOTION.lift, body: BODY.anny.lowestSkinned(M)[1], props: Number.isFinite(props) ? props : null };
+};
+// the coarse body as the figure stands (the world, after the holder's turn), for the page tests that a prop's move
+// leaves the figure where it stands
+window.bodyWorld = () => {
+  if (!BODY.ready || !RIG.ready) return null;
+  const P = skinnedCoarse(MOTION.q, MOTION.rootOff), H = (RIG.holder.updateMatrixWorld(true), RIG.holder.matrixWorld.elements), out = new Array(P.length);
+  for (let i = 0; i < P.length; i += 3) {
+    const a = P[i], b = P[i + 1], c = P[i + 2];
+    out[i] = H[0] * a + H[4] * b + H[8] * c + H[12]; out[i + 1] = H[1] * a + H[5] * b + H[9] * c + H[13]; out[i + 2] = H[2] * a + H[6] * b + H[10] * c + H[14];
+  }
+  return out;
 };
 // the character card of the figure as it stands (Pose's card), for the page tests of the card poses
 window.poseCard = () => poseCard();

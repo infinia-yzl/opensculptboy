@@ -5,7 +5,11 @@
 // (wearables of the slot `prop`: a statue's base, a tree stump, a head at its feet), so that a prop under the soles
 // stands on the floor and the body stands on the prop. main.ts skins the body's coarse vertices (body.ts
 // lowestSkinned) and the shown props' vertices (this file) by the pose's bone matrices, and lifts the root by the
-// difference between the floor and the lowest of them.
+// difference between the floor and the lowest of them. A prop with a place on the card (moved by hand in the studio)
+// counts where its package binds it: the floor belongs to the pose and to the props that are shown, so a prop's move,
+// a change of the bone that holds it and Put it back never move the figure, and the same pose always stands at the
+// same height. A prop that the package binds to the root (a statue's base) moves with the root, so the figure and
+// its base stay together when the floor lifts them.
 
 // the slots whose pieces the floor takes into account
 export const GROUNDED_SLOTS = new Set(['prop']);
@@ -33,10 +37,13 @@ export function lowestSkinnedY(p: SkinnedPoints, M: ArrayLike<number>): number {
   return low;
 }
 
-// the lowest height of the shown pieces of the grounded slots
-export function lowestPieces(pieces: (SkinnedPoints & { slot: string })[], M: ArrayLike<number>): number {
+// a shown piece: its points as dressed, and for a piece with a place, its points before the place (base)
+export interface FloorPiece extends SkinnedPoints { slot: string; base?: SkinnedPoints | null }
+
+// the lowest height of the shown pieces of the grounded slots, each where its package binds it
+export function lowestPieces(pieces: FloorPiece[], M: ArrayLike<number>): number {
   let low = Infinity;
-  for (const p of pieces) if (GROUNDED_SLOTS.has(p.slot)) low = Math.min(low, lowestSkinnedY(p, M));
+  for (const p of pieces) if (GROUNDED_SLOTS.has(p.slot)) low = Math.min(low, lowestSkinnedY(p.base || p, M));
   return low;
 }
 

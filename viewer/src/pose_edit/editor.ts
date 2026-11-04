@@ -16,11 +16,11 @@ import { createStore, ui } from '../shell/state.ts';
 import { defineScope, registerActions, type ActionDef } from '../studio/actions.ts';
 import { cam } from '../studio/camera.ts';
 import { viewFocused } from '../studio/keymap.ts';
-import { registerPicker, registerSurface, type PickHit, type PointerInfo, type DragInfo } from '../studio/pointer.ts';
+import { dragging, registerPicker, registerSurface, type PickHit, type PointerInfo, type DragInfo } from '../studio/pointer.ts';
 import { setSelection } from '../studio/selection.ts';
 import { settings } from '../studio/settings.ts';
 import { PRIORITY, clearStatus, setStatus, type StatusPart } from '../studio/status.ts';
-import { cancelModal, confirmModal, startModal } from '../studio/modal.ts';
+import { cancelModal, confirmModal, modalActive, startModal } from '../studio/modal.ts';
 import { TriangleBVH } from './bvh.ts';
 import { SkinnedBody, balance, gripFrom, signedDistance, type Balance, type Prop } from './contact.ts';
 import { Frames } from './frames.ts';
@@ -37,6 +37,7 @@ import { FINGERS, FINGER_LABELS, HandControls, PRESETS, RELAXED, copyMirrored, m
 import { transforms, coordinatesOf, rotationOf, expRotation, mul3, buildProblem, type PointInput, type PinInput } from './problem.ts';
 import { PointSolver, logRotation as logOf } from './solve.ts';
 import { cardTurns } from '../pose_reference.ts';
+import { capitalised, listOf } from '../ui/words.ts';
 import { apply4, fromColumnMajor, movedInPose, mul4, pageMove, placeAmount, rehold, rotationOf as rot4, type M4, type Place } from '../wearables/place.ts';
 import { alongAxis, heldByChoices, hitHandles, isRest, onPlane, pageNumbers, placeFromNumbers, sweep, translation, turnAbout, type HandlePart, type HeldBy } from './props.ts';
 import type { PropRig } from './host.ts';
@@ -123,6 +124,10 @@ function chainName(c: string): string {
   const [base, side] = c.split('.');
   const word = CHAIN_NAMES[base] || base;
   return side ? `${side === 'l' ? 'Left' : 'Right'} ${word}` : word;
+}
+// the chains that a placement left in their pose: "The left arm and the spine kept their pose: too few sure points."
+export function keptMessage(chains: string[]): string {
+  return `${capitalised(listOf(chains.map((c) => 'the ' + chainName(c).toLowerCase())))} kept ${chains.length > 1 ? 'their' : 'its'} pose: too few sure points.`;
 }
 export type End = 'hand.L' | 'hand.R' | 'foot.L' | 'foot.R' | 'hips' | 'head';
 export const ENDS: { id: End; label: string }[] = [
@@ -295,6 +300,7 @@ export class PoseEditor {
   private leave() {
     this.cancelGrab();
     if (this.propDrag) this.cancelPropDrag();
+    this.settleFloor(true);
     for (const off of this.offs.splice(0)) off();
     this.host.setOverlay(null); this.host.onFrame(null);
     this.layer?.hide();
@@ -363,12 +369,27 @@ export class PoseEditor {
   }
 
   // ---------------------------------------------------------------- the pose
+  // Each edit stands the figure on the floor its own pose finds (host.setPose). While a drag or a modal grab or turn
+  // lasts, the floor holds: the pointer's ray reaches the card frame through the root, so a floor that followed a foot
+  // dragged down would lift the figure, and the foot with it, under a still pointer. The first frame after the
+  // gesture settles the floor (settleFloor), so a ring's drag, whose end shows no new pose, settles as well.
+  private floorHeld = false;
+  private gestureLive(): boolean { return dragging() || modalActive(); }
   private poseChanged() {
     if (!this.session) return;
-    this.host.setPose(this.frames.pageQuaternions(this.session.rotations));
+    const hold = this.gestureLive();
+    this.floorHeld = hold;
+    this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, hold);
     this.syncPlaces();
     this.bal = null;
     this.dirty = true;
+  }
+
+  // the floor under the pose once the gesture that held it has ended (or at once, with force)
+  settleFloor(force = false) {
+    if (!this.floorHeld || !this.session || (!force && this.gestureLive())) return;
+    this.floorHeld = false;
+    this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, false);
   }
 
   private record(label: string) { this.session?.record(label); }
@@ -457,7 +478,7 @@ export class PoseEditor {
     this.publish({ kept });
     const n = placed.filter((e) => e.method !== 'none').length;
     this.host.toast((look ? `Placed ${n} points. ${look} need a look.` : `Placed ${n} points.`)
-      + (kept.length ? ` ${kept.map(chainName).join(', ')} kept ${kept.length > 1 ? 'their' : 'its'} pose: too few sure points.` : ''));
+      + (kept.length ? ` ${keptMessage(kept)}` : ''));
     return { placed: n, look };
   }
 
@@ -2043,6 +2064,7 @@ export class PoseEditor {
   private magAt: { cx: number; cy: number } | null = null;
 
   private frame() {
+    this.settleFloor();
     if (!editStore.get().on || !this.layer || !this.session) return;
     if (!this.dirty && !this.drag) return;
     this.dirty = false;

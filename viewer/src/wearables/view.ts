@@ -18,6 +18,7 @@ import { queryPool } from './pool.ts';
 import { skinTriangles } from './skin.ts';
 import { cardOutfit, NO_OUTFIT, resolveRef, wornPieces, type WornRef } from './wardrobe.ts';
 import { lowestPieces } from '../ground.ts';
+import { listOf } from '../ui/words.ts';
 
 // what the wardrobe needs from the renderer (main.ts)
 export interface WardrobeHost {
@@ -134,8 +135,8 @@ export class Wardrobe {
     const bones = this.host.body().bones;
     for (const [ref, w] of packages) {
       const { folded, missing } = packageBones(w, bones);
-      if (missing.length) { packages.delete(ref); fail(`${ref}: the page's rig lacks its bones ${missing.join(', ')}`); }
-      else if (folded.length) notes.push(`${ref}: the page moves its bones ${folded.join(', ')} with ${MOUTH_ANCESTOR}`);
+      if (missing.length) { packages.delete(ref); fail(`${ref}: the page's rig lacks its bones ${listOf(missing)}`); }
+      else if (folded.length) notes.push(`${ref}: the page moves its bones ${listOf(folded)} with ${MOUTH_ANCESTOR}`);
     }
     // only the pieces that loaded take part
     const ok = (file: string, ref: string) => packages.has(ref) && !!file;
@@ -349,7 +350,8 @@ export class Wardrobe {
     if (!p) { this.notify(); return true; }
     this.place(p, w?.place ?? null);
     this.uploadOne(p, false);
-    this.host.ground(); this.host.changed(); this.notify();
+    // the floor takes the props where their packages bind them (lowestProps), so a move leaves the figure standing
+    this.host.changed(); this.notify();
     return true;
   }
   placeOf(ref: string): Place | null { return this.worn.find((p) => p.ref === ref)?.place ?? null; }
@@ -373,9 +375,11 @@ export class Wardrobe {
     this.uploadMeshes(settled);
     this.host.ground();
   }
-  // the lowest height of the shown props, skinned by bone matrices of the page's rig (ground.ts); Infinity for none
+  // the lowest height of the shown props, skinned by bone matrices of the page's rig (ground.ts); Infinity for none.
+  // A piece with a place on the card counts where its package binds it (its base), so that a move in the studio, a
+  // change of the bone that holds it and Put it back leave the floor, and the figure, where they are.
   lowestProps(boneMats: ArrayLike<number>): number {
-    return lowestPieces(this.pieces.map((p) => ({ slot: p.wearable.slot, vertices: p.vertices, joints: p.joints, weights: p.weights })), boneMats);
+    return lowestPieces(this.pieces.map((p) => ({ slot: p.wearable.slot, vertices: p.vertices, joints: p.joints, weights: p.weights, base: p.base })), boneMats);
   }
   private uploadMeshes(settled: boolean) {
     this.syncPlaces();

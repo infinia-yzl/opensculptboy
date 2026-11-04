@@ -34,8 +34,10 @@ export interface PoseHost {
   holder(): THREE.Matrix4;
   // the pose: a quaternion (x, y, z, w) per bone in the page's axes, each relative to its parent
   pose(): Float32Array;
-  // show a pose at once (an edit): the clip stops, the root stays where it stands, and the picture refines again
-  setPose(q: Float32Array, label?: string): void;
+  // show a pose at once (an edit): the clip stops, and the picture refines again. The figure stands on the floor that
+  // this pose finds, as a pose of the library stands (the same pose, the same height); with hold, while a drag or a
+  // modal grab or turn lasts, the floor stays where it was
+  setPose(q: Float32Array, label?: string, hold?: boolean): void;
   // the coarse body (Anny's level-0 vertices of the current sliders, page frame), its skin (8 bone indices then 8
   // weights out of 255 per vertex), its quads, and the map from its rows to Anny's rows (card_coarse)
   body(): { coarse: Float32Array; skin: Uint8Array; nBody: number; quads: Uint32Array };
