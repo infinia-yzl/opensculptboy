@@ -1366,9 +1366,13 @@ export class PoseEditor {
     return { prop: st.prop, place: r?.place ?? null, carrier: r?.carrier ?? null, inside: st.propInside, pivot: r ? this.propPivotWorld(r) : null,
       handles: this.propHandles ? { centre: this.propHandles.centre, arrows: this.propHandles.arrows, rings: this.propHandles.rings?.map((q) => q.filter((_, i) => i % 6 === 0)), outer: this.propHandles.outer } : null };
   }
-  // Move it out: the prop moves off the hand that holds it, along the way out of the skin inside it (the depth times the
-  // direction to the prop's surface, summed over the hand's skin inside, as a physics engine separates two bodies),
-  // 1 mm at a time up to 60 mm, until the palm is clear and every finger can clear it; then a grip closes from there
+  // Move it out: the prop moves off the hand that holds it. A hand wraps the grip it holds, so one push rarely clears
+  // it: the search tries the way out of the skin inside the prop (the depth times the direction to the prop's surface,
+  // summed over the hand's skin inside it, as a physics engine separates two bodies), both ways along the prop's long
+  // axis (a sword slides along its grip, so the pommel leaves the heel of the palm), and four ways across that axis,
+  // each in steps of 2 mm up to 60 mm, and keeps the shortest move that leaves the palm least inside, with every finger
+  // able to clear the prop; a grip then closes from there. Where no move clears the palm, the best one goes ahead and
+  // a note says how deep the palm stays.
   moveOut(): boolean {
     const st = editStore.get(), S = this.session, ref = st.grip?.prop || st.prop, r = this.rigOf(ref);
     const side = st.grip && st.grip.prop === ref ? st.grip.hand : r ? this.sideOf(r.carrier) : null;
@@ -1387,32 +1391,65 @@ export class PoseEditor {
     }
     const n = Math.hypot(dir[0], dir[1], dir[2]);
     if (!(n > 0)) { this.lastMoveOut = null; this.host.toast(`No skin of the hand is inside the ${r.label}.`); return false; }
-    const u = dir.map((x) => x / n), trace: { mm: number; palm_mm: number; blocked?: boolean }[] = [];
-    let found = 0;
-    for (let mm = 1; mm <= 60 && !found; mm++) {
-      const k = mm / 1000, shifted = (X: Float64Array) => { const Y = X.slice(); for (let i = 0; i < Y.length; i += 3) { Y[i] += k * u[0]; Y[i + 1] += k * u[1]; Y[i + 2] += k * u[2]; } return sdf(Y); };
-      const dk = shifted(V);
-      let palmIn = 0;
-      for (let i = 0; i < dk.length; i++) if (palm.has(rows[i])) palmIn = Math.min(palmIn, dk[i]);
-      trace.push({ mm, palm_mm: Math.round(-palmIn * 10000) / 10 });
-      if (palmIn < 0) continue;
-      const g = this.gripOf(S.rotations, side, shifted, 0), blocked = Object.values(g.report).some((f) => f.blocked);
-      trace[trace.length - 1].blocked = blocked;
-      if (!blocked) found = mm;
+    const unit = (v: number[]) => { const l = Math.hypot(v[0], v[1], v[2]); return l > 1e-9 ? v.map((x) => x / l) : null; };
+    const cross = (a: number[], b: number[]) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    // the prop's long axis: the first principal direction of its rest vertices (power iteration), in the card frame
+    const P = r.vertices, m = c.centre, C = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < P.length; i += 3) { const q = [P[i] - m[0], P[i + 1] - m[1], P[i + 2] - m[2]]; for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) C[a * 3 + b] += q[a] * q[b]; }
+    let ax = [1, 0.3, 0.1];
+    for (let it = 0; it < 50; it++) ax = unit([0, 1, 2].map((a) => C[a * 3] * ax[0] + C[a * 3 + 1] * ax[1] + C[a * 3 + 2] * ax[2])) || ax;
+    const R = rot4(T), axw = [0, 1, 2].map((k) => R[k * 3] * ax[0] + R[k * 3 + 1] * ax[1] + R[k * 3 + 2] * ax[2]), axis = this.frames.dirToCard(axw) as number[];
+    // the hand must go along `out`; the prop goes the other way
+    const out = dir.map((x) => x / n), across = unit(out.map((x, k) => x - axis[k] * (out[0] * axis[0] + out[1] * axis[1] + out[2] * axis[2]))) || unit(cross(axis, [0, 0, 1]))!, third = cross(axis, across);
+    const ways: { name: string; u: number[] }[] = [{ name: 'out of the skin', u: out }, { name: 'along the axis', u: axis }, { name: 'along the axis, back', u: axis.map((x) => -x) },
+      { name: 'across', u: across }, { name: 'across, back', u: across.map((x) => -x) }, { name: 'across, square', u: third }, { name: 'across, square back', u: third.map((x) => -x) }];
+    const pi: number[] = [];
+    for (let i = 0; i < rows.length; i++) if (palm.has(rows[i])) pi.push(i);
+    const VP = new Float64Array(pi.length * 3);
+    pi.forEach((i, j) => { VP[j * 3] = V[i * 3]; VP[j * 3 + 1] = V[i * 3 + 1]; VP[j * 3 + 2] = V[i * 3 + 2]; });
+    const palmDepth = (u: number[], mm: number) => {
+      const k = mm / 1000, Y = VP.slice();
+      for (let i = 0; i < Y.length; i += 3) { Y[i] += k * u[0]; Y[i + 1] += k * u[1]; Y[i + 2] += k * u[2]; }
+      let worst = 0;
+      for (const x of sdf(Y)) worst = Math.min(worst, x);
+      return -worst * 1000;
+    };
+    const trace: { way: string; mm: number; palm_mm: number; blocked?: boolean }[] = [];
+    const start = palmDepth(out, 0);
+    const found: { way: string; u: number[]; mm: number; palm: number }[] = [];
+    for (const way of ways) {
+      let best = { mm: 0, palm: start };
+      for (let mm = 2; mm <= 60; mm += 2) {
+        const pd = palmDepth(way.u, mm);
+        trace.push({ way: way.name, mm, palm_mm: Math.round(pd * 10) / 10 });
+        if (pd < best.palm - 0.25) best = { mm, palm: pd };
+        if (pd <= 0) break;
+      }
+      if (best.mm) found.push({ way: way.name, u: way.u, mm: best.mm, palm: best.palm });
     }
-    this.lastMoveOut = { mm: found, direction: u, trace };
-    if (!found) { this.host.toast(`The ${r.label} does not come off the hand within 60 mm.`); return false; }
-    // the prop moves the other way: -found mm along u (the card frame) as a move of the world
-    const wd = this.frames.dirToWorld(u), m = -found / 1000 * this.unit();
+    // the least palm depth, then the shortest move; a move whose fingers cannot clear the prop is left out
+    found.sort((a, b) => (Math.round(a.palm * 2) - Math.round(b.palm * 2)) || a.mm - b.mm);
+    let pick: (typeof found)[number] | null = null;
+    for (const f of found) {
+      const k = f.mm / 1000, shifted = (X: Float64Array) => { const Y = X.slice(); for (let i = 0; i < Y.length; i += 3) { Y[i] += k * f.u[0]; Y[i + 1] += k * f.u[1]; Y[i + 2] += k * f.u[2]; } return sdf(Y); };
+      const blocked = Object.values(this.gripOf(S.rotations, side, shifted, 0).report).some((g) => g.blocked);
+      trace.push({ way: f.way, mm: f.mm, palm_mm: Math.round(f.palm * 10) / 10, blocked });
+      if (!blocked) { pick = f; break; }
+    }
+    this.lastMoveOut = { mm: pick ? pick.mm : 0, direction: pick ? pick.u : out, way: pick?.way, palm_mm: pick ? Math.round(pick.palm * 10) / 10 : Math.round(start * 10) / 10,
+      start_mm: Math.round(start * 10) / 10, trace };
+    if (!pick) { this.host.toast(`No move of the ${r.label} within 60 mm takes it off the palm.`); return false; }
+    // the prop moves the other way: -mm along u (the card frame) as a move of the world
+    const wd = this.frames.dirToWorld(pick.u), dist = -pick.mm / 1000 * this.unit();
     this.record(`Move the ${r.label} out of the hand`);
-    this.putPlace(r.ref, this.placeAfter(r, r.place, translation(wd.map((x) => x * m))));
-    this.host.toast(`Moved the ${r.label} ${found} mm off the hand.`);
+    this.putPlace(r.ref, this.placeAfter(r, r.place, translation(wd.map((x) => x * dist))));
+    this.host.toast(pick.palm <= 0.05 ? `Moved the ${r.label} ${pick.mm} mm off the palm.` : `Moved the ${r.label} ${pick.mm} mm; the palm stays ${pick.palm.toFixed(1)} mm inside it at best.`);
     this.publish();
     this.updateInside();
     if (st.grip && st.grip.prop === r.ref) { this.gripStart = null; this.setSqueeze(st.squeeze, false); }
     return true;
   }
-  lastMoveOut: { mm: number; direction: number[]; trace?: { mm: number; palm_mm: number; blocked?: boolean }[] } | null = null;
+  lastMoveOut: { mm: number; direction: number[]; way?: string; palm_mm?: number; start_mm?: number; trace?: { way?: string; mm: number; palm_mm: number; blocked?: boolean }[] } | null = null;
 
   // the prop's handles over the view: the move handle (three arrows and a centre) with the Move tool, the turn rings (and
   // an outer ring) with the Turn tool, the prop's name and the bone that holds it, and the deepest skin inside it
@@ -1467,7 +1504,7 @@ export class PoseEditor {
       for (let i = 0; i <= 24; i++) { const t = i / 24 * 2 * Math.PI, rr = 5 * f.scale; cd += (i ? ' L' : 'M') + (sc.x + rr * Math.cos(t)).toFixed(1) + ' ' + (sc.y + rr * Math.sin(t)).toFixed(1); }
       strokes.push({ d: cd, colour: '#d4ae52', width: 2, opacity: 0.95 });
     }
-    f.labels.push({ x: sc.x, y: sc.y - R0 - 30 * f.scale, title: r.label, line: `Held by: ${this.boneName(r.carrier).toLowerCase()}`, side: 'right' });
+    f.labels.push({ x: sc.x - 12, y: sc.y - R0 - 30 * f.scale, title: r.label, line: `Held by: ${this.boneName(r.carrier).toLowerCase()}`, side: 'left' });
     const inside = st.propInside;
     if (inside && inside.mm > 0.5 && this.insideAt) {
       const s = toS(this.insideAt);
