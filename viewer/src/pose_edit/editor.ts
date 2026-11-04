@@ -1376,7 +1376,7 @@ export class PoseEditor {
   // inside it, the depth times the direction to the prop's surface summed over that skin, as a physics engine
   // separates two bodies), in steps of 8, 4, 2 and 1 mm up to 40 mm in all; the fingers' skin is left to Grip, which
   // opens and closes them round the prop where it then stands.
-  moveOut(): boolean {
+  moveOut(cost = MOVE_COST): boolean {
     const st = editStore.get(), S = this.session, ref = st.grip?.prop || st.prop, r = this.rigOf(ref);
     const side = st.grip && st.grip.prop === ref ? st.grip.hand : r ? this.sideOf(r.carrier) : null;
     if (!r || !S || !side) { this.host.toast('Select a prop that a hand holds first.'); return false; }
@@ -1418,7 +1418,7 @@ export class PoseEditor {
     };
     const basis = [axis, across, third], trace: { way?: string; mm: number; palm_mm: number; blocked?: boolean }[] = [];
     const at = (c: number[]) => [0, 1, 2].map((k) => (c[0] * basis[0][k] + c[1] * basis[1][k] + c[2] * basis[2][k]) / 1000);
-    const score = (c: number[]) => { const d = palmDepth(at(c)), mm = Math.hypot(c[0], c[1], c[2]); trace.push({ way: c.map((x) => x.toFixed(0)).join(' '), mm: Math.round(mm * 10) / 10, palm_mm: Math.round(d * 10) / 10 }); return { s: d + MOVE_COST * mm, d }; };
+    const score = (c: number[], k: number) => { const d = palmDepth(at(c)), mm = Math.hypot(c[0], c[1], c[2]); trace.push({ way: c.map((x) => x.toFixed(0)).join(' '), mm: Math.round(mm * 10) / 10, palm_mm: Math.round(d * 10) / 10 }); return { s: d + k * mm, d }; };
     const start = palmDepth([0, 0, 0]);
     let cur = [0, 0, 0], best = { s: start, d: start };
     for (const step of [8, 4, 2, 1]) {
@@ -1427,7 +1427,7 @@ export class PoseEditor {
         for (let a = 0; a < 3; a++) for (const sg of [1, -1]) {
           const c = cur.slice(); c[a] += sg * step;
           if (Math.hypot(c[0], c[1], c[2]) > MOVE_LIMIT) continue;
-          const r2 = score(c);
+          const r2 = score(c, cost);
           if (r2.s < best.s - 1e-6) { best = r2; cur = c; improved = true; }
         }
       }
