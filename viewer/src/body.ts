@@ -273,14 +273,22 @@ export class AnnyBody {
     const Nt = new Float32Array(nF * 3), Tt = new Float32Array(nF * 3);
     vertexFrames(S, this.weld, Nt, Tt);
     this.copyRows(Nt, 3); this.copyRows(Tt, 3);
-    // W: the detail without the relief in world axes; the relief lies along the normal
+    // W: the detail without the relief in world axes; the relief lies along the normal. The default body's fine
+    // positions (bufs.rest, the 16-bit vertex records) give W directly as the rest less the smooth surface and the
+    // relief, so the default body comes back as anny.viewer built it. The detail records hold the same offsets in the
+    // frames of anny.viewer.geometry.tangent_frames, whose first axis is the sum of each corner's next edge: round a
+    // vertex of a regular stretch of the mesh that sum is the umbrella vector and nearly vanishes, so the page's
+    // float32 surface and Python's float64 one can give first axes up to 180 degrees apart there. At the closed lips,
+    // whose detail lies in the tangent plane, that put the page's default body 0.85 mm off; the records serve when
+    // the rest positions are missing.
     const P = this.pos, W = new Float32Array(nF * 3), bare = new Float32Array(nF * 3), reliefIds: number[] = [];
+    const R0 = bufs.rest && bufs.rest.length >= nF * 3 ? bufs.rest : null;
     for (let o = 0, v = 0; v < nF; v++, o += 3) {
       const t2x = Nt[o + 1] * Tt[o + 2] - Nt[o + 2] * Tt[o + 1], t2y = Nt[o + 2] * Tt[o] - Nt[o] * Tt[o + 2], t2z = Nt[o] * Tt[o + 1] - Nt[o + 1] * Tt[o];
       const a = D[o] * st, b = D[o + 1] * st, n = D[o + 2] * st, h = H ? H[v] * st : 0;
       if (h !== 0) reliefIds.push(v);
       for (let k = 0; k < 3; k++) {
-        W[o + k] = a * Tt[o + k] + b * [t2x, t2y, t2z][k] + n * Nt[o + k];
+        W[o + k] = R0 ? R0[o + k] - S[o + k] - h * Nt[o + k] : a * Tt[o + k] + b * [t2x, t2y, t2z][k] + n * Nt[o + k];
         bare[o + k] = S[o + k] + W[o + k];
         P[o + k] = bare[o + k] + h * Nt[o + k];
       }
