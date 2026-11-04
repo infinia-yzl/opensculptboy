@@ -105,7 +105,9 @@ class TestPageContact(unittest.TestCase):
                 "expect": "blocked",
             },
         ]
-        cases += [{**g, "hand": "hand.r", "fingers": fingers} for g in grips]
+        cases += [
+            {**g, "hand": "hand.r", "fingers": fingers, "rest": rest} for g in grips
+        ]
         data = {
             "rig": {
                 "labels": rig.labels,
@@ -120,7 +122,10 @@ class TestPageContact(unittest.TestCase):
             "faces": rig.faces.tolist(),
             "bind": rig.bind.reshape(-1, 16).tolist(),
             "cases": [
-                {**c, "rotations": np.asarray(c["rotations"]).reshape(-1, 9).tolist()}
+                {
+                    **{k: v for k, v in c.items() if k != "rest"},
+                    "rotations": np.asarray(c["rotations"]).reshape(-1, 9).tolist(),
+                }
                 for c in cases
             ],
         }
@@ -182,13 +187,21 @@ class TestPageContact(unittest.TestCase):
                 Dp, np.asarray(c["rotations"]).reshape(-1, 3, 3), atol=1e-9
             )
             return
+        # a finger inside the ball even straight (the thumb beside the palm) cannot grip it; the others do
+        _, straight = contact.squeeze(
+            rig, c["rest"], c["hand"], c["objects"], 0.0, fingers=fingers
+        )
         for f in fingers:
             r = report[f]
+            if straight[f]["inside"]:
+                # it stays as it was inside, or keeps outside where it stood
+                self.assertTrue(r["blocked"] or r["clearance_mm"] >= 0, f)
+                continue
             self.assertFalse(r["blocked"], f)
             if c["value"] == 0.0:
                 # Squeeze at 0: each finger at its start, clear of the ball
                 self.assertGreater(r["clearance_mm"], 1.0, f)
-            elif r["contact"] is not None:
+            elif r["contact"] is not None or r["jointwise"]:
                 # each finger at contact with 1 mm to spare (within the bisection's step)
                 self.assertGreaterEqual(r["clearance_mm"], 1.0, f)
                 self.assertLess(r["clearance_mm"], 1.5, f)
@@ -200,6 +213,8 @@ class TestPageContact(unittest.TestCase):
             )
             for f in fingers:
                 self.assertFalse(report[f]["opened"], f)
+                if report[f]["blocked"]:
+                    continue
                 if report[f]["jointwise"]:
                     self.assertIsNone(sq[f]["contact"], f)
                     self.assertGreaterEqual(report[f]["clearance_mm"], 1.0, f)
@@ -208,7 +223,7 @@ class TestPageContact(unittest.TestCase):
                 self.assertAlmostEqual(
                     sq[f]["clearance_mm"], report[f]["clearance_mm"], delta=0.02
                 )
-            if not any(report[f]["jointwise"] for f in fingers):
+            if not any(report[f]["jointwise"] or report[f]["blocked"] for f in fingers):
                 self.assertLess(np.abs(rig.vertices(D) - rig.vertices(Dp)).max(), 1e-5)
         if expect == "opened":
             # the fingers clenched into the ball open before they close

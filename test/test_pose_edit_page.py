@@ -519,13 +519,14 @@ class TestPoseEditPage(unittest.TestCase):
             )
             settle(tab)
             st = report(tab)["state"]
-            self.assertFalse(st["grip_blocked"])
+            # the straight thumb may lie in the rod beside the palm; the four fingers grip it
             self.assertFalse(st["grip_carried"])
             fingers = {f["finger"]: f for f in st["grip_report"]}
             for f in ("index", "middle", "ring"):
                 self.assertGreaterEqual(fingers[f]["clearance"], 1.0, f)
                 self.assertLess(fingers[f]["clearance"], 1.5, f)
-            self.assertFalse(any(f["inside"] for f in st["grip_report"]))
+            for f in ("index", "middle", "ring", "little"):
+                self.assertFalse(fingers[f]["blocked"] or fingers[f]["inside"], f)
             # Grip again from that grip: the fingers stand at contact, so each opens a little and closes again
             tab.evaluate(GRIP)
             settle(tab)
@@ -547,8 +548,9 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertTrue(tab.evaluate("() => window.__poseEdit.liftHand()"))
             settle(tab)
             r = report(tab)
-            self.assertFalse(r["state"]["grip_blocked"])
-            self.assertFalse(any(f["inside"] for f in r["state"]["grip_report"]))
+            lifted = {f["finger"]: f for f in r["state"]["grip_report"]}
+            for f in ("index", "middle", "ring", "little"):
+                self.assertFalse(lifted[f]["blocked"] or lifted[f]["inside"], f)
             self.assertLessEqual(r["lift"]["trace"][-1]["mm"], 60)
             self.assertEqual(r["undo"][-1], "Lift the hand out")
             # the same rod carried by the hand: lifting the hand takes it along, so Lift out leaves it
