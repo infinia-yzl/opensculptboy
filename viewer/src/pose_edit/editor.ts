@@ -173,6 +173,8 @@ const PARITY_RAYS = [[0.267, 0.535, 0.802], [-0.802, 0.267, 0.535], [0.535, -0.8
 const SNAP_PX = 10;
 // metres: the farthest that skin can lie inside a prop for the props' contact shading and Move it out
 const INSIDE_REACH = 0.12;
+// Move it out: the cost of a millimetre moved against a millimetre of the palm inside the prop, and the longest move (mm)
+const MOVE_COST = 0.25, MOVE_LIMIT = 40;
 
 // the parts a pin can hold: a palm or a sole
 export const PIN_PARTS = [
@@ -1366,13 +1368,14 @@ export class PoseEditor {
     return { prop: st.prop, place: r?.place ?? null, carrier: r?.carrier ?? null, inside: st.propInside, pivot: r ? this.propPivotWorld(r) : null,
       handles: this.propHandles ? { centre: this.propHandles.centre, arrows: this.propHandles.arrows, rings: this.propHandles.rings?.map((q) => q.filter((_, i) => i % 6 === 0)), outer: this.propHandles.outer } : null };
   }
-  // Move it out: the prop moves off the hand that holds it. A hand wraps the grip it holds, so one push rarely clears
-  // it: the search tries the way out of the skin inside the prop (the depth times the direction to the prop's surface,
-  // summed over the hand's skin inside it, as a physics engine separates two bodies), both ways along the prop's long
-  // axis (a sword slides along its grip, so the pommel leaves the heel of the palm), and four ways across that axis,
-  // each in steps of 2 mm up to 60 mm, and keeps the shortest move that leaves the palm least inside, with every finger
-  // able to clear the prop; a grip then closes from there. Where no move clears the palm, the best one goes ahead and
-  // a note says how deep the palm stays.
+  // Move it out: the prop moves to the nearest seat in the hand that holds it. A hand wraps the grip it holds, so a
+  // push that clears the whole palm takes the prop out of the hand (on David's sword 58 mm, the fingers then 18 to 40 mm
+  // off it). The search instead lowers the palm's deepest skin inside the prop plus MOVE_COST per millimetre moved, by
+  // a pattern search (R. Hooke and T. A. Jeeves, "Direct search solution of numerical and statistical problems",
+  // J. ACM, 1961) over moves along the prop's long axis and two ways across it (the second the way out of the skin
+  // inside it, the depth times the direction to the prop's surface summed over that skin, as a physics engine
+  // separates two bodies), in steps of 8, 4, 2 and 1 mm up to 40 mm in all; the fingers' skin is left to Grip, which
+  // opens and closes them round the prop where it then stands.
   moveOut(): boolean {
     const st = editStore.get(), S = this.session, ref = st.grip?.prop || st.prop, r = this.rigOf(ref);
     const side = st.grip && st.grip.prop === ref ? st.grip.hand : r ? this.sideOf(r.carrier) : null;
@@ -1401,55 +1404,52 @@ export class PoseEditor {
     const R = rot4(T), axw = [0, 1, 2].map((k) => R[k * 3] * ax[0] + R[k * 3 + 1] * ax[1] + R[k * 3 + 2] * ax[2]), axis = this.frames.dirToCard(axw) as number[];
     // the hand must go along `out`; the prop goes the other way
     const out = dir.map((x) => x / n), across = unit(out.map((x, k) => x - axis[k] * (out[0] * axis[0] + out[1] * axis[1] + out[2] * axis[2]))) || unit(cross(axis, [0, 0, 1]))!, third = cross(axis, across);
-    const ways: { name: string; u: number[] }[] = [{ name: 'out of the skin', u: out }, { name: 'along the axis', u: axis }, { name: 'along the axis, back', u: axis.map((x) => -x) },
-      { name: 'across', u: across }, { name: 'across, back', u: across.map((x) => -x) }, { name: 'across, square', u: third }, { name: 'across, square back', u: third.map((x) => -x) }];
     const pi: number[] = [];
     for (let i = 0; i < rows.length; i++) if (palm.has(rows[i])) pi.push(i);
     const VP = new Float64Array(pi.length * 3);
     pi.forEach((i, j) => { VP[j * 3] = V[i * 3]; VP[j * 3 + 1] = V[i * 3 + 1]; VP[j * 3 + 2] = V[i * 3 + 2]; });
-    const palmDepth = (u: number[], mm: number) => {
-      const k = mm / 1000, Y = VP.slice();
-      for (let i = 0; i < Y.length; i += 3) { Y[i] += k * u[0]; Y[i + 1] += k * u[1]; Y[i + 2] += k * u[2]; }
+    // the palm's deepest skin inside the prop (mm) with the prop moved by -x (metres, the card frame)
+    const palmDepth = (x: number[]) => {
+      const Y = VP.slice();
+      for (let i = 0; i < Y.length; i += 3) { Y[i] += x[0]; Y[i + 1] += x[1]; Y[i + 2] += x[2]; }
       let worst = 0;
-      for (const x of sdf(Y)) worst = Math.min(worst, x);
+      for (const v of sdf(Y)) worst = Math.min(worst, v);
       return -worst * 1000;
     };
-    const trace: { way: string; mm: number; palm_mm: number; blocked?: boolean }[] = [];
-    const start = palmDepth(out, 0);
-    const found: { way: string; u: number[]; mm: number; palm: number }[] = [];
-    for (const way of ways) {
-      let best = { mm: 0, palm: start };
-      for (let mm = 2; mm <= 60; mm += 2) {
-        const pd = palmDepth(way.u, mm);
-        trace.push({ way: way.name, mm, palm_mm: Math.round(pd * 10) / 10 });
-        if (pd < best.palm - 0.25) best = { mm, palm: pd };
-        if (pd <= 0) break;
+    const basis = [axis, across, third], trace: { way?: string; mm: number; palm_mm: number; blocked?: boolean }[] = [];
+    const at = (c: number[]) => [0, 1, 2].map((k) => (c[0] * basis[0][k] + c[1] * basis[1][k] + c[2] * basis[2][k]) / 1000);
+    const score = (c: number[]) => { const d = palmDepth(at(c)), mm = Math.hypot(c[0], c[1], c[2]); trace.push({ way: c.map((x) => x.toFixed(0)).join(' '), mm: Math.round(mm * 10) / 10, palm_mm: Math.round(d * 10) / 10 }); return { s: d + MOVE_COST * mm, d }; };
+    const start = palmDepth([0, 0, 0]);
+    let cur = [0, 0, 0], best = { s: start, d: start };
+    for (const step of [8, 4, 2, 1]) {
+      for (let improved = true, n = 0; improved && n < 20; n++) {
+        improved = false;
+        for (let a = 0; a < 3; a++) for (const sg of [1, -1]) {
+          const c = cur.slice(); c[a] += sg * step;
+          if (Math.hypot(c[0], c[1], c[2]) > MOVE_LIMIT) continue;
+          const r2 = score(c);
+          if (r2.s < best.s - 1e-6) { best = r2; cur = c; improved = true; }
+        }
       }
-      if (best.mm) found.push({ way: way.name, u: way.u, mm: best.mm, palm: best.palm });
     }
-    // the least palm depth, then the shortest move; a move whose fingers cannot clear the prop is left out
-    found.sort((a, b) => (Math.round(a.palm * 2) - Math.round(b.palm * 2)) || a.mm - b.mm);
-    let pick: (typeof found)[number] | null = null;
-    for (const f of found) {
-      const k = f.mm / 1000, shifted = (X: Float64Array) => { const Y = X.slice(); for (let i = 0; i < Y.length; i += 3) { Y[i] += k * f.u[0]; Y[i + 1] += k * f.u[1]; Y[i + 2] += k * f.u[2]; } return sdf(Y); };
-      const blocked = Object.values(this.gripOf(S.rotations, side, shifted, 0).report).some((g) => g.blocked);
-      trace.push({ way: f.way, mm: f.mm, palm_mm: Math.round(f.palm * 10) / 10, blocked });
-      if (!blocked) { pick = f; break; }
-    }
-    this.lastMoveOut = { mm: pick ? pick.mm : 0, direction: pick ? pick.u : out, way: pick?.way, palm_mm: pick ? Math.round(pick.palm * 10) / 10 : Math.round(start * 10) / 10,
-      start_mm: Math.round(start * 10) / 10, trace };
-    if (!pick) { this.host.toast(`No move of the ${r.label} within 60 mm takes it off the palm.`); return false; }
+    const moved = Math.hypot(cur[0], cur[1], cur[2]), shift = at(cur);
+    const shifted = (X: Float64Array) => { const Y = X.slice(); for (let i = 0; i < Y.length; i += 3) { Y[i] += shift[0]; Y[i + 1] += shift[1]; Y[i + 2] += shift[2]; } return sdf(Y); };
+    const blocked = moved > 0 && Object.values(this.gripOf(S.rotations, side, shifted, 0).report).some((g) => g.blocked);
+    this.lastMoveOut = { mm: Math.round(moved * 10) / 10, direction: shift.map((x) => (moved ? x / moved * 1000 : 0)), way: `axis ${cur[0]} mm, across ${cur[1]} mm and ${cur[2]} mm`,
+      palm_mm: Math.round(best.d * 10) / 10, start_mm: Math.round(start * 10) / 10, blocked, trace };
+    if (!moved || best.d >= start - 0.5) { this.host.toast(`No move of the ${r.label} within ${MOVE_LIMIT} mm seats it better in the hand.`); return false; }
+    const pick = { mm: moved, u: shift.map((x) => x / (moved / 1000)), palm: best.d };
     // the prop moves the other way: -mm along u (the card frame) as a move of the world
     const wd = this.frames.dirToWorld(pick.u), dist = -pick.mm / 1000 * this.unit();
     this.record(`Move the ${r.label} out of the hand`);
     this.putPlace(r.ref, this.placeAfter(r, r.place, translation(wd.map((x) => x * dist))));
-    this.host.toast(pick.palm <= 0.05 ? `Moved the ${r.label} ${pick.mm} mm off the palm.` : `Moved the ${r.label} ${pick.mm} mm; the palm stays ${pick.palm.toFixed(1)} mm inside it at best.`);
+    this.host.toast(pick.palm <= 0.05 ? `Moved the ${r.label} ${pick.mm.toFixed(0)} mm: the palm is clear of it.` : `Moved the ${r.label} ${pick.mm.toFixed(0)} mm: the palm stays ${pick.palm.toFixed(1)} mm inside it, against ${start.toFixed(1)} mm before.`);
     this.publish();
     this.updateInside();
     if (st.grip && st.grip.prop === r.ref) { this.gripStart = null; this.setSqueeze(st.squeeze, false); }
     return true;
   }
-  lastMoveOut: { mm: number; direction: number[]; way?: string; palm_mm?: number; start_mm?: number; trace?: { way?: string; mm: number; palm_mm: number; blocked?: boolean }[] } | null = null;
+  lastMoveOut: { mm: number; direction: number[]; way?: string; palm_mm?: number; start_mm?: number; blocked?: boolean; trace?: { way?: string; mm: number; palm_mm: number; blocked?: boolean }[] } | null = null;
 
   // the prop's handles over the view: the move handle (three arrows and a centre) with the Move tool, the turn rings (and
   // an outer ring) with the Turn tool, the prop's name and the bone that holds it, and the deepest skin inside it
