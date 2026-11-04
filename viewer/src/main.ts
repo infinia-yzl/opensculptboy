@@ -1493,7 +1493,7 @@ void main() {
 }
 const OVL_EMPTY = new THREE.Scene();
 function drawOverlay() {
-  const skel = skeletonShown() && !!SKEL.scene;
+  const skel = skeletonShown() && !!SKEL.scene && !FIGURE.hidden;
   if (!skel && !POSE_EDIT.overlay) return;
   const rt = overlayTarget();
   renderer.autoClear = false;
@@ -1519,7 +1519,7 @@ function drawOverlay() {
 // body it draws), a ball the bone whose head it marks
 const _ray = new THREE.Raycaster(), _ndc = new THREE.Vector2();
 function pickBone(x: number, y: number) {
-  if (!skeletonShown() || !SKEL.scene) return null;
+  if (!skeletonShown() || !SKEL.scene || FIGURE.hidden) return null;
   const r = canvas.getBoundingClientRect();
   _ndc.set((x - r.left) / r.width * 2 - 1, -((y - r.top) / r.height) * 2 + 1);
   _ray.setFromCamera(_ndc, camera);
@@ -2187,7 +2187,7 @@ function bodyRayKey() {
   return k.toFixed(6) + ':' + MOTION.rootOff.join(',') + ':' + COUNTS.body;
 }
 function bodyRay(o: any, d: any): { point: any; distance: number } | null {
-  if (!RIG.ready || !MOTION.q || !BODY.anny) return null;
+  if (!RIG.ready || !MOTION.q || !BODY.anny || FIGURE.hidden) return null;
   const key = bodyRayKey();
   if (key !== BODY_RAY.key || !BODY_RAY.pos) { BODY_RAY.pos = skinnedCoarse(MOTION.q, MOTION.rootOff); BODY_RAY.key = key; }
   const P = BODY_RAY.pos, Q = BODY.anny.quads;
@@ -2998,6 +2998,21 @@ function setXray(on: boolean, isolated: any[] | null) {
   XRAY.on = on; XRAY.isolated = isolated && isolated.length ? new Set(isolated) : null;
   syncXray(); resetAccum();
 }
+// Pose › Edit's figure hidden (pose_edit/display.ts): the body, its hair, eyes, lashes, teeth, wearables and props are
+// left out of the shadows and the scene pass, so the scan stands alone on the floor; the floor, the grid and the
+// background stay. It is a view setting: the card, the history and the exports never see it
+const FIGURE = { hidden: false, last: { calls: 0, triangles: 0 } };
+function setFigureShown(on: boolean) {
+  if (FIGURE.hidden === !on) return;
+  FIGURE.hidden = !on;
+  shadowsDirty = true; resetAccum();
+}
+function hideFigure(): [any, boolean][] {
+  const objs = [...opaque, ...hairObjs, ...(STOOL ? [STOOL] : [])];
+  const kept = objs.map((o: any): [any, boolean] => [o, o.visible]);
+  for (const o of objs) o.visible = false;
+  return kept;
+}
 function renderPass() {
   const t0 = performance.now();
   syncXray();
@@ -3014,6 +3029,7 @@ function renderPass() {
   for (const o of hairObjs) o.userData.hu.uViewportH.value = h;
   if (accCount === 0) updateHairLod(h);
   stage('hair', () => { if (HAIR && HAIR.update(renderer)) shadowsDirty = true; });
+  const keptFigure = FIGURE.hidden ? hideFigure() : null;
   if (shadowsDirty) stage('shadows', renderShadows);
   setRegion(sceneRT, w, h);
   if (SSS_ON) setRegion(sssRT, w, h);
@@ -3023,7 +3039,14 @@ function renderPass() {
   camera.setViewOffset(w, h, jx, jy, w, h);
   U.uFrame.value = accCount;
   renderer.setClearColor(0x000000, 0);
-  stage('scene', () => { renderer.setRenderTarget(sceneRT); renderer.clear(); renderer.render(scene, camera); });
+  stage('scene', () => {
+    renderer.setRenderTarget(sceneRT); renderer.clear();
+    // the draws of the scene pass alone (the page test checks that a hidden figure draws nothing)
+    const c0 = renderer.info.render.calls, n0 = renderer.info.render.triangles;
+    renderer.render(scene, camera);
+    FIGURE.last = { calls: renderer.info.render.calls - c0, triangles: renderer.info.render.triangles - n0 };
+  });
+  if (keptFigure) for (const [o, v] of keptFigure) o.visible = v;
   camera.clearViewOffset();
   if (SSS_ON) {
     sssU.tSSS.value = sceneRT.textures[1]; sssU.tDepth.value = sceneRT.depthTexture;
@@ -3680,6 +3703,7 @@ const POSE_HOST: PoseHost = {
     return q;
   },
   toast: (text) => toast(text),
+  setFigureShown: (on) => setFigureShown(on),
   bodyRay: (o, d) => bodyRay(o, d),
   cardPose: () => ({ bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: [0, 0, 0] }),
 };
@@ -3869,7 +3893,8 @@ window.__U = U;
 window.setLook = (look) => syncBody(() => { applyLook(look, false); return true; });
 // what the keyboard shortcuts change, for the page tests (test_viewer_shortcuts)
 window.viewState = () => ({ turntable: !!controls.autoRotate, hair: hairWanted, rig: rigView(), preset: currentPreset, presets: Object.keys(PRESETS), playing: MOTION.playing,
-  clip: MOTION.cur ? MOTION.cur.name : null, camera: camera.position.toArray(), target: controls.target.toArray(), tweening: !!tween });
+  clip: MOTION.cur ? MOTION.cur.name : null, camera: camera.position.toArray(), target: controls.target.toArray(), tweening: !!tween,
+  figure: { hidden: FIGURE.hidden, ...FIGURE.last } });
 window.setMotion = (name, t = 0, paused = true) => { MOTION.playing = !paused; return setMotion(name, { instant: true, t, remember: false }); };
 window.__MOTION = MOTION; window.__RIG = RIG;
 // the camera and the navigation state, for tests of the interface

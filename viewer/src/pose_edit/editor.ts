@@ -7,6 +7,10 @@
 // version 2: Tab, Q W E, 1 to 5, G, [ ], A, Alt+G, Alt+R, Page Up and Down, the arrows, Shift+Z, Ctrl+Z), the status
 // line, the selection that F frames, and the store that the panel (shell/sections/PoseEditSection.tsx) reads.
 //
+// The view shows the figure, the scan or both (display.ts; Shift+Z swaps them). While the figure is hidden, nothing on
+// it can be picked or hovered: the points not yet placed (they sit on the skin), the joints and their rings, the limbs'
+// handles, the props, the pins and the balance mark; the points placed on the scan stay usable.
+//
 // A drag casts a ray from the camera through the pointer every frame; of the surfaces it meets the point takes the hit
 // nearest to where it was, so it does not jump to a finger in front. Shift moves the pointer at a quarter of its
 // speed, Ctrl snaps to the automatic place, the wheel pushes the point into the stone or pulls it out along the ray,
@@ -19,7 +23,8 @@ import { viewFocused } from '../studio/keymap.ts';
 import { dragging, registerPicker, registerSurface, type PickHit, type PointerInfo, type DragInfo } from '../studio/pointer.ts';
 import { setSelection } from '../studio/selection.ts';
 import { settings } from '../studio/settings.ts';
-import { PRIORITY, clearStatus, setStatus, type StatusPart } from '../studio/status.ts';
+import { PRIORITY, clearStatus, setStatus, setStatusNote, type StatusPart } from '../studio/status.ts';
+import { effective, showFigure, showScan, shownNote, swapShown, type Shown } from './display.ts';
 import { cancelModal, confirmModal, modalActive, startModal } from '../studio/modal.ts';
 import { TriangleBVH } from './bvh.ts';
 import { SkinnedBody, balance, gripFrom, signedDistance, type Balance, type Prop } from './contact.ts';
@@ -55,6 +60,7 @@ export interface EditState {
   tool: Tool;
   section: Section;
   scan: { available: boolean; loading: boolean; shown: boolean; look: ScanLook; opacity: number; error: string; credit: string };
+  figure: boolean;                  // the figure shown (a view setting: never in the card, the history or the exports)
   selected: string | null;          // a point's name
   hand: 'L' | 'R' | null;           // the hand whose map shows
   filter: 'all' | 'hands' | 'body';
@@ -110,6 +116,7 @@ export interface PropInfo { ref: string; label: string; carrier: string; carrier
 const init = (): EditState => ({
   on: false, tool: 'select', section: 'points',
   scan: { available: false, loading: false, shown: true, look: 'ghost', opacity: 0.45, error: '', credit: '' },
+  figure: true,
   selected: null, hand: null, filter: 'all', counts: { placed: 0, look: 0, off: 0, total: POINTS.length }, looks: [], point: null,
   hands: { L: [], R: [] }, body: [], dragging: false, magnifier: true, behind: true, pins: [], pinDraft: null, grip: null, squeeze: 1, props: [],
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
@@ -217,6 +224,8 @@ export class PoseEditor {
     this.frames = new Frames(host);
     this.view = new ScanView(host);
     this.registerKeys();
+    // the figure shows again outside Pose (the scan's view belongs to Pose › Edit)
+    ui.subscribe(() => this.syncFigure());
     if (typeof addEventListener === 'function') addEventListener('pointermove', (e: PointerEvent) => { this.pointer = { x: e.clientX, y: e.clientY }; }, { passive: true });
     // unsaved pose or point edits: the browser asks before the page goes (a reload, a closed tab, Alt+Left)
     if (typeof addEventListener === 'function') addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
@@ -259,6 +268,50 @@ export class PoseEditor {
       version: st.version + 1, ...patch,
     });
     this.dirty = true;
+    this.syncFigure();
+  }
+
+  // ---------------------------------------------------------------- the figure, the scan or both (display.ts)
+  private figureHidden = false;
+  shown(): Shown { const st = editStore.get(); return { figure: st.figure, scan: st.scan.shown }; }
+  hasScan(): boolean { const st = editStore.get(); return !!this.scan && st.scan.available && !st.scan.loading; }
+  // what the view draws now: the figure hides only in Pose › Edit with a scan
+  figureShown(): boolean {
+    const st = editStore.get();
+    return !(st.on && ui.get().mode === 'pose' && !effective(this.shown(), this.hasScan()).figure);
+  }
+  private setShown(next: Shown) {
+    this.view.shown = next.scan;
+    this.publish({ figure: next.figure, scan: { ...editStore.get().scan, shown: next.scan } });
+    this.host.redraw();
+  }
+  // why the figure's and the scan's switches do not apply, or ''
+  private noScan(): string { const st = editStore.get(); return st.scan.loading ? 'Reading the scan' : this.hasScan() ? '' : 'This character has no scan'; }
+  setFigure(on: boolean) { this.setShown(showFigure(this.shown(), on, this.hasScan())); }
+  setScanShown(on: boolean) { this.setShown(showScan(this.shown(), on, this.hasScan())); }
+  swapShown(): boolean {
+    if (!this.hasScan()) return false;
+    this.setShown(swapShown(this.shown(), true));
+    return true;
+  }
+  // the renderer, the selections on the figure and the status line's note follow the state
+  syncFigure() {
+    const st = editStore.get(), live = st.on && ui.get().mode === 'pose';
+    setStatusNote('pose-display', live ? shownNote(this.shown(), this.hasScan()) || null : null);
+    const hidden = !this.figureShown();
+    if (hidden === this.figureHidden) return;
+    this.figureHidden = hidden;
+    this.host.setFigureShown?.(!hidden);
+    this.hovered = null; this.hoverJoint = null; this.hoverRing = null; this.hoverHandle = null;
+    if (hidden) {
+      // nothing on the figure stays selected: a joint, a prop, a limb's handle, an unplaced point
+      if (st.prop) this.selectProp(null);
+      if (st.joint) this.selectJoint(null);
+      if (st.limb) this.publish({ limb: null });
+      if (st.selected && !this.target(st.selected)) this.select(null);
+    }
+    this.dirty = true;
+    this.host.redraw();
   }
 
   // ---------------------------------------------------------------- Edit on and off
@@ -307,7 +360,7 @@ export class PoseEditor {
     document.body.classList.remove('pose-edit-on');
     clearStatus('pose-edit');
     setSelection(null);
-    this.publish({ on: false, selected: null, dragging: false });
+    this.publish({ on: false, selected: null, dragging: false, figure: true });
     this.host.redraw();
   }
 
@@ -352,7 +405,12 @@ export class PoseEditor {
   }
 
   setScanLook(patch: Partial<{ shown: boolean; look: ScanLook; opacity: number }>) {
-    if (patch.shown !== undefined) this.view.shown = patch.shown;
+    if (patch.shown !== undefined) {
+      const { shown, ...rest } = patch;
+      this.setScanShown(shown);
+      if (!Object.keys(rest).length) return;
+      patch = rest;
+    }
     if (patch.look) this.view.look = patch.look;
     if (patch.opacity !== undefined) this.view.opacity = patch.opacity;
     this.publish({ scan: { ...editStore.get().scan, ...patch } });
@@ -1534,7 +1592,7 @@ export class PoseEditor {
   }
 
   private registerPropPickers() {
-    const on = () => { const st = editStore.get(); return st.on && !st.pinDraft && !(st.section === 'points' && st.tool === 'move' && !!st.selected); };
+    const on = () => { const st = editStore.get(); return st.on && !this.figureHidden && !st.pinDraft && !(st.section === 'points' && st.tool === 'move' && !!st.selected); };
     const clear = () => { if (editStore.get().prop) this.selectProp(null); };
     const drag = {
       onDrag: (_h: PickHit, _p: PointerInfo, d: DragInfo) => { if (this.propDrag) this.propDragTo(d.ddx * d.scale, d.ddy * d.scale, d.snap); },
@@ -1976,7 +2034,7 @@ export class PoseEditor {
   private hoverHandle: string | null = null;
 
   private registerLimbPickers() {
-    const on = () => { const st = editStore.get(); return st.on && st.section === 'limbs'; };
+    const on = () => { const st = editStore.get(); return st.on && !this.figureHidden && st.section === 'limbs'; };
     this.offs.push(registerPicker({
       id: 'pose-handles', priority: 20, enabled: on,
       hit: (p) => this.handleScreens.map((h) => ({ item: h.id + ':' + h.kind, distPx: Math.max(0, Math.hypot(h.x - p.x, h.y - p.y) - (h.kind === 'end' ? 13 : 8)),
@@ -2087,11 +2145,15 @@ export class PoseEditor {
     const f: Frame = { points: [], anny: [], labels: [], clusters: [], pins: [], balance: null, magnifier: null, scale };
     this.screen.clear(); this.visible.clear();
     const toS = (x: V3) => cam().toScreen(this.v3(this.frames.toWorld(x)));
+    // with the figure hidden, only the points placed on the scan show
+    const noFigure = this.figureHidden;
     // the hands drawn small when they are small on screen
     const clustered = new Set<'L' | 'R'>();
     for (const side of ['R', 'L'] as const) {
       if (st.hand === side) continue;
-      const xs = handPoints(side).map((p) => toS(S.targets.get(p.name)?.position || anny.get(p.name)!));
+      const hp = handPoints(side).filter((p) => !noFigure || S.targets.has(p.name));
+      if (!hp.length) continue;
+      const xs = hp.map((p) => toS(S.targets.get(p.name)?.position || anny.get(p.name)!));
       const w = Math.max(...xs.map((a) => a.x)) - Math.min(...xs.map((a) => a.x)), h = Math.max(...xs.map((a) => a.y)) - Math.min(...xs.map((a) => a.y));
       if (Math.max(w, h) < 90 * scale) clustered.add(side);
     }
@@ -2099,6 +2161,7 @@ export class PoseEditor {
       if (st.filter === 'hands' && p.group === 'body') continue;
       if (st.filter === 'body' && p.group !== 'body') continue;
       const t = S.targets.get(p.name);
+      if (noFigure && !t) continue;
       const at = t ? t.position : anny.get(p.name)!;
       const s = toS(at);
       if (s.depth <= 0) continue;
@@ -2110,7 +2173,7 @@ export class PoseEditor {
       f.points.push({ name: p.name, number: p.number, x: s.x, y: s.y, state, hidden, selected: p.name === st.selected, hovered: p.name === this.hovered,
         pushed: t ? t.depth_mm : 0, small });
       // Anny's point, while the point is dragged or its hand is shown
-      const showAnny = t && (st.dragging ? p.solve === POINT_BY_NAME.get(st.selected || '')?.solve : (st.selected === p.name));
+      const showAnny = t && !noFigure && (st.dragging ? p.solve === POINT_BY_NAME.get(st.selected || '')?.solve : (st.selected === p.name));
       if (showAnny) { const a = toS(anny.get(p.name)!); f.anny.push({ name: p.name, x: a.x, y: a.y, tx: s.x, ty: s.y, line: true }); }
     }
     for (const side of clustered) {
@@ -2121,9 +2184,9 @@ export class PoseEditor {
         line: !placed ? 'Not placed yet' : look ? `${look} need${look === 1 ? 's' : ''} a look` : 'All placed' });
     }
     // the joints (the Joints tool and the Turn tool) and the dial of the selected joint
-    if (st.section === 'joints' || st.tool === 'turn') { f.points = f.points.filter((q) => q.selected); f.anny = []; f.clusters = []; this.drawJoints(f, st); }
+    if ((st.section === 'joints' || st.tool === 'turn') && !noFigure) { f.points = f.points.filter((q) => q.selected); f.anny = []; f.clusters = []; this.drawJoints(f, st); }
     else { this.jointScreens = []; this.dial = null; }
-    if (st.section === 'limbs') { f.points = []; f.anny = []; f.clusters = []; this.drawHandles(f, st); } else this.handleScreens = [];
+    if (st.section === 'limbs' && !noFigure) { f.points = []; f.anny = []; f.clusters = []; this.drawHandles(f, st); } else this.handleScreens = [];
     // the label of the selected or hovered point
     const lab = st.section === 'points' ? this.hovered || st.selected : null;
     if (lab && this.screen.has(lab)) {
@@ -2134,7 +2197,7 @@ export class PoseEditor {
       f.labels.push({ x: s.x, y: s.y - 34, title: `${p.number} ${p.label}`, line, side: 'left' });
     }
     // Grip: the fingers inside the prop, marked red at their tips
-    if (st.section === 'hands' && st.grip && st.grip_report.length) {
+    if (st.section === 'hands' && st.grip && st.grip_report.length && !noFigure) {
       const side = st.grip.hand, tips = ['thumb_tip', 'index_tip', 'middle_tip', 'ring_tip', 'pinky_tip'], at = S.positions(tips.map((t) => POINT_BY_NAME.get(`${t}.${side}`)!));
       f.alerts = st.grip_report.flatMap((r, k) => {
         if (!r.inside) return [];
@@ -2143,8 +2206,8 @@ export class PoseEditor {
       });
     }
     // the pins and the balance mark
-    S.pinPositions().forEach((x, i) => { const s = toS(x); f.pins.push({ x: s.x, y: s.y, label: S.pins[i].name }); });
-    if (st.balance.shown) {
+    if (!noFigure) S.pinPositions().forEach((x, i) => { const s = toS(x); f.pins.push({ x: s.x, y: s.y, label: S.pins[i].name }); });
+    if (st.balance.shown && !noFigure) {
       if (!this.bal) {
         this.bal = balance(this.skinnedBody(), S.rotations);
         const b = this.bal;
@@ -2153,7 +2216,7 @@ export class PoseEditor {
       const b = this.bal, c = toS(b.centre as V3), m = toS(b.mark as V3);
       f.balance = { centre: [c.x, c.y], mark: [m.x, m.y], polygon: b.polygon.map((q) => { const s = toS(q as V3); return [s.x, s.y] as [number, number]; }), inside: b.inside };
     }
-    if (st.prop) this.drawPropHandles(f, st); else this.propHandles = null;
+    if (st.prop && !noFigure) this.drawPropHandles(f, st); else this.propHandles = null;
     if (this.magCam && this.magAt && this.drag && this.mag) {
       // the magnifier shows the spot under the pointer MAG_ZOOM times larger, so a point lies at its offset from the
       // pointer times the zoom
@@ -2326,7 +2389,7 @@ export class PoseEditor {
     }));
   }
   private registerJointPickers() {
-    const jointsOn = () => { const st = editStore.get(); return st.on && (st.section === 'joints' || st.tool === 'turn'); };
+    const jointsOn = () => { const st = editStore.get(); return st.on && !this.figureHidden && (st.section === 'joints' || st.tool === 'turn'); };
     this.offs.push(registerPicker({
       id: 'pose-rings', priority: 30, enabled: () => jointsOn() && !!editStore.get().joint,
       hit: (p) => { const k = this.hitRing(p); return k === null ? null : { item: k, distPx: 0, label: k === 3 ? 'Free turn' : AXES[k].label }; },
@@ -2436,15 +2499,22 @@ export class PoseEditor {
         run: (c) => { const k = c.event?.key || c.chord.replace('Shift+', ''); const dx = k === 'ArrowLeft' ? -1 : k === 'ArrowRight' ? 1 : 0, dy = k === 'ArrowUp' ? 1 : k === 'ArrowDown' ? -1 : 0;
           return this.nudge(sel()!, dx, dy, c.shift ? 0.2 : 1); } },
       { id: 'pose.clear', label: 'Clear the selection', keys: ['Escape'], group: 'Points', tier: 'constant', scope: 'pose-select', run: () => { this.select(null); } },
-      { id: 'pose.scan', label: 'Show the scan', desc: 'Show or hide the statue\'s scan', keys: ['Shift+Z'], group: 'Display', tier: 'occasional', scope: 'pose-edit',
-        checked: () => editStore.get().scan.shown, hint: 'This character has no scan', menu: 'display', menuLabel: 'Scan shown',
-        run: () => { if (!this.scan) return false; this.setScanLook({ shown: !editStore.get().scan.shown }); } },
-      { id: 'pose.scan-ghost', label: 'Scan as a ghost', desc: 'The scan see-through over the figure', group: 'Display', tier: 'occasional', scope: 'pose-edit', menu: 'display',
-        menuLabel: 'Scan ghost', checked: () => editStore.get().scan.look === 'ghost' && editStore.get().scan.shown,
-        run: () => { if (!this.scan) return false; this.setScanLook({ look: 'ghost', shown: true }); } },
-      { id: 'pose.scan-solid', label: 'Scan solid', desc: 'The scan lit and solid beside the figure', group: 'Display', tier: 'occasional', scope: 'pose-edit', menu: 'display',
-        menuLabel: 'Scan solid', checked: () => editStore.get().scan.look === 'solid' && editStore.get().scan.shown,
-        run: () => { if (!this.scan) return false; this.setScanLook({ look: 'solid', shown: true }); } },
+      // the figure, the scan or both (display.ts): switches of the display menu, and Shift+Z to swap them
+      { id: 'pose.swap', label: 'Swap the figure and the scan', desc: 'The figure alone, then the scan alone; with both shown, the scan alone', keys: ['Shift+Z'],
+        group: 'Display', tier: 'frequent', scope: 'pose-edit', place: 'Pose › Edit, Scan', icon: 'statue', hint: 'This character has no scan', run: () => this.swapShown() },
+      { id: 'pose.figure', label: 'Show the figure', desc: 'The figure with its hair, eyes, teeth, wearables and props; with the scan hidden, hiding it shows the scan',
+        group: 'Display', tier: 'occasional', scope: 'pose-edit', place: 'Pose › Edit, Scan', icon: 'body', menu: 'display', menuOrder: 0, menuLabel: 'Figure', help: false,
+        checked: () => effective(this.shown(), this.hasScan()).figure, unavailable: () => this.noScan(),
+        run: () => { if (!this.hasScan()) return false; this.setFigure(!effective(this.shown(), true).figure); } },
+      { id: 'pose.scan', label: 'Show the scan', desc: 'The statue\'s scan; with the figure hidden, hiding it shows the figure', group: 'Display', tier: 'occasional',
+        scope: 'pose-edit', place: 'Pose › Edit, Scan', icon: 'statue', menu: 'display', menuOrder: 1, menuLabel: 'Scan', help: false, hint: 'This character has no scan',
+        checked: () => this.hasScan() && effective(this.shown(), true).scan, unavailable: () => this.noScan(),
+        run: () => { if (!this.hasScan()) return false; this.setScanShown(!effective(this.shown(), true).scan); } },
+      { id: 'pose.scan-see', label: 'Scan see-through', desc: 'On: the scan as a see-through ghost. Off: the scan solid and lit', group: 'Display', tier: 'occasional',
+        scope: 'pose-edit', place: 'Pose › Edit, Scan', icon: 'ghost', menu: 'display', menuOrder: 2, help: false, hint: 'This character has no scan',
+        checked: () => editStore.get().scan.look === 'ghost',
+        unavailable: () => this.noScan() || (effective(this.shown(), true).scan ? '' : 'The scan is hidden'),
+        run: () => { if (!this.hasScan()) return false; this.setScanLook({ look: editStore.get().scan.look === 'ghost' ? 'solid' : 'ghost' }); } },
       { id: 'pose.turn-keys', label: 'Turn the joint', desc: 'The joint turns with the mouse until a click or Enter; X, Y or Z keep to one ring', keys: ['R'], group: 'Joints',
         tier: 'frequent', scope: 'pose-joint', run: () => this.startTurn() },
       { id: 'pose.reset-joint', label: 'Reset the joint', desc: 'The joint back to its rest turn (Shift: the whole limb)', keys: ['Alt+R', 'Shift+Alt+R'], group: 'Joints',
@@ -2506,7 +2576,7 @@ export function editorReport(ed: PoseEditor) {
     pts[p.name] = { number: p.number, target: t ? t.position : null, on: t ? t.on : null, confidence: t ? t.confidence : null, depth: t ? t.depth_mm : 0,
       placed: t ? t.placed : null, anny: a || null, screen: s || null, visible: (ed as any).visible.get(p.name) ?? null, onScan, annyGap };
   }
-  return { state: { ...editStore.get(), hands: undefined, body: undefined }, lift: ed.lastLift, points: pts, magnifier: (ed as any).mag, props: ed.propReport(), moveOut: ed.lastMoveOut,
+  return { state: { ...editStore.get(), hands: undefined, body: undefined }, figureShown: ed.figureShown(), lift: ed.lastLift, points: pts, magnifier: (ed as any).mag, props: ed.propReport(), moveOut: ed.lastMoveOut,
     unsaved: ed.unsavedEdits(), prompt: ed.promptOn(), rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
     labels: S ? S.rig.labels : [] };
 }

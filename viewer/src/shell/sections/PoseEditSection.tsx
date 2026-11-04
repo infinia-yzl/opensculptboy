@@ -1,10 +1,10 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The Pose mode's Edit panel (DESIGN-0013, phase 1; artboards 1a to 1f): the scan (shown or hidden, see-through,
-// ghost or solid), the reference points (Place points, the points that need a look, the body map and the hand map),
-// the selected point (its weight, Use this point, its depth in the stone), contact pins, Grip with Squeeze, the
-// balance mark, and Save points. The tools of the view (Select, Move, Turn) float at the view's top left. The panel
+// The Pose mode's Edit panel (DESIGN-0013, phase 1; artboards 1a to 1f): the figure and the scan (each shown or
+// hidden, Shift+Z to swap them; the scan see-through, ghost or solid), the reference points (Place points, the points
+// that need a look, the body map and the hand map), the selected point (its weight, Use this point, its depth in the
+// stone), contact pins, Grip with Squeeze, the balance mark, and Save points. The tools of the view (Select, Move, Turn) float at the view's top left. The panel
 // reads the editor's store (pose_edit/editor.ts), which changes on clicks, keys and the ends of drags only.
 
 import { useState, useSyncExternalStore } from 'react';
@@ -200,7 +200,10 @@ function ScanBlock({ st }: { st: EditState }) {
     <div className="osb-section pe-scan">
       <h3 className="osb-eyebrow">Scan</h3>
       {s.loading ? <Note>Reading the scan…</Note> : s.error ? <Note className="pe-error">The scan could not be read: {s.error}</Note> : <>
-        <div className="pe-switch-row"><Switch label="Show the scan" on={s.shown} onChange={(on) => ed.setScanLook({ shown: on })} /><kbd className="osb-key">Shift Z</kbd></div>
+        <div className="pe-switch-row"><Switch label="Show the figure" on={st.figure} onChange={(on) => ed.setFigure(on)} /></div>
+        <div className="pe-switch-row"><Switch label="Show the scan" on={s.shown} onChange={(on) => ed.setScanShown(on)} /></div>
+        <div className="pe-switch-row pe-swap"><Tip action="pose.swap"><TextButton label="Swap the figure and the scan" icon="statue" quiet onClick={() => runAction('pose.swap')} /></Tip>
+          <kbd className="osb-key">Shift Z</kbd></div>
         <Range key={'op' + s.shown} id="see-through" label="See-through" value={pct(s.opacity)} min={5} max={100} step={5} unit="%" ends={['Faint', 'Solid']}
           onInput={(v) => ed.setScanLook({ opacity: v / 100 })} />
         <Seg label="The scan's look" fill items={[{ value: 'ghost', label: 'Ghost' }, { value: 'solid', label: 'Solid' }]} value={s.look} onPick={(v) => ed.setScanLook({ look: v as any })} />
@@ -570,12 +573,20 @@ export function PoseEditSection() {
       {!hand ? <div className="osb-section pe-contact"><ContactFolds st={st} /></div> : null}
       </>}
       <PropsBlock st={st} />
-      <div className="pe-foot">
+      {createPortal(<div className="pe-foot">
         {st.section !== 'points' ? <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />
           : hand ? <TextButton label="Reset the hand" icon="reset" quiet onClick={() => { const s = st.selected || `wrist.${hand}`; ed.resetPoint(s, true); }} />
           : st.counts.placed || st.counts.look ? <TextButton label="Place again" icon="sparkle" quiet disabled={!st.scan.available} onClick={() => ed.placeAll()} /> : <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />}
         <TextButton label={st.section === 'points' ? 'Save points' : 'Save the pose'} icon="saveCard" primary disabled={legacy.hosted} onClick={() => ed.savePoints(legacy.saveCard)} />
-      </div>
+      </div>, poseFoot())}
     </div>
   );
+}
+
+// The footer of Edit (Rest pose, Save points or Save the pose) stands below the panel's scrolling body, as the
+// design system's panel footer does (Panels.tsx hosts this element), so every row of the panel scrolls above it.
+let FOOT: HTMLElement | null = null;
+export function poseFoot(): HTMLElement {
+  if (!FOOT) { FOOT = document.createElement('footer'); FOOT.className = 'osb-panel-foot pe-panel-foot'; FOOT.setAttribute('aria-label', 'Save the pose'); }
+  return FOOT;
 }

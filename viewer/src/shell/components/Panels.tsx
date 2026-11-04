@@ -20,6 +20,7 @@ import { ExpressSection } from '../sections/ExpressSection.tsx';
 import { FaceSection } from '../sections/FaceSection.tsx';
 import { HairSection } from '../sections/HairSection.tsx';
 import { PoseSection } from '../sections/PoseSection.tsx';
+import { poseFoot } from '../sections/PoseEditSection.tsx';
 import { SettingsSection } from '../sections/SettingsSection.tsx';
 import { SheetSection } from '../sections/SheetSection.tsx';
 import { SkinSection, setStone } from '../sections/SkinSection.tsx';
@@ -33,6 +34,8 @@ import { Tip } from './ui/tooltip.tsx';
 
 function Foot({ mode, sub }: { mode: ModeId; sub: string }) {
   const { app, ed, legacy } = useShell();
+  // Pose's Edit puts its own footer into this element (empty, and hidden, while Edit is off)
+  if (mode === 'pose') return <div className="pe-foot-host" ref={(n) => { if (n && poseFoot().parentElement !== n) n.append(poseFoot()); }} />;
   if (mode !== 'create') return null;
   const R = legacy.random, X = legacy.reset;
   // Use own: a statue becomes its own skin again (a card's baked skin, or the page's skin)

@@ -5,7 +5,8 @@
 // the page sets its own line under a source name (`setStatus('pose-edit', parts)`); the line shows the source of the
 // highest priority, and the newest among equals. While Shift, Ctrl or Alt is held, the line shows that key's variant:
 // a whole line given for it, else each part's own variant, and the held key as a cap at the start. Holding a modifier
-// for half a second also opens the overlay of that key's combinations (artboard 3c), from the action registry.
+// for half a second also opens the overlay of that key's combinations (artboard 3c), from the action registry. A note
+// ('Figure hidden') stays at the start of the line whichever source shows, until its source clears it.
 
 export type Held = 'shift' | 'ctrl' | 'alt';
 
@@ -39,7 +40,17 @@ export function setStatus(source: string, parts: StatusPart[] | null, opts: Stat
 export function clearStatus(source: string) { if (entries.delete(source)) emit(); }
 export function subscribeStatus(fn: () => void): () => void { listeners.add(fn); return () => { listeners.delete(fn); }; }
 
-export interface StatusLine { source: string | null; lead: string; parts: StatusPart[]; held: Held | null; heldLong: Held | null; lit: string }
+export interface StatusLine { source: string | null; lead: string; parts: StatusPart[]; held: Held | null; heldLong: Held | null; lit: string; notes: string[] }
+
+// the notes at the start of the line, by source ('pose-display': 'Figure hidden'); '' or null clears one
+const notes = new Map<string, string>();
+export function setStatusNote(source: string, text: string | null) {
+  if (!text) { if (notes.delete(source)) emit(); return; }
+  if (notes.get(source) === text) return;
+  notes.set(source, text);
+  emit();
+}
+export function statusNotes(): string[] { return [...notes.values()]; }
 // a part of the line to light (the tour's current step: 'Left-drag')
 let lit = '';
 export function setStatusLit(keys: string) { if (lit !== keys) { lit = keys; emit(); } }
@@ -50,11 +61,12 @@ export function statusNow(): StatusLine {
     const p = e.opts.priority ?? 20, q = top ? (top.opts.priority ?? 20) : -1;
     if (!top || p > q || (p === q && e.t > top.t)) top = e;
   }
-  if (!top) return { source: null, lead: '', parts: [], held, heldLong, lit };
+  const ns = statusNotes();
+  if (!top) return { source: null, lead: '', parts: [], held, heldLong, lit, notes: ns };
   let parts = top.parts;
   if (held && top.opts.held?.[held]) parts = top.opts.held[held]!;
   else if (held) parts = top.parts.map((p) => (held! in p ? p[held!] : p)).filter((p): p is StatusPart => !!p);
-  return { source: top.source, lead: top.opts.lead || '', parts, held, heldLong, lit };
+  return { source: top.source, lead: top.opts.lead || '', parts, held, heldLong, lit, notes: ns };
 }
 export function heldKey(): Held | null { return held; }
 
@@ -95,5 +107,5 @@ export function trackModifiers(target: Window = window) {
 export function statusText(): string {
   const s = statusNow();
   const lead = s.held ? s.held[0].toUpperCase() + s.held.slice(1) + ' held · ' : '';
-  return lead + (s.lead ? s.lead + ' · ' : '') + s.parts.map((p) => (p.keys ? p.keys : '') + (p.text ? (p.keys ? ': ' : '') + p.text : '')).join(' · ');
+  return lead + s.notes.map((n) => n + ' · ').join('') + (s.lead ? s.lead + ' · ' : '') + s.parts.map((p) => (p.keys ? p.keys : '') + (p.text ? (p.keys ? ': ' : '') + p.text : '')).join(' · ');
 }

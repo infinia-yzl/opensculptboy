@@ -3,7 +3,8 @@
 //
 // The status line under the view (artboard 3b): what the mouse does now, from studio/status.ts. A held Shift, Ctrl
 // or Alt shows as a cap at the start of the line, and after half a second the overlay of that key's combinations
-// opens at the left edge of the view (artboard 3c).
+// opens at the left edge of the view (artboard 3c). A note ('Figure hidden') stands first, in the accent colour, so the
+// person always knows that a part of the view is hidden.
 
 import { capsOf, modifierActions, rowLabelOf } from './actions.ts';
 import { useActionsVersion, useStatusLine } from './react.ts';
@@ -22,6 +23,7 @@ export function StatusLine() {
   return (
     <>
       <div className="osb-glass status-line" aria-live="off" aria-label="What the mouse does now" data-held={s.held || undefined}>
+        {s.notes.map((n) => <span key={n} className="status-note" data-note={n}>{n}</span>)}
         {s.held ? <span className="status-held"><kbd className="osb-key">{heldName}</kbd> held</span> : null}
         {s.lead ? <span className="status-part status-lead">{s.lead}</span> : null}
         {s.parts.map((p, i) => <Part key={i} p={p} lit={!!s.lit && p.keys === s.lit} />)}

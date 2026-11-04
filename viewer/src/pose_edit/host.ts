@@ -70,6 +70,9 @@ export interface PoseHost {
   cardPose(): { bones: Record<string, number[]>; root: number[] };
   // the first point of the posed body under a ray (page frame), or null
   bodyRay(origin: THREE.Vector3, dir: THREE.Vector3): { point: THREE.Vector3; distance: number } | null;
+  // the figure (the body, its hair, eyes, lashes, teeth, wearables and props) drawn or hidden; hidden, it casts no
+  // shadow, the body's ray meets nothing and its bones cannot be picked. The floor, the grid and the scan stay
+  setFigureShown?(on: boolean): void;
   // a toast
   toast(text: string): void;
 }
