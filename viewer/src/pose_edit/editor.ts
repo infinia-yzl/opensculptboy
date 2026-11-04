@@ -1343,6 +1343,20 @@ export class PoseEditor {
     if (quiet) editStore.set({ propInside: res }); else this.publish({ propInside: res });
     this.dirty = true;
   }
+  // a pixel of the view where the pointer's ray meets the prop first, inside the free space between the panels (for the
+  // page tests), or null
+  propPixel(ref: string): [number, number] | null {
+    const r = this.rigOf(ref), T = r ? this.propWorld(r) : null;
+    if (!r || !T) return null;
+    const rect = this.host.canvas.getBoundingClientRect(), V = r.vertices, I = r.triangles;
+    for (let t = 0; t + 2 < I.length; t += 3 * 5) {
+      const c = [0, 1, 2].map((k) => (V[I[t] * 3 + k] + V[I[t + 1] * 3 + k] + V[I[t + 2] * 3 + k]) / 3), s = cam().toScreen(this.v3(apply4(T, c)));
+      if (s.depth <= 0 || s.x < rect.left + 440 || s.x > rect.right - 440 || s.y < rect.top + 90 || s.y > rect.bottom - 90) continue;
+      const hits = this.hitProps({ x: s.x, y: s.y, ray: cam().rayAt(s.x, s.y), radius: 16 } as PointerInfo);
+      if (hits.length && hits[0].item === ref) return [s.x, s.y];
+    }
+    return null;
+  }
   propReport() {
     const st = editStore.get(), r = this.rigOf(st.prop);
     return { prop: st.prop, place: r?.place ?? null, carrier: r?.carrier ?? null, inside: st.propInside, pivot: r ? this.propPivotWorld(r) : null,
