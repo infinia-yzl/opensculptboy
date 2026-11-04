@@ -12,6 +12,7 @@
 
 import RANGES from '../../../src/opensculptboy/data/posing/joint_ranges.json' with { type: 'json' };
 import { logRotation, type SolveProblem } from './solve.ts';
+import { listOf } from '../ui/words.ts';
 
 export type V3 = [number, number, number];
 export type M3 = number[];          // 3 x 3, row-major
@@ -132,7 +133,7 @@ export function chainBones(rig: RigSpace, chains: string[], table: any = TABLE, 
     const lower = chain.toLowerCase(), dot0 = lower.indexOf('.');
     const part = dot0 < 0 ? lower : lower.slice(0, dot0), side = dot0 < 0 ? '' : lower.slice(dot0 + 1);
     const words: string[] | undefined = table.chains[part];
-    if (!words) throw new Error(`Unknown chain ${chain}; use one of ${Object.keys(table.chains).sort().join(', ')}.`);
+    if (!words) throw new Error(`Unknown chain ${chain}; use one of ${listOf(Object.keys(table.chains).sort(), 'or')}.`);
     const suffix = side ? '.' + side.toUpperCase() : '';
     rig.labels.forEach((label, b) => {
       const [name, s] = splitSide(label);

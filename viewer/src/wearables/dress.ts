@@ -14,6 +14,7 @@ import { maskedSolid } from './alpha.ts';
 import { adjacency, CANDIDATES, frames, interpolate, linePartnersSteps, norm3, QUERY_SLICE, rayHitsSteps, runSteps, Surface, unitRows, vertexNormals, vertexScales, type F64, type I32, type Steps } from './geometry.ts';
 import type { Garment, Wearable } from './package.ts';
 import { applyPlace, type Place } from './place.ts';
+import { listOf } from '../ui/words.ts';
 
 export const GAP = 0.001;        // metres between a piece and what lies under it
 export const DEPTH = 0.03;       // metres: a vertex deeper inside a surface than this is left alone
@@ -122,7 +123,7 @@ export function bodyWeights(w: Wearable, body: BodySurface, k = MAX_INFLUENCES):
   if (b.skinWeights) {
     const names = b.jointNames || [], index = names.map((nm) => bodyBone(nm, body.bones));
     const missing = names.filter((_, i) => index[i] < 0);
-    if (missing.length) throw new Error(`The body's rig lacks the garment's bones ${missing.join(', ')}.`);
+    if (missing.length) throw new Error(`The body's rig lacks the garment's bones ${listOf(missing)}.`);
     const K = b.skinK!, S = b.skinWeights!, J = b.skinJoints!;
     const folds = names.some((nm) => !body.bones.includes(nm));
     const merged = new Map<number, number>();

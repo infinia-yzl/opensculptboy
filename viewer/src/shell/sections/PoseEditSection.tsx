@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom';
 import { BUILTIN, editStore, ENDS, PARTS, PIN_PARTS, poseEditor, type EditState, type PointInfo } from '../../pose_edit/editor.ts';
 import { BodyMap, HandMap, JointMap } from '../../pose_edit/maps.tsx';
 import { AXES } from '../../pose_edit/joints.ts';
-import { FINGER_LABELS, PRESETS } from '../../pose_edit/hands.ts';
+import { FINGER_LABELS, PRESETS, gripWarning } from '../../pose_edit/hands.ts';
 import { SECTIONS } from '../../pose_edit/editor.ts';
 import { runAction } from '../../studio/actions.ts';
 import { Chip, Fold, Note, Search, Seg, Switch, TextButton } from '../components/controls.tsx';
@@ -377,7 +377,7 @@ function GripBlock({ st }: { st: EditState }) {
       <TextButton label={on ? 'Let go' : 'Grip'} icon="hand" primary={!on} onClick={() => { if (on) ed.setGrip(null); else { ed.setGrip({ hand: side, prop }); ed.setSqueeze(1); } }} />
     </div>
     {on && st.grip_blocked ? <div className="pe-grip-blocked" role="status">
-      <p><Icon name="alert" size={16} /> The {st.grip_report.filter((f) => f.blocked).map((f) => FINGER_NAMES[FINGERS_ORDER.indexOf(f.finger)].toLowerCase()).join(', ') || 'a finger'} stays inside the {label}, at its present curl and straight alike.</p>
+      <p><Icon name="alert" size={16} /> {gripWarning(st.grip_report.filter((f) => f.blocked).map((f) => f.finger), label)}</p>
       {st.grip_carried ? null : <>
         <TextButton label="Lift the hand out" icon="hand" onClick={() => ed.liftHand()} />
         <Note>Lift the hand out moves the hand off the {label}, and the arm follows, until every finger can clear it. You can also drag the hand's handle in Limbs.</Note>
@@ -462,7 +462,6 @@ function PropPanel({ st, p }: { st: EditState; p: EditState['propList'][number] 
   </>;
 }
 const FINGER_NAMES = ['Thumb', 'Index finger', 'Middle finger', 'Ring finger', 'Little finger'];
-const FINGERS_ORDER = ['thumb', 'index', 'middle', 'ring', 'little'];
 function HandsPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!, h = st.handShape, side = st.handSide;
   const started = useState({ on: false })[0];

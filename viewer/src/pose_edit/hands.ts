@@ -15,9 +15,15 @@
 import { FIST_BENDS } from './contact.ts';
 import { Joints } from './joints.ts';
 import { splitSide, transforms, type RigSpace } from './problem.ts';
+import { capitalised, fingersPhrase } from '../ui/words.ts';
 
 export const FINGERS = ['thumb', 'index', 'middle', 'ring', 'little'] as const;
 export const FINGER_LABELS = ['Thumb', 'Index finger', 'Middle finger', 'Ring finger', 'Little finger'];
+// Grip's warning for the fingers that stay inside a prop: "The index and middle fingers stay inside the sword, ..."
+export function gripWarning(fingers: string[], prop: string): string {
+  const f = fingersPhrase(fingers);
+  return `${capitalised(f.text)} ${f.plural ? 'stay' : 'stays'} inside the ${prop}, at ${f.plural ? 'their' : 'its'} present curl and straight alike.`;
+}
 const SPREAD_DEG = [0, 14, 4, 9, 16];   // a finger's knuckle at 100 % spread
 const FAN = [0, 1, 0.3, -0.5, -1];       // which way each finger leaves the middle of the hand (+: towards the thumb)
 
