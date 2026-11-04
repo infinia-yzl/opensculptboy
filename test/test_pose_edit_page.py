@@ -395,7 +395,18 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertIsNone(report(tab)["state"]["selected"])
             key("a", "pose.select-all", "() => window.__poseEdit.selectHand('R')")
             key("Alt+a", "pose.select-none")
-            key("Shift+z", "pose.scan")
+            # Shift+Z swaps the figure and the scan: both shown become the scan alone, then the figure alone
+            key("Shift+z", "pose.swap")
+            self.assertEqual(
+                [report(tab)["state"]["figure"], report(tab)["state"]["scan"]["shown"]],
+                [False, True],
+            )
+            key("Shift+z", "pose.swap")
+            self.assertEqual(
+                [report(tab)["state"]["figure"], report(tab)["state"]["scan"]["shown"]],
+                [True, False],
+            )
+            tab.evaluate("() => window.__poseEdit.setScanShown(true)")
             press_in_view(tab, "Escape")
 
             # the pose's keys: mirror, copy and paste, undo and redo

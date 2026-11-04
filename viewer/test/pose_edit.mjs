@@ -12,6 +12,9 @@
 // - names joined into the messages' sentences, one, two and three of them (src/ui/words.ts, Grip's warning, Place
 //   points' kept chains);
 // - the floor under an edited pose: each edit stands on its own floor, and a modal turn holds it until its end.
+// - the figure, the scan or both (src/pose_edit/display.ts): the swap of Shift+Z, the figure and the scan never both
+//   hidden, a character without a scan always showing its figure, the status line's note, and the display menu's
+//   switches with their ticks and their greyed state.
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { MeshoptEncoder } from 'meshoptimizer';
@@ -126,7 +129,7 @@ const host = { THREE, ready: () => false, canvas: {}, camera: new THREE.Perspect
 installPoseEditor(host);
 const want = { 'pose.edit': ['Tab'], 'pose.tool.select': ['Q'], 'pose.tool.move': ['W'], 'pose.tool.turn': ['E'], 'pose.grab': ['G'], 'pose.parent': ['['],
   'pose.child': [']'], 'pose.select-all': ['A'], 'pose.reset-point': ['Alt+G'], 'pose.reset-turn': ['Alt+R'], 'pose.push': ['PageDown'], 'pose.pull': ['PageUp'],
-  'pose.nudge': ['ArrowLeft'], 'pose.scan': ['Shift+Z'], 'pose.tool.1': ['1'] };
+  'pose.nudge': ['ArrowLeft'], 'pose.swap': ['Shift+Z'], 'pose.tool.1': ['1'] };
 for (const [id, keys] of Object.entries(want)) {
   const a = actions.action(id);
   assert.ok(a, `${id} is registered`);
@@ -185,4 +188,102 @@ console.log('words: one, two and three names joined without a comma before "and"
   confirmModal();
   ed.session = null;
   console.log('floor: each edit stands on its own floor; a gesture holds it until its end');
+}
+
+// ------------------------------------------------------------------ the figure, the scan or both
+{
+  const { showFigure, showScan, swapShown, effective, shownNote } = await import('../src/pose_edit/display.ts');
+  const B = { figure: true, scan: true }, F = { figure: true, scan: false }, S = { figure: false, scan: true }, N = { figure: false, scan: false };
+  // Shift+Z: the figure alone and the scan alone in turn; both shown become the scan alone
+  assert.deepEqual(swapShown(F, true), S);
+  assert.deepEqual(swapShown(S, true), F);
+  assert.deepEqual(swapShown(B, true), S);
+  assert.deepEqual(swapShown(swapShown(B, true), true), F);
+  // hiding one while the other is hidden shows the other
+  assert.deepEqual(showFigure(F, false, true), S);
+  assert.deepEqual(showScan(S, false, true), F);
+  assert.deepEqual(showFigure(B, false, true), S);
+  assert.deepEqual(showScan(B, false, true), F);
+  assert.deepEqual(showFigure(S, true, true), B);
+  assert.deepEqual(showScan(F, true, true), B);
+  // never both hidden, from any state and by any step; without a scan the figure always shows
+  for (const st of [B, F, S, N]) for (const has of [true, false]) {
+    for (const r of [showFigure(st, false, has), showFigure(st, true, has), showScan(st, false, has), showScan(st, true, has), swapShown(st, has)]) {
+      if (has) assert.ok(r.figure || r.scan, JSON.stringify([st, has, r]));
+      else assert.ok(r.figure, JSON.stringify([st, has, r]));
+    }
+    const e = effective(st, has);
+    assert.ok(e.figure || e.scan);
+  }
+  assert.deepEqual(effective(N, true), F);
+  assert.equal(shownNote(S, true), 'Figure hidden');
+  assert.equal(shownNote(F, true), 'Scan hidden');
+  assert.equal(shownNote(B, true), '');
+  assert.equal(shownNote(S, false), '');
+
+  // the editor: the display menu's switches, their ticks and the status line, on a character with a scan
+  const { ui } = await import('../src/shell/state.ts');
+  const { statusText } = await import('../src/studio/status.ts');
+  const { editStore } = await import('../src/pose_edit/editor.ts');
+  if (!actions.scopeOf('pose')) actions.defineScope({ id: 'pose', label: 'Pose', active: () => ui.get().mode === 'pose' });
+  const ed = installPoseEditor(host), figure = [];
+  Object.assign(host, { redraw: () => {}, setFigureShown: (on) => figure.push(on) });
+  ui.set({ mode: 'pose' });
+  editStore.set({ on: true });
+  const ids = () => actions.menuItems('display').map((a) => a.id);
+  const ticks = () => Object.fromEntries(actions.menuItems('display').map((a) => [a.id, a.checked ? a.checked() : null]));
+  const greyed = () => Object.fromEntries(actions.menuItems('display').map((a) => [a.id, a.unavailable ? a.unavailable() : '']));
+  assert.deepEqual(ids(), ['pose.figure', 'pose.scan', 'pose.scan-see']);
+  // no scan: the switches stay in their places, greyed out with the reason; Shift+Z has nothing to swap
+  assert.deepEqual(greyed(), { 'pose.figure': 'This character has no scan', 'pose.scan': 'This character has no scan', 'pose.scan-see': 'This character has no scan' });
+  assert.equal(actions.runAction('pose.swap'), false);
+  assert.equal(actions.runAction('pose.figure'), false);
+  assert.equal(ed.figureShown(), true);
+  // a scan
+  ed.scan = { positions: new Float32Array(9), indices: new Uint32Array(3), normals: new Float32Array(9) };
+  editStore.set({ scan: { ...editStore.get().scan, available: true, loading: false } });
+  assert.deepEqual(greyed(), { 'pose.figure': '', 'pose.scan': '', 'pose.scan-see': '' });
+  assert.deepEqual(ticks(), { 'pose.figure': true, 'pose.scan': true, 'pose.scan-see': true });
+  assert.equal(actions.runAction('pose.swap'), true);
+  assert.deepEqual(ticks(), { 'pose.figure': false, 'pose.scan': true, 'pose.scan-see': true });
+  assert.equal(ed.figureShown(), false);
+  assert.equal(figure.at(-1), false);
+  assert.ok(statusText().startsWith('Figure hidden'), statusText());
+  actions.runAction('pose.swap');
+  assert.deepEqual(ticks(), { 'pose.figure': true, 'pose.scan': false, 'pose.scan-see': true });
+  assert.equal(figure.at(-1), true);
+  assert.ok(statusText().startsWith('Scan hidden'), statusText());
+  assert.equal(greyed()['pose.scan-see'], 'The scan is hidden');
+  // the switches: the scan on, the figure off, then the scan off shows the figure again
+  actions.runAction('pose.scan');
+  assert.deepEqual(ticks(), { 'pose.figure': true, 'pose.scan': true, 'pose.scan-see': true });
+  assert.ok(!statusText().includes('hidden'), statusText());
+  actions.runAction('pose.figure');
+  assert.deepEqual(ticks(), { 'pose.figure': false, 'pose.scan': true, 'pose.scan-see': true });
+  actions.runAction('pose.scan');
+  assert.deepEqual(ticks(), { 'pose.figure': true, 'pose.scan': false, 'pose.scan-see': true });
+  // see-through: on is the ghost, off is solid
+  actions.runAction('pose.scan');
+  actions.runAction('pose.scan-see');
+  assert.equal(editStore.get().scan.look, 'solid');
+  assert.equal(ticks()['pose.scan-see'], false);
+  actions.runAction('pose.scan-see');
+  assert.equal(editStore.get().scan.look, 'ghost');
+  // the figure hides only in Pose: another mode shows it, and Pose hides it again
+  actions.runAction('pose.figure');
+  assert.equal(figure.at(-1), false);
+  ui.set({ mode: 'create' });
+  assert.equal(figure.at(-1), true);
+  assert.ok(!statusText().includes('Figure hidden'), statusText());
+  ui.set({ mode: 'pose' });
+  assert.equal(figure.at(-1), false);
+  // the card's scan gone: the figure shows
+  ed.scan = null;
+  editStore.set({ scan: { ...editStore.get().scan, available: false } });
+  ed.syncFigure();
+  assert.equal(figure.at(-1), true);
+  assert.equal(ed.figureShown(), true);
+  editStore.set({ on: false, figure: true, scan: { ...editStore.get().scan, shown: true, look: 'ghost' } });
+  ed.syncFigure();
+  console.log('display: Shift+Z swaps the figure and the scan, never both hidden, ticks and greyed switches as the state is');
 }

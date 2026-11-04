@@ -12,8 +12,9 @@
 import assert from 'node:assert/strict';
 import {
   allActions, chordsOf, conflicts, defineScope, dispatchKey, helpRows, normChord, registerAction, reservedUses, RESERVED, capsOf, commands,
-  menuItems, modifierActions,
+  menuItems, modifierActions, runAction,
 } from '../src/studio/actions.ts';
+import { keepInside, nearestItem, ringSlots, slotAngle } from '../src/studio/menus.ts';
 import { registerKeymap } from '../src/studio/keymap.ts';
 import { ui } from '../src/shell/state.ts';
 import { setSelection } from '../src/studio/selection.ts';
@@ -59,7 +60,7 @@ assert.deepEqual(capsOf('Ctrl+Z', true), ['Cmd', 'Z']);
 let ran = [];
 const stubApp = {
   presets: { studio: { label: 'Studio' }, window: { label: 'Window' } },
-  motion: () => ({ cur: null }), togglePlay() {}, turntable: () => false, setTurntable() {}, rigView: () => 'off', setRigView() {},
+  motion: () => ({ cur: null }), togglePlay() {}, turntable: () => false, setTurntable() {}, rig: 'off', rigView() { return this.rig; }, setRigView(v) { this.rig = v; },
   hairVisible: () => true, setHairVisible() {}, applyPreset() {}, boneNames: () => ['root', 'wrist.R'], setParts: (h, f) => { ran.push('parts:' + JSON.stringify([h, f])); },
 };
 const stubNav = new Proxy({}, { get: (_, k) => (...a) => { ran.push('nav.' + String(k) + (a.length ? ':' + a.join(',') : '')); } });
@@ -76,7 +77,7 @@ const P = [
   ['pose.turn-keys', ['R']], ['pose.parent', ['[']], ['pose.child', [']']], ['pose.finger-prev', ['Shift+[']], ['pose.finger-next', ['Shift+]']],
   ['pose.select-all', ['A']], ['pose.select-none', ['Alt+A']], ['pose.reset-point', ['Alt+G', 'Shift+Alt+G']], ['pose.reset-turn', ['Alt+R', 'Shift+Alt+R']],
   ['pose.push', ['PageDown', 'Shift+PageDown', 'Alt+PageDown']], ['pose.pull', ['PageUp', 'Shift+PageUp', 'Alt+PageUp']], ['pose.mirror', ['M']],
-  ['pose.copy', ['Ctrl+C']], ['pose.paste', ['Ctrl+V']], ['pose.paste-mirrored', ['Ctrl+Shift+V']], ['pose.scan', ['Shift+Z']],
+  ['pose.copy', ['Ctrl+C']], ['pose.paste', ['Ctrl+V']], ['pose.paste-mirrored', ['Ctrl+Shift+V']], ['pose.swap', ['Shift+Z']],
   ['pose.tool.1', ['1']], ['pose.tool.2', ['2']], ['pose.tool.3', ['3']], ['pose.tool.4', ['4']], ['pose.tool.5', ['5']],
 ];
 for (const [id, keys, scope] of P) registerAction({ id, label: id, keys, group: 'Points', tier: 'frequent', scope: scope || 'pose-edit', run: () => { ran.push(id); } });
@@ -189,7 +190,30 @@ assert.deepEqual(conflicts(), []);
 
 // ------------------------------------------------------------------ menus, the command list and the Ctrl overlay
 assert.deepEqual(menuItems('view').map((a) => a.menuLabel || a.label), ['Top', 'Face', 'Right', 'Right hand', 'Three-quarter', 'Front', 'Full figure', 'Left hand', 'Left', 'Back']);
-assert.deepEqual(menuItems('display').map((a) => a.id), ['display.solid', 'display.xray', 'display.skeleton', 'display.weights', 'display.hair']);
+// the display menu: switches in fixed places (Pose › Edit adds the figure, the scan and its see-through in places 0 to 2)
+assert.deepEqual(menuItems('display').map((a) => [a.id, a.menuOrder]), [['display.weights', 3], ['display.hair', 4], ['display.skeleton', 5], ['display.xray', 6]]);
+assert.ok(menuItems('display').every((a) => typeof a.checked === 'function'), 'every choice of the display menu is a switch');
+const rigTicks = () => menuItems('display').filter((a) => a.id === 'display.skeleton' || a.id === 'display.weights').map((a) => a.checked());
+assert.deepEqual(rigTicks(), [false, false]);
+runAction('display.skeleton');
+assert.deepEqual(rigTicks(), [false, true]);
+// the skeleton and the skin weights share one rig view: one on turns the other off, and the ticks say so
+runAction('display.weights');
+assert.deepEqual(rigTicks(), [true, false]);
+runAction('display.weights');
+assert.deepEqual(rigTicks(), [false, false]);
+// the places: eight round the ring (the view menu's ten take ten), the nearest direction, and the window's edges
+assert.equal(ringSlots([3, 4, 5, 6]), 8);
+assert.equal(ringSlots([...Array(10).keys()]), 10);
+assert.equal(slotAngle(2, 8), Math.PI / 2);
+const angs = [3, 4, 5, 6].map((o) => slotAngle(o, 8));
+assert.equal(nearestItem(Math.PI, angs), 1);               // straight down: the hair
+assert.equal(nearestItem(-Math.PI / 2, angs), 3);          // left: X-ray
+assert.equal(nearestItem(Math.PI * 0.7, angs), 0);         // down and to the right: the skin weights
+assert.equal(nearestItem(0.01, angs), 3);                  // up: the nearest of an empty place's neighbours
+assert.deepEqual(keepInside({ left: -120, top: 40, right: 400, bottom: 500 }, 1600, 1000), { dx: 128, dy: 0 });
+assert.deepEqual(keepInside({ left: 1300, top: 700, right: 1700, bottom: 1100 }, 1600, 1000), { dx: -108, dy: -108 });
+assert.deepEqual(keepInside({ left: 10, top: 10, right: 20, bottom: 20 }, 1600, 1000), { dx: 0, dy: 0 });
 const frame = commands('frame').map((c) => c.a.id);
 assert.ok(frame.includes('view.frame') && frame.includes('view.home'), frame.join());
 assert.ok(modifierActions('Ctrl').some((x) => x.a.id === 'edit.undo'));
