@@ -63,7 +63,11 @@ CASES = [
     {"name": "placed_frame", "body": "thin", "card": "placed", "frame": True},
 ]
 # the circlet's place on the card "placed" (opensculptboy.wearables.place)
-PLACE = {"bone": "wrist.R", "rotation": [0.1, -0.2, 0.15, 0.9605], "translation": [0.012, -0.03, 0.05]}
+PLACE = {
+    "bone": "wrist.R",
+    "rotation": [0.1, -0.2, 0.15, 0.9605],
+    "translation": [0.012, -0.03, 0.05],
+}
 
 
 def _packages(folder: pathlib.Path):
@@ -191,7 +195,10 @@ class TestViewerWearables(unittest.TestCase):
         }
         placed = card.to_dict()
         placed["outfits"][0]["pieces"][2]["place"] = dict(
-            PLACE, rotation=list(np.asarray(PLACE["rotation"]) / np.linalg.norm(PLACE["rotation"]))
+            PLACE,
+            rotation=list(
+                np.asarray(PLACE["rotation"]) / np.linalg.norm(PLACE["rotation"])
+            ),
         )
         placed["schema"] = 6
         cards["placed"] = Character.from_dict(placed)

@@ -69,7 +69,9 @@ def card_has_places(data: dict) -> bool:
         for piece in (outfit or {}).get("pieces") or []:
             if isinstance(piece, dict) and "place" in piece:
                 return True
-    return any(isinstance(e, dict) and "place" in e for e in data.get("wearables") or [])
+    return any(
+        isinstance(e, dict) and "place" in e for e in data.get("wearables") or []
+    )
 
 
 def rotation_matrix(q) -> np.ndarray:
@@ -153,12 +155,25 @@ def carrier_weights(bone: int, count: int, max_influences: int):
     return weights, indices
 
 
-def rehold(place: dict | None, binding_bone: str, skin_old, skin_new, head_old, head_new, bone: str) -> dict:
+def rehold(
+    place: dict | None,
+    binding_bone: str,
+    skin_old,
+    skin_new,
+    head_old,
+    head_new,
+    bone: str,
+) -> dict:
     """The place that keeps a piece where it stands in a pose while ``bone`` takes it over:
     ``skin_old`` and ``skin_new`` (4, 4) are the skinning matrices (rest to posed) of the bone
     that carries it now and of ``bone``, and ``head_old``, ``head_new`` their rest heads. A
     piece without a place is carried by ``binding_bone`` with no move."""
     current = place or {"bone": binding_bone}
     A = place_matrix(current, head_old)
-    M = np.linalg.solve(np.asarray(skin_new, np.float64), np.asarray(skin_old, np.float64)) @ A
+    M = (
+        np.linalg.solve(
+            np.asarray(skin_new, np.float64), np.asarray(skin_old, np.float64)
+        )
+        @ A
+    )
     return place_of(M, head_new, bone)

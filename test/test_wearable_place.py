@@ -75,9 +75,13 @@ class TestPlaceMaths(unittest.TestCase):
         M = place_matrix(PLACE, head)
         again = place_of(M, head, CARRIER, digits=12)
         np.testing.assert_allclose(again["rotation"], PLACE["rotation"], atol=1e-12)
-        np.testing.assert_allclose(again["translation"], PLACE["translation"], atol=1e-12)
+        np.testing.assert_allclose(
+            again["translation"], PLACE["translation"], atol=1e-12
+        )
         # the head stays put when only the turn changes, and moves by the translation
-        np.testing.assert_allclose(M[:3, :3] @ head + M[:3, 3], head + PLACE["translation"], atol=1e-12)
+        np.testing.assert_allclose(
+            M[:3, :3] @ head + M[:3, 3], head + PLACE["translation"], atol=1e-12
+        )
 
     def test_rehold_keeps_the_piece_in_the_world(self):
         rng = np.random.default_rng(5)
@@ -132,12 +136,20 @@ class TestPlacedPiece(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "schema 6"):
             Character.from_dict(dict(data, schema=5))
         bad = copy.deepcopy(data)
-        bad["outfits"][0]["pieces"][1]["place"] = {"bone": CARRIER, "rotation": [1, 1, 0, 0]}
+        bad["outfits"][0]["pieces"][1]["place"] = {
+            "bone": CARRIER,
+            "rotation": [1, 1, 0, 0],
+        }
         with self.assertRaisesRegex(ValueError, "unit quaternion"):
             Character.from_dict(bad)
         # a loose piece holds a place as well
         loose = Character.from_dict(
-            {"schema": 6, "wearables": [{"id": "circlet", "file": "circlet.wearable.json", "place": PLACE}]}
+            {
+                "schema": 6,
+                "wearables": [
+                    {"id": "circlet", "file": "circlet.wearable.json", "place": PLACE}
+                ],
+            }
         )
         self.assertEqual(worn_pieces(loose, self.folder)[0].place, PLACE)
 
@@ -154,12 +166,16 @@ class TestPlacedPiece(unittest.TestCase):
         Q = rotation_matrix(TURN)
         expected = head + (plain[ref].vertices - head) @ Q.T + PLACE["translation"]
         np.testing.assert_allclose(moved[ref].vertices, expected, atol=1e-12)
-        np.testing.assert_allclose(moved[ref].normals, plain[ref].normals @ Q.T, atol=1e-12)
+        np.testing.assert_allclose(
+            moved[ref].normals, plain[ref].normals @ Q.T, atol=1e-12
+        )
         self.assertTrue(np.all(moved[ref].joints[:, 0] == b))
         self.assertTrue(np.all(moved[ref].weights[:, 0] == 1.0))
         self.assertEqual(moved[ref].extras()["place"], PLACE)
         # the other pieces stay as they were
-        np.testing.assert_array_equal(moved["test_outfit/tunic"].vertices, plain["test_outfit/tunic"].vertices)
+        np.testing.assert_array_equal(
+            moved["test_outfit/tunic"].vertices, plain["test_outfit/tunic"].vertices
+        )
 
     def test_place_on_a_surface_piece_is_refused(self):
         data = self.placed.to_dict()
@@ -188,15 +204,27 @@ class TestPlacedPiece(unittest.TestCase):
         expected = moved["test_outfit/circlet"].vertices @ C.T
         lift = np.median(V - expected, axis=0)
         np.testing.assert_allclose(V, expected + lift, atol=2e-5)
-        pose = {"bones": {"lowerarm01.R": _quat([1, 0, 0], 40), "wrist.R": _quat([0, 1, 1], 35), "neck01": _quat([0, 0, 1], 25)}}
-        _, Vp, world_p, _ = self._export(placed_card(self.card, pose=pose), "placed_posed.glb")
+        pose = {
+            "bones": {
+                "lowerarm01.R": _quat([1, 0, 0], 40),
+                "wrist.R": _quat([0, 1, 1], 35),
+                "neck01": _quat([0, 0, 1], 25),
+            }
+        }
+        _, Vp, world_p, _ = self._export(
+            placed_card(self.card, pose=pose), "placed_posed.glb"
+        )
 
         def local(Vs, W, bone):
             M = np.linalg.inv(W[names.index(bone)])
             return Vs @ M[:3, :3].T + M[:3, 3]
 
-        np.testing.assert_allclose(local(Vp, world_p, CARRIER), local(V, world, CARRIER), atol=2e-5)
-        self.assertGreater(np.abs(local(Vp, world_p, "head") - local(V, world, "head")).max(), 0.05)
+        np.testing.assert_allclose(
+            local(Vp, world_p, CARRIER), local(V, world, CARRIER), atol=2e-5
+        )
+        self.assertGreater(
+            np.abs(local(Vp, world_p, "head") - local(V, world, "head")).max(), 0.05
+        )
 
     def test_vrm_files(self):
         from opensculptboy.export.vrm import export_vrm
@@ -209,32 +237,66 @@ class TestPlacedPiece(unittest.TestCase):
         for version, check in (("1.0", check_vrm1), ("0.x", check_vrm0)):
             with self.subTest(version):
                 path = self.folder / f"placed_{version}.vrm"
-                export_vrm(path, self.placed, author="test", version=version, detail_dir=self.folder)
+                export_vrm(
+                    path,
+                    self.placed,
+                    author="test",
+                    version=version,
+                    detail_dir=self.folder,
+                )
                 glb = GLB(path)
                 self.assertEqual(structure_errors(glb), [])
                 self.assertEqual(check(glb.json), [])
                 names = [n.get("name") for n in glb.json["nodes"]]
                 node = names.index("test_outfit/circlet")
                 skin = glb.json["skins"][glb.json["nodes"][node]["skin"]]
-                prim = glb.json["meshes"][glb.json["nodes"][node]["mesh"]]["primitives"][0]
+                prim = glb.json["meshes"][glb.json["nodes"][node]["mesh"]][
+                    "primitives"
+                ][0]
                 joints = glb.accessor(prim["attributes"]["JOINTS_0"])
                 weights = glb.accessor(prim["attributes"]["WEIGHTS_0"])
-                used = {skin["joints"][int(j)] for j, w in zip(joints.reshape(-1), weights.reshape(-1)) if w > 0}
+                used = {
+                    skin["joints"][int(j)]
+                    for j, w in zip(joints.reshape(-1), weights.reshape(-1))
+                    if w > 0
+                }
                 self.assertEqual({names[j] for j in used}, {CARRIER})
                 # the piece keeps its reach from the wrist in the file's T-pose
                 V = evaluate_nodes(glb)[node][0].positions
                 W = node_world_matrices(glb)[names.index(CARRIER)]
-                np.testing.assert_allclose(np.linalg.norm(V - W[:3, 3], axis=1), reach, atol=2e-4)
+                np.testing.assert_allclose(
+                    np.linalg.norm(V - W[:3, 3], axis=1), reach, atol=2e-4
+                )
 
     def test_body_sliders_keep_the_place_on_the_bone(self):
         """On a taller body the bone's head moves, and the piece moves with it."""
-        tall = Character.from_dict(dict(self.placed.to_dict(), phenotype={"height": 1.0}))
+        tall = Character.from_dict(
+            dict(self.placed.to_dict(), phenotype={"height": 1.0})
+        )
         body = card_body(tall, self.model)
         moved = {p.ref: p for p in dress(body, worn_pieces(tall, self.folder))}
-        plain = {p.ref: p for p in dress(body, worn_pieces(Character.from_dict(dict(self.card.to_dict(), phenotype={"height": 1.0})), self.folder))}
+        plain = {
+            p.ref: p
+            for p in dress(
+                body,
+                worn_pieces(
+                    Character.from_dict(
+                        dict(self.card.to_dict(), phenotype={"height": 1.0})
+                    ),
+                    self.folder,
+                ),
+            )
+        }
         head = body.bone_poses[body.bone_labels.index(CARRIER)][:3, 3]
-        expected = apply_place(PLACE, plain["test_outfit/circlet"].vertices, plain["test_outfit/circlet"].normals, head)[0]
-        np.testing.assert_allclose(moved["test_outfit/circlet"].vertices, expected, atol=1e-12)
+        expected = apply_place(
+            PLACE,
+            plain["test_outfit/circlet"].vertices,
+            plain["test_outfit/circlet"].normals,
+            head,
+        )[0]
+        np.testing.assert_allclose(
+            moved["test_outfit/circlet"].vertices, expected, atol=1e-12
+        )
 
 
 class TestStatueProps(unittest.TestCase):
@@ -246,15 +308,27 @@ class TestStatueProps(unittest.TestCase):
         card = {
             "schema": 6,
             "outfits": [
-                {"id": "statue", "pieces": [
-                    {"piece": "sword", "file": "sword.wearable.json", "place": PLACE},
-                    {"piece": "base", "file": "base.wearable.json"},
-                ]}
+                {
+                    "id": "statue",
+                    "pieces": [
+                        {
+                            "piece": "sword",
+                            "file": "sword.wearable.json",
+                            "place": PLACE,
+                        },
+                        {"piece": "base", "file": "base.wearable.json"},
+                    ],
+                }
             ],
             "active_outfit": "statue",
         }
         self.assertEqual(card_places(card), {"sword": PLACE})
-        config = {"format": "opensculptboy.statue/1", "name": "synthetic", "scan": "scan.stl", "prop_bones": {"Sword": "metacarpal4.R"}}
+        config = {
+            "format": "opensculptboy.statue/1",
+            "name": "synthetic",
+            "scan": "scan.stl",
+            "prop_bones": {"Sword": "metacarpal4.R"},
+        }
         out, report = apply_card(card, config, hands=())
         self.assertEqual(out["prop_places"], {"sword": PLACE})
         self.assertEqual(report["prop_places"], {"sword": CARRIER})
@@ -262,18 +336,30 @@ class TestStatueProps(unittest.TestCase):
         self.assertEqual(prop_place(loaded, "Sword"), PLACE)
         self.assertIsNone(prop_place(loaded, "Base"))
         with self.assertRaises(ValueError):
-            StatueConfig.from_dict(dict(out, prop_places={"sword": {"bone": CARRIER, "rotation": [2, 0, 0, 0]}}))
+            StatueConfig.from_dict(
+                dict(
+                    out,
+                    prop_places={"sword": {"bone": CARRIER, "rotation": [2, 0, 0, 0]}},
+                )
+            )
         # the starter's build moves the prop's rest and binds it to the place's bone
         body = template_body()
-        rest = np.random.default_rng(1).normal(size=(40, 3)) * 0.05 + body.bone_poses[body.bone_labels.index("head")][:3, 3]
+        rest = (
+            np.random.default_rng(1).normal(size=(40, 3)) * 0.05
+            + body.bone_poses[body.bone_labels.index("head")][:3, 3]
+        )
         moved, bone = placed_rest(rest, PLACE, body, body.bone_labels)
         self.assertEqual(body.bone_labels[bone], CARRIER)
         head = body.bone_poses[bone][:3, 3]
-        np.testing.assert_allclose(moved, apply_place(PLACE, rest, rest, head)[0], atol=1e-12)
+        np.testing.assert_allclose(
+            moved, apply_place(PLACE, rest, rest, head)[0], atol=1e-12
+        )
 
 
-@unittest.skipUnless(node_available() and (REPO / "viewer" / "node_modules" / "three").exists(),
-                     "node 22 or later and the viewer's node packages are needed")
+@unittest.skipUnless(
+    node_available() and (REPO / "viewer" / "node_modules" / "three").exists(),
+    "node 22 or later and the viewer's node packages are needed",
+)
 class TestPlaceNode(unittest.TestCase):
     def test_page_twin(self):
         """The page's place maths, its card round trip and its dress of a placed piece
@@ -281,8 +367,19 @@ class TestPlaceNode(unittest.TestCase):
         head = [0.02, -0.04, 1.3]
         X = np.random.default_rng(2).normal(size=(5, 3)) * 0.1
         expected = apply_place(PLACE, X, X, head)
-        case = {"place": PLACE, "head": head, "points": X.tolist(), "vertices": expected[0].tolist(), "normals": expected[1].tolist()}
-        out = subprocess.run(["node", "test/props.mjs", json.dumps(case)], cwd=REPO / "viewer", capture_output=True, text=True)
+        case = {
+            "place": PLACE,
+            "head": head,
+            "points": X.tolist(),
+            "vertices": expected[0].tolist(),
+            "normals": expected[1].tolist(),
+        }
+        out = subprocess.run(
+            ["node", "test/props.mjs", json.dumps(case)],
+            cwd=REPO / "viewer",
+            capture_output=True,
+            text=True,
+        )
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         print(out.stdout.strip())
 

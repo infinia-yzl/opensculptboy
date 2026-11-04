@@ -61,13 +61,22 @@ def rod_package(folder: pathlib.Path):
     u /= np.linalg.norm(u)
     w = np.cross(across, u)
     ring, rows, r = 16, np.linspace(-0.12, 0.12, 9), 0.006
-    P = [centre + across * t + r * (np.cos(a) * u + np.sin(a) * w) for t in rows for a in np.linspace(0, 2 * np.pi, ring, endpoint=False)]
+    P = [
+        centre + across * t + r * (np.cos(a) * u + np.sin(a) * w)
+        for t in rows
+        for a in np.linspace(0, 2 * np.pi, ring, endpoint=False)
+    ]
     P += [centre - across * 0.12, centre + across * 0.12]
     T = []
     for q in range(len(rows) - 1):
         for a in range(ring):
             a1 = (a + 1) % ring
-            p0, p1, p2, p3 = q * ring + a, q * ring + a1, (q + 1) * ring + a, (q + 1) * ring + a1
+            p0, p1, p2, p3 = (
+                q * ring + a,
+                q * ring + a1,
+                (q + 1) * ring + a,
+                (q + 1) * ring + a1,
+            )
             T += [(p0, p2, p1), (p1, p2, p3)]
     end0, end1 = len(P) - 2, len(P) - 1
     last = (len(rows) - 1) * ring
@@ -77,7 +86,12 @@ def rod_package(folder: pathlib.Path):
     V = np.asarray(P)
     N = V - centre - np.outer((V - centre) @ across, across)
     N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-9)
-    garment = Garment(V, np.asarray(T, np.int64), normals=N, materials=[Material("stone", (0.8, 0.78, 0.74, 1.0), 0.0, 0.6)])
+    garment = Garment(
+        V,
+        np.asarray(T, np.int64),
+        normals=N,
+        materials=[Material("stone", (0.8, 0.78, 0.74, 1.0), 0.0, 0.6)],
+    )
     rod = Wearable(
         name="rod",
         label="Rod",
@@ -99,7 +113,13 @@ def open_prop_statue(tab, folder):
     files, *_ = points_statue(folder)
     rod_files, _ = rod_package(folder)
     card = json.loads((folder / "character.json").read_text(encoding="utf-8"))
-    card["outfits"] = [{"id": "statue", "label": "Statue pieces", "pieces": [{"piece": "rod", "file": "rod.wearable.json", "enabled": True}]}]
+    card["outfits"] = [
+        {
+            "id": "statue",
+            "label": "Statue pieces",
+            "pieces": [{"piece": "rod", "file": "rod.wearable.json", "enabled": True}],
+        }
+    ]
     card["active_outfit"] = "statue"
     (folder / "character.json").write_text(json.dumps(card), encoding="utf-8")
     drop(tab, files + rod_files)
@@ -111,7 +131,8 @@ def drop(tab, files, entries=None):
         payload[name] = base64.b64encode(data).decode()
     tab.evaluate(DROP, payload)
     tab.wait_for_function(
-        "() => window.wearStats && window.wearStats() && window.wearStats().card === 'Points statue' && window.wearStats().timing.full === true",
+        "() => window.wearStats && window.wearStats() && "
+        "window.wearStats().card === 'Points statue' && window.wearStats().timing.full === true",
         timeout=120000,
     )
     tab.evaluate("() => __shell.actions.openMode('pose')")
@@ -123,7 +144,9 @@ def world(tab):
 
 
 @local_only("Playwright with the built viewer page")
-@unittest.skipUnless(playwright_available(), "Playwright and the built viewer page are needed")
+@unittest.skipUnless(
+    playwright_available(), "Playwright and the built viewer page are needed"
+)
 class TestPropsPage(unittest.TestCase):
     def test_select_drag_undo_held_by_save_and_reload(self):
         from playwright.sync_api import sync_playwright
@@ -158,7 +181,9 @@ class TestPropsPage(unittest.TestCase):
             tab.mouse.up()
             settle(tab)
             self.assertEqual(report(tab)["state"]["prop"], REF)
-            self.assertTrue(tab.locator(".pe-prop-row[aria-pressed='true']").is_visible())
+            self.assertTrue(
+                tab.locator(".pe-prop-row[aria-pressed='true']").is_visible()
+            )
 
             # the Move tool: a drag with recorded moves of the mouse, 120 px to the right in 12 steps. The page
             # grounds the figure again when a prop's place changes (the floor takes the props), and Edit's pose has not
@@ -182,7 +207,9 @@ class TestPropsPage(unittest.TestCase):
             shift = (moved - before).mean(axis=0)
             self.assertGreater(np.linalg.norm(shift), 0.01)
             # the rod moved as one: every vertex by the same shift, across the view
-            np.testing.assert_allclose(moved - before, np.broadcast_to(shift, moved.shape), atol=1e-5)
+            np.testing.assert_allclose(
+                moved - before, np.broadcast_to(shift, moved.shape), atol=1e-5
+            )
             self.assertIsNotNone(r["props"]["place"])
             self.assertEqual(r["props"]["place"]["bone"], "metacarpal4.R")
             self.assertEqual(len(r["undo"]), undo0 + 1)
@@ -204,7 +231,9 @@ class TestPropsPage(unittest.TestCase):
                 tab.keyboard.press(k)
             settle(tab)
             unit = tab.evaluate("() => window.__poseEdit.host.frame().scale")
-            np.testing.assert_allclose((world(tab) - before).mean(axis=0) / unit, [0.005, 0, 0], atol=1e-6)
+            np.testing.assert_allclose(
+                (world(tab) - before).mean(axis=0) / unit, [0.005, 0, 0], atol=1e-6
+            )
             self.assertEqual(report(tab)["undo"][-1], "Move the Rod")
 
             # Held by: the ground, where the rod stands; a turn of the right wrist then leaves it in place
@@ -214,8 +243,8 @@ class TestPropsPage(unittest.TestCase):
             r = report(tab)
             self.assertEqual(r["props"]["carrier"], "root")
             np.testing.assert_allclose(world(tab), before, atol=2e-5)
-            TURN_WRIST = """() => { const e = window.__poseEdit, J = e.joints(), b = J.bone('wrist.R'); e.selectJoint('wrist.R');
-              e.setJointValue(0, J.values(b, e.session.rotations).value[0] + 25); }"""
+            TURN_WRIST = """() => { const e = window.__poseEdit, J = e.joints(), b = J.bone('wrist.R');
+              e.selectJoint('wrist.R'); e.setJointValue(0, J.values(b, e.session.rotations).value[0] + 25); }"""
             tab.evaluate(TURN_WRIST)
             settle(tab)
             np.testing.assert_allclose(world(tab), before, atol=2e-5)
@@ -238,19 +267,31 @@ class TestPropsPage(unittest.TestCase):
             with tab.expect_download() as dl:
                 tab.get_by_role("button", name="Save points").click()
             data = pathlib.Path(dl.value.path()).read_bytes()
-            saved = json.loads(zipfile.ZipFile(io.BytesIO(data)).read("character.json")) if data[:2] == b"PK" else json.loads(data)
+            saved = (
+                json.loads(zipfile.ZipFile(io.BytesIO(data)).read("character.json"))
+                if data[:2] == b"PK"
+                else json.loads(data)
+            )
             self.assertEqual(saved["schema"], 6)
             piece = saved["outfits"][0]["pieces"][0]
             self.assertEqual(piece["place"]["bone"], "root")
-            np.testing.assert_allclose(piece["place"]["translation"], place["translation"], atol=1e-6)
+            np.testing.assert_allclose(
+                piece["place"]["translation"], place["translation"], atol=1e-6
+            )
             from opensculptboy.character import Character
 
-            Character.from_dict({k: v for k, v in saved.items() if k not in ("detail",)})
+            Character.from_dict(
+                {k: v for k, v in saved.items() if k not in ("detail",)}
+            )
 
             # the saved card opens again with the rod where it was
             tab.reload()
             tab.wait_for_function("() => window.__ready === true", timeout=300000)
-            files = [f for f in folder.iterdir() if f.is_file() and f.name != "character.json"]
+            files = [
+                f
+                for f in folder.iterdir()
+                if f.is_file() and f.name != "character.json"
+            ]
             drop(tab, files, {"character.json": json.dumps(saved).encode()})
             edit_on(tab)
             tab.evaluate("() => window.__poseEdit.restPose()")

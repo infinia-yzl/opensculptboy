@@ -352,7 +352,14 @@ def apply_card(
         fields = {
             k: v
             for k, v in card.items()
-            if k not in ("look", "wearables", "outfits", "active_outfit", "wearable_overrides")
+            if k
+            not in (
+                "look",
+                "wearables",
+                "outfits",
+                "active_outfit",
+                "wearable_overrides",
+            )
         }
         fields["schema"] = 4
         character = Character.from_dict(fields)

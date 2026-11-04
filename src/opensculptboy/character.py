@@ -320,9 +320,7 @@ class Character:
         from opensculptboy.wearables.place import PLACE_SCHEMA, card_has_places
 
         if schema < PLACE_SCHEMA and card_has_places(data):
-            raise ValueError(
-                f"A piece's place needs character schema {PLACE_SCHEMA}."
-            )
+            raise ValueError(f"A piece's place needs character schema {PLACE_SCHEMA}.")
         fields = {f.name for f in dataclasses.fields(cls)}
         unknown = sorted(set(data) - fields - {"schema"})
         if unknown:
