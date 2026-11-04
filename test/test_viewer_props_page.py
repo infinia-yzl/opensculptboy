@@ -251,7 +251,7 @@ class TestPropsPage(unittest.TestCase):
             press_in_view(tab, "Control+z")
             press_in_view(tab, "Control+z")
             settle(tab)
-            self.assertEqual(report(tab)["props"]["carrier"], "metacarpal4.R")
+            self.assertEqual(report(tab)["state"]["propList"][0]["carrier"], "metacarpal4.R")
             tab.evaluate(TURN_WRIST)
             settle(tab)
             self.assertGreater(np.abs(world(tab) - before).max(), 0.005)
