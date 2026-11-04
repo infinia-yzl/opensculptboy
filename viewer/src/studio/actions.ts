@@ -57,7 +57,8 @@ export interface ActionDef {
   menu?: string;                    // the ring menu that offers it ('view' for the backtick, 'display' for Z)
   menuOrder?: number;               // its place in that menu, clockwise from the top
   menuLabel?: string;               // its shorter name there ('Full figure')
-  checked?: () => boolean;          // a switch or a choice that is on now (a tick in the menu, aria-checked)
+  checked?: () => boolean;          // a switch that is on now (a tick in the menu, aria-checked); a ring menu keeps open after a click on one
+  unavailable?: () => string;       // why it does not apply now ('This character has no scan'), or '': a ring menu greys it out with the reason
 }
 
 export interface ScopeDef {
@@ -319,12 +320,12 @@ export function commands(query = ''): { a: ActionDef; live: boolean; score: numb
       const l = a.label.toLowerCase();
       score = (l.startsWith(q) ? 4 : 0) + (l.includes(q) ? 2 : 0) + (a.keys?.length ? 1 : 0);
     }
-    out.push({ a, live: liveAction(a), score });
+    out.push({ a, live: liveAction(a) && !a.unavailable?.(), score });
   }
   out.sort((x, y) => Number(y.live) - Number(x.live) || y.score - x.score || x.a.label.localeCompare(y.a.label));
   return out;
 }
-// the items of a ring menu, in their order
+// the items of a ring menu, in their order (an item that does not apply now stays in its place, greyed out)
 export function menuItems(menu: string): ActionDef[] {
   return [...ACTIONS.values()].filter((a) => a.menu === menu && a.run && liveAction(a))
     .sort((x, y) => (x.menuOrder ?? 99) - (y.menuOrder ?? 99));

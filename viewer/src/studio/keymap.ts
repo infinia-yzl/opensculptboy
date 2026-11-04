@@ -150,17 +150,19 @@ export function registerKeymap(d: KeymapDeps): () => void {
       run: () => app.setTurntable(!app.turntable()), checked: () => app.turntable(), place: 'The view bar', icon: 'turntable', help: false },
 
     // ---------------------------------------------------------------- the display
-    { id: 'display.menu', label: 'Display menu', desc: 'Solid, X-ray, the scan, the skeleton and the skin weights round the pointer', keys: ['Z'], group: 'The view', tier: 'frequent',
-      place: 'The view', icon: 'display', run: () => d.ringMenu('display') },
-    { id: 'display.solid', label: 'Solid', icon: 'cube', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 0, help: false, place: 'The display menu',
-      checked: () => !cam().xrayOn(), run: () => cam().xray(false) },
-    { id: 'display.xray', label: 'X-ray', icon: 'xray', desc: 'The body and the scan see-through, so points behind them show', keys: ['Alt+Z'], group: 'The view', tier: 'frequent',
-      menu: 'display', menuOrder: 1, place: 'The display menu', checked: () => cam().xrayOn(), run: () => cam().xray(!cam().xrayOn()) },
-    { id: 'display.skeleton', label: 'Skeleton', icon: 'bones', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 5, help: false, place: 'The display menu',
+    // the display menu's places, clockwise from the top (studio/menus.ts): the figure, the scan and its see-through in
+    // the top right (Pose › Edit adds them), the skin weights, the hair and the skeleton below, X-ray on the left
+    { id: 'display.menu', label: 'Display menu', desc: 'X-ray, the figure, the scan, the skeleton, the skin weights and the hair round the pointer, as switches', keys: ['Z'],
+      group: 'The view', tier: 'frequent', place: 'The view', icon: 'display', run: () => d.ringMenu('display') },
+    { id: 'display.xray', label: 'X-ray', icon: 'xray', desc: 'The figure see-through, so points behind it show', keys: ['Alt+Z'], group: 'The view', tier: 'frequent',
+      menu: 'display', menuOrder: 6, place: 'The display menu', checked: () => cam().xrayOn(), run: () => cam().xray(!cam().xrayOn()) },
+    { id: 'display.skeleton', label: 'Skeleton', desc: 'The bones over the figure; it shares the rig view with the skin weights', icon: 'bones', group: 'Display', tier: 'occasional',
+      menu: 'display', menuOrder: 5, help: false, place: 'The display menu',
       checked: () => app.rigView() === 'skeleton', run: () => app.setRigView(app.rigView() === 'skeleton' ? 'off' : 'skeleton') },
-    { id: 'display.weights', label: 'Skin weights', icon: 'display', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 6, help: false, place: 'The display menu',
+    { id: 'display.weights', label: 'Skin weights', desc: 'The skin coloured by a bone\'s weights; it shares the rig view with the skeleton', icon: 'display', group: 'Display', tier: 'occasional',
+      menu: 'display', menuOrder: 3, help: false, place: 'The display menu',
       checked: () => app.rigView() === 'weights', run: () => app.setRigView(app.rigView() === 'weights' ? 'off' : 'weights') },
-    { id: 'display.hair', label: 'Hair', icon: 'hair', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 7, help: false, place: 'The display menu',
+    { id: 'display.hair', label: 'Hair', icon: 'hair', group: 'Display', tier: 'occasional', menu: 'display', menuOrder: 4, help: false, place: 'The display menu',
       checked: () => app.hairVisible(), run: () => app.setHairVisible(!app.hairVisible()) },
 
     { id: 'part.hide', label: 'Hide the selected part', keys: ['H'], group: 'The view', tier: 'frequent', row: 'part.hide', rowLabel: 'Hide the selected part, hide the rest, show all',
