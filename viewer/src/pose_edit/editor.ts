@@ -650,9 +650,16 @@ export class PoseEditor {
     const D = this.drag, S = this.session;
     if (!D || !S) return;
     D.vx += dx; D.vy += dy;
-    const hit = this.scanHit(D.vx, D.vy, D.last);
-    // off the scan the point keeps its last spot (a push with the wheel still takes it in)
-    if (!hit && (dx || dy)) return;
+    // off the scan (the pointer's ray meets no scan) the point keeps its last spot on the surface, and the magnifier
+    // holds on that spot; a push with the wheel still takes the point in
+    const raw = this.scanHit(D.vx, D.vy, D.last), hit = raw && !raw.off ? raw : null;
+    if (!hit) {
+      const a = cam().toScreen(this.v3(this.frames.toWorld(D.last)));
+      this.mag = { x: a.x, y: a.y, off: true };
+      this.dirty = true;
+      this.statusDrag();
+      if (dx || dy) return;
+    }
     let spot = hit ? hit.point : D.last;
     const t = S.targets.get(D.name)!;
     if (snap && t.auto) {
@@ -660,10 +667,7 @@ export class PoseEditor {
       if (Math.hypot(a.x - D.vx, a.y - D.vy) <= SNAP_PX) spot = t.auto.slice() as V3;
     }
     D.last = spot;
-    // the magnifier: round the pointer over the scan; off the scan (the point slides along the surface spot nearest
-    // the pointer's ray), round the point's spot, so it keeps showing the surface the point holds to
-    if (hit && !hit.off) this.mag = { x: D.vx, y: D.vy };
-    else { const a = cam().toScreen(this.v3(this.frames.toWorld(spot))); this.mag = { x: a.x, y: a.y, off: true }; }
+    if (hit) this.mag = { x: D.vx, y: D.vy };
     const dd = D.depth / 1000;
     const position: V3 = D.depth > 0 ? [spot[0] + D.ray[0] * dd, spot[1] + D.ray[1] * dd, spot[2] + D.ray[2] * dd] : spot;
     S.dragTo(D.name, position, D.depth > 0 ? { surface: spot, ray: D.ray, depth_mm: D.depth } : { depth_mm: 0 });

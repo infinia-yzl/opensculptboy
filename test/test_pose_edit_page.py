@@ -191,8 +191,8 @@ class TestPoseEditPage(unittest.TestCase):
                 atol=1e-9,
             )
 
-            # a drag that leaves the scan: the point keeps to the surface, and the magnifier holds on the point's
-            # spot (it showed the empty stage round the pointer before)
+            # a drag that leaves the scan: the point keeps its last spot on the surface, and the magnifier holds
+            # on that spot (it showed the empty stage round the pointer before)
             self.assertTrue(report(tab)["unsaved"])
             s = report(tab)["points"]["index_pip.R"]["screen"]
             # a place on the view where the pointer's ray meets no scan
@@ -209,6 +209,13 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertTrue(mag["off"])
             self.assertLess(np.hypot(mag["x"] - spot["x"], mag["y"] - spot["y"]), 2.0)
             self.assertLess(r["points"]["index_pip.R"]["onScan"], 1e-4)
+            # the point stayed where the pointer left the scan, near where the drag began
+            self.assertLess(
+                np.linalg.norm(
+                    np.subtract(r["points"]["index_pip.R"]["target"], after["target"])
+                ),
+                0.03,
+            )
             shot("1d_off_scan")
             tab.keyboard.press("Escape")
             tab.mouse.up()
