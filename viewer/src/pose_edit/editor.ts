@@ -171,6 +171,8 @@ const MAG_SIZE = 220, MAG_ZOOM = 4;
 // three rays out of a point, along no axis, for the parity test of a prop's inside
 const PARITY_RAYS = [[0.267, 0.535, 0.802], [-0.802, 0.267, 0.535], [0.535, -0.802, 0.267]];
 const SNAP_PX = 10;
+// metres: the farthest that skin can lie inside a prop for the props' contact shading and Move it out
+const INSIDE_REACH = 0.12;
 
 // the parts a pin can hold: a palm or a sole
 export const PIN_PARTS = [
@@ -1311,9 +1313,11 @@ export class PoseEditor {
         this.frames.toWorld([X[i * 3], X[i * 3 + 1], X[i * 3 + 2]], w);
         const p = apply4(Ti, w), q = c.bvh.closest(p);
         if (!q) { out[i] = Infinity; continue; }
-        const n = c.bvh.normal(q.tri), s = (p[0] - q.point[0]) * n[0] + (p[1] - q.point[1]) * n[1] + (p[2] - q.point[2]) * n[2];
-        let inside = s * c.outside < 0;
-        if (q.distance < 0.03 * u) { let odd = 0; for (const d of PARITY_RAYS) if (c.bvh.rayAll(p, d).length % 2 === 1) odd++; inside = odd >= 2; }
+        // inside or out by the parity of crossings along three rays, by majority, within REACH of the prop: the side of
+        // the closest face misleads further away (on David's sword it called the left shin 31 cm inside the blade), and
+        // no skin lies that deep inside a prop
+        let inside = false;
+        if (q.distance < INSIDE_REACH * u) { let odd = 0; for (const d of PARITY_RAYS) if (c.bvh.rayAll(p, d).length % 2 === 1) odd++; inside = odd >= 2; }
         out[i] = (inside ? -q.distance : q.distance) / u;
       }
       return out;
@@ -1382,31 +1386,33 @@ export class PoseEditor {
       for (let k = 0; k < 3; k++) dir[k] += -d[i] * (s[k] - x[k]) / l;
     }
     const n = Math.hypot(dir[0], dir[1], dir[2]);
-    if (!(n > 0)) { this.host.toast(`No skin of the hand is inside the ${r.label}.`); return false; }
-    const u = dir.map((x) => x / n);
+    if (!(n > 0)) { this.lastMoveOut = null; this.host.toast(`No skin of the hand is inside the ${r.label}.`); return false; }
+    const u = dir.map((x) => x / n), trace: { mm: number; palm_mm: number; blocked?: boolean }[] = [];
     let found = 0;
     for (let mm = 1; mm <= 60 && !found; mm++) {
       const k = mm / 1000, shifted = (X: Float64Array) => { const Y = X.slice(); for (let i = 0; i < Y.length; i += 3) { Y[i] += k * u[0]; Y[i + 1] += k * u[1]; Y[i + 2] += k * u[2]; } return sdf(Y); };
       const dk = shifted(V);
-      let palmClear = true;
-      for (let i = 0; i < dk.length; i++) if (palm.has(rows[i]) && dk[i] < 0) { palmClear = false; break; }
-      if (!palmClear) continue;
-      const g = this.gripOf(S.rotations, side, shifted, 0);
-      if (!Object.values(g.report).some((f) => f.blocked)) found = mm;
+      let palmIn = 0;
+      for (let i = 0; i < dk.length; i++) if (palm.has(rows[i])) palmIn = Math.min(palmIn, dk[i]);
+      trace.push({ mm, palm_mm: Math.round(-palmIn * 10000) / 10 });
+      if (palmIn < 0) continue;
+      const g = this.gripOf(S.rotations, side, shifted, 0), blocked = Object.values(g.report).some((f) => f.blocked);
+      trace[trace.length - 1].blocked = blocked;
+      if (!blocked) found = mm;
     }
+    this.lastMoveOut = { mm: found, direction: u, trace };
     if (!found) { this.host.toast(`The ${r.label} does not come off the hand within 60 mm.`); return false; }
     // the prop moves the other way: -found mm along u (the card frame) as a move of the world
     const wd = this.frames.dirToWorld(u), m = -found / 1000 * this.unit();
     this.record(`Move the ${r.label} out of the hand`);
     this.putPlace(r.ref, this.placeAfter(r, r.place, translation(wd.map((x) => x * m))));
-    this.lastMoveOut = { mm: found, direction: u };
     this.host.toast(`Moved the ${r.label} ${found} mm off the hand.`);
     this.publish();
     this.updateInside();
     if (st.grip && st.grip.prop === r.ref) { this.gripStart = null; this.setSqueeze(st.squeeze, false); }
     return true;
   }
-  lastMoveOut: { mm: number; direction: number[] } | null = null;
+  lastMoveOut: { mm: number; direction: number[]; trace?: { mm: number; palm_mm: number; blocked?: boolean }[] } | null = null;
 
   // the prop's handles over the view: the move handle (three arrows and a centre) with the Move tool, the turn rings (and
   // an outer ring) with the Turn tool, the prop's name and the bone that holds it, and the deepest skin inside it

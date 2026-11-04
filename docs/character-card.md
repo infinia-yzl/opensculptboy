@@ -21,7 +21,7 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 
 | Field | Holds |
 |---|---|
-| `schema` | 1 for the fields above, 2 with `detail`, 3 with `material`, 4 with the wardrobe fields, 5 with `look`. A card is written with the lowest schema that holds its fields, so that older cards stay byte for byte the same. |
+| `schema` | 1 for the fields above, 2 with `detail`, 3 with `material`, 4 with the wardrobe fields, 5 with `look`, 6 with a piece's `place`. A card is written with the lowest schema that holds its fields, so that older cards stay byte for byte the same, and every older schema still opens. |
 | `name` | the character's name |
 | `rig` | `anny` (104 bones), or `anny-mouth` with a jaw bone and a tongue chain ([Mouth](mouth.md)) |
 | `topology` | `anny`, or `sculpt` and `sculpt-quads` ([Sculpt topology](sculpt-topology.md)) |
@@ -33,8 +33,8 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 | `pose` | a still pose in Anny's `local-ref` parameters: `"bones"` maps bone names to unit quaternions (x, y, z, w) relative to the parent, measured from Anny's reference pose (each bone's frame at its reference orientation), and `"root"` moves the root bone (metres); an empty pose is the reference pose; `"reference"` (optional, written by Python for the card's body) holds each bone's turn from its rest orientation to its reference orientation, which the web viewer compares with the turns it finds itself ([Viewer](viewer.md#pose-cards)) |
 | `detail` | the detail layer of a fitted character |
 | `material` | the skin, eyes, teeth, inner mouth and tiers |
-| `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`, with optional `description`, `tags`, `source` and per-piece `overrides`, `hides` and `springs`) and the one worn ([Wearables](wearables.md)) |
-| `wearables` | loose pieces: `{"id", "file", "enabled"}`, each file a wearable package |
+| `outfits`, `active_outfit` | the outfits (`{"id", "label", "pieces": [{"piece", "file", "enabled"}]}`, with optional `description`, `tags`, `source` and per-piece `overrides`, `hides`, `springs` and `place`) and the one worn ([Wearables](wearables.md)) |
+| `wearables` | loose pieces: `{"id", "file", "enabled"}`, each file a wearable package, with an optional `place` |
 | `wearable_overrides` | single pieces switched on or off: `{"<outfit>/<piece>": {"enabled": false}}` |
 | `look` | what the web viewer shows beyond the model's parameters ([`look`](#look)) |
 
@@ -91,6 +91,21 @@ Every field is optional, and a missing name keeps its default. Paths in a card a
 A card without `material` gets the exporters' own plain skin. A section that holds only `eyes`, `reference_eyes`, `lashes`, `teeth`, `mouth`, `hair` or `brows` keeps that plain skin and changes those parts alone. `fit --textures` and `opensculptboy bake` write the section of a fitted character, and `--material skin.json` lays further values over it.
 
 ## `look`
+
+## Props: a piece's place
+
+A rigidly bound piece (a prop such as a statue's sword or its base) may hold a `place` in its entry (schema 6), which the web viewer's studio writes when the piece is moved by hand:
+
+```json
+{"piece": "sword", "file": "sword.wearable.json", "enabled": true,
+ "place": {"bone": "metacarpal4.R", "rotation": [0.0, 0.0, 0.0871557, 0.9961947], "translation": [0.004, -0.012, 0.0]}}
+```
+
+- `bone` is the bone that carries the piece. The piece follows that bone alone, so a prop held by a hand still moves with the hand; `root` keeps it in place while the figure poses.
+- `rotation` (a unit quaternion x, y, z, w) and `translation` (metres) move the piece in the card's rest frame, about the rest head of `bone` on the card's body: a rest vertex `x` of the piece, as its package binds it, goes to `h + Q (x - h) + t`. The axes are the card's own (Anny's frame), so the page and the exporters agree without the bones' rest orientations, and the place follows the bone's head when the body's sliders move it.
+- Without `place` the piece stays where its package binds it. A `place` on a surface-bound piece is refused when the card is dressed.
+- The GLB and VRM exports, `wearables check` and the page apply it when they dress the piece (`opensculptboy.wearables.place`, `viewer/src/wearables/place.ts`, checked against each other by `test_wearable_place` and `test_viewer_wearables`).
+- `python -m opensculptboy.statues apply-card` turns the places of a statue card's props into the config's `prop_places`, and the starter's build moves and binds each prop by its place, so that the rebuilt starter carries it there.
 
 The `look` block (schema 5) holds what the [web viewer](viewer.md) shows of the character beyond the model's parameters, so that one card carries everything the page shows. The page's **Save card** writes it, and the page reads it when it opens the card. The exporters keep it in the card of their scene extras and do not use it yet.
 

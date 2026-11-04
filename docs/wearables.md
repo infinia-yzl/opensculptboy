@@ -54,7 +54,7 @@ The tools record the licence they find or are given; choosing assets and followi
 ### Binding
 
 - **Surface.** Each garment vertex stores three vertices of a triangle of Anny's template, the barycentric coordinates of its bound point and its offset from that point in the point's frame: the tangent (the triangle's first edge, made orthogonal to the normal), the bitangent and the normal blended from the corners' vertex normals. The offset is divided by the frame's scale, the blended length of the corners' edges. On another body the same point and frame give the vertex back, so the offset turns and stretches with the skin. On the binding body the garment returns to its own vertices exactly.
-- **Rigid.** The vertices are stored in the rest frame of one bone and move with it, for pieces that keep their shape (a circlet, a buckle, a staff).
+- **Rigid.** The vertices are stored in the rest frame of one bone and move with it, for pieces that keep their shape (a circlet, a buckle, a staff). A card can move a rigid piece and give it to another bone with the piece's `place` ([Character card](character-card.md#props-a-pieces-place)), as the web viewer's studio does for a prop moved by hand.
 
 ### Fitting
 

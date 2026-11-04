@@ -160,7 +160,11 @@ class TestPropsPage(unittest.TestCase):
             self.assertEqual(report(tab)["state"]["prop"], REF)
             self.assertTrue(tab.locator(".pe-prop-row[aria-pressed='true']").is_visible())
 
-            # the Move tool: a drag with recorded moves of the mouse, 120 px to the right in 12 steps
+            # the Move tool: a drag with recorded moves of the mouse, 120 px to the right in 12 steps. The page
+            # grounds the figure again when a prop's place changes (the floor takes the props), and Edit's pose has not
+            # been grounded yet: a place set to where the rod stands grounds it first
+            tab.evaluate(f"() => window.__poseEdit.host.setPropPlace('{REF}', null)")
+            settle(tab)
             before = world(tab)
             undo0 = len(report(tab)["undo"])
             press_in_view(tab, "w")
