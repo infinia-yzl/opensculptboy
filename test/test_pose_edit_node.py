@@ -4,7 +4,9 @@
 The pose editor's parts that need no browser, in node (``viewer/test/pose_edit.mjs``): a starter's
 light scan compressed with EXT_meshopt_compression reads back into the card frame, the BVH's rays
 and closest points match a brute force, the points carry the screens' numbers and plain names,
-and the editor's keys sit in the action registry without a conflict or a key the browser keeps.
+the editor's keys sit in the action registry without a conflict or a key the browser keeps, the
+messages join one, two and three names without a comma before "and", and each edit stands on the
+floor its own pose finds, held while a modal grab or turn lasts.
 It needs the viewer's node packages (``cd viewer && npm ci``).
 """
 

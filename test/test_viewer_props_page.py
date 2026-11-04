@@ -12,6 +12,9 @@ person would:
 - G, then X and a typed 5, then Enter moves it 5 mm along the view's X axis;
 - Held by gives it to the ground (the root) where it stands, and a turn of the right wrist then
   leaves it in place, where before it followed the hand;
+- no move of the rod, no turn, Held by and Put it back moves the figure: every vertex of the body
+  stays within 1 micrometre, and each pose edit stands the figure on the floor its pose finds, which
+  an undo and a redo give back exactly;
 - Save points writes the card with the rod's place (card schema 6), and the saved card opens again
   with the rod where it was.
 """
@@ -143,6 +146,20 @@ def world(tab):
     return np.asarray(tab.evaluate(ROD_WORLD), np.float64).reshape(-1, 3)
 
 
+def body(tab):
+    """The coarse body as the figure stands, in the world (the page's hook)."""
+    return np.asarray(tab.evaluate("() => window.bodyWorld()"), np.float64).reshape(
+        -1, 3
+    )
+
+
+def on_floor(test, tab):
+    """The figure's lowest point (its body or a prop) stands on the floor."""
+    g = tab.evaluate("() => window.groundInfo()")
+    low = min(g["body"], g["props"] if g["props"] is not None else np.inf)
+    test.assertAlmostEqual(low, g["floor"], delta=1e-6)
+
+
 @local_only("Playwright with the built viewer page")
 @unittest.skipUnless(
     playwright_available(), "Playwright and the built viewer page are needed"
@@ -165,6 +182,12 @@ class TestPropsPage(unittest.TestCase):
             edit_on(tab)
             tab.evaluate("() => window.__poseEdit.restPose()")
             settle(tab)
+            # the edited pose stands on its own floor, as a pose of the library stands
+            on_floor(self, tab)
+            unit = tab.evaluate("() => window.__poseEdit.host.frame().scale")
+            # a micrometre of the card in the page's units
+            UM = 1e-6 * unit
+            figure = body(tab)
             st = report(tab)["state"]
             self.assertEqual([q["ref"] for q in st["propList"]], [REF])
             self.assertEqual(st["propList"][0]["carrier"], "metacarpal4.R")
@@ -185,11 +208,7 @@ class TestPropsPage(unittest.TestCase):
                 tab.locator(".pe-prop-row[aria-pressed='true']").is_visible()
             )
 
-            # the Move tool: a drag with recorded moves of the mouse, 120 px to the right in 12 steps. The page
-            # grounds the figure again when a prop's place changes (the floor takes the props), and Edit's pose has not
-            # been grounded yet: a place set to where the rod stands grounds it first
-            tab.evaluate(f"() => window.__poseEdit.host.setPropPlace('{REF}', null)")
-            settle(tab)
+            # the Move tool: a drag with recorded moves of the mouse, 120 px to the right in 12 steps
             before = world(tab)
             undo0 = len(report(tab)["undo"])
             press_in_view(tab, "w")
@@ -214,6 +233,8 @@ class TestPropsPage(unittest.TestCase):
             self.assertEqual(r["props"]["place"]["bone"], "metacarpal4.R")
             self.assertEqual(len(r["undo"]), undo0 + 1)
             self.assertEqual(r["undo"][-1], "Move the Rod")
+            # the figure stays where it stood: every vertex of the body
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=UM)
             # undo and redo
             press_in_view(tab, "Control+z")
             settle(tab)
@@ -222,6 +243,7 @@ class TestPropsPage(unittest.TestCase):
             press_in_view(tab, "Control+Shift+z")
             settle(tab)
             np.testing.assert_allclose(world(tab), moved, atol=1e-4)
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=UM)
 
             # G, X, a typed 5, Enter: 5 mm along the view's X axis
             before = world(tab)
@@ -230,10 +252,10 @@ class TestPropsPage(unittest.TestCase):
             for k in ("x", "5", "Enter"):
                 tab.keyboard.press(k)
             settle(tab)
-            unit = tab.evaluate("() => window.__poseEdit.host.frame().scale")
             np.testing.assert_allclose(
                 (world(tab) - before).mean(axis=0) / unit, [0.005, 0, 0], atol=1e-6
             )
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=UM)
             self.assertEqual(report(tab)["undo"][-1], "Move the Rod")
 
             # every key of the props: each runs its action (the registry's record of the actions that ran)
@@ -270,6 +292,8 @@ class TestPropsPage(unittest.TestCase):
             key("Alt+r", "pose.prop.clear-turn")
             key("Alt+g", "pose.prop.clear-move")
             self.assertIsNone(report(tab)["props"]["place"])
+            # the turns, the nudges and Put it back left the figure where it stood
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=UM)
             key("Escape", "pose.prop.clear")
             self.assertIsNone(report(tab)["state"]["prop"])
             actions = tab.evaluate("() => window.__studio.actions()")
@@ -289,11 +313,21 @@ class TestPropsPage(unittest.TestCase):
             r = report(tab)
             self.assertEqual(r["props"]["carrier"], "root")
             np.testing.assert_allclose(world(tab), before, atol=1e-4)
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=UM)
             TURN_WRIST = """() => { const e = window.__poseEdit, J = e.joints(), b = J.bone('wrist.R');
               e.selectJoint('wrist.R'); e.setJointValue(0, J.values(b, e.session.rotations).value[0] + 25); }"""
             tab.evaluate(TURN_WRIST)
             settle(tab)
             np.testing.assert_allclose(world(tab), before, atol=1e-4)
+            # a pose edit stands on its floor; undo and redo give the figure's height back exactly
+            on_floor(self, tab)
+            turned = body(tab)
+            press_in_view(tab, "Control+z")
+            settle(tab)
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=1e-9)
+            press_in_view(tab, "Control+Shift+z")
+            settle(tab)
+            np.testing.assert_allclose(body(tab), turned, rtol=0, atol=1e-9)
             press_in_view(tab, "Control+z")
             press_in_view(tab, "Control+z")
             settle(tab)
@@ -309,6 +343,7 @@ class TestPropsPage(unittest.TestCase):
             tab.locator(".pe-held-by select").select_option("root")
             settle(tab)
             held = world(tab)
+            figure = body(tab)
             place = report(tab)["props"]["place"]
 
             # Save points: the card with the rod's place, schema 6
@@ -343,14 +378,13 @@ class TestPropsPage(unittest.TestCase):
             drop(tab, files, {"character.json": json.dumps(saved).encode()})
             edit_on(tab)
             tab.evaluate("() => window.__poseEdit.restPose()")
-            # the floor under this pose, as before the save (a place set to where the rod stands grounds it)
-            tab.evaluate(
-                f"() => {{ const e = window.__poseEdit; e.host.setPropPlace('{REF}', e.rigOf('{REF}').place); }}"
-            )
             settle(tab)
             r = report(tab)
             self.assertEqual(r["state"]["propList"][0]["carrier"], "root")
             np.testing.assert_allclose(world(tab), held, atol=1e-4)
+            # the same pose stands at the same height after the reload
+            on_floor(self, tab)
+            np.testing.assert_allclose(body(tab), figure, rtol=0, atol=10 * UM)
             self.assertEqual(errors, [])
             browser.close()
 

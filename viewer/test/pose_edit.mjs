@@ -9,6 +9,9 @@
 // - the numbered point set of the screens and its plain names (src/pose_edit/points.ts);
 // - the editor's keys in the action registry: the ids and keys of key map version 2, no two actions on a key in one
 //   scope, and no key the browser keeps (src/pose_edit/editor.ts, src/studio/actions.ts).
+// - names joined into the messages' sentences, one, two and three of them (src/ui/words.ts, Grip's warning, Place
+//   points' kept chains);
+// - the floor under an edited pose: each edit stands on its own floor, and a modal turn holds it until its end.
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { MeshoptEncoder } from 'meshoptimizer';
@@ -132,3 +135,54 @@ for (const [id, keys] of Object.entries(want)) {
 assert.deepEqual(actions.conflicts().filter((c) => c.scope.startsWith('pose')), []);
 assert.deepEqual(actions.reservedUses().filter((u) => u.id.startsWith('pose.')), []);
 console.log('keys: the pose editor\'s actions are registered without conflicts');
+
+// ------------------------------------------------------------------ names joined into a sentence
+const { listOf, fingersPhrase } = await import('../src/ui/words.ts');
+const { gripWarning } = await import('../src/pose_edit/hands.ts');
+const { keptMessage } = await import('../src/pose_edit/editor.ts');
+assert.equal(listOf([]), '');
+assert.equal(listOf(['wrist.R']), 'wrist.R');
+assert.equal(listOf(['wrist.R', 'jaw']), 'wrist.R and jaw');
+assert.equal(listOf(['arm', 'leg', 'spine']), 'arm, leg and spine');
+assert.equal(listOf(['arm', 'leg', 'spine'], 'or'), 'arm, leg or spine');
+assert.equal(gripWarning(['index'], 'sword'), 'The index finger stays inside the sword, at its present curl and straight alike.');
+assert.equal(gripWarning(['middle', 'index'], 'sword'), 'The index and middle fingers stay inside the sword, at their present curl and straight alike.');
+assert.equal(gripWarning(['index', 'middle', 'ring'], 'sword'), 'The index, middle and ring fingers stay inside the sword, at their present curl and straight alike.');
+assert.equal(gripWarning(['thumb'], 'rod'), 'The thumb stays inside the rod, at its present curl and straight alike.');
+assert.equal(fingersPhrase(['thumb', 'index']).text, 'the thumb and index finger');
+assert.equal(fingersPhrase(['little', 'thumb', 'ring']).text, 'the thumb, ring and little fingers');
+assert.equal(gripWarning([], 'rod'), 'A finger stays inside the rod, at its present curl and straight alike.');
+assert.equal(keptMessage(['arm.l']), 'The left arm kept its pose: too few sure points.');
+assert.equal(keptMessage(['arm.l', 'spine']), 'The left arm and the spine kept their pose: too few sure points.');
+assert.equal(keptMessage(['arm.l', 'leg.r', 'neck']), 'The left arm, the right leg and the head and neck kept their pose: too few sure points.');
+console.log('words: one, two and three names joined without a comma before "and"');
+
+// ------------------------------------------------------------------ the floor under an edited pose
+// The editor stands each edit on its own floor (host.setPose with hold false), holds the floor while a modal grab or
+// turn lasts (hold true), and settles it on the first frame after the gesture, once; Edit off settles a held floor.
+{
+  const { startModal, confirmModal } = await import('../src/studio/modal.ts');
+  globalThis.addEventListener ??= () => {}; globalThis.removeEventListener ??= () => {};
+  const ed = installPoseEditor(host), calls = [];
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  Object.assign(host, { restTurns: () => null, parents: () => [-1, 0], bones: () => ['root', 'b'], root: () => 0,
+    setPose: (q, label, hold) => calls.push(!!hold) });
+  ed.session = { rotations: [I.slice(), I.slice()], places: {} };
+  ed.poseChanged();
+  assert.deepEqual(calls, [false], 'an edit outside a gesture stands on its floor');
+  ed.frame();
+  assert.deepEqual(calls, [false], 'a settled floor needs no new pose');
+  startModal({ kind: 'turn', label: 'b', update: () => { ed.poseChanged(); }, confirm: () => {}, cancel: () => {} }, { x: 0, y: 0 });
+  assert.deepEqual(calls, [false, true], 'a modal turn holds the floor');
+  ed.frame();
+  assert.deepEqual(calls, [false, true], 'the floor holds while the turn lasts');
+  confirmModal();
+  ed.frame(); ed.frame();
+  assert.deepEqual(calls, [false, true, false], 'the frame after the turn settles the floor once');
+  startModal({ kind: 'turn', label: 'b', update: () => { ed.poseChanged(); }, confirm: () => {}, cancel: () => {} }, { x: 0, y: 0 });
+  ed.settleFloor(true);
+  assert.deepEqual(calls, [false, true, false, true, false], 'Edit off settles a held floor');
+  confirmModal();
+  ed.session = null;
+  console.log('floor: each edit stands on its own floor; a gesture holds it until its end');
+}

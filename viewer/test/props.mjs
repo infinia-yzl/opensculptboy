@@ -11,6 +11,8 @@
 //   and the place carried to the worn pieces (src/wearables/wardrobe.ts);
 // - a rigid piece dressed with a place: moved about its new bone's head, on that bone alone (src/wearables/dress.ts);
 // - the handles' hit tests, the choices of Held by, and the prop keys in the action registry without a conflict.
+// - the floor under the figure: a prop with a place counts where its package binds it, and a base on the root lifts
+//   with the figure (src/ground.ts).
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 
@@ -139,3 +141,29 @@ assert.ok(actions.action('pose.prop.reset'));
 assert.deepEqual(actions.conflicts(), []);
 assert.deepEqual(actions.reservedUses().filter((u) => u.id.startsWith('pose.')), []);
 console.log('props: the handles\' hit tests, Held by\'s choices and the prop keys without a conflict');
+
+// ------------------------------------------------------------------ the floor under the figure (src/ground.ts)
+// A prop with a place counts where its package binds it, so a move, a change of the bone that holds it and Put it
+// back leave the floor; a base on the root lifts with the figure. Two bones: the root (0) and a hand (1), raised 0.3.
+{
+  const G = await import('../src/ground.ts');
+  const mats = (rootY, handY) => { const M = new Float64Array(32); for (const b of [0, 1]) { M[b * 16] = M[b * 16 + 5] = M[b * 16 + 10] = M[b * 16 + 15] = 1; } M[13] = rootY; M[29] = rootY + handY; return M; };
+  const pts = (ys, bone) => ({ vertices: Float64Array.from(ys.flatMap((y) => [0.1, y, 0])), joints: Uint16Array.from(ys.flatMap(() => [bone, 0, 0, 0])), weights: Float32Array.from(ys.flatMap(() => [1, 0, 0, 0])) });
+  const body = pts([0.05, 1.7], 0), base = { slot: 'prop', ...pts([-0.1, 0.0], 0) }, sword = { slot: 'prop', ...pts([0.6, 1.2], 1) };
+  const floor = 0, M = mats(0, 0.3);
+  const ground = (pieces, m = M) => G.groundShift(floor, G.lowestSkinnedY(body, m), G.lowestPieces(pieces, m)).ground;
+  const g0 = ground([base, sword]);
+  assert.equal(g0, 0.1, 'the base stands on the floor');
+  // the sword moved 2 m down and held by the root: the dressed points move, the package's place stays
+  const moved = { ...sword, ...pts([-1.4, -0.8], 0), base: pts([0.6, 1.2], 1) };
+  assert.equal(ground([base, moved]), g0, 'a moved prop leaves the floor');
+  assert.equal(ground([base, { ...moved, base: null }]), 1.4, 'without its base the moved prop would lift the figure');
+  // the same pose from another root offset (another history): the lowest point lands on the floor alike
+  for (const r of [-0.25, 0, 0.4]) {
+    const m = mats(r, 0.3), g = ground([base, sword], m), lifted = mats(r + g, 0.3);
+    assert.ok(Math.abs(Math.min(G.lowestSkinnedY(body, lifted), G.lowestPieces([base, sword], lifted)) - floor) < 1e-12, `root ${r}`);
+    // the base on the root and the body move by the same lift: they stay together
+    assert.ok(Math.abs((G.lowestSkinnedY(base, lifted) - G.lowestSkinnedY(base, m)) - (G.lowestSkinnedY(body, lifted) - G.lowestSkinnedY(body, m))) < 1e-12);
+  }
+  console.log('floor: a prop counts where its package binds it; a base on the root lifts with the figure');
+}
