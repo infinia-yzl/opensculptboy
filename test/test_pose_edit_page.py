@@ -195,11 +195,13 @@ class TestPoseEditPage(unittest.TestCase):
             # spot (it showed the empty stage round the pointer before)
             self.assertTrue(report(tab)["unsaved"])
             s = report(tab)["points"]["index_pip.R"]["screen"]
+            # a place on the view where the pointer's ray meets no scan
+            ox, oy = tab.evaluate(OFF_SCAN)
             tab.mouse.move(s["x"], s["y"])
             tab.mouse.down()
             for k in range(1, 9):
                 tab.mouse.move(
-                    s["x"] + (1700 - s["x"]) * k / 8, s["y"] + (140 - s["y"]) * k / 8
+                    s["x"] + (ox - s["x"]) * k / 8, s["y"] + (oy - s["y"]) * k / 8
                 )
                 settle(tab, 1)
             r = report(tab)
@@ -582,9 +584,8 @@ class TestPoseEditPage(unittest.TestCase):
             tab.evaluate("() => window.__poseEdit.setApplyTo('arm.R')")
             moving = None
             for c in builtin:
-                tab.locator(f".pe-builtin [data-pose='{c['name']}']").first.click(
-                    force=True
-                )
+                # a chip in a closed fold: the fold opened and the chip clicked
+                tab.evaluate(CHIP, c["name"])
                 settle(tab)
                 r = report(tab)
                 rot = dict(zip(r["labels"], r["rotations"]))
@@ -693,6 +694,19 @@ ROD = """(o) => {
 GRIP = (
     "() => { const e = window.__poseEdit; "
     "e.setGrip({ hand: 'R', prop: 'test/rod' }); e.setSqueeze(1); }"
+)
+# the first spot of a grid over the view where the pointer's ray meets no scan (client pixels)
+OFF_SCAN = """() => {
+  const e = window.__poseEdit, r = e.host.canvas.getBoundingClientRect();
+  for (let j = 1; j < 10; j++) for (let i = 1; i < 10; i++) {
+    const x = r.left + r.width * i / 10, y = r.top + r.height * j / 10;
+    if (x > 400 && !e.scanHit(x, y, null)) return [x, y];
+  }
+  return [r.left + 420, r.top + 20];
+}"""
+CHIP = (
+    "(name) => { const c = document.querySelector(`.pe-builtin [data-pose='${name}']`); "
+    "c.closest('details').open = true; c.click(); }"
 )
 UNLOAD = (
     "() => { const e = new Event('beforeunload', { cancelable: true }); "
