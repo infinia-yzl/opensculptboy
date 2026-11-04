@@ -1491,6 +1491,7 @@ void main() {
   });
   return OVL.rt;
 }
+const OVL_EMPTY = new THREE.Scene();
 function drawOverlay() {
   const skel = skeletonShown() && !!SKEL.scene;
   if (!skel && !POSE_EDIT.overlay) return;
@@ -1505,6 +1506,9 @@ function drawOverlay() {
   if (skel) renderer.render(SKEL.scene, camera);
   // the pose editor's scan and magnifier (pose_edit/view3d.ts)
   if (POSE_EDIT.overlay) { renderer.clearDepth(); POSE_EDIT.overlay(rt); renderer.setClearColor(0x000000, 0); }
+  // the target is multisampled, and three.js resolves its samples into the texture at the end of a render, never
+  // after a clear alone: an empty render resolves the cleared target, so a hidden scan leaves the picture at once
+  renderer.setRenderTarget(rt); renderer.render(OVL_EMPTY, camera);
   renderer.setRenderTarget(null);
   OVL.mat.uniforms.tOvl.value = rt.texture;
   quadMesh.material = OVL.mat; renderer.render(quadScene, quadCam);

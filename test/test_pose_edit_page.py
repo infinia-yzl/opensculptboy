@@ -68,6 +68,12 @@ def edit_on(tab):
     )
 
 
+def picture(png):
+    from PIL import Image
+
+    return np.asarray(Image.open(io.BytesIO(png)).convert("RGB"), dtype=np.float64)
+
+
 def settle(tab, frames=4):
     for _ in range(frames):
         tab.evaluate("() => new Promise((r) => requestAnimationFrame(() => r()))")
@@ -501,8 +507,9 @@ class TestPoseEditPage(unittest.TestCase):
 
     def test_grip_library_and_unsaved_edits(self):
         """Grip from the hand as it stands on rods across the right hand (a rod on the root and one
-        carried by the hand), Lift out, the built-in poses in the Library tool applied to one part
-        and blended, and the prompt before leaving with unsaved edits."""
+        carried by the hand), Lift out, the scan's picture gone at once when it is hidden, the
+        built-in poses in the Library tool applied to one part and blended, and the prompt before
+        leaving with unsaved edits."""
         from playwright.sync_api import sync_playwright
 
         folder = pathlib.Path(tempfile.mkdtemp())
@@ -568,6 +575,29 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertTrue(report(tab)["state"]["grip_carried"])
             self.assertFalse(tab.evaluate("() => window.__poseEdit.liftHand()"))
             tab.evaluate("() => window.__poseEdit.setGrip(null)")
+
+            # Show the scan off after the solid scan: the picture leaves the scan at once
+            def view():
+                settle(tab, 30)
+                tab.wait_for_timeout(800)
+                return picture(
+                    tab.screenshot(clip=dict(x=420, y=80, width=1400, height=900))
+                )
+
+            tab.evaluate("() => window.__poseEdit.setScanLook({ shown: false })")
+            bare = view()
+            tab.evaluate(
+                "() => window.__poseEdit.setScanLook({ look: 'solid', shown: true })"
+            )
+            solid = view()
+            tab.evaluate("() => window.__poseEdit.setScanLook({ shown: false })")
+            hidden = view()
+            shown_diff = np.abs(solid - bare).mean()
+            self.assertGreater(shown_diff, 1.0)
+            self.assertLess(np.abs(hidden - bare).mean(), 0.25 * shown_diff)
+            tab.evaluate(
+                "() => window.__poseEdit.setScanLook({ look: 'ghost', shown: true })"
+            )
 
             # the Library tool lists the page's built-in poses in groups, with the search
             tab.evaluate(
