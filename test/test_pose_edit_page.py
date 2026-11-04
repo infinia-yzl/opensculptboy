@@ -526,7 +526,7 @@ class TestPoseEditPage(unittest.TestCase):
             settle(tab)
 
             # Grip: a rod on the palm's side of the fingers in the reference pose; each finger closes to 1 mm
-            tab.evaluate(ROD, {"out": 0.022, "radius": 0.012, "bone": "root"})
+            tab.evaluate(ROD, {"out": 0.035, "radius": 0.012, "bone": "root"})
             tab.evaluate(
                 "() => { const e = window.__poseEdit; e.setSection('hands'); e.setHandSide('R'); "
                 "e.setGrip({ hand: 'R', prop: 'test/rod' }); e.setSqueeze(1); }"
