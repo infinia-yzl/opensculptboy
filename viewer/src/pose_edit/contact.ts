@@ -165,8 +165,9 @@ export function squeeze(body: SkinnedBody, rotations: ArrayLike<number>[], hand:
   return { rotations: D, report };
 }
 
-export interface GripFinger { start: number; contact: number | null; scale: number; clearance_mm: number; opened: boolean; wedged: boolean; blocked: boolean }
+export interface GripFinger { start: number; contact: number | null; scale: number; clearance_mm: number; opened: boolean; wedged: boolean; blocked: boolean; jointwise: boolean }
 export const WEDGE_STEP = 0.01;
+export const JOINT_STEP = 2 * Math.PI / 180;
 
 // Grip from the hand as it stands (the editor's Grip): each finger of hand ("hand.r") starts from its present curl.
 // A finger clear of the objects keeps that start; a finger that touches or enters them opens along its own curl in
@@ -240,11 +241,39 @@ export function gripFrom(body: SkinnedBody, rotations: ArrayLike<number>[], hand
         wedged = true; start = best; contact = best;
       } else blocked = true;
     }
-    const end = contact === null ? MAX_SCALE : contact;
-    const chosen = blocked ? present : wedged ? start : start + value * (end - start);
-    const now = posed(chosen);
+    // the end of the closing: the bends at contact, or, for a finger that the shared curl brings to no contact, each
+    // joint in turn from the knuckle out closing alone until the finger comes within the clearance (GraspIt's
+    // closing joint by joint: a link stops at contact and the joints past it go on)
+    const startB = bends.map((b) => b * start);
+    let endB = bends.map((b) => b * (contact === null ? MAX_SCALE : contact)), jointwise = false;
+    if (contact === null && !blocked && !wedged) {
+      const fist = FIST_BENDS[finger].map((d) => d * Math.PI / 180);
+      const caps = [0, 1, 2].map((j) => MAX_SCALE * Math.max(Math.abs(bends[j]), fist[j]));
+      const B = startB.slice();
+      const gapB = (b: number[]) => { const d = signedDistance(body.vertices(posedB(b), rows), objects); let m = Infinity; for (const x of d) if (x < m) m = x; return m; };
+      const posedB = (b: number[]) => { const trial = D.slice(); bones.forEach((k, j) => { const c = coords[j].slice(); c[0] = b[j]; trial[k] = rotationOf(frames.get(k)!, c); }); return trial; };
+      let touched = false;
+      for (let j = 0; j < 3 && !touched; j++) {
+        for (let x = B[j] + JOINT_STEP; x <= caps[j] + 1e-9; x += JOINT_STEP) {
+          const t = B.slice(); t[j] = x;
+          const g = gapB(t);
+          if (g <= clearance) {
+            let lo = x - JOINT_STEP, hi = x;
+            for (let it = 0; it < BISECTION; it++) { const mid = 0.5 * (lo + hi); const m = B.slice(); m[j] = mid; if (gapB(m) > clearance) lo = mid; else hi = mid; }
+            B[j] = lo; touched = true; break;
+          }
+          B[j] = x;
+        }
+      }
+      if (touched) { endB = B; jointwise = true; }
+    }
+    const bendsAt = (v: number) => (blocked ? bends.map((b) => b * present) : wedged ? startB : startB.map((b, j) => b + v * (endB[j] - b)));
+    const chosenB = bendsAt(value), now = D.slice();
+    bones.forEach((k, j) => { const c = coords[j].slice(); c[0] = chosenB[j]; now[k] = rotationOf(frames.get(k)!, c); });
     for (const b of bones) D[b] = now[b];
-    report[finger] = { start: r4(start), contact: contact === null ? null : r4(contact), scale: r4(chosen), clearance_mm: Math.round(1000 * gap(chosen) * 100) / 100, opened, wedged, blocked };
+    const chosen = blocked ? present : wedged ? start : start + value * ((contact === null ? MAX_SCALE : contact) - start);
+    const gNow = (() => { const d = signedDistance(body.vertices(now, rows), objects); let m = Infinity; for (const x of d) if (x < m) m = x; return m; })();
+    report[finger] = { start: r4(start), contact: contact === null ? null : r4(contact), scale: r4(chosen), clearance_mm: Math.round(1000 * gNow * 100) / 100, opened, wedged, blocked, jointwise };
   }
   return { rotations: D, report };
 }

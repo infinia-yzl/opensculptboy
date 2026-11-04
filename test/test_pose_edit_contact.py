@@ -193,16 +193,23 @@ class TestPageContact(unittest.TestCase):
                 self.assertGreaterEqual(r["clearance_mm"], 1.0, f)
                 self.assertLess(r["clearance_mm"], 1.5, f)
         if expect == "squeeze":
-            # from straight fingers Grip closes as Squeeze does
+            # from straight fingers Grip closes as Squeeze does; a finger that the shared curl brings to no contact
+            # closes on joint by joint and comes within the clearance
             D, sq = contact.squeeze(
                 rig, c["rotations"], c["hand"], c["objects"], 1.0, fingers=fingers
             )
             for f in fingers:
                 self.assertFalse(report[f]["opened"], f)
+                if report[f]["jointwise"]:
+                    self.assertIsNone(sq[f]["contact"], f)
+                    self.assertGreaterEqual(report[f]["clearance_mm"], 1.0, f)
+                    self.assertLess(report[f]["clearance_mm"], 1.5, f)
+                    continue
                 self.assertAlmostEqual(
                     sq[f]["clearance_mm"], report[f]["clearance_mm"], delta=0.02
                 )
-            self.assertLess(np.abs(rig.vertices(D) - rig.vertices(Dp)).max(), 1e-5)
+            if not any(report[f]["jointwise"] for f in fingers):
+                self.assertLess(np.abs(rig.vertices(D) - rig.vertices(Dp)).max(), 1e-5)
         if expect == "opened":
             # the fingers clenched into the ball open before they close
             self.assertGreaterEqual(sum(report[f]["opened"] for f in fingers), 3)
