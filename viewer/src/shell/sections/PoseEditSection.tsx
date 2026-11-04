@@ -9,13 +9,13 @@
 
 import { useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { editStore, ENDS, PARTS, PIN_PARTS, poseEditor, type EditState, type PointInfo } from '../../pose_edit/editor.ts';
+import { BUILTIN, editStore, ENDS, PARTS, PIN_PARTS, poseEditor, type EditState, type PointInfo } from '../../pose_edit/editor.ts';
 import { BodyMap, HandMap, JointMap } from '../../pose_edit/maps.tsx';
 import { AXES } from '../../pose_edit/joints.ts';
 import { FINGER_LABELS, PRESETS } from '../../pose_edit/hands.ts';
 import { SECTIONS } from '../../pose_edit/editor.ts';
 import { runAction } from '../../studio/actions.ts';
-import { Fold, Note, Seg, Switch, TextButton } from '../components/controls.tsx';
+import { Chip, Fold, Note, Search, Seg, Switch, TextButton } from '../components/controls.tsx';
 import { Icon } from '../components/ui/icon.tsx';
 import { Tip } from '../components/ui/tooltip.tsx';
 import { useShell } from '../context.ts';
@@ -48,21 +48,30 @@ function LimbsPanel({ st }: { st: EditState }) {
   );
 }
 
-// the Library tool (artboard 2e): saved poses as tiles, applied to the whole body or one part, two poses blended, and
-// mirror and copy
+// the Library tool (artboard 2e): saved poses as tiles and the page's 50 built-in poses in folds with a search, each
+// applied to the whole body or one part, two poses (saved or built-in) blended, and mirror and copy
 function LibraryPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!;
   const [name, setName] = useState('');
   const [a, setA] = useState(''), [b, setB] = useState('');
-  const poses = st.poses;
+  const [q, setQ] = useState('');
+  const poses = st.poses, builtin = ed.builtinPoses(), query = q.trim().toLowerCase();
+  const groups = [...new Set(builtin.map((c) => c.group || 'Poses'))];
+  const part = (PARTS.find((x) => x.id === st.applyTo) || PARTS[0]).label;
+  const options = <>
+    {poses.length ? <optgroup label="Saved poses">{poses.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</optgroup> : null}
+    {groups.map((g) => <optgroup key={g} label={g}>{builtin.filter((c) => (c.group || 'Poses') === g).map((c) => <option key={c.name} value={BUILTIN + c.name}>{c.label}</option>)}</optgroup>)}
+  </>;
   return (
     <div className="osb-section pe-library-panel">
-      <h3 className="osb-eyebrow">Saved poses <span className="osb-eyebrow-val">{poses.length}</span></h3>
+      <h3 className="osb-eyebrow">Apply to</h3>
+      <Seg label="Apply to" items={PARTS.map((p) => ({ value: p.id, label: p.label }))} value={st.applyTo} onPick={(v) => ed.setApplyTo(v)} />
+      <h3 className="osb-eyebrow pe-eyebrow">Saved poses <span className="osb-eyebrow-val">{poses.length}</span></h3>
       {poses.length ? (
         <div className="pe-library" role="group" aria-label="Saved poses">
           {poses.map((p) => (
             <div key={p.id} className="pe-pose-tile">
-              <button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.applyPose(p.id)} title={`Apply ${p.label} to: ${(PARTS.find((x) => x.id === st.applyTo) || PARTS[0]).label}`}>
+              <button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.applyPose(p.id)} title={`Apply ${p.label} to: ${part}`}>
                 <Icon name="pose" size={22} /><span>{p.label}</span></button>
               <button type="button" className="osb-ib" aria-label={`Delete ${p.label}`} onClick={() => ed.deletePose(p.id)}><Icon name="close" size={12} /></button>
             </div>
@@ -73,16 +82,31 @@ function LibraryPanel({ st }: { st: EditState }) {
         <input type="text" className="osb-input" placeholder="A name for this pose" aria-label="A name for this pose" value={name} onChange={(e) => setName(e.target.value)} />
         <TextButton label="Save the pose" icon="plus" disabled={!name.trim()} onClick={() => { ed.savePose(name.trim()); setName(''); }} />
       </div>
-      <h3 className="osb-eyebrow pe-eyebrow">Apply to</h3>
-      <Seg label="Apply to" items={PARTS.map((p) => ({ value: p.id, label: p.label }))} value={st.applyTo} onPick={(v) => ed.setApplyTo(v)} />
-      {poses.length >= 2 ? <>
+      {builtin.length ? <>
+        <h3 className="osb-eyebrow pe-eyebrow">Built-in poses <span className="osb-eyebrow-val">{builtin.length}</span></h3>
+        <Search placeholder={`Search ${builtin.length} poses`} value={q} onChange={setQ} />
+        <div className="folds osb-folds pe-builtin" role="group" aria-label="Built-in poses">
+          {groups.map((g) => {
+            const list = builtin.filter((c) => (c.group || 'Poses') === g && (!query || c.label.toLowerCase().includes(query) || g.toLowerCase().includes(query)));
+            if (!list.length) return null;
+            return (
+              <Fold key={g + (query ? ':q' : '')} title={g} count={list.length} open={query ? true : undefined}>
+                <div className="chips osb-chips">{list.map((c) => <Chip key={c.name} pressed={false} data-pose={c.name} title={`Apply ${c.label} to: ${part}`}
+                  onClick={() => ed.applyPose(BUILTIN + c.name)}>{c.label}</Chip>)}</div>
+              </Fold>
+            );
+          })}
+        </div>
+        <Note>A built-in pose applies to the part chosen above, and the rest of the figure keeps its pose. Poses from the MakeHuman community (CC0).</Note>
+      </> : null}
+      {poses.length + builtin.length >= 2 ? <>
         <h3 className="osb-eyebrow pe-eyebrow">Blend two poses</h3>
         <div className="pe-blend">
-          <select aria-label="First pose" value={a} onChange={(e) => setA(e.target.value)}><option value="">First pose</option>{poses.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
-          <select aria-label="Second pose" value={b} onChange={(e) => setB(e.target.value)}><option value="">Second pose</option>{poses.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}</select>
+          <select aria-label="First pose" value={a} onChange={(e) => setA(e.target.value)}><option value="">First pose</option>{options}</select>
+          <select aria-label="Second pose" value={b} onChange={(e) => setB(e.target.value)}><option value="">Second pose</option>{options}</select>
         </div>
         {a && b ? <Range key={a + b} id="blend" label="Blend" unit="%" value={Math.round((st.blend?.t ?? 0) * 100)} min={0} max={100} step={1}
-          ends={[poses.find((p) => p.id === a)!.label, poses.find((p) => p.id === b)!.label]} onInput={(v) => ed.blendPoses(a, b, v / 100, false)}
+          ends={[ed.poseLabel(a), ed.poseLabel(b)]} onInput={(v) => ed.blendPoses(a, b, v / 100, false)}
           onStart={() => (ed as any).record('Blend poses')} /> : null}
       </> : null}
       <h3 className="osb-eyebrow pe-eyebrow">Mirror and copy</h3>
@@ -345,28 +369,30 @@ function GesturePad({ st }: { st: EditState }) {
 function GripBlock({ st }: { st: EditState }) {
   const ed = poseEditor()!, side = st.handSide, on = st.grip && st.grip.hand === side;
   if (!st.props.length) return null;
-  const prop = (on && st.grip!.prop) || st.props[0];
+  const prop = (on && st.grip!.prop) || st.props[0], label = prop.split('/').pop() || 'prop';
   return <>
     <h3 className="osb-eyebrow pe-eyebrow">Grip a prop</h3>
     <div className="pe-grip-row">
       <Seg label="The prop" items={st.props.map((p) => ({ value: p, label: p.split('/').pop() || p }))} value={prop} onPick={(v) => ed.setGrip({ hand: side, prop: v })} />
-      <TextButton label={on ? 'Let go' : 'Grip'} icon="hand" primary={!on} onClick={() => { if (on) ed.setGrip(null); else { ed.setGrip({ hand: side, prop }); ed.setSqueeze(st.squeeze || 0.8); } }} />
+      <TextButton label={on ? 'Let go' : 'Grip'} icon="hand" primary={!on} onClick={() => { if (on) ed.setGrip(null); else { ed.setGrip({ hand: side, prop }); ed.setSqueeze(1); } }} />
     </div>
     {on && st.grip_blocked ? <div className="pe-grip-blocked" role="status">
-      <p><Icon name="alert" size={16} /> Move the hand off the {(st.grip!.prop.split('/').pop() || 'prop')} first. With the fingers straight, {st.grip_report.filter((f) => f.inside).map((f) => FINGER_NAMES[FINGERS_ORDER.indexOf(f.finger)].toLowerCase()).join(', ') || 'a finger'} is still inside it.</p>
-      <TextButton label="Lift the hand out" icon="hand" onClick={() => ed.liftHand()} />
-      <Note>Lift the hand out moves the hand along its palm, and the arm follows, until every finger clears the prop. You can also drag the hand's handle in Limbs.</Note>
+      <p><Icon name="alert" size={16} /> The {st.grip_report.filter((f) => f.blocked).map((f) => FINGER_NAMES[FINGERS_ORDER.indexOf(f.finger)].toLowerCase()).join(', ') || 'a finger'} stays inside the {label}, at its present curl and straight alike.</p>
+      {st.grip_carried ? <Note>The {label} moves with this hand, so lifting the hand takes it along. Turn that finger in Joints.</Note> : <>
+        <TextButton label="Lift the hand out" icon="hand" onClick={() => ed.liftHand()} />
+        <Note>Lift the hand out moves the hand off the {label}, and the arm follows, until every finger can clear it. You can also drag the hand's handle in Limbs.</Note>
+      </>}
     </div> : null}
-    {on && !st.grip_blocked ? <>
+    {on ? <>
       <Range key="squeeze" id="grip-squeeze" label="Squeeze" value={Math.round(st.squeeze * 100)} min={0} max={100} step={1} unit="%" ends={['Looser', 'Tighter']}
         onInput={(v) => ed.setSqueeze(v / 100, false)} />
       <ul className="pe-grip-fingers">
         {st.grip_report.map((f, k) => (
           <li key={f.finger} className={f.inside ? 'is-bad' : ''}><span>{FINGER_NAMES[k]}</span>
-            <span>{!isFinite(f.clearance) ? '' : f.inside ? <><Icon name="alert" size={14} /> {Math.abs(f.clearance).toFixed(0)} mm inside</> : f.clearance <= 1.5 ? <><Icon name="check" size={14} /> Touching</> : `${f.clearance.toFixed(0)} mm off`}</span></li>
+            <span>{!isFinite(f.clearance) ? '' : f.inside ? <><Icon name="alert" size={14} /> {Math.abs(f.clearance).toFixed(0)} mm inside</> : f.clearance <= 1.5 ? <><Icon name="check" size={14} /> Touching{f.opened ? ', opened first' : ''}</> : `${f.clearance.toFixed(0)} mm off`}</span></li>
         ))}
       </ul>
-      <Note>The fingers close joint by joint until each one touches the prop with 1 mm to spare.</Note>
+      <Note>Each finger starts where it stands, opens first if it is inside the {label}, and closes joint by joint until it touches with 1 mm to spare. Squeeze loosens the grip back to that start.</Note>
     </> : null}
   </>;
 }

@@ -165,6 +165,59 @@ export function squeeze(body: SkinnedBody, rotations: ArrayLike<number>[], hand:
   return { rotations: D, report };
 }
 
+export interface GripFinger { start: number; contact: number | null; scale: number; clearance_mm: number; opened: boolean; blocked: boolean }
+
+// Grip from the hand as it stands (the editor's Grip): each finger of hand ("hand.r") starts from its present curl.
+// A finger clear of the objects keeps that start; a finger that touches or enters them opens along its own curl in
+// steps of SCAN_STEP until it clears them by the clearance (the finger is "opened"), and a finger that clears them at
+// no curl down to straight is "blocked" and keeps its present curl. From its start each finger closes until it comes
+// within the clearance (bisection, as squeeze), and value from 0 to 1 sets each finger between its start and its
+// contact, so Squeeze loosens the grip back to the start and never through the prop. GraspIt's AutoGrasp closes the
+// fingers from a pre-shape clear of the object (A. T. Miller and P. K. Allen, 2004); the present pose serves as that
+// pre-shape, opened only where it must be. Returns the rotations (B x 9) and a report per finger.
+export function gripFrom(body: SkinnedBody, rotations: ArrayLike<number>[], hand: string, objects: Prop[], value = 1,
+  clearance = CLEARANCE, fingers = ['finger1', 'finger2', 'finger3', 'finger4', 'finger5']): { rotations: number[][]; report: Record<string, GripFinger> } {
+  const rig = body.rig, side = '.' + hand.split('.')[1].toUpperCase();
+  value = Math.min(Math.max(value, 0), 1);
+  const D = rotations.map((r) => Array.from(r));
+  const frames = jointFrames(rig), ix = new Map(rig.labels.map((l, i) => [l, i] as [string, number]));
+  const report: Record<string, GripFinger> = {};
+  const r4 = (x: number) => Math.round(x * 1e4) / 1e4;
+  for (const finger of fingers) {
+    const bones = [1, 2, 3].map((j) => ix.get(`${finger}-${j}${side}`)!);
+    const coords = bones.map((b) => coordinatesOf(frames.get(b)!, D[b]));
+    let bends = coords.map((c) => c[0]), present = 1;
+    // a finger near straight curls along the fist's bends, from straight
+    if (bends.reduce((s, b) => s + Math.abs(b) * 180 / Math.PI, 0) < 15) { bends = FIST_BENDS[finger].map((d) => d * Math.PI / 180); present = 0; }
+    const rows = body.rowsOf(bones);
+    const posed = (scale: number) => {
+      const trial = D.slice();
+      bones.forEach((b, j) => { const c = coords[j].slice(); c[0] = scale * bends[j]; trial[b] = rotationOf(frames.get(b)!, c); });
+      return trial;
+    };
+    const gap = (scale: number) => { const d = signedDistance(body.vertices(posed(scale), rows), objects); let m = Infinity; for (const x of d) if (x < m) m = x; return m; };
+    // the boundary between a clear scale lo and a touching scale hi
+    const boundary = (lo: number, hi: number) => { for (let it = 0; it < BISECTION; it++) { const mid = 0.5 * (lo + hi); if (gap(mid) > clearance) lo = mid; else hi = mid; } return lo; };
+    let start = present, contact: number | null = null, opened = false, blocked = false;
+    if (gap(present) > clearance) {
+      // clear: close from here
+      for (let s = present + SCAN_STEP; s <= MAX_SCALE + 1e-9; s += SCAN_STEP) if (gap(s) <= clearance) { contact = boundary(s - SCAN_STEP, s); break; }
+    } else {
+      // touching or inside: open along the curl until the finger clears the prop
+      let clear: number | null = null;
+      for (let s = present - SCAN_STEP; s > -1e-9; s -= SCAN_STEP) if (gap(Math.max(s, 0)) > clearance) { clear = Math.max(s, 0); break; }
+      if (clear === null) blocked = true;
+      else { opened = true; contact = boundary(clear, Math.min(clear + SCAN_STEP, present)); start = clear; }
+    }
+    const end = contact === null ? MAX_SCALE : contact;
+    const chosen = blocked ? present : start + value * (end - start);
+    const now = posed(chosen);
+    for (const b of bones) D[b] = now[b];
+    report[finger] = { start: r4(start), contact: contact === null ? null : r4(contact), scale: r4(chosen), clearance_mm: Math.round(1000 * gap(chosen) * 100) / 100, opened, blocked };
+  }
+  return { rotations: D, report };
+}
+
 // ------------------------------------------------------------------ balance
 export function centreOfMass(V: ArrayLike<number>, T: ArrayLike<number>): { centre: number[]; volume: number } {
   const n = V.length / 3, o = [0, 0, 0];

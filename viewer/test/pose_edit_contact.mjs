@@ -1,13 +1,14 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// Parity of the page's Squeeze and balance mark (src/pose_edit/contact.ts) with opensculptboy.posing.contact, run by
+// Parity of the page's Squeeze and balance mark (src/pose_edit/contact.ts) with opensculptboy.posing.contact, and the
+// editor's Grip from the hand as it stands (gripFrom), run by
 // test/test_pose_edit_contact.py:
 //   node viewer/test/pose_edit_contact.mjs <folder>
 // reads <folder>/input.json (a rig, its skin and cases) and writes <folder>/output.json.
 import fs from 'fs';
 import path from 'path';
-import { SkinnedBody, balance, squeeze } from '../src/pose_edit/contact.ts';
+import { SkinnedBody, balance, gripFrom, squeeze } from '../src/pose_edit/contact.ts';
 
 const dir = process.argv[2];
 const inp = JSON.parse(fs.readFileSync(path.join(dir, 'input.json')));
@@ -18,6 +19,10 @@ const out = inp.cases.map((c) => {
   const t0 = performance.now();
   if (c.kind === 'squeeze') {
     const r = squeeze(body, c.rotations, c.hand, c.objects, c.value, undefined, c.fingers);
+    return { rotations: r.rotations, report: r.report, ms: performance.now() - t0 };
+  }
+  if (c.kind === 'grip') {
+    const r = gripFrom(body, c.rotations, c.hand, c.objects, c.value, undefined, c.fingers);
     return { rotations: r.rotations, report: r.report, ms: performance.now() - t0 };
   }
   return { balance: balance(body, c.rotations), ms: performance.now() - t0 };

@@ -44,8 +44,13 @@ export interface PoseHost {
   redraw(): void;
   // a callback on every frame of the page (the points follow the camera)
   onFrame(fn: (() => void) | null): void;
-  // the props worn (the wardrobe's shown pieces of the slot prop), as triangle meshes in the page's frame
-  props(): { name: string; positions: Float32Array; indices: Uint32Array }[];
+  // the props worn (the wardrobe's shown pieces of the slot prop), as triangle meshes in the page's frame, with the bone
+  // that carries a rigid prop
+  props(): { name: string; positions: Float32Array; indices: Uint32Array; bone?: string }[];
+  // the page's library of poses (the 50 built-in poses: name, label, group and credit), and one of them as the page's
+  // quaternions (its first frame), or null
+  builtinPoses(): { name: string; label: string; group?: string; credit?: string }[];
+  builtinPose(name: string): Float32Array | null;
   // the pose shown as a card's pose (opensculptboy.Character.pose: each bone's turn relative to its parent in Anny's frame)
   cardPose(): { bones: Record<string, number[]>; root: number[] };
   // the first point of the posed body under a ray (page frame), or null

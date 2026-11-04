@@ -191,6 +191,32 @@ class TestPoseEditPage(unittest.TestCase):
                 atol=1e-9,
             )
 
+            # a drag that leaves the scan: the point keeps to the surface, and the magnifier holds on the point's
+            # spot (it showed the empty stage round the pointer before)
+            self.assertTrue(report(tab)["unsaved"])
+            s = report(tab)["points"]["index_pip.R"]["screen"]
+            tab.mouse.move(s["x"], s["y"])
+            tab.mouse.down()
+            for k in range(1, 9):
+                tab.mouse.move(
+                    s["x"] + (1700 - s["x"]) * k / 8, s["y"] + (140 - s["y"]) * k / 8
+                )
+                settle(tab, 1)
+            r = report(tab)
+            mag, spot = r["magnifier"], r["points"]["index_pip.R"]["screen"]
+            self.assertTrue(mag["off"])
+            self.assertLess(np.hypot(mag["x"] - spot["x"], mag["y"] - spot["y"]), 2.0)
+            self.assertLess(r["points"]["index_pip.R"]["onScan"], 1e-4)
+            shot("1d_off_scan")
+            tab.keyboard.press("Escape")
+            tab.mouse.up()
+            settle(tab)
+            np.testing.assert_allclose(
+                report(tab)["points"]["index_pip.R"]["target"],
+                after["target"],
+                atol=1e-9,
+            )
+
             # the wheel during a drag pushes the point 1 mm a notch; Page Down 1 mm more; Page Up pulls it out
             # the selection turns the view round the point, so its place on the screen is read after it
             tab.locator(".hand-map [data-name='middle_tip.R']").click()
@@ -263,6 +289,8 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertEqual(len(ref["pins"]), 1)
             self.assertIn("ghost", ref)
             self.assertTrue(card["pose"]["bones"])
+            # saved: nothing left to ask about
+            self.assertFalse(report(tab)["unsaved"])
 
             # Tab turns Edit off
             press_in_view(tab, "Tab")
@@ -426,7 +454,8 @@ class TestPoseEditPage(unittest.TestCase):
             if name.endswith("." + side) and name.startswith(("finger", "metacarpal"))
         }
         with sync_playwright() as p:
-            browser, tab = open_tab(p, url + "?base", 1920, 1080)
+            # the page leaves with an unsaved edit: noprompt keeps the browser from asking
+            browser, tab = open_tab(p, url + "?base&noprompt", 1920, 1080)
             open_statue(tab, folder)
             edit_on(tab)
             tab.evaluate(
@@ -438,7 +467,7 @@ class TestPoseEditPage(unittest.TestCase):
             self.assertTrue(any(abs(v[0] - 1) > 0.05 for v in fist.values()))
 
             # another character: Anny's default body, the library kept in the browser
-            tab.goto(url + "?base")
+            tab.goto(url + "?base&noprompt")
             tab.wait_for_function("() => window.__ready && !!window.__shell")
             tab.evaluate("() => __shell.actions.openMode('pose')")
             tab.wait_for_function("() => !!window.__poseEdit")
@@ -460,6 +489,215 @@ class TestPoseEditPage(unittest.TestCase):
             for name, rot in hand(r, "L").items():
                 np.testing.assert_allclose(rot, left0[name], atol=1e-9, err_msg=name)
             browser.close()
+
+    def test_grip_library_and_unsaved_edits(self):
+        """Grip from the hand as it stands on rods across the right hand (a rod on the root and one
+        carried by the hand), Lift out, the built-in poses in the Library tool applied to one part
+        and blended, and the prompt before leaving with unsaved edits."""
+        from playwright.sync_api import sync_playwright
+
+        folder = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, folder, True)
+        page_dir = folder / "page"
+        page_dir.mkdir()
+        servers, url = served(page_dir, {})
+        self.addCleanup(stop, servers)
+        with sync_playwright() as p:
+            browser, tab = open_tab(p, url + "?base", 1920, 1080)
+            open_statue(tab, folder)
+            edit_on(tab)
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            settle(tab)
+
+            # Grip: a rod across the palm side of the straight fingers; each finger closes to 1 mm
+            tab.evaluate(ROD, {"out": 0.025, "radius": 0.012, "bone": "root"})
+            tab.evaluate(
+                "() => { const e = window.__poseEdit; e.setSection('hands'); e.setHandSide('R'); "
+                "e.setGrip({ hand: 'R', prop: 'test/rod' }); e.setSqueeze(1); }"
+            )
+            settle(tab)
+            st = report(tab)["state"]
+            self.assertFalse(st["grip_blocked"])
+            self.assertFalse(st["grip_carried"])
+            fingers = {f["finger"]: f for f in st["grip_report"]}
+            for f in ("index", "middle", "ring"):
+                self.assertGreaterEqual(fingers[f]["clearance"], 1.0, f)
+                self.assertLess(fingers[f]["clearance"], 1.5, f)
+            self.assertFalse(any(f["inside"] for f in st["grip_report"]))
+            # Grip again from that grip: the fingers stand at contact, so each opens a little and closes again
+            tab.evaluate(GRIP)
+            settle(tab)
+            again = {f["finger"]: f for f in report(tab)["state"]["grip_report"]}
+            for f in ("index", "middle", "ring"):
+                self.assertAlmostEqual(
+                    again[f]["clearance"], fingers[f]["clearance"], delta=0.5
+                )
+
+            # a rod in the plane of the straight fingers: inside at every curl, so the grip blocks; Lift out moves
+            # the hand off the rod (the rod stands on the root) and the grip closes from there
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            tab.evaluate(ROD, {"out": 0.0, "radius": 0.012, "bone": "root"})
+            tab.evaluate(GRIP)
+            settle(tab)
+            st = report(tab)["state"]
+            self.assertTrue(st["grip_blocked"])
+            self.assertTrue(any(f["blocked"] for f in st["grip_report"]))
+            self.assertTrue(tab.evaluate("() => window.__poseEdit.liftHand()"))
+            settle(tab)
+            r = report(tab)
+            self.assertFalse(r["state"]["grip_blocked"])
+            self.assertFalse(any(f["inside"] for f in r["state"]["grip_report"]))
+            self.assertLessEqual(r["lift"]["trace"][-1]["mm"], 60)
+            self.assertEqual(r["undo"][-1], "Lift the hand out")
+            # the same rod carried by the hand: lifting the hand takes it along, so Lift out leaves it
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            tab.evaluate(ROD, {"out": 0.0, "radius": 0.012, "bone": "metacarpal4.R"})
+            tab.evaluate(GRIP)
+            settle(tab)
+            self.assertTrue(report(tab)["state"]["grip_carried"])
+            self.assertFalse(tab.evaluate("() => window.__poseEdit.liftHand()"))
+            tab.evaluate("() => window.__poseEdit.setGrip(null)")
+
+            # the Library tool lists the page's built-in poses in groups, with the search
+            tab.evaluate(
+                "() => { const e = window.__poseEdit; e.restPose(); e.setSection('library'); }"
+            )
+            settle(tab)
+            builtin = tab.evaluate("() => window.__poseEdit.builtinPoses()")
+            self.assertGreaterEqual(len(builtin), 50)
+            self.assertEqual(
+                tab.locator(".pe-builtin [data-pose]").count(), len(builtin)
+            )
+            tab.get_by_placeholder(f"Search {len(builtin)} poses").fill(
+                builtin[3]["label"][:6]
+            )
+            self.assertGreaterEqual(tab.locator(".pe-builtin [data-pose]").count(), 1)
+            self.assertLess(
+                tab.locator(".pe-builtin [data-pose]").count(), len(builtin)
+            )
+            tab.get_by_placeholder(f"Search {len(builtin)} poses").fill("")
+            # one part: a built-in pose on the right arm leaves the left arm and the legs
+            r0 = report(tab)
+            rot0 = dict(zip(r0["labels"], r0["rotations"]))
+            tab.evaluate("() => window.__poseEdit.setApplyTo('arm.R')")
+            moving = None
+            for c in builtin:
+                tab.locator(f".pe-builtin [data-pose='{c['name']}']").first.click(
+                    force=True
+                )
+                settle(tab)
+                r = report(tab)
+                rot = dict(zip(r["labels"], r["rotations"]))
+                changed = [
+                    n for n in rot if np.abs(np.subtract(rot[n], rot0[n])).max() > 1e-6
+                ]
+                if changed:
+                    moving = c
+                    break
+            self.assertIsNotNone(moving)
+            self.assertTrue(all(n.endswith(".R") for n in changed), changed)
+            self.assertTrue(r["undo"][-1].startswith("Apply "))
+            # a blend of two built-in poses on the whole body, half way
+            tab.evaluate("() => window.__poseEdit.setApplyTo('all')")
+            ids = ["builtin:" + builtin[0]["name"], "builtin:" + builtin[1]["name"]]
+            tab.evaluate(
+                "(ids) => window.__poseEdit.blendPoses(ids[0], ids[1], 0.5)", ids
+            )
+            settle(tab)
+            self.assertEqual(report(tab)["state"]["blend"]["t"], 0.5)
+
+            # unsaved edits: the browser asks before the page goes, unless the setting is off
+            self.assertTrue(report(tab)["unsaved"])
+            asked = []
+
+            def on_dialog(d):
+                asked.append(d.type)
+                d.dismiss()
+
+            tab.on("dialog", on_dialog)
+            press_in_view(tab, "Escape")
+            try:
+                tab.reload(timeout=4000)
+            except Exception:
+                pass  # the dismissed prompt keeps the page
+            self.assertEqual(asked, ["beforeunload"])
+            self.assertTrue(report(tab)["unsaved"])
+            self.assertTrue(tab.evaluate(UNLOAD))
+            # View › Controls turns the prompt off
+            tab.evaluate("() => window.__studioSettings.set({ warnUnsaved: false })")
+            self.assertFalse(tab.evaluate(UNLOAD))
+            tab.evaluate("() => window.__studioSettings.set({ warnUnsaved: true })")
+            # undone back to the state as opened: no edit left
+            while report(tab)["undo"]:
+                tab.evaluate("() => window.__poseEdit.undo()")
+            self.assertFalse(report(tab)["unsaved"])
+            self.assertFalse(tab.evaluate(UNLOAD))
+            browser.close()
+
+            # noprompt in the URL: the page tests leave with edits
+            browser, tab = open_tab(p, url + "?base&noprompt", 1920, 1080)
+            open_statue(tab, folder)
+            edit_on(tab)
+            tab.evaluate("() => window.__poseEdit.restPose()")
+            settle(tab)
+            tab.evaluate(
+                "() => { const e = window.__poseEdit; e.setSection('hands'); "
+                "e.setHandSide('R'); e.applyPreset('fist'); }"
+            )
+            self.assertTrue(report(tab)["unsaved"])
+            self.assertFalse(report(tab)["prompt"])
+            self.assertFalse(tab.evaluate(UNLOAD))
+            browser.close()
+
+
+# a rod across the right hand for Grip (card frame): through the knuckles' line moved 3 cm along the fingers and
+# `out` metres to the palm's side, 14 cm long, as a closed capsule; the editor's host shows it as the prop test/rod
+ROD = """(o) => {
+  const e = window.__poseEdit, F = e.frames, head = (l) => e.headOf(l);
+  const w = head('wrist.R'), m = head('finger3-1.R');
+  const i = head('finger2-1.R'), l = head('finger5-1.R');
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const unit = (v) => { const n = Math.hypot(...v); return v.map((x) => x / n); };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0]];
+  const along = unit(sub(m, w)), across = unit(sub(i, l));
+  let n = unit(cross(along, across));
+  // the palm's side: where a curled finger goes
+  const S = e.session, R0 = S.rotations.map((r) => r.slice());
+  const tip0 = head('finger3-3.R');
+  e.hands().setCurl(S.rotations, 'R', 2, 1); S.setPose(S.rotations);
+  const tip1 = head('finger3-3.R'); S.setPose(R0);
+  const d = sub(tip1, tip0);
+  if (d[0] * n[0] + d[1] * n[1] + d[2] * n[2] < 0) n = n.map((x) => -x);
+  const c = [0, 1, 2].map((k) => (i[k] + l[k]) / 2 + along[k] * 0.03 + n[k] * o.out);
+  const b = cross(across, n), r = o.radius, half = 0.07, ring = 16, P = [], I = [];
+  const at = (t, a, s) => [0, 1, 2].map((k) => c[k] + across[k] * t
+    + (n[k] * Math.cos(a) + b[k] * Math.sin(a)) * s);
+  const cap = [3, 2, 1].map((j) => [Math.cos(j * Math.PI / 8), Math.sin(j * Math.PI / 8)]);
+  const rows = [[-half - r, 0], ...cap.reverse().map(([x, y]) => [-half - r * x, r * y]),
+    [-half, r], [half, r], ...cap.reverse().map(([x, y]) => [half + r * x, r * y]),
+    [half + r, 0]];
+  for (const [t, s] of rows) {
+    for (let a = 0; a < ring; a++) P.push(...F.toWorld(at(t, 2 * Math.PI * a / ring, s)));
+  }
+  for (let q = 0; q + 1 < rows.length; q++) {
+    for (let a = 0; a < ring; a++) {
+      const a1 = (a + 1) % ring, p0 = q * ring + a, p1 = q * ring + a1;
+      const p2 = (q + 1) * ring + a, p3 = (q + 1) * ring + a1;
+      I.push(p0, p2, p1, p1, p2, p3);
+    }
+  }
+  const positions = Float32Array.from(P), indices = Uint32Array.from(I);
+  e.host.props = () => [{ name: 'test/rod', positions, indices, bone: o.bone }];
+}"""
+GRIP = (
+    "() => { const e = window.__poseEdit; "
+    "e.setGrip({ hand: 'R', prop: 'test/rod' }); e.setSqueeze(1); }"
+)
+UNLOAD = (
+    "() => { const e = new Event('beforeunload', { cancelable: true }); "
+    "dispatchEvent(e); return e.defaultPrevented; }"
+)
 
 
 if __name__ == "__main__":

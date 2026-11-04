@@ -3593,7 +3593,9 @@ function shownProps() {
       if (sum > 0) { a /= sum; b /= sum; c /= sum; }
       out[i * 3] = H[0] * a + H[4] * b + H[8] * c + H[12]; out[i * 3 + 1] = H[1] * a + H[5] * b + H[9] * c + H[13]; out[i * 3 + 2] = H[2] * a + H[6] * b + H[10] * c + H[14];
     }
-    return { name: p.ref, positions: out, indices: Uint32Array.from(p.wearable.garment.triangles) };
+    // the bone that carries a rigid prop (every vertex on one joint), for the pose editor's Grip
+    const bone = n && W[0] === 1 ? RIG.bones[J[0]]?.name : undefined;
+    return { name: p.ref, positions: out, indices: Uint32Array.from(p.wearable.garment.triangles), bone };
   });
 }
 const POSE_HOST: PoseHost = {
@@ -3623,6 +3625,14 @@ const POSE_HOST: PoseHost = {
   redraw: () => redisplay(),
   onFrame: (fn) => { POSE_EDIT.frame = fn; },
   props: () => shownProps(),
+  builtinPoses: () => MOTION.clips.filter((c: any) => c.kind === 'pose').map((c: any) => ({ name: c.name, label: c.label, group: c.group, credit: c.credit })),
+  builtinPose: (name: string) => {
+    const c = MOTION.byName[name];
+    if (!c || c.kind !== 'pose' || !MOTION.nb) return null;
+    const q = new Float32Array(MOTION.nb * 4);
+    sampleClip(c, 0, q, [0, 0, 0], 0);
+    return q;
+  },
   toast: (text) => toast(text),
   bodyRay: (o, d) => bodyRay(o, d),
   cardPose: () => ({ bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: [0, 0, 0] }),

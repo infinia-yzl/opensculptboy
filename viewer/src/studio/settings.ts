@@ -2,7 +2,7 @@
 // Apache License, Version 2.0
 //
 // The studio's control settings (DESIGN-0014, "Settings", View menu › Controls): four speeds, each from half to twice
-// its default, Larger targets, and the Blender middle mouse. The camera reads the turn, move and zoom speeds; the
+// its default, Larger targets, the Blender middle mouse, and the prompt before leaving with unsaved edits. The camera reads the turn, move and zoom speeds; the
 // posing editor reads the drag speed of points and rings and the picking radius. The settings stay in this browser
 // for this person; a browser that keeps nothing (a private window, blocked storage) gets the defaults.
 
@@ -13,9 +13,10 @@ export interface ControlSettings {
   dragSpeed: number;        // the drag speed of points and rings, 0.5 to 2
   largerTargets: boolean;   // points, handles and rings draw larger, and the picking radius grows from 16 to 24 px
   blenderMiddle: boolean;   // the middle mouse turns the camera and Shift+middle moves the view, as in Blender
+  warnUnsaved: boolean;     // the browser asks before the page goes with unsaved pose or point edits
 }
 
-export const DEFAULTS: ControlSettings = { turnSpeed: 1, moveSpeed: 1, zoomStep: 1, dragSpeed: 1, largerTargets: false, blenderMiddle: false };
+export const DEFAULTS: ControlSettings = { turnSpeed: 1, moveSpeed: 1, zoomStep: 1, dragSpeed: 1, largerTargets: false, blenderMiddle: false, warnUnsaved: true };
 export const SPEED_RANGE: [number, number] = [0.5, 2];
 export const SPEEDS: { key: keyof ControlSettings; label: string; note: string }[] = [
   { key: 'turnSpeed', label: 'Turn speed', note: 'How fast a drag or an arrow key turns the camera' },
@@ -32,7 +33,7 @@ function load(): ControlSettings {
   try { o = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch { o = {}; }
   return {
     turnSpeed: clampSpeed(o.turnSpeed, 1), moveSpeed: clampSpeed(o.moveSpeed, 1), zoomStep: clampSpeed(o.zoomStep, 1),
-    dragSpeed: clampSpeed(o.dragSpeed, 1), largerTargets: !!o.largerTargets, blenderMiddle: !!o.blenderMiddle,
+    dragSpeed: clampSpeed(o.dragSpeed, 1), largerTargets: !!o.largerTargets, blenderMiddle: !!o.blenderMiddle, warnUnsaved: o.warnUnsaved !== false,
   };
 }
 
@@ -58,3 +59,6 @@ export const settings = {
   // the scale of points, handles and rings as drawn
   targetScale(): number { return state.largerTargets ? 1.5 : 1; },
 };
+
+// the page tests read and set the settings
+if (typeof window !== 'undefined') (window as any).__studioSettings = settings;

@@ -24,6 +24,8 @@ export function ControlsPanel({ shown }: { shown: boolean }) {
         tip="Points, handles and rings draw larger, and a click picks within 24 pixels instead of 16" />
       <Switch label="Middle mouse turns the camera (Blender)" on={s.blenderMiddle} onChange={(on) => settings.set({ blenderMiddle: on })}
         tip="Middle-drag turns and Shift+middle-drag moves the view, as in Blender" />
+      <Switch label="Ask before leaving with unsaved edits" on={s.warnUnsaved} onChange={(on) => settings.set({ warnUnsaved: on })}
+        tip="The browser asks before the page closes or reloads while posed points or a pose are not saved" />
       <p className="osb-note">These settings stay in this browser.</p>
       <button type="button" className="osb-btn osb-btn--ghost" onClick={() => { settings.reset(); setGen(gen + 1); }}>Reset the controls</button>
     </section>

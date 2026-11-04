@@ -3,7 +3,10 @@
 """
 Parity of the page's Squeeze and balance mark (``viewer/src/pose_edit/contact.ts``) with
 ``opensculptboy.posing.contact``: the page closes the same fingers onto a ball to the same
-scale and clearance, and finds the same centre of mass, support polygon and margin.
+scale and clearance, and finds the same centre of mass, support polygon and margin. The
+editor's Grip (``gripFrom``) starts from the hand as it stands: from straight fingers it closes
+as Squeeze does; fingers clenched into the ball open first and then close to 1 mm; and fingers
+inside a ball at every curl stay as they are, marked blocked.
 """
 
 import json
@@ -61,6 +64,48 @@ class TestPageContact(unittest.TestCase):
             {"kind": "balance", "rotations": rest},
             {"kind": "balance", "rotations": bent},
         ]
+        # the fingers clenched beyond the ball (1.4 times the fist's bends), and a ball that holds the whole hand
+        clenched = rest.copy()
+        for f in fingers:
+            for j in range(3):
+                b = ix[f"{f}-{j + 1}.R"]
+                fr = frames[b]
+                bend = np.radians(contact.FIST_BENDS[f][j]) * 1.4
+                clenched[b] = ps._exp(
+                    fr["axes"] @ (fr["sign"] * np.array([bend, 0.0, 0.0]))
+                )
+        big = {"kind": "sphere", "centre": centre.tolist(), "radius": 0.2}
+        grips = [
+            {
+                "kind": "grip",
+                "rotations": rest,
+                "objects": [ball],
+                "value": 1.0,
+                "expect": "squeeze",
+            },
+            {
+                "kind": "grip",
+                "rotations": clenched,
+                "objects": [ball],
+                "value": 1.0,
+                "expect": "opened",
+            },
+            {
+                "kind": "grip",
+                "rotations": clenched,
+                "objects": [ball],
+                "value": 0.0,
+                "expect": "start",
+            },
+            {
+                "kind": "grip",
+                "rotations": clenched,
+                "objects": [big],
+                "value": 1.0,
+                "expect": "blocked",
+            },
+        ]
+        cases += [{**g, "hand": "hand.r", "fingers": fingers} for g in grips]
         data = {
             "rig": {
                 "labels": rig.labels,
@@ -85,7 +130,9 @@ class TestPageContact(unittest.TestCase):
             out = json.loads(pathlib.Path(tmp, "output.json").read_text())
         for c, page in zip(cases, out):
             with self.subTest(kind=c["kind"], value=c.get("value")):
-                if c["kind"] == "squeeze":
+                if c["kind"] == "grip":
+                    self._check_grip(c, page, contact, rig, fingers)
+                elif c["kind"] == "squeeze":
                     D, report = contact.squeeze(
                         rig,
                         c["rotations"],
@@ -124,6 +171,41 @@ class TestPageContact(unittest.TestCase):
                     self.assertEqual(len(b["polygon"]), len(p["polygon"]))
                     np.testing.assert_allclose(b["polygon"], p["polygon"], atol=1e-8)
                 print(f"page {c['kind']}: {page['ms']:.0f} ms")
+
+    def _check_grip(self, c, page, contact, rig, fingers):
+        report, expect = page["report"], c["expect"]
+        Dp = np.asarray(page["rotations"]).reshape(-1, 3, 3)
+        if expect == "blocked":
+            # inside at every curl: each finger keeps its present curl and says so
+            self.assertTrue(all(report[f]["blocked"] for f in fingers))
+            np.testing.assert_allclose(
+                Dp, np.asarray(c["rotations"]).reshape(-1, 3, 3), atol=1e-9
+            )
+            return
+        for f in fingers:
+            r = report[f]
+            self.assertFalse(r["blocked"], f)
+            if c["value"] == 0.0:
+                # Squeeze at 0: each finger at its start, clear of the ball
+                self.assertGreater(r["clearance_mm"], 1.0, f)
+            elif r["contact"] is not None:
+                # each finger at contact with 1 mm to spare (within the bisection's step)
+                self.assertGreaterEqual(r["clearance_mm"], 1.0, f)
+                self.assertLess(r["clearance_mm"], 1.5, f)
+        if expect == "squeeze":
+            # from straight fingers Grip closes as Squeeze does
+            D, sq = contact.squeeze(
+                rig, c["rotations"], c["hand"], c["objects"], 1.0, fingers=fingers
+            )
+            for f in fingers:
+                self.assertFalse(report[f]["opened"], f)
+                self.assertAlmostEqual(
+                    sq[f]["clearance_mm"], report[f]["clearance_mm"], delta=0.02
+                )
+            self.assertLess(np.abs(rig.vertices(D) - rig.vertices(Dp)).max(), 1e-5)
+        if expect == "opened":
+            # the fingers clenched into the ball open before they close
+            self.assertGreaterEqual(sum(report[f]["opened"] for f in fingers), 3)
 
 
 if __name__ == "__main__":

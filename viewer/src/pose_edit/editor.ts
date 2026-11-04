@@ -22,7 +22,7 @@ import { settings } from '../studio/settings.ts';
 import { PRIORITY, clearStatus, setStatus, type StatusPart } from '../studio/status.ts';
 import { cancelModal, confirmModal, startModal } from '../studio/modal.ts';
 import { TriangleBVH } from './bvh.ts';
-import { SkinnedBody, balance, squeeze, type Balance, type Prop } from './contact.ts';
+import { SkinnedBody, balance, gripFrom, signedDistance, type Balance, type Prop } from './contact.ts';
 import { Frames } from './frames.ts';
 import type { PoseHost } from './host.ts';
 import { PointLayer, type DrawPoint, type Frame } from './layer.ts';
@@ -77,8 +77,9 @@ export interface EditState {
   handShape: HandShape & { fist: number; thumb: number };
   preset: string | null;
   userPresets: { id: string; label: string; shape: HandShape }[];
-  grip_report: { finger: string; clearance: number; inside: boolean }[];
-  grip_blocked: boolean;            // the open hand is still inside the prop
+  grip_report: { finger: string; clearance: number; inside: boolean; opened?: boolean; blocked?: boolean }[];
+  grip_blocked: boolean;            // a finger is inside the prop at every curl from its present one to straight
+  grip_carried: boolean;            // the prop moves with the gripping hand (it is bound to a bone of that arm)
   kept: string[];                   // the chains the last placement left as they stood
   clip: string;                      // what Ctrl+C took
   // the limbs (phase 3)
@@ -99,7 +100,7 @@ const init = (): EditState => ({
   hands: { L: [], R: [] }, body: [], dragging: false, magnifier: true, behind: true, pins: [], pinDraft: null, grip: null, squeeze: 1, props: [],
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
   joint: null, jv: null, limits: true, handSide: 'R', handShape: { curl: [0, 0, 0, 0, 0], spread: 0, fist: 0, thumb: 0 }, preset: null, userPresets: loadPresets(),
-  grip_report: [], grip_blocked: false, kept: [], clip: '', limb: null, pinned: [], follow: false, poses: loadPoses(), blend: null, applyTo: 'all',
+  grip_report: [], grip_blocked: false, grip_carried: false, kept: [], clip: '', limb: null, pinned: [], follow: false, poses: loadPoses(), blend: null, applyTo: 'all',
 });
 
 // a chain's plain name ("arm.l" -> "Left arm")
@@ -126,6 +127,8 @@ const END_BONES: Record<string, { bone: string; chain: string; keep: string[]; p
 // the library: poses saved in this browser, as the card's pose (each bone's turn in Anny's frame, quaternions)
 export interface SavedPose { id: string; label: string; bones: Record<string, number[]> }
 const POSE_KEY = 'osb.poseLibrary';
+// the id of a built-in pose of the page's library in the Library tool
+export const BUILTIN = 'builtin:';
 function loadPoses(): SavedPose[] {
   try { const v = JSON.parse(localStorage.getItem(POSE_KEY) || '[]'); return Array.isArray(v) ? v.filter((x) => x && x.bones && x.label) : []; } catch { return []; }
 }
@@ -173,7 +176,9 @@ export class PoseEditor {
   private dirty = true;
   private hovered: string | null = null;
   private drag: { name: string; vx: number; vy: number; before: any; last: V3; depth: number; ray: V3 } | null = null;
-  private mag: { x: number; y: number } | null = null;
+  // the magnifier's centre (client pixels): the pointer over the scan; off the scan, the point's last spot on the
+  // surface (off), so the magnifier keeps showing the surface the point holds to
+  private mag: { x: number; y: number; off?: boolean } | null = null;
   private visible = new Map<string, boolean>();
   private screen = new Map<string, { x: number; y: number; depth: number }>();
   private body: SkinnedBody | null = null;
@@ -190,6 +195,12 @@ export class PoseEditor {
     this.view = new ScanView(host);
     this.registerKeys();
     if (typeof addEventListener === 'function') addEventListener('pointermove', (e: PointerEvent) => { this.pointer = { x: e.clientX, y: e.clientY }; }, { passive: true });
+    // unsaved pose or point edits: the browser asks before the page goes (a reload, a closed tab, Alt+Left)
+    if (typeof addEventListener === 'function') addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
+      if (!this.promptOn() || !this.unsavedEdits()) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
   }
 
   // ---------------------------------------------------------------- the store
@@ -233,9 +244,11 @@ export class PoseEditor {
     if (!this.host.ready()) { this.host.toast('The character is still loading.'); return; }
     const R = this.frames.cardRotations();
     const rig = this.frames.rig(R);
+    let fresh = false;
     if (!this.session) {
       this.session = new EditSession(rig, this.frames.skin(), R);
       this.session.onChange = () => this.poseChanged();
+      fresh = true;
     } else { this.session.setRig(rig, this.frames.skin()); this.session.setPose(R); }
     this.body = null; this.bodyTris = null;
     const card = this.host.card();
@@ -244,7 +257,10 @@ export class PoseEditor {
       const ref = card.card?.detail?.fit?.reference;
       this.session.readCard(ref?.points, ref?.pins);
       this.session.undoStack.length = 0; this.session.redoStack.length = 0;
+      fresh = true;
     }
+    // the state as opened: edits after it are unsaved until Save points or Save the pose
+    if (fresh) this.savedSig = this.signature();
     if (!this.layer) this.layer = new PointLayer((this.host.canvas.parentElement as HTMLElement) || document.body);
     this.host.setOverlay((t) => this.drawOverlay(t));
     this.host.onFrame(() => this.frame());
@@ -595,7 +611,7 @@ export class PoseEditor {
   }
 
   // the scan under a point of the canvas: of the crossings, the one nearest `near` (else the first)
-  private scanHit(cx: number, cy: number, near: V3 | null): { point: V3; ray: V3 } | null {
+  private scanHit(cx: number, cy: number, near: V3 | null): { point: V3; ray: V3; off?: boolean } | null {
     if (!this.bvh) return null;
     const ray = cam().rayAt(cx, cy);
     const o = this.frames.fromWorld([ray.origin.x, ray.origin.y, ray.origin.z]), d = this.frames.dirToCard([ray.direction.x, ray.direction.y, ray.direction.z]);
@@ -613,7 +629,7 @@ export class PoseEditor {
       const s = (near[0] - o[0]) * d[0] + (near[1] - o[1]) * d[1] + (near[2] - o[2]) * d[2];
       const q = this.bvh.closest([o[0] + d[0] * s, o[1] + d[1] * s, o[2] + d[2] * s]);
       if (!q) return null;
-      best = q.point;
+      return { point: q.point, ray: d, off: true };
     }
     return { point: best, ray: d };
   }
@@ -634,7 +650,6 @@ export class PoseEditor {
     const D = this.drag, S = this.session;
     if (!D || !S) return;
     D.vx += dx; D.vy += dy;
-    this.mag = { x: D.vx, y: D.vy };
     const hit = this.scanHit(D.vx, D.vy, D.last);
     // off the scan the point keeps its last spot (a push with the wheel still takes it in)
     if (!hit && (dx || dy)) return;
@@ -645,6 +660,10 @@ export class PoseEditor {
       if (Math.hypot(a.x - D.vx, a.y - D.vy) <= SNAP_PX) spot = t.auto.slice() as V3;
     }
     D.last = spot;
+    // the magnifier: round the pointer over the scan; off the scan (the point slides along the surface spot nearest
+    // the pointer's ray), round the point's spot, so it keeps showing the surface the point holds to
+    if (hit && !hit.off) this.mag = { x: D.vx, y: D.vy };
+    else { const a = cam().toScreen(this.v3(this.frames.toWorld(spot))); this.mag = { x: a.x, y: a.y, off: true }; }
     const dd = D.depth / 1000;
     const position: V3 = D.depth > 0 ? [spot[0] + D.ray[0] * dd, spot[1] + D.ray[1] * dd, spot[2] + D.ray[2] * dd] : spot;
     S.dragTo(D.name, position, D.depth > 0 ? { surface: spot, ray: D.ray, depth_mm: D.depth } : { depth_mm: 0 });
@@ -798,14 +817,31 @@ export class PoseEditor {
   }
 
   // Grip: the hand and the prop; Squeeze closes its fingers onto the prop
-  // Grip (DESIGN-0013, "Grip a prop"; GraspIt's closing of the fingers): the hand first opens (every finger straight);
-  // a finger still inside the prop stops the grip with a note, and Lift out moves the hand off the prop along the
-  // palm's normal (the arm follows) only when the owner asks. From that open start each finger closes joint by joint to
-  // contact with 1 mm to spare, and Squeeze scales the closing.
-  private gripOpen: number[][] | null = null;
+  // Grip (DESIGN-0013, "Grip a prop"; GraspIt's closing of the fingers) starts from the hand as it stands: each finger
+  // clear of the prop closes from its present curl, and a finger that touches or enters the prop first opens along its
+  // curl only as far as it must (contact.gripFrom). A statue's hand already wraps its prop, and a hand opened straight
+  // drives a finger through the prop's guard (David's index finger crossed the sword's guard bar), so the open start
+  // blocked the grip there. Each finger then closes to contact with 1 mm to spare, and Squeeze sets each finger between
+  // its start and its contact. A finger inside the prop at every curl blocks the grip with a note; Lift out moves the
+  // hand off the prop (the arm follows) when the prop stands apart from the hand.
+  private gripStart: number[][] | null = null;
   private propOutside = 1;
+  private propBone: number | null = null;
   lastLift: { normal: number[]; trace: { mm: number; miss_mm: number; worst?: number }[] } | null = null;   // the last Lift out's steps, for the tests
-  setGrip(grip: { hand: 'L' | 'R'; prop: string } | null) { this.propBvh = null; this.gripOpen = null; this.publish({ grip, grip_blocked: false, grip_report: [] }); }
+  setGrip(grip: { hand: 'L' | 'R'; prop: string } | null) {
+    this.propBvh = null; this.gripStart = null;
+    this.publish({ grip, grip_blocked: false, grip_report: [], grip_carried: grip ? this.carries(grip.hand, grip.prop) : false });
+  }
+
+  // whether the prop moves with the hand's arm: its bone is a bone of that arm (the shoulder down to the fingers)
+  private carries(side: 'L' | 'R', name: string): boolean {
+    const S = this.session, prop = this.host.props().find((p) => p.name === name);
+    if (!S || !prop?.bone) return false;
+    let b = S.rig.labels.indexOf(prop.bone);
+    const arm = new RegExp(`^(clavicle|shoulder|upperarm|lowerarm|wrist|metacarpal|finger)[0-9-]*\\.${side}$`);
+    while (b >= 0) { if (arm.test(S.rig.labels[b])) return true; b = S.rig.parents[b]; }
+    return false;
+  }
 
   // the prop as a signed distance (card frame), as it stands now
   private propSdf(): Prop | null {
@@ -818,6 +854,7 @@ export class PoseEditor {
       const P = new Float32Array(prop.positions.length);
       for (let i = 0; i < P.length; i += 3) P.set(this.frames.fromWorld([prop.positions[i], prop.positions[i + 1], prop.positions[i + 2]]), i);
       this.propBvh = new TriangleBVH(P, prop.indices);
+      this.propBone = prop.bone ? this.session!.rig.labels.indexOf(prop.bone) : null;
       // the side the faces' winding calls outside: a mesh wound clockwise has a negative volume, and its normals point in
       let vol = 0;
       const I = prop.indices;
@@ -834,7 +871,8 @@ export class PoseEditor {
         const p = [X[i * 3], X[i * 3 + 1], X[i * 3 + 2]], q = bvh.closest(p);
         if (!q) { out[i] = Infinity; continue; }
         // inside or out: the closest face's side, and where a face's winding is not to be trusted (within 3 cm of the
-        // prop, where the sign matters), the parity of crossings along three rays, by majority (the pieces are closed)
+        // prop, where the sign matters), the parity of crossings along three rays, by majority (the pieces are closed;
+        // on David's sword this agrees with the generalised winding number at every hand vertex within 3 cm)
         const n = bvh.normal(q.tri), s = (p[0] - q.point[0]) * n[0] + (p[1] - q.point[1]) * n[1] + (p[2] - q.point[2]) * n[2];
         let inside = s * outside < 0;
         if (q.distance < 0.03) {
@@ -848,12 +886,8 @@ export class PoseEditor {
     };
     return sdf;
   }
-  // the hand's fingers straight (each finger at its reference curl, zero bend)
-  private openHand(R: number[][], side: 'L' | 'R') { const H = this.hands(); for (let k = 0; k < 5; k++) H.setCurl(R, side, k, 0); }
-  // each finger's gap to the prop (mm, negative inside) for rotations R, with the fingers as they stand
-  private fingerGaps(R: number[][], side: 'L' | 'R', sdf: Prop): number[] {
-    const r = squeeze(this.skinnedBody(), R, side === 'R' ? 'hand.r' : 'hand.l', [sdf], 0);
-    return FINGERS.map((_, k) => r.report[`finger${k + 1}`]?.clearance_mm ?? Infinity);
+  private gripOf(R: number[][], side: 'L' | 'R', sdf: Prop, value: number) {
+    return gripFrom(this.skinnedBody(), R, side === 'R' ? 'hand.r' : 'hand.l', [sdf], value);
   }
   setSqueeze(value: number, record = true): boolean {
     const S = this.session, g = editStore.get().grip;
@@ -861,66 +895,78 @@ export class PoseEditor {
     const sdf = this.propSdf();
     if (!sdf) return false;
     if (record) this.record('Squeeze');
-    if (!this.gripOpen) { const R = S.rotations.map((r) => r.slice()); this.openHand(R, g.hand); this.gripOpen = R; }
-    const open = this.gripOpen, gaps = this.fingerGaps(open, g.hand, sdf);
-    if (gaps.some((x) => x < 0)) {
-      // the open hand is still in the prop: the hand stays open and the panel says so
-      S.setPose(open);
-      this.poseChanged();
-      this.publish({ squeeze: value, grip_blocked: true, grip_report: FINGERS.map((f, k) => ({ finger: f, clearance: gaps[k], inside: gaps[k] < 0 })) });
-      return true;
-    }
-    const r = squeeze(this.skinnedBody(), open, g.hand === 'R' ? 'hand.r' : 'hand.l', [sdf], value);
+    if (!this.gripStart) this.gripStart = S.rotations.map((r) => r.slice());
+    const r = this.gripOf(this.gripStart, g.hand, sdf, value);
     S.setPose(r.rotations);
     this.poseChanged();
     // each finger's gap to the prop at the chosen squeeze (negative: inside it), for the panel
-    const report = FINGERS.map((f, k) => { const q = r.report[`finger${k + 1}`]; return { finger: f, clearance: q ? q.clearance_mm : NaN, inside: !!q && (q.inside || q.clearance_mm < 0) }; });
-    this.publish({ squeeze: value, grip_report: report, grip_blocked: false });
+    const report = FINGERS.map((f, k) => {
+      const q = r.report[`finger${k + 1}`];
+      return { finger: f, clearance: q ? q.clearance_mm : NaN, inside: !!q && q.clearance_mm < 0, opened: !!q?.opened, blocked: !!q?.blocked };
+    });
+    this.publish({ squeeze: value, grip_report: report, grip_blocked: report.some((x) => x.blocked) });
     return true;
   }
-  // Lift out: the open hand moved along its palm's normal, away from the prop, by the arm's IK (its turn kept), in
-  // steps of 2 mm up to 40 mm, until every finger clears the prop by 1 mm; then the grip closes from there
+  // Lift out: the hand moved off the prop by the arm's IK (its turn kept), in steps of 2 mm up to 60 mm, until every
+  // finger can clear the prop; then the grip closes from there. The way out is the hand's depenetration direction (as a
+  // physics engine separates two bodies in contact): the sum over the hand's vertices inside the prop of their depth
+  // times the direction to their closest point on the prop's surface, with the palm's normal both ways after it. A prop
+  // that moves with the hand's arm moves with the lift, so Lift out leaves such a prop alone.
   liftHand(): boolean {
     const S = this.session, g = editStore.get().grip;
-    if (!S || !g || !this.gripOpen) return false;
+    if (!S || !g) return false;
     const sdf = this.propSdf();
     if (!sdf) return false;
-    const side = g.hand, end = ('hand.' + side) as End, before = S.snapshot(), open = this.gripOpen;
-    S.setPose(open);
-    const w = this.headOf('wrist.' + side)!, a = this.headOf('finger3-1.' + side)!, i = this.headOf('finger2-1.' + side)!, l = this.headOf('finger5-1.' + side)!;
-    const along = [a[0] - w[0], a[1] - w[1], a[2] - w[2]], across = [i[0] - l[0], i[1] - l[1], i[2] - l[2]];
+    const label = g.prop.split('/').pop() || 'prop';
+    if (this.carries(g.hand, g.prop)) { this.host.toast(`The ${label} moves with this hand, so lifting the hand takes it along.`); return false; }
+    if (!this.gripStart) this.gripStart = S.rotations.map((r) => r.slice());
+    const side = g.hand, end = ('hand.' + side) as End, before = S.snapshot(), start = this.gripStart;
+    S.setPose(start);
+    const body = this.skinnedBody();
+    const handBones = S.rig.labels.map((l, i) => [l, i] as [string, number]).filter(([l]) => new RegExp(`^(wrist|metacarpal|finger)[0-9-]*\\.${side}$`).test(l)).map(([, i]) => i);
+    const rows = body.rowsOf(handBones), V = body.vertices(start, rows), d = signedDistance(V, [sdf]), bvh = this.propBvh!;
+    const dir = [0, 0, 0];
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] >= 0) continue;
+      const p = [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]], q = bvh.closest(p)!, l = q.distance || 1;
+      for (let k = 0; k < 3; k++) dir[k] += -d[i] * (q.point[k] - p[k]) / l;
+    }
+    const w = this.headOf('wrist.' + side)!, a = this.headOf('finger3-1.' + side)!, ix = this.headOf('finger2-1.' + side)!, l5 = this.headOf('finger5-1.' + side)!;
+    const along = [a[0] - w[0], a[1] - w[1], a[2] - w[2]], across = [ix[0] - l5[0], ix[1] - l5[1], ix[2] - l5[2]];
     const c = [along[1] * across[2] - along[2] * across[1], along[2] * across[0] - along[0] * across[2], along[0] * across[1] - along[1] * across[0]];
-    const cl = Math.hypot(c[0], c[1], c[2]) || 1, n = c.map((x) => x / cl);
-    const tryMove = (d: number): number[][] | null => {
-      S.setPose(open);
+    const unit = (v: number[]) => { const n = Math.hypot(v[0], v[1], v[2]); return n > 1e-9 ? v.map((x) => x / n) : null; };
+    const palm = unit(c) || [0, 0, 1], out = unit(dir);
+    const ways = [...(out ? [out] : []), palm, palm.map((x) => -x)];
+    const trace: { mm: number; miss_mm: number; worst?: number }[] = [];
+    const tryMove = (n: number[], dd: number): number[][] | null => {
+      S.setPose(start);
       const { problem, bones } = this.limbProblem(end), sv = new PointSolver(problem), e = END_BONES[end];
-      const target = (p: V3): V3 => [p[0] + n[0] * d, p[1] + n[1] * d, p[2] + n[2] * d];
+      const target = (p: V3): V3 => [p[0] + n[0] * dd, p[1] + n[1] * dd, p[2] + n[2] * dd];
       sv.setTarget(0, target(this.headOf(e.bone)!));
       e.keep.forEach((k, j) => sv.setTarget(1 + j, target(this.headOf(k)!)));
-      const r = sv.solve(25), R = open.map((x) => x.slice());
+      const r = sv.solve(25), R = start.map((x) => x.slice());
       for (const b of bones) R[b] = Array.from(r.rotations.subarray(b * 9, b * 9 + 9));
       S.setPose(R);
       const reached = this.headOf(e.bone)!, t = target(w), miss = Math.hypot(reached[0] - t[0], reached[1] - t[1], reached[2] - t[2]);
-      trace.push({ mm: Math.round(d * 1000), miss_mm: Math.round(miss * 10000) / 10 });
+      trace.push({ mm: Math.round(dd * 1000), miss_mm: Math.round(miss * 10000) / 10 });
       return miss < 0.002 ? R : null;
     };
-    const trace: { mm: number; miss_mm: number; worst?: number }[] = [];
-    this.lastLift = { normal: n, trace };
-    // both ways along the normal, the shorter move first
+    this.lastLift = { normal: ways[0], trace };
     let found: number[][] | null = null;
-    for (let mm = 2; mm <= 40 && !found; mm += 2) {
-      for (const sign of [1, -1]) {
-        const R = tryMove(sign * mm / 1000);
+    for (const n of ways) {
+      for (let mm = 2; mm <= 60 && !found; mm += 2) {
+        const R = tryMove(n, mm / 1000);
         if (!R) continue;
-        const g = Math.min(...this.fingerGaps(R, side, sdf));
-        trace[trace.length - 1].worst = Math.round(g * 10) / 10;
-        if (g >= 1) { found = R; break; }
+        const r = this.gripOf(R, side, sdf, 0), worst = Math.min(...Object.values(r.report).map((f) => f.clearance_mm));
+        trace[trace.length - 1].worst = Math.round(worst * 10) / 10;
+        if (!Object.values(r.report).some((f) => f.blocked)) { found = R; this.lastLift.normal = n; }
       }
+      if (found) break;
     }
-    if (!found) { S.restore(before); this.host.toast(`The arm cannot take the hand off the ${g.prop.split('/').pop()}.`); this.publish(); return false; }
+    if (!found) { S.restore(before); this.host.toast(`The arm cannot take the hand off the ${label}.`); this.publish(); return false; }
     S.restore(before);
     this.record('Lift the hand out');
-    this.gripOpen = found;
+    this.gripStart = found;
     S.setPose(found);
     return this.setSqueeze(editStore.get().squeeze, false);
   }
@@ -941,6 +987,25 @@ export class PoseEditor {
     this.host.setPose(this.frames.pageQuaternions(S.rotations), 'Edited pose');
     if (target) target.pose = this.host.cardPose();
     await save();
+    this.savedSig = this.signature();
+  }
+
+  // ---------------------------------------------------------------- unsaved edits (DESIGN-0014, "Browser keys")
+  // the points, the pins and the pose as a string, to tell an unsaved edit from the state last opened or saved (an
+  // edit undone back to that state is no edit)
+  private savedSig: string | null = null;
+  private signature(): string {
+    const S = this.session;
+    if (!S) return '';
+    return JSON.stringify([S.cardPoints(), S.cardPins(), S.rotations.map((r) => r.map((x) => Math.round(x * 1e6)))]);
+  }
+  unsavedEdits(): boolean { return !!this.session && this.savedSig !== null && this.signature() !== this.savedSig; }
+  // the prompt before leaving the page: on unless View › Controls turns it off or the URL carries noprompt (the page
+  // tests leave pages with edits)
+  promptOn(): boolean {
+    let flag = false;
+    try { flag = new URLSearchParams(location.search).has('noprompt'); } catch { /* no location: on */ }
+    return settings.get().warnUnsaved && !flag;
   }
 
   // ---------------------------------------------------------------- joints (phase 2)
@@ -1332,24 +1397,36 @@ export class PoseEditor {
     this.host.toast(`Saved the pose ${label}`);
   }
   deletePose(id: string) { const list = editStore.get().poses.filter((p) => p.id !== id); savePoses(list); this.publish({ poses: list }); }
-  // a saved pose's local-ref turns by bone index (its pose.bones, as a card keeps them); a bone it lacks stands at the
-  // zero, Anny's reference pose, as the card leaves out the bones there
-  private poseRotations(p: SavedPose): number[][] {
-    return cardTurns(p.bones, this.session!.rig.labels);
+  // a library pose's local-ref turns by bone index: a saved pose's pose.bones, as a card keeps them (a bone it lacks
+  // stands at the zero, Anny's reference pose), or a built-in pose (an id "builtin:NAME") converted from the page's
+  // quaternions for the body shown
+  private poseRotations(id: string): number[][] | null {
+    if (id.startsWith(BUILTIN)) {
+      const q = this.host.builtinPose(id.slice(BUILTIN.length));
+      return q ? this.frames.cardRotations(q) : null;
+    }
+    const p = editStore.get().poses.find((x) => x.id === id);
+    return p ? cardTurns(p.bones, this.session!.rig.labels) : null;
   }
-  // a saved pose onto the part chosen (the whole body, a hand, the arms, the legs)
+  poseLabel(id: string): string {
+    if (id.startsWith(BUILTIN)) return this.host.builtinPoses().find((c) => c.name === id.slice(BUILTIN.length))?.label || id.slice(BUILTIN.length);
+    return editStore.get().poses.find((x) => x.id === id)?.label || id;
+  }
+  // the built-in poses of the page's library, for the Library tool
+  builtinPoses() { return this.host.builtinPoses(); }
+  // a library pose (saved or built-in) onto the part chosen (the whole body, a hand, the arms, the legs)
   applyPose(id: string, part = editStore.get().applyTo) {
-    const p = editStore.get().poses.find((x) => x.id === id), S = this.session;
-    if (!p || !S) return;
-    const test = (PARTS.find((x) => x.id === part) || PARTS[0]).test, R = this.poseRotations(p), root = this.host.root();
-    this.change(`Apply ${p.label}`, (cur) => { S.rig.labels.forEach((l, i) => { if (i !== root && test(l)) cur[i] = R[i]; }); });
+    const S = this.session, R = S ? this.poseRotations(id) : null;
+    if (!S || !R) return;
+    const test = (PARTS.find((x) => x.id === part) || PARTS[0]).test, root = this.host.root();
+    this.change(`Apply ${this.poseLabel(id)}`, (cur) => { S.rig.labels.forEach((l, i) => { if (i !== root && test(l)) cur[i] = R[i]; }); });
   }
   setApplyTo(part: string) { this.publish({ applyTo: part }); }
-  // two saved poses blended by t (a turn per bone, along the shortest arc)
+  // two library poses (saved or built-in) blended by t (a turn per bone, along the shortest arc)
   blendPoses(a: string, b: string, t: number, record = true) {
-    const P = editStore.get().poses, A = P.find((x) => x.id === a), B = P.find((x) => x.id === b), S = this.session;
-    if (!A || !B || !S) return;
-    const RA = this.poseRotations(A), RB = this.poseRotations(B), test = (PARTS.find((x) => x.id === editStore.get().applyTo) || PARTS[0]).test, root = this.host.root();
+    const S = this.session, RA = S ? this.poseRotations(a) : null, RB = S ? this.poseRotations(b) : null;
+    if (!S || !RA || !RB) return;
+    const test = (PARTS.find((x) => x.id === editStore.get().applyTo) || PARTS[0]).test, root = this.host.root();
     this.change('Blend poses', (cur) => {
       S.rig.labels.forEach((l, i) => {
         if (i === root || !test(l)) return;
@@ -1475,7 +1552,7 @@ export class PoseEditor {
       // pointer times the zoom
       const t = S.targets.get(this.drag.name)!, q = toS(t.position), half = MAG_SIZE / 2;
       const px = this.magAt.cx + (q.x - this.mag.x) * MAG_ZOOM, py = this.magAt.cy + (q.y - this.mag.y) * MAG_ZOOM;
-      f.magnifier = { cx: this.magAt.cx, cy: this.magAt.cy, r: half, zoom: MAG_ZOOM,
+      f.magnifier = { cx: this.magAt.cx, cy: this.magAt.cy, r: half, zoom: MAG_ZOOM, note: this.mag.off ? 'Off the scan: the point stays here' : undefined,
         point: Math.hypot(px - this.magAt.cx, py - this.magAt.cy) < half - 8 ? { x: px, y: py, number: POINT_BY_NAME.get(this.drag.name)!.number, state: 'placed' } : undefined };
     }
     this.layer!.draw(f);
@@ -1799,7 +1876,8 @@ export function editorReport(ed: PoseEditor) {
     pts[p.name] = { number: p.number, target: t ? t.position : null, on: t ? t.on : null, confidence: t ? t.confidence : null, depth: t ? t.depth_mm : 0,
       placed: t ? t.placed : null, anny: a || null, screen: s || null, visible: (ed as any).visible.get(p.name) ?? null, onScan, annyGap };
   }
-  return { state: { ...editStore.get(), hands: undefined, body: undefined }, lift: ed.lastLift, points: pts, rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
+  return { state: { ...editStore.get(), hands: undefined, body: undefined }, lift: ed.lastLift, points: pts, magnifier: (ed as any).mag,
+    unsaved: ed.unsavedEdits(), prompt: ed.promptOn(), rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
     labels: S ? S.rig.labels : [] };
 }
 

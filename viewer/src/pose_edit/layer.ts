@@ -23,7 +23,7 @@ export interface DrawLabel { x: number; y: number; title: string; line?: string;
 export interface DrawCluster { x: number; y: number; title: string; line: string }
 export interface DrawPin { x: number; y: number; label: string }
 export interface DrawBalance { centre: [number, number]; mark: [number, number]; polygon: [number, number][]; inside: boolean }
-export interface DrawMagnifier { cx: number; cy: number; r: number; zoom: number; point?: { x: number; y: number; number: number; state: DrawPoint['state'] } }
+export interface DrawMagnifier { cx: number; cy: number; r: number; zoom: number; note?: string; point?: { x: number; y: number; number: number; state: DrawPoint['state'] } }
 export interface DrawStroke { d: string; colour: string; width: number; dash?: string; opacity?: number }
 export interface DrawTag { x: number; y: number; text: string; colour: string }
 export interface DrawJoint { x: number; y: number; selected: boolean; hovered: boolean; side: 'L' | 'R' | '' }
@@ -211,6 +211,14 @@ export class PointLayer {
     const t = el('text', { x: m.cx, y: m.cy + m.r - 0.5, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': 11, 'font-weight': 600,
       'font-family': 'var(--font-sans)', fill: '#ffffff' }, g);
     t.textContent = `${m.zoom} ×`;
+    if (m.note) {
+      // the pointer left the scan: the magnifier holds on the point's last spot, and says so above its ring
+      const w = m.note.length * 6.2 + 16;
+      el('rect', { x: m.cx - w / 2, y: m.cy - m.r - 22, width: w, height: 20, rx: 3, fill: '#141414' }, g);
+      const n = el('text', { x: m.cx, y: m.cy - m.r - 12, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': 11, 'font-weight': 600,
+        'font-family': 'var(--font-sans)', fill: '#ffffff' }, g);
+      n.textContent = m.note;
+    }
   }
 
   private tag(x: number, y: number, title: string, line: string | undefined, side: 'right' | 'left'): HTMLElement {
