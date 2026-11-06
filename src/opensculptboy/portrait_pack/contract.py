@@ -8,8 +8,8 @@ A portrait pack is one flat folder that holds ``manifest.json`` and one PNG per 
 and blinks, as visual novels do, swaps the frames in place: the mouth while the text types, the
 eyes for a blink, the expression for each message. :func:`check_pack` applies every rule of the
 contract and gives a reason code for each failure, so the export checks its own output and a pack
-can be checked before an app imports it. The check reads the files alone: it needs neither the
-model nor a browser.
+can be checked before an app imports it. The check reads the files alone, without the model or a
+browser.
 """
 
 from __future__ import annotations

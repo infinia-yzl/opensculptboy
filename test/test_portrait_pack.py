@@ -7,8 +7,8 @@ In CI: the check with synthetic packs (a valid one, then each broken case with i
 the manifest's rules, the faces of every frame, the folder rules and the command's exit codes.
 Local only (Playwright with the built page): the default character's full pack and the pack of
 --expressions neutral, with the frames' outline and the faces' changes. The full pack renders at
-288 by 384 pixels with one pass per frame (about 20 minutes in software); set
-OPENSCULPTBOY_PORTRAIT_PACK to a pack folder of the default character to check that pack instead.
+288 by 384 pixels with one pass per frame (about 30 minutes in software); set
+OPENSCULPTBOY_PORTRAIT_PACK to a pack folder of the default character to check that pack.
 """
 
 import contextlib
