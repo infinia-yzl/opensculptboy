@@ -389,7 +389,7 @@ class TestCommand(unittest.TestCase):
             render.is_software("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device))")
         )
         self.assertFalse(
-            render.is_software("ANGLE (NVIDIA, Direct3D11 vs_5_0 ps_5_0, D3D11)")
+            render.is_software("ANGLE (Graphics card, Direct3D11 vs_5_0 ps_5_0, D3D11)")
         )
 
     def test_folder(self):
