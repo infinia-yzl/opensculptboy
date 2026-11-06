@@ -3592,6 +3592,56 @@ const SHEET_HOST = {
   characterName: () => (WEAR?.loaded ? WEAR.cardName : '') || (currentLook.name && currentLook.name !== 'Custom' ? currentLook.name : '') || 'Character',
 };
 
+// ------------------------------------------------------------------ the portrait pack
+// The portrait pack (opensculptboy.portrait_pack, docs/portrait-pack.md) drives window.portrait from headless Chromium.
+// It renders through the sheet's machinery: the sheet's hold (the hair at rest, no blink timer, the clip paused), the
+// page's lights and exposure, the sheet's camera in front of the figure, and the sheet's display pass, which divides
+// the accumulated colour by the coverage, so the pixels come out with straight alpha on a transparent background. The
+// camera, the lights and the pose stay the same for every frame; only the face changes.
+// The bust in heads (the height from the chin to the crown): the frame's top lies this far above the crown, and the
+// frame is this many heads high, so the bottom edge cuts the figure across the upper chest.
+const PORTRAIT_BUST = { above: 0.3, height: 2.5 };
+const PORTRAIT: any = { view: null };
+function portraitView(width: number, height: number) {
+  const f = SHEET_HOST.figure(), H = f.crown[1] - f.chin[1];
+  const top = f.crown[1] + PORTRAIT_BUST.above * H, halfH = PORTRAIT_BUST.height * H / 2;
+  return { turn: 0, cx: f.head[0], cy: top - halfH, halfH, width, height };
+}
+// the point between the eyes (the middle of the eye bones' heads, else the face), projected by the camera: pixels from
+// the frame's top-left corner
+function portraitAnchor(view: any) {
+  const eyes = FIG.joints.filter((j: any) => j.name === 'eye.L' || j.name === 'eye.R');
+  const p = eyes.length === 2 ? eyes[0].p.clone().add(eyes[1].p).multiplyScalar(0.5) : FIG.head.clone();
+  const n = p.project(sheetCamera(view));
+  return { x: (n.x + 1) / 2 * view.width, y: (1 - n.y) / 2 * view.height };
+}
+function portraitBase64(d: Uint8ClampedArray) {
+  let s = '';
+  for (let i = 0; i < d.length; i += 0x8000) s += String.fromCharCode.apply(null, Array.from(d.subarray(i, i + 0x8000)));
+  return btoa(s);
+}
+(window as any).portrait = {
+  // hold the scene for a pack of width x height frames: returns the framing, the anchor and the facial actions
+  begin(width: number, height: number) {
+    if (!RIG.ready || !FACE || !FACE.ready) throw new Error('The figure and its face are not ready.');
+    sheetHold(true);
+    sheetLights('page');
+    sheetTurnIfNeeded(0);
+    PORTRAIT.view = portraitView(width, height);
+    return { view: PORTRAIT.view, anchor: portraitAnchor(PORTRAIT.view), exposure: renderer.toneMappingExposure, actions: FACE.actionNames() };
+  },
+  // one frame: the face of these facial actions (weights 0 to 1, every other action at 0), `samples` accumulated
+  // passes, and the RGBA bytes with the rows from the top, in base64
+  async frame(actions: Record<string, number>, samples = 16) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    await FACE!.set({ actions });
+    const img = await sheetRender(PORTRAIT.view, Math.max(1, samples | 0), async () => {});
+    return portraitBase64(img.data);
+  },
+  // the page's own view again
+  end() { if (PORTRAIT.view) { PORTRAIT.view = null; sheetHold(false); } },
+};
+
 // ------------------------------------------------------------------ what the interface sees of the renderer
 // ------------------------------------------------------------------ the pose editor's host (pose_edit/host.ts)
 // The editor (DESIGN-0013) reads the rig, the coarse body and the card, shows its edited pose at once as the clip
