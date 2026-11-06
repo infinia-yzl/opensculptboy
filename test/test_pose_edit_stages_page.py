@@ -292,13 +292,36 @@ class TestPointStagesPage(unittest.TestCase):
             self.assertEqual(r["state"]["stage"], 1)
             self.assertIn("Stage 1 of 4", panel.inner_text())
             self.assertEqual(r["shown"], [])
-            # the points read back from the card's entry open the session at stage 3 or later, where work is left
+            # the points read back from the card's entry open the session where work is left: the first of
+            # stages 2 and 3 with a point not placed or one that needs a look
             stage = tab.evaluate(
                 "() => { const ed = window.__poseEdit, S = ed.session;"
                 " S.readCard(S.cardPoints(), []); return ed.openingStage(); }"
             )
-            self.assertIn(stage, (3, 4) if not looks else (3,))
             r2 = report(tab)
+
+            def left(names):
+                return any(
+                    r2["points"][n]["target"] is None
+                    or (
+                        not r2["points"][n]["on"]
+                        and r2["points"][n]["confidence"] < 0.5
+                    )
+                    for n in names
+                )
+
+            main = ["head_top", "wrist.R", "wrist.L", "ankle.R", "ankle.L"]
+            between = [
+                n
+                for n in r2["points"]
+                if n not in main and r2["points"][n]["number"] <= 15
+            ]
+            if left(main):
+                self.assertEqual(stage, 2)
+            elif left(between):
+                self.assertEqual(stage, 3)
+            else:
+                self.assertIn(stage, (3, 4))
             for n in stage2:
                 self.assertEqual(r2["points"][n]["target"], stage2[n], n)
             tab.locator(".pe-stage[data-stage='4']").click()
