@@ -323,7 +323,10 @@ class TestPointStagesPage(unittest.TestCase):
             else:
                 self.assertIn(stage, (3, 4))
             for n in stage2:
-                self.assertEqual(r2["points"][n]["target"], stage2[n], n)
+                # the card keeps a place to the micrometre
+                np.testing.assert_allclose(
+                    r2["points"][n]["target"], stage2[n], atol=1e-6, err_msg=n
+                )
             tab.locator(".pe-stage[data-stage='4']").click()
             settle(tab)
             self.assertIn("Open Hands", tab.locator(".pe-points").inner_text())
