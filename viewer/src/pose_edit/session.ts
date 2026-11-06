@@ -34,7 +34,8 @@ export interface Pin {
 }
 
 // places: the props' places on the card by reference (wearables/place.ts), which the history keeps with the pose
-export interface Snapshot { rotations: number[][]; targets: [string, Target][]; pins: Pin[]; places?: Record<string, any> }
+// shift: the root's move (card frame, metres) that stage 1 of the Points tab gives the whole figure
+export interface Snapshot { rotations: number[][]; targets: [string, Target][]; pins: Pin[]; places?: Record<string, any>; shift?: V3 }
 
 export const DRAG_STEPS = 8;
 // the automatic placement turns a chain only with at least MIN_POINTS points on, spread over MIN_BONES bones
@@ -69,15 +70,39 @@ export class EditSession {
   onChange: () => void = () => {};
   // the props' places by reference (null: where the package binds it), kept in the history with the pose
   places: Record<string, any> = {};
+  // the root's move (card frame, metres): the whole figure moves by it against the scan, which stays
+  shift: V3 = [0, 0, 0];
+  readonly root: number;
 
-  constructor(rig: RigSpace, skin: SkinSource, rotations: number[][]) {
+  constructor(rig: RigSpace, skin: SkinSource, rotations: number[][], shift: V3 = [0, 0, 0]) {
     this.rig = rig; this.skin = skin; this.rotations = rotations.map((r) => r.slice());
     this.order = topologicalOrder(rig.parents);
+    this.root = Math.max(0, rig.parents.findIndex((p) => p < 0));
+    this.shift = shift.slice() as V3;
+    this.syncFrame();
   }
 
   // a new body (its rig and skin) keeps the places and the pose
-  setRig(rig: RigSpace, skin: SkinSource) { this.rig = rig; this.skin = skin; this.influences.clear(); this.drag = null; }
-  setPose(rotations: number[][]) { this.rotations = rotations.map((r) => r.slice()); }
+  setRig(rig: RigSpace, skin: SkinSource) { this.rig = rig; this.skin = skin; this.influences.clear(); this.drag = null; this.syncFrame(); }
+  setPose(rotations: number[][]) { this.rotations = rotations.map((r) => r.slice()); this.syncFrame(); }
+
+  // the rig's frame from the root's turn and the shift: x_card = D_root (x - h_root) + shift (frames.ts, Frames.rig)
+  syncFrame() {
+    const D = this.rotations[this.root], h = this.rig.heads[this.root], t = this.shift;
+    const f = [0, 1, 2].map((r) => [D[r * 3], D[r * 3 + 1], D[r * 3 + 2], t[r] - (D[r * 3] * h[0] + D[r * 3 + 1] * h[1] + D[r * 3 + 2] * h[2])]);
+    // in place: the editor's skinned body and joints hold this rig
+    this.rig.frame = [...f, [0, 0, 0, 1]];
+  }
+  // the pelvis (the root's head) on the present pose, card frame: the handle of stage 1
+  pelvis(): V3 { return this.shift.slice() as V3; }
+  // stage 1: the whole figure moved by `shift` and turned by the root's turn D (row-major 3 x 3), the chains untouched
+  setRoot(D: number[] | null, shift: V3 | null) {
+    if (D) this.rotations[this.root] = D.slice();
+    if (shift) this.shift = shift.slice() as V3;
+    this.syncFrame();
+    this.drag = null;
+    this.onChange();
+  }
 
   influence(name: string): Influence {
     let f = this.influences.get(name);
@@ -216,13 +241,15 @@ export class EditSession {
   // ---------------------------------------------------------------- history
   snapshot(): Snapshot {
     return { rotations: this.rotations.map((r) => r.slice()), targets: [...this.targets].map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]),
-      pins: JSON.parse(JSON.stringify(this.pins)), places: JSON.parse(JSON.stringify(this.places)) };
+      pins: JSON.parse(JSON.stringify(this.pins)), places: JSON.parse(JSON.stringify(this.places)), shift: this.shift.slice() as V3 };
   }
   restore(s: Snapshot) {
     this.rotations = s.rotations.map((r) => r.slice());
     this.targets = new Map(s.targets.map(([k, v]) => [k, JSON.parse(JSON.stringify(v))]));
     this.pins = JSON.parse(JSON.stringify(s.pins));
     if (s.places) this.places = JSON.parse(JSON.stringify(s.places));
+    if (s.shift) this.shift = s.shift.slice() as V3;
+    this.syncFrame();
     this.drag = null;
     this.onChange();
   }

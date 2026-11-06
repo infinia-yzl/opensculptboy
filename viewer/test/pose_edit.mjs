@@ -168,9 +168,9 @@ console.log('words: one, two and three names joined without a comma before "and"
   globalThis.addEventListener ??= () => {}; globalThis.removeEventListener ??= () => {};
   const ed = installPoseEditor(host), calls = [];
   const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-  Object.assign(host, { restTurns: () => null, parents: () => [-1, 0], bones: () => ['root', 'b'], root: () => 0,
+  Object.assign(host, { restTurns: () => null, parents: () => [-1, 0], bones: () => ['root', 'b'], root: () => 0, frame: () => ({ scale: 1, rotation: I, offset: [0, 0, 0] }),
     setPose: (q, label, hold) => calls.push(!!hold) });
-  ed.session = { rotations: [I.slice(), I.slice()], places: {} };
+  ed.session = { rotations: [I.slice(), I.slice()], places: {}, shift: [0, 0, 0], syncFrame: () => {} };
   ed.poseChanged();
   assert.deepEqual(calls, [false], 'an edit outside a gesture stands on its floor');
   ed.frame();

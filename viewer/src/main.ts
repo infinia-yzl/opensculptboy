@@ -1937,7 +1937,7 @@ function sampleClip(c: any, t: number, outQ: Float32Array, outRoot: number[], gr
   if (c.exact) {
     outQ.set(c.exact.q);
     const hip = hipHeight();
-    for (let k = 0; k < 3; k++) outRoot[k] = c.exact.root[k] * hip;
+    for (let k = 0; k < 3; k++) outRoot[k] = c.exact.root[k] * hip + (c.shift ? c.shift[k] : 0);
     outRoot[1] += ground;
     return;
   }
@@ -1953,7 +1953,8 @@ function sampleClip(c: any, t: number, outQ: Float32Array, outRoot: number[], gr
     slerpInto(outQ, i * 4, _qa, 0, _qb, 0, a);
   }
   const r0 = (c.start + f0) * 3, r1 = (c.start + f1) * 3, hip = hipHeight();
-  for (let k = 0; k < 3; k++) outRoot[k] = (R[r0 + k] + (R[r1 + k] - R[r0 + k]) * a) * hip;
+  // a card's pose.root (c.shift, page frame, metres) moves its still pose
+  for (let k = 0; k < 3; k++) outRoot[k] = (R[r0 + k] + (R[r1 + k] - R[r0 + k]) * a) * hip + (c.shift ? c.shift[k] : 0);
   outRoot[1] += ground;
 }
 // the vertical shift that puts the lowest point of the body and its shown props on the floor in a pose, or over all
@@ -2154,7 +2155,7 @@ function poseCard() {
   return {
     schema: 1, name: L.name || 'character', rig: 'anny', topology: 'anny', phenotypes: 'all',
     phenotype: { ...L.phenotype }, local_changes: {}, face_shapes: { ...L.face }, facial_actions: {},
-    pose: { bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: [0, 0, 0] },
+    pose: { bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: cardRoot() },
   };
 }
 // the coarse body skinned by a pose (rotations q, root offset), in the page's frame
@@ -3320,6 +3321,20 @@ function writePoseFrame(name: string, label: string, q: ArrayLike<number>) {
 // the still pose of a character card (opensculptboy.Character.pose: each bone's local-ref turn relative to its parent as
 // a quaternion in anny's frame, the inverse of cardBonesRef), as a pose clip 'card:<name>' of the page's motion; null for
 // a card without one. Bones that the page's rig lacks are left out.
+// the card's pose.root (Anny's axes, metres) of the pose shown: its shift (page frame) as A^T shift / s, rounded as
+// Python writes it
+function cardRoot(): number[] {
+  const sh = MOTION.cur?.shift;
+  if (!sh || !BODY.anny?.meta) return [0, 0, 0];
+  const s = BODY.anny.meta.shape.frame.scale, R = ANNY_TO_PAGE;
+  return [0, 1, 2].map((c) => Math.round((R[c] * sh[0] + R[3 + c] * sh[1] + R[6 + c] * sh[2]) / s * 1e6) / 1e6);
+}
+// a card's pose.root as the page's shift (s A root), or null for none
+function cardShift(root: any): number[] | null {
+  if (!Array.isArray(root) || root.length !== 3 || !root.every(Number.isFinite) || root.every((x: number) => Math.abs(x) < 1e-9) || !BODY.anny?.meta) return null;
+  const s = BODY.anny.meta.shape.frame.scale, R = ANNY_TO_PAGE;
+  return [0, 1, 2].map((r) => s * (R[r * 3] * root[0] + R[r * 3 + 1] * root[1] + R[r * 3 + 2] * root[2]));
+}
 function cardPose(card: any): string | null {
   const bones = card?.pose?.bones;
   if (!bones || typeof bones !== 'object' || !Object.keys(bones).length || !RIG.ready || !MOTION.nb) return null;
@@ -3336,6 +3351,7 @@ function cardPose(card: any): string | null {
   const q = quaternions(R.slice(0, nb), ANNY_TO_PAGE);
   const name = 'card:' + (card.name || 'character');
   writePoseFrame(name, card.name ? `${card.name}'s pose` : "The card's pose", q);
+  MOTION.byName[name].shift = cardShift(card?.pose?.root);
   return name;
 }
 function sheetHold(on: boolean) {
@@ -3602,18 +3618,24 @@ const SHEET_HOST = {
 // stays where it was; the editor's next edit after the gesture settles it. A prop's move never grounds the figure:
 // the floor takes the props where their packages bind them (wearables/view.ts lowestProps).
 const POSE_EDIT: { overlay: ((rt: any) => void) | null; frame: (() => void) | null } = { overlay: null, frame: null };
-function setEditPose(q: Float32Array, label = 'Edited pose', hold = false) {
+function setEditPose(q: Float32Array, label = 'Edited pose', hold = false, shift?: number[]) {
   if (!RIG.ready || !MOTION.nb) return;
   const from = MOTION.cur;
   writePoseFrame('edit', label, q);
   const c = MOTION.byName.edit, hip = hipHeight();
-  // the root's offset of the pose shown, less its floor, in hip heights (as the library's roots)
-  if (from !== c || !c.exact) c.exact = { q: null, root: [0, 1, 2].map((k) => (MOTION.rootOff[k] - (k === 1 ? MOTION.ground : 0)) / hip) };
+  // the root's offset of the pose shown, less its floor and its shift, in hip heights (as the library's roots); the
+  // shift (the card's pose.root, page frame) stays apart, so the host's rootOffset can leave it out
+  if (from !== c || !c.exact) {
+    const was = from?.shift || [0, 0, 0];
+    c.exact = { q: null, root: [0, 1, 2].map((k) => (MOTION.rootOff[k] - was[k] - (k === 1 ? MOTION.ground : 0)) / hip) };
+    c.shift = from && from !== c && from.shift ? from.shift.slice() : c.shift || null;
+  }
+  if (shift) c.shift = shift.every((x) => Math.abs(x) < 1e-9) ? null : shift.slice();
   c.exact.q = Float32Array.from(q);
   if (from !== c) { MOTION.cur = c; MOTION.t = 0; MOTION.playing = false; }
   MOTION.fade = 1;
   if (!hold) MOTION.ground = groundFor(c);
-  for (let k = 0; k < 3; k++) MOTION.rootOff[k] = c.exact.root[k] * hip + (k === 1 ? MOTION.ground : 0);
+  for (let k = 0; k < 3; k++) MOTION.rootOff[k] = c.exact.root[k] * hip + (k === 1 ? MOTION.ground : 0) + (c.shift ? c.shift[k] : 0);
   if (from !== c) HOOKS.motion();
   MOTION.q.set(q);
   RIG.bones.forEach((b: any, i: number) => b.quaternion.set(q[i * 4], q[i * 4 + 1], q[i * 4 + 2], q[i * 4 + 3]));
@@ -3674,10 +3696,11 @@ const POSE_HOST: PoseHost = {
   root: () => RIG.root,
   frame: () => { const fr = BODY.anny.meta.shape.frame; return { scale: fr.scale, rotation: ANNY_TO_PAGE, offset: fr.offset }; },
   lift: () => BODY.anny.floorShift || 0,
-  rootOffset: () => MOTION.rootOff.slice(),
+  rootOffset: () => { const sh = MOTION.cur?.shift; return sh ? MOTION.rootOff.map((x: number, k: number) => x - sh[k]) : MOTION.rootOff.slice(); },
+  rootShift: () => (MOTION.cur?.shift || [0, 0, 0]).slice(),
   holder: () => { RIG.holder.updateMatrixWorld(true); return RIG.holder.matrixWorld.clone(); },
   pose: () => Float32Array.from(MOTION.q),
-  setPose: (q, label, hold) => setEditPose(q, label, !!hold),
+  setPose: (q, label, hold, shift) => setEditPose(q, label, !!hold, shift),
   body: () => ({ coarse: BODY.anny.coarse, skin: BODY.anny.coarseSkin, nBody: BODY.anny.nBody, quads: BODY.anny.quads }),
   annyRows: () => { const b = (window as any).__BUFFERS?.card_coarse; return b ? new Uint32Array(b.data.buffer.slice(b.data.byteOffset, b.data.byteOffset + b.data.byteLength)) : null; },
   card: () => {
@@ -3705,7 +3728,7 @@ const POSE_HOST: PoseHost = {
   toast: (text) => toast(text),
   setFigureShown: (on) => setFigureShown(on),
   bodyRay: (o, d) => bodyRay(o, d),
-  cardPose: () => ({ bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: [0, 0, 0] }),
+  cardPose: () => ({ bones: cardBonesRef(MOTION.q, RIG.bones.map((b: any) => b.name), RIG.parents, BODY.anny.restTurns(), ANNY_TO_PAGE), root: cardRoot() }),
 };
 registerPoseHost(POSE_HOST);
 
