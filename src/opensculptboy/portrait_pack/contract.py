@@ -204,17 +204,21 @@ def check_manifest(manifest) -> list[dict]:
                         "unknown_field",
                     )
             x, y = anchor.get("x"), anchor.get("y")
-            if not (_is_number(x) and _is_number(y)):
-                bad("The anchor's x and y must be numbers.")
-            elif size and not (0 <= x <= size[0] and 0 <= y <= size[1]):
+            if not (_is_int(x) and _is_int(y)):
+                bad("The anchor's x and y must be whole numbers of pixels.")
+            elif not (0 <= x <= MAX_SIDE and 0 <= y <= MAX_SIDE):
+                bad(f"The anchor ({x}, {y}) lies outside 0 to {MAX_SIDE}.")
+            elif size and not (x <= size[0] and y <= size[1]):
                 bad(f"The anchor ({x}, {y}) lies outside the frame.")
             else:
                 anchor_y = y
 
     if "baseline" in manifest:
         b = manifest["baseline"]
-        if not _is_number(b):
-            bad("The baseline must be a number.")
+        if not _is_int(b):
+            bad("The baseline must be a whole number of pixels.")
+        elif not 1 <= b <= MAX_SIDE:
+            bad(f"The baseline {b} lies outside 1 to {MAX_SIDE}.")
         elif size and b > size[1]:
             bad(f"The baseline {b} lies below the frame's height {size[1]}.")
         elif anchor_y is not None and b <= anchor_y:

@@ -54,7 +54,7 @@ def manifest(expressions=("neutral",), w=W, h=H, **extra):
     m = {
         "schema": SCHEMA,
         "frame": {"width": w, "height": h},
-        "anchor": {"x": w / 2, "y": h / 3},
+        "anchor": {"x": w // 2, "y": h // 3},
         "baseline": h,
         "expressions": list(expressions),
         "generator": {"name": "OpenSculptBoy", "version": "test"},
@@ -247,6 +247,16 @@ class TestManifest(unittest.TestCase):
         self.assertBad("too_large", frame={"width": 1025, "height": 10})
         self.assertBad(anchor={"x": 1, "y": H + 1})
         self.assertBad(anchor={"x": "1", "y": 2})
+        # whole pixels: the consuming app reads the anchor, the frame and the baseline as
+        # unsigned integers
+        self.assertBad(anchor={"x": 382.9, "y": 338.11})
+        self.assertBad(anchor={"x": 6.0, "y": 5})
+        self.assertBad(anchor={"x": True, "y": 5})
+        self.assertBad(anchor={"x": -1, "y": 5})
+        self.assertBad(baseline=float(H))
+        self.assertBad(baseline=True)
+        self.assertBad(baseline=0)
+        self.assertBad(frame={"width": 12.0, "height": 16})
         self.assertBad(baseline=H + 1)
         self.assertBad(baseline=H / 3)
         self.assertBad(expressions=[])
@@ -369,6 +379,23 @@ class TestCommand(unittest.TestCase):
                 code, _, err = run_cli(*args)
                 self.assertEqual(code, 2, err)
         self.assertFalse(out.exists())
+
+    def test_whole_anchor(self):
+        self.assertEqual(
+            render.whole_anchor({"x": 382.9, "y": 338.11}, 768, 1024),
+            {"x": 383, "y": 338},
+        )
+        self.assertEqual(
+            render.whole_anchor({"x": -0.4, "y": 1023.8}, 768, 1024),
+            {"x": 0, "y": 1023},
+        )
+        self.assertEqual(
+            render.whole_anchor({"x": 900.2, "y": 2000}, 768, 1024),
+            {"x": 768, "y": 1023},
+        )
+        a = render.whole_anchor({"x": 382.9, "y": 338.11}, 768, 1024)
+        self.assertEqual(check_manifest(manifest(w=768, h=1024, anchor=a)), [])
+        self.assertTrue(all(type(v) is int for v in a.values()))
 
     def test_parse(self):
         self.assertEqual(render.parse_size("768x1024"), (768, 1024))
@@ -514,6 +541,8 @@ class TestDefaultPack(unittest.TestCase):
         self.assertEqual(m["expressions"], list(EXPRESSIONS))
         self.assertEqual(m["baseline"], m["frame"]["height"])
         self.assertNotIn("companion", m)
+        for v in (*m["anchor"].values(), m["baseline"], *m["frame"].values()):
+            self.assertIs(type(v), int)
         if hasattr(self, "result"):
             self.assertEqual(self.result[0], 0, self.result[2][-2000:])
 

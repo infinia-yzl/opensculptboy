@@ -389,6 +389,14 @@ def provenance(card_name: str | None) -> str:
     )
 
 
+def whole_anchor(anchor: dict, width: int, height: int) -> dict:
+    """The anchor in whole pixels, as the contract takes it: rounded to the nearest pixel, inside
+    the frame and above the baseline (the frame's bottom row)."""
+    x = min(max(int(round(anchor["x"])), 0), width)
+    y = min(max(int(round(anchor["y"])), 0), height - 1)
+    return {"x": x, "y": y}
+
+
 def save_frame(path: pathlib.Path, rgba: np.ndarray) -> None:
     """One frame as an 8-bit RGBA PNG (colour type 6) without interlacing, compressed losslessly
     at the highest level."""
@@ -470,7 +478,7 @@ def write_pack(
         manifest["companion"] = companion
     manifest.update(
         frame={"width": width, "height": height},
-        anchor={"x": round(info["anchor"]["x"], 2), "y": round(info["anchor"]["y"], 2)},
+        anchor=whole_anchor(info["anchor"], width, height),
         baseline=height,
         expressions=expressions,
         generator={"name": "OpenSculptBoy", "version": _version()},
