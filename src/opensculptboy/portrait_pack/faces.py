@@ -65,7 +65,7 @@ EXPRESSION_MIXES = {
     "sad": Expression({"sad": 0.9}),
     "stern": Expression({"angry": 0.6}),
     "embarrassed": Expression({"happy": 0.35, "lookDown": 0.3}, {"browInnerUp": 0.2}),
-    "drowsy": Expression({"relaxed": 0.8}, lids=0.25),
+    "drowsy": Expression({"relaxed": 0.8}, lids=0.15),
 }
 # The mouths as vowels with their weights.
 MOUTH_MIXES = {

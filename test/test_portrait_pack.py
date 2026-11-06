@@ -334,7 +334,7 @@ class TestFaces(unittest.TestCase):
         # the blink takes over the widened eyes
         self.assertNotIn("eyeWideLeft", frame_actions("surprised", "closed", "closed"))
         drowsy = frame_actions("drowsy", "closed", "open")["eyeBlinkLeft"]
-        self.assertAlmostEqual(drowsy, 0.35 * 0.8 + 0.25)
+        self.assertAlmostEqual(drowsy, 0.35 * 0.8 + 0.15)
         with self.assertRaises(ValueError):
             frame_actions("grin", "closed", "open")
 
