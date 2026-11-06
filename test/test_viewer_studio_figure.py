@@ -118,7 +118,7 @@ class TestFigureAndScan(unittest.TestCase):
             not_now = tab.get_by_role("button", name="Not now")
             if not_now.count() and not_now.first.is_visible():
                 not_now.first.click()
-            tab.get_by_role("button", name="Place points").click()
+            tab.evaluate("() => window.__poseEdit.placeAll()")
             tab.wait_for_function(
                 "() => window.poseEditReport().state.counts.placed > 0", timeout=120000
             )

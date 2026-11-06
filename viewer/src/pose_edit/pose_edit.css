@@ -144,3 +144,14 @@ body:not(.pose-edit-on) .pe-inset, body.shot .pe-inset { display: none !importan
 .pe-prop-nums label { display: grid; gap: 2px; font-size: 12px; color: var(--text-muted); }
 .pe-prop-nums .pe-num { width: 100%; min-height: 28px; }
 .pe-grip-carried { display: grid; gap: 6px; margin: 6px 0; }
+
+/* ------------------------------------------------------------ the stages of the Points tab (pose_edit/stages.ts) */
+.pe-stages { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: var(--space-2) 0 var(--space-3); padding: 0; list-style: none; }
+.pe-stage { display: flex; flex-direction: column; align-items: center; gap: 2px; width: 100%; min-height: 48px; padding: 4px 2px; border: 1px solid var(--line);
+  border-radius: var(--radius-s, 6px); background: var(--raised); color: var(--text-muted); cursor: pointer; font: 400 11px/14px var(--font-sans); text-align: center; }
+.pe-stage b { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid currentColor; font: 600 11px/1 var(--font-sans); }
+.pe-stage:hover { background: var(--raised-2); color: var(--text); }
+.pe-stage[aria-current="step"] { color: var(--accent-strong); background: var(--accent-soft); border-color: var(--accent-line); }
+.pe-stage[aria-current="step"] b { background: var(--accent); border-color: var(--accent); color: var(--on-accent, #ffffff); }
+.pe-stage-line { margin: 4px 0 var(--space-2); font: 400 14px/20px var(--font-sans); color: var(--text); }
+.pe-stage-nav { justify-content: space-between; margin-top: var(--space-3); }

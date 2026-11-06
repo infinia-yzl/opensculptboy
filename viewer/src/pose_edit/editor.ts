@@ -36,6 +36,7 @@ import { POINTS, POINT_BY_NAME, handPoints, pointsOfChain, type RefPoint } from 
 import { handAxes, type V3 } from './problem.ts';
 import { ghostOf, readScan, type ScanMesh } from './scan.ts';
 import { EditSession, PIN_WEIGHT, type Pin, type Target } from './session.ts';
+import { FIGURE, shownPoints, stageCounts, stageOf, stagePoints, startStage, type Stage } from './stages.ts';
 import { ScanView, type ScanLook } from './view3d.ts';
 import { AXES, BODY_JOINTS, Joints, jointName, type JointValues } from './joints.ts';
 import { FINGERS, FINGER_LABELS, HandControls, PRESETS, RELAXED, copyMirrored, mirrorPose, type HandShape } from './hands.ts';
@@ -64,8 +65,12 @@ export interface EditState {
   selected: string | null;          // a point's name
   hand: 'L' | 'R' | null;           // the hand whose map shows
   filter: 'all' | 'hands' | 'body';
-  counts: { placed: number; look: number; off: number; total: number };
-  looks: PointInfo[];               // the points that need a look
+  counts: { placed: number; look: number; off: number; total: number };   // the stage's points
+  looks: PointInfo[];               // the stage's points that need a look
+  // the stages of the Points tab (stages.ts): the stage shown, and the figure's move of stage 1 (from the card's pose)
+  stage: Stage;
+  root: { moved: boolean; mm: number; turn: number };
+  fingers: boolean;                 // the Hands tab shows the hand's finger points (stage 4)
   point: PointInfo | null;          // the selected point
   hands: Record<'L' | 'R', PointInfo[]>;
   body: PointInfo[];
@@ -117,7 +122,7 @@ const init = (): EditState => ({
   on: false, tool: 'select', section: 'points',
   scan: { available: false, loading: false, shown: true, look: 'ghost', opacity: 0.45, error: '', credit: '' },
   figure: true,
-  selected: null, hand: null, filter: 'all', counts: { placed: 0, look: 0, off: 0, total: POINTS.length }, looks: [], point: null,
+  selected: null, hand: null, filter: 'all', counts: { placed: 0, look: 0, off: 0, total: 1 }, looks: [], point: null, stage: 1, root: { moved: false, mm: 0, turn: 0 }, fingers: false,
   hands: { L: [], R: [] }, body: [], dragging: false, magnifier: true, behind: true, pins: [], pinDraft: null, grip: null, squeeze: 1, props: [],
   balance: { shown: false, inside: null, margin: null }, undo: '', redo: '', version: 0,
   joint: null, jv: null, limits: true, handSide: 'R', handShape: { curl: [0, 0, 0, 0, 0], spread: 0, fist: 0, thumb: 0 }, preset: null, userPresets: loadPresets(),
@@ -245,9 +250,11 @@ export class PoseEditor {
         distance: null };
     };
     const all = POINTS.map(info);
-    const counts = { placed: all.filter((p) => p.state === 'placed').length, look: all.filter((p) => p.state === 'look').length,
-      off: all.filter((p) => p.state === 'off').length, total: all.length };
     const st = editStore.get();
+    const stage = patch.stage ?? st.stage, root = this.rootInfo();
+    const stateOf = new Map(all.map((p) => [p.name, p.state]));
+    const counts = stageCounts(stage, (n) => stateOf.get(n) || 'unplaced', root.moved);
+    const own = new Set(stagePoints(stage));
     const sel = patch.selected !== undefined ? patch.selected : st.selected;
     let point = sel ? all.find((p) => p.name === sel) || null : null;
     if (point && s) {
@@ -261,7 +268,7 @@ export class PoseEditor {
     const hs = H && s ? { ...H.shape(s.rotations, side), fist: H.fist(s.rotations, side), thumb: H.thumb(s.rotations, side) } : st.handShape;
     editStore.set({
       jv, handShape: hs,
-      counts, looks: all.filter((p) => p.state === 'look'), point,
+      counts, looks: all.filter((p) => p.state === 'look' && own.has(p.name)), point, root,
       hands: { R: handPoints('R').map(info), L: handPoints('L').map(info) }, body: POINTS.filter((p) => p.group === 'body').map(info),
       pins: (s?.pins || []).map((q) => ({ name: q.name })), undo: s?.undoStack.at(-1)?.label || '', redo: s?.redoStack.at(-1)?.label || '',
       propList: this.propInfos(),
@@ -320,13 +327,15 @@ export class PoseEditor {
     if (!on) { this.leave(); return; }
     if (!this.host.ready()) { this.host.toast('The character is still loading.'); return; }
     const R = this.frames.cardRotations();
-    const rig = this.frames.rig(R);
+    // the root's shift of the pose shown (a card's pose.root): the figure stands moved against the card frame
+    const shift = this.frames.pageToShift(this.host.rootShift?.() || [0, 0, 0]);
+    const rig = this.frames.rig(R, shift);
     let fresh = false;
     if (!this.session) {
-      this.session = new EditSession(rig, this.frames.skin(), R);
+      this.session = new EditSession(rig, this.frames.skin(), R, shift);
       this.session.onChange = () => this.poseChanged();
       fresh = true;
-    } else { this.session.setRig(rig, this.frames.skin()); this.session.setPose(R); }
+    } else { this.session.shift = shift; this.session.setRig(rig, this.frames.skin()); this.session.setPose(R); }
     this.body = null; this.bodyTris = null;
     const card = this.host.card();
     if (card && card.card !== this.scanCard) {
@@ -338,8 +347,13 @@ export class PoseEditor {
     }
     // the props' places as the card holds them (the history keeps them with the pose)
     this.session.places = Object.fromEntries(this.rigs().map((r) => [r.ref, r.place ? JSON.parse(JSON.stringify(r.place)) : null]));
-    // the state as opened: edits after it are unsaved until Save points or Save the pose
-    if (fresh) this.savedSig = this.signature();
+    // the state as opened: edits after it are unsaved until Save points or Save the pose; the root's turn and shift as
+    // opened are what Reset the figure goes back to, and the points already placed tell the stage to open at
+    if (fresh) {
+      this.savedSig = this.signature();
+      this.rootStart = { D: this.session.rotations[this.session.root].slice(), shift: this.session.shift.slice() as V3 };
+      this.publish({ stage: this.openingStage() });
+    }
     if (!this.layer) this.layer = new PointLayer((this.host.canvas.parentElement as HTMLElement) || document.body);
     this.host.setOverlay((t) => this.drawOverlay(t));
     this.host.onFrame(() => this.frame());
@@ -437,7 +451,8 @@ export class PoseEditor {
     if (!this.session) return;
     const hold = this.gestureLive();
     this.floorHeld = hold;
-    this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, hold);
+    this.session.syncFrame();
+    this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, hold, this.frames.shiftToPage(this.session.shift));
     this.syncPlaces();
     this.bal = null;
     this.dirty = true;
@@ -447,7 +462,7 @@ export class PoseEditor {
   settleFloor(force = false) {
     if (!this.floorHeld || !this.session || (!force && this.gestureLive())) return;
     this.floorHeld = false;
-    this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, false);
+    this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, false, this.frames.shiftToPage(this.session.shift));
   }
 
   private record(label: string) { this.session?.record(label); }
@@ -513,7 +528,8 @@ export class PoseEditor {
   }
 
   // Place points: every point (or the given ones) on the scan, then the solve of each chain
-  placeAll(names?: string[]): { placed: number; look: number } {
+  // (lone: the chains of the points placed turn with a single confident point, as a stage places few points)
+  placeAll(names?: string[], opts: { lone?: boolean } = {}): { placed: number; look: number } {
     const S = this.session;
     if (!S || !this.bvh) { this.host.toast('Show a scan first: Place points needs a statue starter with its scan.'); return { placed: 0, look: 0 }; }
     this.record(names ? 'Place again' : 'Place points');
@@ -531,9 +547,11 @@ export class PoseEditor {
       S.targets.set(e.name, t);
     }
     // only the chains with enough confident points turn; the others keep their pose (a lone point never pulls a limb)
-    const solved = S.confidentChains(), kept = S.placedChains().filter((c) => !solved.includes(c));
+    const solved = opts.lone ? [...new Set(placed.filter((e) => e.method !== 'none' && e.on).map((e) => POINT_BY_NAME.get(e.name)!.solve))]
+      : S.confidentChains(), kept = opts.lone ? [] : S.placedChains().filter((c) => !solved.includes(c));
     for (const c of solved) S.solve(c);
-    this.publish({ kept });
+    // every point placed at once: the stage where work is left
+    this.publish({ kept, ...(names ? {} : { stage: this.openingStage() }) });
     const n = placed.filter((e) => e.method !== 'none').length;
     this.host.toast((look ? `Placed ${n} points. ${look} need a look.` : `Placed ${n} points.`)
       + (kept.length ? ` ${keptMessage(kept)}` : ''));
@@ -554,10 +572,144 @@ export class PoseEditor {
   // the whole pose solved again from the places
   solveAll() { this.session?.solveAll(); this.publish(); }
 
+  // ---------------------------------------------------------------- the stages of the Points tab (stages.ts)
+  // the root's turn and shift as the session opened: what Reset the figure goes back to
+  private rootStart: { D: number[]; shift: V3 } | null = null;
+  private figureDrag: { before: any; vx: number; vy: number; start: V3; at: number[]; normal: number[] } | null = null;
+  private figureScreen: { x: number; y: number; depth: number } | null = null;
+
+  private pointState(name: string): PointInfo['state'] {
+    const t = this.session?.targets.get(name);
+    return !t ? 'unplaced' : !t.on && t.placed === 'auto' && t.confidence < 0.5 ? 'look' : !t.on ? 'off' : 'placed';
+  }
+  // the figure's move of stage 1: millimetres and the turn about the vertical (degrees) since the session opened;
+  // moved once it has moved, or when the card's pose already moves the root
+  rootInfo(): EditState['root'] {
+    const S = this.session, R0 = this.rootStart;
+    if (!S || !R0) return { moved: false, mm: 0, turn: 0 };
+    const D = S.rotations[S.root], t = S.shift, mm = 1000 * Math.hypot(t[0] - R0.shift[0], t[1] - R0.shift[1], t[2] - R0.shift[2]);
+    const Z = mul3(D, [R0.D[0], R0.D[3], R0.D[6], R0.D[1], R0.D[4], R0.D[7], R0.D[2], R0.D[5], R0.D[8]]);
+    const turn = Math.atan2(Z[3], Z[0]) * 180 / Math.PI;
+    const card = Math.hypot(t[0], t[1], t[2]) > 5e-4;
+    return { moved: card || mm > 0.5 || Math.abs(turn) > 0.05, mm, turn };
+  }
+  // the stage a session opens at, from the points it holds (stages.startStage)
+  openingStage(): Stage {
+    const S = this.session;
+    return startStage((n) => this.pointState(n), !!S && Math.hypot(S.shift[0], S.shift[1], S.shift[2]) > 5e-4);
+  }
+  setStage(stage: Stage) {
+    const st = editStore.get();
+    if (stage === st.stage && st.section === 'points') return;
+    // the selection stays when its point belongs to the new stage
+    const keep = st.selected && stageOf(st.selected) === stage ? st.selected : null;
+    if (st.selected && !keep) this.select(null);
+    // dragging is the work of every stage: the Move tool takes over from Select
+    this.publish({ stage, section: 'points', hand: null, tool: st.tool === 'select' ? 'move' : st.tool });
+    this.statusIdle();
+  }
+  // the Hands tab's finger points (stage 4) shown or hidden
+  setFingers(on: boolean) { if (on !== editStore.get().fingers) { if (!on && editStore.get().selected) this.select(null); this.publish({ fingers: on }); } }
+  nextStage() { const s = editStore.get().stage; if (s < 4) this.setStage((s + 1) as Stage); }
+  previousStage() { const s = editStore.get().stage; if (s > 1) this.setStage((s - 1) as Stage); }
+
+  // stage 1: the figure turned about the vertical through the pelvis to `deg` since the session opened
+  setFigureTurn(deg: number, record = true) {
+    const S = this.session;
+    if (!S) return;
+    if (record) this.record('Turn the figure');
+    const a = (deg - this.rootInfo().turn) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    S.setRoot(mul3([c, -s, 0, s, c, 0, 0, 0, 1], S.rotations[S.root]), null);
+    this.publish();
+  }
+  // stage 1: the figure back where the session opened it
+  resetFigure(): boolean {
+    const S = this.session, R0 = this.rootStart;
+    const now = this.rootInfo();
+    if (!S || !R0 || (now.mm < 0.05 && Math.abs(now.turn) < 0.005)) return false;
+    this.record('Reset the figure');
+    S.setRoot(R0.D, R0.shift);
+    this.publish();
+    return true;
+  }
+  // stage 1: the figure moved so that its pelvis lands at `at` (card frame)
+  moveFigure(at: V3, record = true) {
+    const S = this.session;
+    if (!S) return;
+    if (record) this.record('Move the figure');
+    S.setRoot(null, at);
+    this.publish();
+  }
+  // the whole figure in the view (the body map's figure point)
+  frameFigure() {
+    const S = this.session;
+    if (!S) return;
+    const box = [...S.positions().values()].map((x) => { const w = this.frames.toWorld(x); return { x: w[0], y: w[1], z: w[2] }; });
+    cam().frameBounds(box, { label: 'The figure' });
+  }
+
+  // the drag of the figure's handle: it keeps to the plane through the pelvis that faces the camera, as the pelvis
+  // lies inside the body
+  beginFigureDrag(x: number, y: number) {
+    const S = this.session!;
+    const at = this.frames.toWorld(S.pelvis()), T = this.host.THREE, n = new T.Vector3();
+    this.host.camera.getWorldDirection(n);
+    this.figureDrag = { before: S.snapshot(), vx: x, vy: y, start: S.pelvis(), at, normal: [n.x, n.y, n.z] };
+    this.publish({ dragging: true, selected: null });
+    setStatus('pose-edit-drag', [{ text: 'Moving the figure' }, { keys: 'Shift', text: 'fine' }, { keys: 'Esc', text: 'put it back where it was' }], { priority: PRIORITY.drag });
+  }
+  figureDragMove(dx: number, dy: number) {
+    const D = this.figureDrag, S = this.session;
+    if (!D || !S) return;
+    D.vx += dx; D.vy += dy;
+    const ray = cam().rayAt(D.vx, D.vy), o = ray.origin, d = ray.direction, n = D.normal;
+    const den = n[0] * d.x + n[1] * d.y + n[2] * d.z;
+    if (Math.abs(den) < 1e-9) return;
+    const k = (n[0] * (D.at[0] - o.x) + n[1] * (D.at[1] - o.y) + n[2] * (D.at[2] - o.z)) / den;
+    S.setRoot(null, this.frames.fromWorld([o.x + d.x * k, o.y + d.y * k, o.z + d.z * k]));
+    this.publish();
+  }
+  endFigureDrag() {
+    const D = this.figureDrag, S = this.session;
+    if (!D || !S) return;
+    this.figureDrag = null;
+    S.undoStack.push({ label: 'Move the figure', snap: D.before });
+    S.redoStack.length = 0;
+    clearStatus('pose-edit-drag');
+    this.publish({ dragging: false, selected: null });
+    this.statusIdle();
+  }
+  cancelFigureDrag() {
+    const D = this.figureDrag, S = this.session;
+    if (!D || !S) return;
+    this.figureDrag = null;
+    S.restore(D.before);
+    clearStatus('pose-edit-drag');
+    this.publish({ dragging: false, selected: null });
+    this.statusIdle();
+  }
+
+  // Place points of a stage: its points that have no place yet (with again, the ones the automatic placement put
+  // too), never a point placed by hand; the chains of the confident ones turn towards them, the earlier stages' points
+  // held in their solves. Stage 4 places one hand's finger points (both without a side).
+  placeStage(stage: Stage = editStore.get().stage, opts: { again?: boolean; side?: 'L' | 'R' } = {}): { placed: number; look: number } {
+    const S = this.session;
+    if (!S || stage === 1) return { placed: 0, look: 0 };
+    const names = stagePoints(stage).filter((n) => {
+      const t = S.targets.get(n), p = POINT_BY_NAME.get(n)!;
+      if (opts.side && p.side !== opts.side) return false;
+      return !t || (opts.again && t.placed === 'auto');
+    });
+    if (!names.length) { this.host.toast(opts.again ? 'Every point of this stage was placed by hand.' : 'Every point of this stage has a place.'); return { placed: 0, look: 0 }; }
+    return this.placeAll(names, { lone: true });
+  }
+
   // ---------------------------------------------------------------- selection
-  select(name: string | null, opts: { frame?: boolean } = {}) {
+  // (pivot: false keeps the camera's pivot, so a press that starts a drag leaves the view still under the pointer)
+  select(name: string | null, opts: { frame?: boolean; pivot?: boolean } = {}) {
     const p = name ? POINT_BY_NAME.get(name) : null;
-    const hand = p && p.group !== 'body' ? (p.side as 'L' | 'R') : editStore.get().hand;
+    // a finger point opens its hand's map in Points; a wrist (stage 2) stays on the stage's body map
+    const hand = p && stageOf(p.name) === 4 && editStore.get().section === 'points' ? (p.side as 'L' | 'R') : editStore.get().hand;
     this.publish({ selected: name, hand: name ? hand : editStore.get().hand, ...(name ? { prop: null } : {}) });
     if (!p) { if (!editStore.get().prop) { setSelection(null); this.statusIdle(); } return; }
     setSelection({
@@ -567,7 +719,7 @@ export class PoseEditor {
     });
     this.statusSelected();
     if (opts.frame) { const f = this.framing(p, 1); if (f) cam().frameBounds(f.box, { label: f.label, pivot: f.pivot }); }
-    else {
+    else if (opts.pivot !== false) {
       // turn round the selection (DESIGN-0014): the pivot moves to the point, the camera stays
       const t = this.target(p.name), at = t ? t.position : this.session?.positions([p]).get(p.name);
       if (at) { const w = this.frames.toWorld(at); cam().setPivot({ x: w[0], y: w[1], z: w[2] }, { history: false }); }
@@ -1647,7 +1799,7 @@ export class PoseEditor {
       ref.points = S.cardPoints();
       ref.pins = S.cardPins();
     }
-    this.host.setPose(this.frames.pageQuaternions(S.rotations), 'Edited pose');
+    this.host.setPose(this.frames.pageQuaternions(S.rotations), 'Edited pose', false, this.frames.shiftToPage(S.shift));
     if (target) target.pose = this.host.cardPose();
     await save();
     this.savedSig = this.signature();
@@ -1660,7 +1812,7 @@ export class PoseEditor {
   private signature(): string {
     const S = this.session;
     if (!S) return '';
-    return JSON.stringify([S.cardPoints(), S.cardPins(), S.rotations.map((r) => r.map((x) => Math.round(x * 1e6))), S.places]);
+    return JSON.stringify([S.cardPoints(), S.cardPins(), S.rotations.map((r) => r.map((x) => Math.round(x * 1e6))), S.places, S.shift.map((x) => Math.round(x * 1e6))]);
   }
   unsavedEdits(): boolean { return !!this.session && this.savedSig !== null && this.signature() !== this.savedSig; }
   // the prompt before leaving the page: on unless View › Controls turns it off or the URL carries noprompt (the page
@@ -2147,19 +2299,22 @@ export class PoseEditor {
     const toS = (x: V3) => cam().toScreen(this.v3(this.frames.toWorld(x)));
     // with the figure hidden, only the points placed on the scan show
     const noFigure = this.figureHidden;
+    // the points of the stage (and the placed points of the earlier ones); a hand shown from its cluster or its map, or
+    // the Hands tab's finger points, show that hand's points
+    const shown = this.shownSet(st);
     // the hands drawn small when they are small on screen
     const clustered = new Set<'L' | 'R'>();
     for (const side of ['R', 'L'] as const) {
       if (st.hand === side) continue;
-      const hp = handPoints(side).filter((p) => !noFigure || S.targets.has(p.name));
-      if (!hp.length) continue;
+      const hp = handPoints(side).filter((p) => (!noFigure || S.targets.has(p.name)) && shown.has(p.name));
+      // a wrist alone (stages 2 and 3) is a point of its own, drawn full size
+      if (hp.length < 6) continue;
       const xs = hp.map((p) => toS(S.targets.get(p.name)?.position || anny.get(p.name)!));
       const w = Math.max(...xs.map((a) => a.x)) - Math.min(...xs.map((a) => a.x)), h = Math.max(...xs.map((a) => a.y)) - Math.min(...xs.map((a) => a.y));
       if (Math.max(w, h) < 90 * scale) clustered.add(side);
     }
     for (const p of POINTS) {
-      if (st.filter === 'hands' && p.group === 'body') continue;
-      if (st.filter === 'body' && p.group !== 'body') continue;
+      if (!shown.has(p.name)) continue;
       const t = S.targets.get(p.name);
       if (noFigure && !t) continue;
       const at = t ? t.position : anny.get(p.name)!;
@@ -2182,6 +2337,18 @@ export class PoseEditor {
       const look = st.hands[side].filter((p) => p.state === 'look').length, placed = st.hands[side].filter((p) => p.state !== 'unplaced').length;
       f.clusters.push({ x: Math.max(...xs.map((a) => a.x)), y: xs.reduce((s, a) => s + a.y, 0) / xs.length, title: `${side === 'R' ? 'Right' : 'Left'} hand: 21 points`,
         line: !placed ? 'Not placed yet' : look ? `${look} need${look === 1 ? 's' : ''} a look` : 'All placed' });
+    }
+    // stage 1: the figure's handle at the pelvis, drawn over the body (it lies inside it)
+    this.figureScreen = null;
+    if (st.section === 'points' && st.stage === 1 && !st.hand && !noFigure) {
+      const s = toS(S.pelvis());
+      if (s.depth > 0) {
+        this.figureScreen = s;
+        f.points.push({ name: FIGURE, number: 0, x: s.x, y: s.y, state: st.root.moved ? 'placed' : 'unplaced', hidden: false, selected: !!this.figureDrag,
+          hovered: this.hovered === FIGURE, pushed: 0, figure: true });
+        if (this.hovered === FIGURE || this.figureDrag) f.labels.push({ x: s.x, y: s.y - 40, title: 'The figure', side: 'left',
+          line: this.figureDrag ? 'The whole figure follows the pointer.' : 'Drag it onto the statue\'s pelvis' });
+      }
     }
     // the joints (the Joints tool and the Turn tool) and the dial of the selected joint
     if ((st.section === 'joints' || st.tool === 'turn') && !noFigure) { f.points = f.points.filter((q) => q.selected); f.anny = []; f.clusters = []; this.drawJoints(f, st); }
@@ -2226,6 +2393,17 @@ export class PoseEditor {
         point: Math.hypot(px - this.magAt.cx, py - this.magAt.cy) < half - 8 ? { x: px, y: py, number: POINT_BY_NAME.get(this.drag.name)!.number, state: 'placed' } : undefined };
     }
     this.layer!.draw(f);
+  }
+
+  // the reference points the view shows: in Points, the stage's points and the earlier stages' placed ones (a hand
+  // opened from its cluster or Select the hand shows its 21 points); in Hands with the finger points on, that hand's
+  // points; elsewhere every point, as before (the Joints and Limbs tools hide them)
+  private shownSet(st: EditState): Set<string> {
+    const S = this.session;
+    if (st.section === 'hands') return new Set(st.fingers ? handPoints(st.handSide).map((p) => p.name) : []);
+    if (st.section !== 'points') return new Set(POINTS.map((p) => p.name));
+    if (st.hand) return new Set([...handPoints(st.hand).map((p) => p.name), ...shownPoints(st.stage, (n) => !!S?.targets.has(n))]);
+    return new Set(shownPoints(st.stage, (n) => !!S?.targets.has(n)));
   }
 
   private jointScreens: { label: string; x: number; y: number }[] = [];
@@ -2373,11 +2551,30 @@ export class PoseEditor {
       },
       cursor: 'pointer',
     };
-    const pointsOn = () => { const st = editStore.get(); return st.on && st.section === 'points' && st.tool !== 'turn'; };
+    const pointsOn = () => { const st = editStore.get(); return st.on && (st.section === 'points' || (st.section === 'hands' && st.fingers)) && st.tool !== 'turn'; };
+    // stage 1: the figure's handle drags with Select and Move alike
+    this.offs.push(registerPicker({
+      id: 'pose-figure', priority: 12, enabled: () => { const st = editStore.get(); return st.on && st.section === 'points' && st.stage === 1 && !st.hand && st.tool !== 'turn' && !this.figureHidden; },
+      hit: (p: PointerInfo) => {
+        const s = this.figureScreen;
+        if (!s) return null;
+        const d = Math.hypot(s.x - p.x, s.y - p.y), r = 15 * settings.targetScale();
+        return d > p.radius + r ? null : { item: FIGURE, distPx: Math.max(0, d - r), depth: s.depth, label: 'The figure' };
+      },
+      onDown: () => true,
+      onDrag: (_h: PickHit, _p: PointerInfo, d: DragInfo) => {
+        if (!this.figureDrag) this.beginFigureDrag(d.x0, d.y0);
+        this.figureDragMove(d.ddx * d.scale, d.ddy * d.scale);
+      },
+      onUp: () => this.endFigureDrag(),
+      onCancel: () => this.cancelFigureDrag(),
+      onHover: (h: PickHit | null) => { this.hovered = h ? FIGURE : (this.hovered === FIGURE ? null : this.hovered); this.dirty = true; },
+      cursor: 'grab',
+    }));
     this.offs.push(registerPicker({ id: 'pose-points-select', priority: 10, enabled: () => pointsOn() && editStore.get().tool !== 'move', ...common }));
     this.offs.push(registerPicker({
       id: 'pose-points-move', priority: 10, enabled: () => pointsOn() && editStore.get().tool === 'move', ...common,
-      onDown: (h: PickHit) => { if (!this.bvh) return false; this.select(h.item as string); return true; },
+      onDown: (h: PickHit) => { if (!this.bvh) return false; this.select(h.item as string, { pivot: false }); return true; },
       onDrag: (h: PickHit, p: PointerInfo, d: DragInfo) => {
         if (!this.drag) this.beginDrag(h.item as string, d.x0, d.y0);
         this.dragMove(d.ddx * d.scale, d.ddy * d.scale, d.snap);
@@ -2528,8 +2725,8 @@ export class PoseEditor {
         scope: 'pose-edit', hint: 'Copy a pose first (Ctrl+C)', run: () => this.pastePose(true) },
       { id: 'pose.undo', label: 'Undo the pose edit', keys: ['Ctrl+Z'], group: 'History', tier: 'constant', scope: 'pose-edit', help: false, run: () => this.undo() },
       { id: 'pose.redo', label: 'Redo the pose edit', keys: ['Ctrl+Shift+Z', 'Ctrl+Y'], group: 'History', tier: 'constant', scope: 'pose-edit', help: false, run: () => this.redo() },
-      { id: 'pose.place', label: 'Place points', desc: 'Every point on the scan, from the fitted character', group: 'Points', tier: 'occasional', scope: 'pose-edit', place: 'Pose › Edit',
-        run: () => { this.placeAll(); } },
+      { id: 'pose.place', label: 'Place points', desc: "The stage's points on the scan, from the fitted character", group: 'Points', tier: 'occasional', scope: 'pose-edit', place: 'Pose › Edit',
+        run: () => { this.placeStage(); } },
 
       // the props (DESIGN-0013, "Props"): live while a prop is selected, in place of the point's and the joint's keys
       { id: 'pose.prop.grab', label: 'Grab the prop', desc: 'The selected prop follows the mouse until a click or Enter; X, Y or Z keep to one axis, a number moves it that many millimetres',
@@ -2578,7 +2775,8 @@ export function editorReport(ed: PoseEditor) {
   }
   return { state: { ...editStore.get(), hands: undefined, body: undefined }, figureShown: ed.figureShown(), lift: ed.lastLift, points: pts, magnifier: (ed as any).mag, props: ed.propReport(), moveOut: ed.lastMoveOut,
     unsaved: ed.unsavedEdits(), prompt: ed.promptOn(), rotations: S ? S.rotations : null, undo: S ? S.undoStack.map((e) => e.label) : [],
-    labels: S ? S.rig.labels : [] };
+    labels: S ? S.rig.labels : [], shown: [...(ed as any).screen.keys()],
+    figure: S ? { pelvis: S.pelvis(), screen: (ed as any).figureScreen, root: ed.rootInfo() } : null };
 }
 
 let EDITOR: PoseEditor | null = null;

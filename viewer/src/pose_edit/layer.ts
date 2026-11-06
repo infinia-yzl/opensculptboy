@@ -17,6 +17,7 @@ export interface DrawPoint {
   state: 'placed' | 'look' | 'off' | 'unplaced';
   hidden: boolean; selected: boolean; hovered: boolean; pushed: number;   // pushed: mm into the stone
   small?: boolean;          // a dot of a hand cluster, without its number
+  figure?: boolean;         // the figure's handle of stage 1 (the pelvis): a larger ring with a cross, without a number
 }
 export interface DrawAnny { name: string; x: number; y: number; tx: number; ty: number; line: boolean }
 export interface DrawLabel { x: number; y: number; title: string; line?: string; side?: 'right' | 'left' }
@@ -121,7 +122,20 @@ export class PointLayer {
     this.html.replaceChildren(box);
   }
 
+  // the figure's handle: a ring of 15 pixels with a cross, gold while dragged, blue once the figure has moved
+  private figure(g: SVGGElement, p: DrawPoint, s: number) {
+    const r = 15 * s * (p.hovered ? 7 / 6 : 1), grp = el('g', { 'data-point': 'figure' }, g);
+    const fill = p.selected ? COLOURS.selected : p.state === 'placed' ? COLOURS.placed : 'rgba(255,255,255,0.7)';
+    el('circle', { cx: p.x, cy: p.y, r, fill, stroke: COLOURS.halo, 'stroke-width': 5, 'stroke-opacity': 0.75 }, grp);
+    el('circle', { cx: p.x, cy: p.y, r, fill, stroke: COLOURS.outline, 'stroke-width': 1.8 }, grp);
+    const ink = p.state === 'placed' && !p.selected ? '#ffffff' : COLOURS.outline, k = r * 0.62;
+    for (const [dx, dy] of [[1, 0], [0, 1]]) {
+      el('line', { x1: p.x - dx * k, y1: p.y - dy * k, x2: p.x + dx * k, y2: p.y + dy * k, stroke: ink, 'stroke-width': 2.2 * s, 'stroke-linecap': 'round' }, grp);
+    }
+  }
+
   private point(g: SVGGElement, p: DrawPoint, s: number) {
+    if (p.figure) { this.figure(g, p, s); return; }
     const r = (p.small ? 3.5 : 11) * s * (p.hovered ? 4 / 3 : 1);
     const grp = el('g', { 'data-point': p.number, opacity: p.hidden ? 0.55 : 1 }, g);
     const dash = p.hidden ? { 'stroke-dasharray': '3 2' } : {};

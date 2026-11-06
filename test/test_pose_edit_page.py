@@ -111,7 +111,7 @@ class TestPoseEditPage(unittest.TestCase):
             shot("1a_edit_on")
 
             # Place points: every point on the scan, the arms turned towards the scan's pose
-            tab.get_by_role("button", name="Place points").click()
+            tab.evaluate("() => window.__poseEdit.placeAll()")
             tab.wait_for_function(
                 "() => window.poseEditReport().state.counts.placed > 0"
             )
@@ -329,7 +329,7 @@ class TestPoseEditPage(unittest.TestCase):
             open_statue(tab, folder)
             edit_on(tab)
             tab.evaluate("() => window.__poseEdit.restPose()")
-            tab.get_by_role("button", name="Place points").click()
+            tab.evaluate("() => window.__poseEdit.placeAll()")
             tab.wait_for_function(
                 "() => window.poseEditReport().state.counts.placed > 0"
             )
