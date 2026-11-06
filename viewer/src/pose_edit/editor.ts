@@ -463,6 +463,8 @@ export class PoseEditor {
     if (!this.floorHeld || !this.session || (!force && this.gestureLive())) return;
     this.floorHeld = false;
     this.host.setPose(this.frames.pageQuaternions(this.session.rotations), undefined, false, this.frames.shiftToPage(this.session.shift));
+    // the figure and the scan stand on the new floor: the points over the view and their hit spots follow at once
+    this.dirty = true;
   }
 
   private record(label: string) { this.session?.record(label); }
