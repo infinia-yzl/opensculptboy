@@ -93,7 +93,37 @@ def screen_of(tab, card_point):
     )
 
 
-def drag(tab, a, b, steps=24):
+# the page's first-visit offers (the tour's offer and the card of the camera's controls) stand over the view and take
+# a press there
+OFFERS = ("Not now", "Got it")
+
+
+def quiet(tab):
+    """Close the first visit's offers that stand over the view."""
+    for label in OFFERS:
+        button = tab.get_by_role("button", name=label)
+        for i in range(button.count()):
+            if button.nth(i).is_visible():
+                button.nth(i).click()
+
+
+ON_VIEW = "(a) => { const e = document.elementFromPoint(a[0], a[1]); return e ? (e.id || e.tagName) : null; }"
+
+
+def drag(tab, start, end, steps=24):
+    """A drag with the mouse from start() to end() (client pixels), both read once the view has settled
+    and nothing stands over the view at the start."""
+    for _ in range(3):
+        quiet(tab)
+        settle(tab, 6)
+        a = start()
+        if tab.evaluate(ON_VIEW, list(a)) == "c":
+            break
+    else:
+        raise AssertionError(
+            f"the press at {a} meets {tab.evaluate(ON_VIEW, list(a))}, not the view"
+        )
+    b = end()
     tab.mouse.move(a[0], a[1])
     tab.mouse.down()
     for i in range(1, steps + 1):
@@ -102,6 +132,17 @@ def drag(tab, a, b, steps=24):
         )
     tab.mouse.up()
     settle(tab)
+
+
+def figure_at(tab):
+    s = report(tab)["figure"]["screen"]
+    return (s["x"], s["y"])
+
+
+def point_at(tab, name):
+    """Where the view draws a reference point now (client pixels)."""
+    s = report(tab)["points"][name]["screen"]
+    return (s["x"], s["y"])
 
 
 def gap(r, truth, name):
@@ -124,11 +165,7 @@ class TestPointStagesPage(unittest.TestCase):
 
             def shot(name):
                 if shots:
-                    # the first visit's offers stay out of the pictures
-                    for label in ("Not now", "Got it"):
-                        button = tab.get_by_role("button", name=label)
-                        if button.count() and button.first.is_visible():
-                            button.first.click()
+                    quiet(tab)
                     tab.screenshot(
                         path=str(pathlib.Path(shots) / f"{name}.png"), timeout=600000
                     )
@@ -138,6 +175,7 @@ class TestPointStagesPage(unittest.TestCase):
             tab.evaluate("() => document.getElementById('c').focus()")
             tab.keyboard.press("Tab")
             tab.wait_for_function("() => window.poseEditReport().state.on")
+            quiet(tab)
             tab.evaluate("() => window.__poseEdit.restPose()")
             truth = tab.evaluate(SCAN, {"turn": TURN_DEG, "shift": SHIFT})
             tab.wait_for_function("() => window.poseEditReport().state.scan.available")
@@ -155,8 +193,7 @@ class TestPointStagesPage(unittest.TestCase):
             self.assertIn("pelvis", panel.locator(".pe-stage-line").inner_text())
             shot("stage1_start")
             # the scan's pelvis: the truth's pelvis is the shift (the root's head)
-            start = r["figure"]["screen"]
-            drag(tab, (start["x"], start["y"]), screen_of(tab, SHIFT))
+            drag(tab, lambda: figure_at(tab), lambda: screen_of(tab, SHIFT))
             r = report(tab)
             pel = r["figure"]["pelvis"]
             # the front view moves the pelvis across and up (Anny's x and z); its depth stays
@@ -168,8 +205,7 @@ class TestPointStagesPage(unittest.TestCase):
             tab.keyboard.press("Numpad3")
             tab.wait_for_timeout(700)
             settle(tab)
-            s = report(tab)["figure"]["screen"]
-            drag(tab, (s["x"], s["y"]), screen_of(tab, SHIFT))
+            drag(tab, lambda: figure_at(tab), lambda: screen_of(tab, SHIFT))
             pel = report(tab)["figure"]["pelvis"]
             self.assertLess(float(np.linalg.norm(np.subtract(pel, SHIFT))), 0.006)
             tab.keyboard.press("Numpad1")
@@ -208,8 +244,12 @@ class TestPointStagesPage(unittest.TestCase):
             elbow = r["points"]["elbow.L"]["anny"]
             gap0 = gap(r, truth, "wrist.L")
             # a drag of the left wrist onto the scan's: the left arm turns and the elbow follows
-            a = r["points"]["wrist.L"]["screen"]
-            drag(tab, (a["x"], a["y"]), screen_of(tab, truth["wrist.L"]), steps=16)
+            drag(
+                tab,
+                lambda: point_at(tab, "wrist.L"),
+                lambda: screen_of(tab, truth["wrist.L"]),
+                steps=16,
+            )
             r = report(tab)
             w = r["points"]["wrist.L"]
             self.assertEqual(r["state"]["selected"], "wrist.L")
