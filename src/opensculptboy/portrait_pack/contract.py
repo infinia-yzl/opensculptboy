@@ -40,7 +40,8 @@ EYES = ("open", "half", "closed")
 REQUIRED_EXPRESSION = "neutral"
 
 # The limits of a pack. MAX_PACK_BYTES matches the consuming app's contract: a full pack of 90
-# frames at the default size of 768 by 1024 pixels keeps well within it.
+# frames at the default size of 768 by 1024 pixels keeps within it, also for a card with its own
+# textures (about 80 MiB).
 MAX_FILES = 100
 MAX_SIDE = 1024
 MAX_MANIFEST_BYTES = 64 * 1024

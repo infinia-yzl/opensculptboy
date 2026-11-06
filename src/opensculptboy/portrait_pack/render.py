@@ -45,10 +45,47 @@ DEFAULT_SAMPLES = 16
 REPO_PAGE = (
     pathlib.Path(__file__).resolve().parents[3] / "viewer" / "dist" / "anny_viewer.html"
 )
-# Chromium falls back to drawing WebGL in software on a computer without a graphics card.
-CHROMIUM_ARGS = ["--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"]
+# Headless Chromium on the graphics card, by platform: ANGLE on Direct3D 11 on Windows and on
+# Metal on macOS, the default GL elsewhere. Without these, headless Chromium can draw WebGL in
+# software even when a graphics card is there.
+GPU_ARGS = {
+    "win32": ["--use-angle=d3d11", "--ignore-gpu-blocklist", "--enable-gpu"],
+    "darwin": ["--use-angle=metal", "--ignore-gpu-blocklist", "--enable-gpu"],
+}
+GPU_ARGS_OTHER = ["--ignore-gpu-blocklist", "--enable-gpu"]
+# The fallback on a computer without a graphics card: WebGL drawn in software (SwiftShader).
+SOFTWARE_ARGS = [
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
+]
 # The environment variable that names a Chromium executable for Playwright to launch.
 CHROMIUM_ENV = "OPENSCULPTBOY_CHROMIUM"
+# The environment variable that sets Chromium's arguments (separated by spaces) in place of the
+# graphics card's arguments and the software fallback.
+CHROMIUM_ARGS_ENV = "OPENSCULPTBOY_CHROMIUM_ARGS"
+# The renderer of a WebGL 2 context, or null without WebGL 2.
+RENDERER_JS = """() => {
+  const gl = document.createElement('canvas').getContext('webgl2');
+  if (!gl) return null;
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  return String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+}"""
+
+
+def gpu_args(platform: str | None = None) -> list[str]:
+    """Chromium's arguments for drawing on the graphics card on this platform."""
+    import sys
+
+    return list(GPU_ARGS.get(platform or sys.platform, GPU_ARGS_OTHER))
+
+
+def is_software(renderer: str) -> bool:
+    """Whether a WebGL renderer string names a software renderer."""
+    return any(
+        w in renderer for w in ("SwiftShader", "llvmpipe", "softpipe", "Software")
+    )
+
 
 # The licence of the default character's pictures: the licences of the model data.
 DEFAULT_LICENCE = (
@@ -162,6 +199,8 @@ class PortraitPage:
         self._stack = contextlib.ExitStack()
         self.tab = None
         self.errors: list[str] = []
+        self.renderer = ""
+        self.software = False
 
     def __enter__(self):
         try:
@@ -177,10 +216,7 @@ class PortraitPage:
                 "or name the built page with --page."
             )
         p = self._stack.enter_context(sync_playwright())
-        kw = {}
-        if os.environ.get(CHROMIUM_ENV):
-            kw["executable_path"] = os.environ[CHROMIUM_ENV]
-        browser = p.chromium.launch(args=CHROMIUM_ARGS, **kw)
+        browser = self._launch(p)
         self._stack.callback(browser.close)
         self.tab = browser.new_context(viewport=dict(width=640, height=480)).new_page()
         self.tab.set_default_timeout(PAGE_TIMEOUT_MS)
@@ -194,6 +230,39 @@ class PortraitPage:
         if self.card:
             self._open_card()
         return self
+
+    def _launch(self, p):
+        """Chromium on the graphics card when WebGL 2 runs there, else in software; sets
+        ``renderer`` (the WebGL renderer string) and ``software``."""
+        import shlex
+
+        kw = {}
+        if os.environ.get(CHROMIUM_ENV):
+            kw["executable_path"] = os.environ[CHROMIUM_ENV]
+        if os.environ.get(CHROMIUM_ARGS_ENV):
+            tries = [
+                (
+                    "the arguments of " + CHROMIUM_ARGS_ENV,
+                    shlex.split(os.environ[CHROMIUM_ARGS_ENV]),
+                )
+            ]
+        else:
+            tries = [("the graphics card", gpu_args()), ("software", SOFTWARE_ARGS)]
+        for what, args in tries:
+            browser = p.chromium.launch(args=args, **kw)
+            tab = browser.new_page()
+            renderer = tab.evaluate(RENDERER_JS)
+            tab.close()
+            if renderer:
+                self.renderer, self.software = renderer, is_software(renderer)
+                kind = "software" if self.software else "the graphics card"
+                self.log(f"Chromium with {what}: WebGL 2 on {kind} ({renderer})")
+                return browser
+            self.log(f"Chromium with {what}: no WebGL 2")
+            browser.close()
+        raise PortraitError(
+            "Headless Chromium gives no WebGL 2 on the graphics card or in software."
+        )
 
     def __exit__(self, *exc):
         self._stack.close()
@@ -393,6 +462,7 @@ def write_pack(
             save_frame(folder / frame_name(x, m, e), pp.frame(actions, samples))
             log(f"{i + 1}/{len(faces)} {frame_name(x, m, e)} ({time.time() - t:.1f} s)")
         pp.end()
+        renderer = pp.renderer
         if pp.errors:
             raise PortraitError(f"The page reported errors: {pp.errors[:3]}")
     manifest = {"schema": SCHEMA}
@@ -416,4 +486,5 @@ def write_pack(
         "check": report,
         "seconds": round(time.time() - t0, 1),
         "samples": samples,
+        "renderer": renderer,
     }

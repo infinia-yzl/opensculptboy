@@ -377,6 +377,21 @@ class TestCommand(unittest.TestCase):
         )
         self.assertEqual(render.parse_expressions(None), list(EXPRESSIONS))
 
+    def test_chromium_args(self):
+        # the graphics card first, by platform; SwiftShader as the fallback
+        self.assertIn("--use-angle=d3d11", render.gpu_args("win32"))
+        self.assertIn("--use-angle=metal", render.gpu_args("darwin"))
+        self.assertIn("--enable-gpu", render.gpu_args("linux"))
+        for args in (render.gpu_args("win32"), render.gpu_args("linux")):
+            self.assertNotIn("--enable-unsafe-swiftshader", args)
+        self.assertIn("--use-angle=swiftshader", render.SOFTWARE_ARGS)
+        self.assertTrue(
+            render.is_software("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device))")
+        )
+        self.assertFalse(
+            render.is_software("ANGLE (NVIDIA, Direct3D11 vs_5_0 ps_5_0, D3D11)")
+        )
+
     def test_folder(self):
         # an empty or new folder, or a previous pack (emptied first); never a folder of other files
         render.prepare_folder(self.dir / "new")
@@ -539,6 +554,31 @@ class TestDefaultPack(unittest.TestCase):
                             self.assertGreater(np.abs(pics[i] - pics[j]).mean(), 1.0)
 
 
+@local_only("Playwright and Chromium")
+@unittest.skipUnless(
+    playwright_available(), "Playwright and the built viewer page are needed"
+)
+class TestLaunch(unittest.TestCase):
+    def test_software_fallback(self):
+        # Chromium without WebGL 2 on the graphics card's arguments relaunches in software
+        from playwright.sync_api import sync_playwright
+
+        logs = []
+        page = render.PortraitPage(log=logs.append)
+        env = {render.CHROMIUM_ENV: str(CHROMIUM)} if CHROMIUM.exists() else {}
+        no_webgl = ["--disable-gpu", "--disable-webgl"]
+        with (
+            mock.patch.dict(os.environ, env),
+            mock.patch.object(render, "gpu_args", lambda: no_webgl),
+        ):
+            with sync_playwright() as p:
+                page._launch(p).close()
+        self.assertTrue(page.renderer)
+        self.assertTrue(page.software)
+        self.assertIn("no WebGL 2", logs[0])
+        self.assertIn("Chromium with software", logs[1])
+
+
 @local_only("Playwright with the built viewer page")
 @unittest.skipUnless(
     playwright_available(), "Playwright and the built viewer page are needed"
@@ -572,6 +612,7 @@ class TestNeutralPack(unittest.TestCase):
                 sorted(p.name for p in folder.iterdir()),
                 sorted([MANIFEST, *frame_names(["neutral"])]),
             )
+            self.assertTrue(result["renderer"])
             m = json.loads((folder / MANIFEST).read_text())
             self.assertEqual(m["companion"], "Test")
             self.assertEqual(m["expressions"], ["neutral"])
