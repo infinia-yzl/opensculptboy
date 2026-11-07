@@ -199,7 +199,17 @@ class TestLayeredCheck(unittest.TestCase):
             ("face", "thigh", "joy", "open", "half", "png"),
         )
         self.assertEqual(LC.layer_kind("leap.peak.webp"), ("leap", "peak", "webp"))
+        # a pose's own face set, and the framings of a single shot
+        self.assertEqual(
+            LC.layer_kind("face.thought.chin.thinking.half.open.webp"),
+            ("face", "thought", "chin", "thinking", "half", "open", "webp"),
+        )
+        self.assertEqual(
+            LC.layer_kind("body.downcast.low.webp"), ("body", "downcast", "low", "webp")
+        )
         for bad in (
+            "face.thought.Chin.thinking.half.open.webp",
+            "face.close.chin.grin.half.open.webp",
             "body.chin.bust.webp",
             "face.close.joy.open.webp",
             "leap.top.webp",
@@ -207,6 +217,88 @@ class TestLayeredCheck(unittest.TestCase):
             "neutral.closed.open.png",
         ):
             self.assertIsNone(LC.layer_kind(bad), bad)
+
+    def test_shot_framings_and_face_sets(self):
+        """The framings of the shots: a framing through each shot's camera, recorded in the
+        manifest, and a face set of its own for a pose that turns its head."""
+        m = layered_manifest()
+        m["expressions"] = ["neutral", "stern", "thinking"]
+        cam = {
+            "shot": "thought",
+            "lens": 85,
+            "height": "eyes",
+            "above": 0,
+            "tilt": 0,
+            "turn": 25,
+        }
+        m["framings"]["close"]["head"]["size"] = 10.4
+        m["framings"]["close"]["camera"] = {**cam, "shot": "close_up", "turn": 20}
+        m["framings"]["thought"] = {
+            "frame": {"width": 24, "height": 32},
+            "head": {"x": 12, "y": 10, "top": 4, "chin": 16, "size": 10.4},
+            "camera": cam,
+            "sets": {
+                "chin": {
+                    "face": {"x": 8, "y": 8, "width": 8, "height": 8},
+                    "expressions": ["neutral", "thinking"],
+                }
+            },
+        }
+        m["framings"]["stern"] = {
+            "frame": {"width": 24, "height": 32},
+            "head": {"x": 12, "y": 10, "top": 4, "chin": 16},
+            "camera": {
+                **cam,
+                "shot": "close_up",
+                "expression": "stern",
+                "tilt": 3,
+                "turn": 8,
+            },
+            "face": {"x": 8, "y": 8, "width": 8, "height": 8},
+            "expressions": ["neutral", "stern"],
+        }
+        m["poses"] = {
+            "at_ease": {"framings": ["close", "full", "stern"]},
+            "chin": {"framings": ["thought"]},
+        }
+        folder = write_layered(self.tmp / "sets", m)
+        report = LC.check_layered_pack(folder)
+        self.assertTrue(report["pass"], report["problems"])
+        names = {p.name for p in folder.iterdir()}
+        self.assertIn("face.thought.chin.thinking.open.closed.webp", names)
+        self.assertIn("face.stern.stern.half.half.webp", names)
+        self.assertNotIn("face.stern.thinking.half.half.webp", names)
+        self.assertEqual(sum(n.startswith("face.close.") for n in names), 27)
+        for change, want in (
+            (
+                lambda x: x["framings"]["thought"]["sets"]["chin"].update(
+                    expressions=["joy"]
+                ),
+                "sets",
+            ),
+            (
+                lambda x: x["framings"]["stern"].update(expressions=["stern"]),
+                "expressions",
+            ),
+            (
+                lambda x: x["framings"]["close"]["camera"].update(height="knees"),
+                "camera",
+            ),
+            (lambda x: x["framings"]["close"]["head"].update(size=-1), "head"),
+            (
+                lambda x: x["poses"]["chin"].update(framings=["thought", "close"]),
+                "face set of its own",
+            ),
+            (
+                lambda x: x["poses"]["at_ease"].update(framings=["stern", "full"]),
+                "at_ease",
+            ),
+        ):
+            x = json.loads(json.dumps(m))
+            change(x)
+            with self.subTest(want=want):
+                problems = LC.check_layered_manifest(x)
+                self.assertTrue(any(want in p["message"] for p in problems), problems)
 
     def test_command_checks_a_layered_pack(self):
         folder = write_layered(self.tmp / "p")
@@ -425,6 +517,19 @@ class TestSharedPoses(unittest.TestCase):
             self.assertIn(name, self.shared.bones)
         b = self.shared.bones
         self.assertEqual(b["at_ease"]["leftUpperArm"], (8.0, -6.0, -79.0))
+        # the stance of at_ease: the weight on the left leg, the hips and the shoulders tilted
+        # against each other, and the head turned back toward the camera
+        self.assertEqual(b["at_ease"]["hips"], (0.0, 5.0, 4.0))
+        self.assertEqual(b["at_ease"]["chest"], (0.0, -2.0, -3.0))
+        self.assertEqual(b["arms_crossed"]["spine"], (-2.0, -2.0, -4.0))
+        self.assertEqual(b["arms_crossed"]["hips"], (0.0, 5.0, 4.0))
+        # the poses that turn their own head, with their face sets, and the leap's key poses
+        self.assertEqual(
+            set(self.shared.own_head),
+            {"chin", "hand_on_chest", "downcast", *stage_poses.LEAP_POSES.values()},
+        )
+        self.assertEqual(self.shared.faces["chin"], ["neutral", "thinking"])
+        self.assertEqual(self.shared.faces["cheer_peak"], ["joy"])
         self.assertEqual(b["at_ease"]["rightUpperArm"], (8.0, 6.0, 79.0))
         self.assertEqual(b["fist"]["leftThumbMetacarpal"], (20.0, 45.0, -10.0))
         self.assertEqual(b["wave"]["leftIndexProximal"], (0.0, -7.5, -4.0))
@@ -455,6 +560,15 @@ class TestSharedPoses(unittest.TestCase):
                 "no finger preset",
             ),
             ({"keepHead": {"pose": "nope", "bones": ["head"]}}, "keepHead"),
+            ({"poses": {"p": {"stance": "lounge"}}}, "no stance"),
+            (
+                {"poses": {"p": {"faces": ["neutral"]}}},
+                "only a pose that turns its own head",
+            ),
+            (
+                {"poses": {"p": {"keepHead": False, "faces": ["neutral", "neutral"]}}},
+                "faces",
+            ),
         ]
         for change, want in cases:
             with self.subTest(want=want):
@@ -523,7 +637,7 @@ class TestSharedPoses(unittest.TestCase):
             "foot.L",
             "foot.R",
         ]
-        for name in stage_poses.POSES:
+        for name in [*stage_poses.POSES, *stage_poses.LEAP_POSES.values()]:
             with self.subTest(pose=name):
                 _, page = self.page_fk(name)
                 vrm = self.vrm_fk(name)
@@ -535,6 +649,11 @@ class TestSharedPoses(unittest.TestCase):
         ref, _ = self.page_fk("at_ease")
         for name in stage_poses.POSES:
             W, _ = self.page_fk(name)
+            i = self.index["head"]
+            if name in self.shared.own_head:
+                # a pose with its own face set turns its head
+                self.assertGreater(np.abs(W[i] - ref[i]).max(), 0.05, name)
+                continue
             for bone in ("neck01", "neck02", "neck03", "head"):
                 with self.subTest(pose=name, bone=bone):
                     i = self.index[bone]
@@ -554,11 +673,17 @@ class TestSharedPoses(unittest.TestCase):
                 self.assertEqual(len(q), len(bones))
                 np.testing.assert_allclose(np.linalg.norm(q, axis=1), 1, atol=1e-9)
                 self.assertEqual(p["root"], [0.0, 0.0, 0.0])
-        # the leap's key poses still come from the posing tools
+        # the leap's key poses come from the same file
         for key in stage_poses.LEAP:
-            self.assertEqual(
-                len(stage_poses.page_pose(key, bones)["q"]), 4 * len(bones)
+            p = shared_poses.page_pose(
+                self.shared,
+                stage_poses.shared_name(key),
+                bones,
+                rig.labels,
+                rig.parents,
+                rig.turns,
             )
+            self.assertEqual(len(p["q"]), 4 * len(bones))
 
 
 def shots_data():
@@ -631,6 +756,37 @@ class TestShotCameras(unittest.TestCase):
         # the window's height at the eyes' distance spans the shot's head heights
         d = c.distance(0.2)
         self.assertAlmostEqual(2 * d * np.tan(np.radians(c.fov) / 2), c.window * 0.2)
+        self.assertEqual(
+            f.manifest(),
+            {
+                "shot": "full",
+                "lens": 50.0,
+                "height": "hips",
+                "above": 0.0,
+                "tilt": -8.0,
+                "turn": 20.0,
+            },
+        )
+
+    def test_render_with_an_expression(self):
+        """The square-on stern close-up renders through the close-up's camera with its stern
+        values, as a framing of its own."""
+        data = shots_data()
+        data["shots"]["close_up"]["byExpression"] = {
+            "stern": {"stills": "stern", "camera": {"tilt": 3, "turn": 8}}
+        }
+        data["renders"]["stern"] = {"shot": "close_up", "expression": "stern"}
+        s = shots.parse(data)["stern"]
+        self.assertEqual(
+            (s.shot, s.expression, s.lens, s.tilt, s.turn),
+            ("close_up", "stern", 85, 3, 8),
+        )
+        self.assertEqual(s.manifest()["expression"], "stern")
+        data["shots"]["close_up"]["byExpression"]["stern"]["stills"] = "close"
+        with self.assertRaisesRegex(
+            shots.ShotsError, r"close_up \(stern\), whose stills"
+        ):
+            shots.parse(data)
 
     def test_broken(self):
         for change, want in (
@@ -642,6 +798,12 @@ class TestShotCameras(unittest.TestCase):
                 "height",
             ),
             (lambda d: d["shots"]["full"]["camera"].update(tilt=45), "out of range"),
+            (
+                lambda d: d["renders"].update(
+                    stern={"shot": "close_up", "expression": "joy"}
+                ),
+                "no values for",
+            ),
         ):
             data = shots_data()
             change(data)
@@ -684,6 +846,9 @@ class TestShotCameras(unittest.TestCase):
             self.assertLess(
                 abs((head["chin"] - head["top"]) / g["scale"] - 1), 0.06, name
             )
+            # the head's projected size: one stage head height at the eyes' depth
+            hu = (1.6 - 0.95) / 3.5
+            self.assertAlmostEqual(head["size"], g["scale"] * hu / 0.22, delta=0.01)
             for pose in ("at_ease", "wave"):
                 v = f.view(name, pose)
                 c = v["camera"]
@@ -727,7 +892,7 @@ class TestDefaultLayeredPack(unittest.TestCase):
                 "--expressions",
                 "neutral,joy",
                 "--poses",
-                "at_ease,chin,cheer",
+                "at_ease,hand_on_chest,cheer",
                 "--page",
                 str(PAGE),
                 "--json",
@@ -743,8 +908,14 @@ class TestDefaultLayeredPack(unittest.TestCase):
         result = json.loads(out)
         self.assertTrue(result["check"]["pass"], result["check"]["problems"])
         m = result["manifest"]
-        self.assertEqual(set(m["framings"]), set(layers.FRAMINGS))
+        self.assertEqual(set(m["framings"]), set(layers.BASE_FRAMINGS))
         self.assertEqual(m["poses"]["cheer"]["framings"], ["waist", "thigh", "full"])
+        # the bow turns the head: its own face set at the framings it shows at
+        self.assertEqual(m["poses"]["hand_on_chest"]["framings"], ["waist", "thigh"])
+        for f in ("waist", "thigh"):
+            self.assertEqual(
+                m["framings"][f]["sets"]["hand_on_chest"]["expressions"], ["neutral"]
+            )
         self.assertEqual(m["leap"]["frames"], list(stage_poses.LEAP))
 
     def test_faces_fit_the_bodies(self):
