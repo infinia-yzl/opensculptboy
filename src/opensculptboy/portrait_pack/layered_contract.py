@@ -222,6 +222,31 @@ def check_light(m) -> list[str]:
     return out
 
 
+def _leap_frame_ok(fw, hd) -> bool:
+    """The leap's own frame and head: the leap's frames may hold more pixels per head than their
+    framing (the stage pushes in at the top of the leap)."""
+    if not (
+        isinstance(fw, dict)
+        and set(fw) == {"width", "height"}
+        and _int(fw["width"])
+        and _int(fw["height"])
+        and 1 <= fw["width"] <= MAX_SIDE_V2
+        and 1 <= fw["height"] <= MAX_SIDE_V2
+    ):
+        return False
+    w, h = fw["width"], fw["height"]
+    return (
+        isinstance(hd, dict)
+        and {"x", "y", "top", "chin"} <= set(hd) <= {"x", "y", "top", "chin", "size"}
+        and all(_int(hd[k]) for k in ("x", "y", "top", "chin"))
+        and ("size" not in hd or (_num(hd["size"]) and 1 <= hd["size"] <= MAX_SIDE_V2))
+        and 0 <= hd["x"] <= w
+        and hd["top"] < hd["y"] < hd["chin"]
+        and -h <= hd["top"]
+        and hd["chin"] <= 2 * h
+    )
+
+
 def check_joints(m) -> list[str]:
     """The problems of a manifest's joints (``joints``), as messages: the names, a list of numbers
     (x, y for each name) for each body layer of a pose at a framing it shows at, and for each leap
@@ -617,7 +642,9 @@ def check_layered_manifest(m) -> list[dict]:
     if "leap" in m:
         ok = (
             isinstance(lp, dict)
-            and set(lp) == {"framing", "frames"}
+            and {"framing", "frames"}
+            <= set(lp)
+            <= {"framing", "frames", "frame", "head"}
             and lp["framing"] in (fr or {})
         )
         ok = (
@@ -629,7 +656,16 @@ def check_layered_manifest(m) -> list[dict]:
         ok = ok and [k for k in LEAP_KEYS if k in lp["frames"]] == lp["frames"]
         if not ok:
             bad(
-                f"The leap must be {{framing, frames}}, its frames among {list(LEAP_KEYS)} in that order."
+                f"The leap must be {{framing, frames}}, its frames among {list(LEAP_KEYS)} in that order, "
+                "with an optional frame and head of its own."
+            )
+        elif ("frame" in lp) != ("head" in lp):
+            bad("The leap's own frame and head come together.")
+        elif "frame" in lp and not _leap_frame_ok(lp["frame"], lp["head"]):
+            bad(
+                "The leap's frame must be {width, height} in whole pixels, at most "
+                f"{MAX_SIDE_V2} a side, and its head {{x, y, top, chin, size}} inside it, the crown "
+                "above the anchor above the chin."
             )
     ex = m.get("extra")
     if "extra" in m and not (
@@ -674,7 +710,7 @@ def wanted_layers(m) -> dict:
                                 r["height"],
                             )
         if "leap" in m:
-            fw = fr[m["leap"]["framing"]]["frame"]
+            fw = m["leap"].get("frame") or fr[m["leap"]["framing"]]["frame"]
             for k in m["leap"]["frames"]:
                 out[f"leap.{k}.{ext}"] = (fw["width"], fw["height"])
         for p in m.get("passes") or []:
