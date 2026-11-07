@@ -106,6 +106,8 @@ FRONT_MIN_SHARE = 0.003
 MASK_GROW = 0.04
 MASK_SOFT = 0.02
 DEFAULT_QUALITY = {"body": 88, "face": 90}
+# The joints that are points of the head, which the page projects by these names.
+POINTS = ("eyes", "crown", "chin")
 FORMATS = ("webp", "png")
 
 
@@ -824,6 +826,19 @@ def write_layered_pack(
         neutral = frame_actions("neutral", "closed", "open")
         # the card's rig and its T-pose turns, for the shared poses
         rig = shared_poses.card_rig(card)
+        # the joints the manifest records, by the page's names for them
+        humanoid = shared_poses.bone_map()
+        joint_names = [n for n in LC.JOINT_NAMES if n in humanoid or n in POINTS]
+        page_names = [n if n in POINTS else humanoid[n] for n in joint_names]
+
+        def joints_now() -> list:
+            """The joints of the picture just rendered, in its pixels: x, y for each name."""
+            got = pp.tab.evaluate("(n) => window.portrait.project(n)", page_names)
+            missing = [n for n, p in zip(joint_names, page_names) if p not in got]
+            if missing:
+                raise PortraitError(f"The page has no joints {missing}.")
+            return [round(float(v), 1) for p in page_names for v in got[p][:2]]
+
         if cameras is not None:
             lacking = [f for f in framings if f not in cameras]
             if lacking:
@@ -1026,6 +1041,8 @@ def write_layered_pack(
 
         manifest_framings = {}
         manifest_poses = {p: {"framings": [], "front": []} for p in poses}
+        body_joints: dict = {}
+        leap_joints: dict = {}
         written = 0
         for name in framings:
             g = framer.geo[name]
@@ -1059,6 +1076,7 @@ def write_layered_pack(
                 rgba = render(framer.view(name, pose), neutral, samples)
                 save_layer(folder / f"body.{pose}.{name}{ext}", rgba, q_body)
                 written += 1
+                body_joints.setdefault(pose, {})[name] = joints_now()
                 body_passes = lit.layer(
                     folder,
                     f"body.{pose}.{name}",
@@ -1149,6 +1167,7 @@ def write_layered_pack(
                 )
                 save_layer(folder / f"leap.{key}{ext}", rgba, q_body)
                 written += 1
+                leap_joints[key] = joints_now()
                 lit.layer(
                     folder,
                     f"leap.{key}",
@@ -1193,14 +1212,18 @@ def write_layered_pack(
     )
     if leap_keys:
         manifest["leap"] = {"framing": "full", "frames": leap_keys}
+    if body_joints:
+        manifest["joints"] = {
+            "names": joint_names,
+            "poses": body_joints,
+            **({"leap": leap_joints} if leap_joints else {}),
+        }
     if lit.on:
         manifest["passes"] = lit.manifest_passes()
         manifest["light"] = lit.manifest_light()
     if preview:
         manifest["preview"] = True
-    (folder / C.MANIFEST).write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
-    )
+    (folder / C.MANIFEST).write_text(manifest_text(manifest), encoding="utf-8")
     report = (
         C.check_pack(folder)
         if not preview
@@ -1221,6 +1244,21 @@ def write_layered_pack(
         "files": written + 1 + lit.files,
         **({"light": lit.result()} if lit.on else {}),
     }
+
+
+def manifest_text(manifest: dict) -> str:
+    """The manifest as JSON with an indent of 2, each list of numbers on one line (the joints)."""
+    import re
+
+    text = json.dumps(manifest, indent=2, ensure_ascii=False)
+    number_list = re.compile(r"\[\s*(-?[\d.e+-]+(?:,\s*-?[\d.e+-]+)*)\s*\]")
+    return (
+        number_list.sub(
+            lambda m: "[" + ", ".join(x.strip() for x in m.group(1).split(",")) + "]",
+            text,
+        )
+        + "\n"
+    )
 
 
 def prepare_layered_folder(out) -> pathlib.Path:
