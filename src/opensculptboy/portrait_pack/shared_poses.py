@@ -9,7 +9,9 @@ The file names the normalized humanoid bones of VRM 1.0 and gives each bone angl
 about X, then Y, then Z, each in the parent's frame (three.js's Euler order ``ZYX``), with the
 figure facing +Z, its left at +X and up at +Y: the axes of the viewer page and of the authoring
 rig. Arms and hands are written as for the left side and mirrored onto the right
-(``[x, -y, -z]``); presets carry the arms down, the fingers' curls and the thumb.
+(``[x, -y, -z]``); presets carry the arms down, the fingers' curls, the thumb and the stances
+(the hips, the spine and the legs of a pose, such as the weight on one leg). A pose that turns its
+own head (``keepHead: false``) lists in ``faces`` the expressions of its own face set.
 ``data/portrait/poses.json`` is the command's default file.
 
 The rig of a card has more bones than the humanoid, and it rests in an A pose. A pose turns it as
@@ -129,6 +131,9 @@ class SharedPoses:
     keep_pose: str | None
     own_head: frozenset  # the poses that turn the head themselves
     source: str = ""
+    faces: dict = dataclasses.field(
+        default_factory=dict
+    )  # pose -> its own face set's expressions
 
     @property
     def names(self) -> list:
@@ -213,11 +218,19 @@ def parse(data: dict, source: str = "") -> SharedPoses:
     poses = data.get("poses")
     if not isinstance(poses, dict) or not poses:
         raise PosesError("The pose file holds no poses.")
-    bones, own = {}, set()
+    stances = data.get("stances") or {}
+    if not isinstance(stances, dict):
+        raise PosesError("The pose file's stances must be an object of stances.")
+    bones, own, faces = {}, set(), {}
     for name, p in poses.items():
         where = f"pose {name}"
         b = {}
-        for bone, e in (p.get("bones") or {}).items():
+        stance = {}
+        if "stance" in p:
+            stance = stances.get(p["stance"])
+            if not isinstance(stance, dict):
+                raise PosesError(f"{where}: no stance {p['stance']!r}.")
+        for bone, e in [*stance.items(), *(p.get("bones") or {}).items()]:
             if bone not in HUMANOID_PARENT:
                 raise PosesError(f"{where}: {bone} is not a VRM humanoid bone.")
             if not (isinstance(e, list) and len(e) == 3):
@@ -229,6 +242,19 @@ def parse(data: dict, source: str = "") -> SharedPoses:
         bones[name] = b
         if p.get("keepHead") is False:
             own.add(name)
+            xs = p.get("faces", ["neutral"])
+            if not (
+                isinstance(xs, list)
+                and xs
+                and all(isinstance(x, str) for x in xs)
+                and len(set(xs)) == len(xs)
+            ):
+                raise PosesError(f"{where}: faces lists expressions, each once.")
+            faces[name] = list(xs)
+        elif "faces" in p:
+            raise PosesError(
+                f"{where}: only a pose that turns its own head (keepHead false) has faces."
+            )
     keep = data.get("keepHead")
     keep_bones, keep_pose = (), None
     if keep:
@@ -241,7 +267,7 @@ def parse(data: dict, source: str = "") -> SharedPoses:
         bad = [b for b in keep_bones if b not in HUMANOID_PARENT]
         if bad:
             raise PosesError(f"keepHead names {bad}, which are not VRM humanoid bones.")
-    return SharedPoses(bones, keep_bones, keep_pose, frozenset(own), source)
+    return SharedPoses(bones, keep_bones, keep_pose, frozenset(own), source, faces)
 
 
 def load(path=None) -> SharedPoses:

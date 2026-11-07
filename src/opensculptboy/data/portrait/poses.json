@@ -13,8 +13,8 @@
     "open": [4, 4, 2]
   },
   "thumb": {
-    "rest": { "ThumbMetacarpal": [0, 22, -4], "ThumbProximal": [0, 8, -4], "ThumbDistal": [0, 6, 0] },
-    "fist": { "ThumbMetacarpal": [20, 45, -10], "ThumbProximal": [0, 35, -5], "ThumbDistal": [0, 30, 0] }
+    "rest": {"ThumbMetacarpal": [0, 22, -4], "ThumbProximal": [0, 8, -4], "ThumbDistal": [0, 6, 0]},
+    "fist": {"ThumbMetacarpal": [20, 45, -10], "ThumbProximal": [0, 35, -5], "ThumbDistal": [0, 30, 0]}
   },
   "arms": {
     "down": {
@@ -22,67 +22,111 @@
       "UpperArm": [8, -6, -79],
       "LowerArm": [0, -12, 0],
       "Hand": [0, 0, -2],
-      "hand": { "curl": "relaxed" }
+      "hand": {"curl": "relaxed"}
     }
   },
-  "keepHead": { "pose": "at_ease", "bones": ["neck", "head"] },
+  "stances": {
+    "rest": {"hips": [0, 5, 4], "spine": [0, -2, -4], "chest": [0, -2, -3], "neck": [0, -4, 2], "head": [0, -5, 1], "leftUpperLeg": [0, 0, -9], "leftFoot": [0, -4, 5], "rightUpperLeg": [-10, 6, -2], "rightLowerLeg": [18, 0, 0], "rightFoot": [-6, 10, 2]},
+    "lean": {"hips": [0, 6, 7], "spine": [-2, -2, -6], "chest": [-2, -2, -5], "leftUpperLeg": [0, 0, -12], "leftFoot": [0, -4, 7], "rightUpperLeg": [-14, 10, -3], "rightLowerLeg": [26, 0, 0], "rightFoot": [-10, 12, 2]}
+  },
+  "keepHead": {"pose": "at_ease", "bones": ["neck", "head"]},
   "poses": {
     "at_ease": {
+      "stance": "rest",
       "left": "down",
       "right": "down"
     },
     "relaxed": {
-      "bones": {
-        "hips": [0, 4, 3],
-        "spine": [-2, -2, -4],
-        "chest": [-2, -2, -2],
-        "leftUpperLeg": [-8, 0, 2],
-        "leftLowerLeg": [16, 0, 0],
-        "leftFoot": [-6, -8, 0],
-        "rightUpperLeg": [0, 0, -3]
-      },
-      "left": { "Shoulder": [0, 0, -2], "UpperArm": [70, 25, -48], "LowerArm": [0, -110, 0], "Hand": [0, 0, 30], "hand": { "curl": [20, 30, 20], "thumb": 0.3 } },
-      "right": { "from": "down", "UpperArm": [10, -2, -80] }
+      "stance": "lean",
+      "left": {"Shoulder": [0, 0, -2], "UpperArm": [70, 26, -42], "LowerArm": [0, -112.5, 0], "Hand": [0.5, 0, 29], "hand": {"curl": [20, 30, 20], "thumb": 0}},
+      "right": {"from": "down", "UpperArm": [10, -2, -80]}
     },
     "hands_behind_head": {
-      "bones": { "spine": [-3, 0, 0], "chest": [-3, 0, 0] },
-      "left": { "Shoulder": [0, 0, 8], "UpperArm": [-125, 10, 38], "LowerArm": [0, -115, 0], "Hand": [0, 0, 0], "hand": { "curl": [40, 50, 30], "thumb": 0.4 } },
-      "right": { "Shoulder": [0, 0, 8], "UpperArm": [-125, 10, 38], "LowerArm": [0, -115, 0], "Hand": [0, 0, 0], "hand": { "curl": [40, 50, 30], "thumb": 0.4 } }
+      "stance": "rest",
+      "bones": {"spine": [-3, -2, -4], "chest": [-3, -2, -3]},
+      "left": {"Shoulder": [0, 0, 8], "UpperArm": [-125, 10, 38], "LowerArm": [0, -115, 0], "Hand": [0, 0, 0], "hand": {"curl": [40, 50, 30], "thumb": 0.4}},
+      "right": {"Shoulder": [0, 0, 8], "UpperArm": [-125, 10, 38], "LowerArm": [0, -115, 0], "Hand": [0, 0, 0], "hand": {"curl": [40, 50, 30], "thumb": 0.4}}
     },
     "chin": {
-      "bones": { "chest": [4, 0, 0] },
-      "right": { "UpperArm": [60, -40, -108], "LowerArm": [0, -135, 0], "Hand": [0, 0, 24], "hand": { "curl": [55, 80, 50], "thumb": 0.5 } },
-      "left": { "UpperArm": [65, -30, -74], "LowerArm": [0, -100, 0], "Hand": [0, 0, 0], "hand": { "curl": "relaxed" } }
+      "stance": "rest",
+      "keepHead": false,
+      "faces": ["neutral", "thinking"],
+      "bones": {"chest": [4, -2, -3], "neck": [-3, 2, 2], "head": [-4, 4, 0]},
+      "right": {"UpperArm": [65.5, -41.5, -111.5], "LowerArm": [0, -132, 0], "Hand": [-1, 0, 31], "hand": {"curl": [55, 80, 50], "thumb": 0.5}},
+      "left": {"UpperArm": [65, -30, -74], "LowerArm": [0, -100, 0], "Hand": [0, 0, 0], "hand": {"curl": "relaxed"}}
     },
     "scratch_head": {
-      "right": { "Shoulder": [0, 0, 8], "UpperArm": [-130, 5, 55], "LowerArm": [0, -120, 0], "Hand": [0, 20, 0], "hand": { "curl": [30, 40, 20], "thumb": 0.3 } },
+      "stance": "rest",
+      "right": {"Shoulder": [0, 0, 8], "UpperArm": [-130, 5, 55], "LowerArm": [0, -120, 0], "Hand": [0, 20, 0], "hand": {"curl": [30, 40, 20], "thumb": 0.3}},
       "left": "down",
-      "wiggle": [{ "bone": "rightHand", "amount": [0, 0, 10], "periodMs": 420 }]
+      "wiggle": [{"bone": "rightHand", "amount": [0, 0, 10], "periodMs": 420}]
     },
     "arms_crossed": {
-      "bones": { "spine": [-2, 0, 0] },
-      "left": { "UpperArm": [65, -32, -74], "LowerArm": [0, -116, 0], "Hand": [0, 0, 0], "hand": { "curl": [20, 40, 20], "thumb": 0.2 } },
-      "right": { "UpperArm": [55, -42, -70], "LowerArm": [0, -112, 0], "Hand": [0, 0, 0], "hand": { "curl": [20, 40, 20], "thumb": 0.2 } }
+      "stance": "rest",
+      "bones": {"spine": [-2, -2, -4]},
+      "left": {"UpperArm": [65, -32, -74], "LowerArm": [0, -116, 0], "Hand": [0, 0, 0], "hand": {"curl": [20, 40, 20], "thumb": 0.2}},
+      "right": {"UpperArm": [55, -42, -70], "LowerArm": [0, -112, 0], "Hand": [0, 0, 0], "hand": {"curl": [20, 40, 20], "thumb": 0.2}}
     },
     "hand_on_chest": {
-      "bones": { "spine": [5, 0, 0], "chest": [4, 0, 0] },
-      "right": { "UpperArm": [60, -24, -84], "LowerArm": [0, -125, 0], "Hand": [-60, -10, -20], "hand": { "curl": "open", "thumb": 0 } },
+      "keepHead": false,
+      "faces": ["neutral", "smile", "worried"],
+      "bones": {"spine": [7, 0, 0], "chest": [6, 0, 0], "neck": [4, 0, 0], "head": [6, 0, 0]},
+      "right": {"UpperArm": [60, -24, -84], "LowerArm": [0, -125, 0], "Hand": [-60, -10, -20], "hand": {"curl": "open", "thumb": 0}},
       "left": "down"
     },
     "wave": {
-      "left": { "Shoulder": [0, 0, 6], "UpperArm": [-90, -10, 10], "LowerArm": [0, -88, 0], "Hand": [0, 0, 0], "hand": { "curl": "open", "thumb": -1, "spread": 5 } },
+      "stance": "rest",
+      "left": {"Shoulder": [0, 0, 6], "UpperArm": [-90, -10, 10], "LowerArm": [0, -88, 0], "Hand": [0, 0, 0], "hand": {"curl": "open", "thumb": -1, "spread": 5}},
       "right": "down",
-      "wiggle": [{ "bone": "leftLowerArm", "amount": [0, 0, 16], "periodMs": 760 }]
+      "wiggle": [{"bone": "leftLowerArm", "amount": [0, 0, 16], "periodMs": 760}]
     },
     "fist": {
-      "bones": { "chest": [-2, 0, 0] },
-      "left": { "Shoulder": [0, 0, 10], "UpperArm": [-90, -10, 45], "LowerArm": [0, -75, 0], "Hand": [0, 0, 0], "hand": { "curl": "fist", "thumb": 1 } },
+      "stance": "rest",
+      "bones": {"chest": [-2, -2, -3]},
+      "left": {"Shoulder": [0, 0, 10], "UpperArm": [-90, -10, 45], "LowerArm": [0, -75, 0], "Hand": [0, 0, 0], "hand": {"curl": "fist", "thumb": 1}},
       "right": "down"
     },
     "cheer": {
-      "bones": { "spine": [-4, 0, 0], "chest": [-4, 0, 0] },
-      "left": { "Shoulder": [0, 0, 12], "UpperArm": [-60, -8, 50], "LowerArm": [0, -25, 0], "Hand": [0, 0, 0], "hand": { "curl": "fist", "thumb": 1 } },
-      "right": { "Shoulder": [0, 0, 12], "UpperArm": [-60, -8, 50], "LowerArm": [0, -25, 0], "Hand": [0, 0, 0], "hand": { "curl": "fist", "thumb": 1 } }
+      "stance": "rest",
+      "bones": {"spine": [-4, -2, -4], "chest": [-4, -2, -3]},
+      "left": {"Shoulder": [0, 0, 12], "UpperArm": [-60, -8, 50], "LowerArm": [0, -25, 0], "Hand": [0, 0, 0], "hand": {"curl": "fist", "thumb": 1}},
+      "right": {"Shoulder": [0, 0, 12], "UpperArm": [-60, -8, 50], "LowerArm": [0, -25, 0], "Hand": [0, 0, 0], "hand": {"curl": "fist", "thumb": 1}}
+    },
+    "downcast": {
+      "stance": "rest",
+      "keepHead": false,
+      "faces": ["neutral", "sad", "worried"],
+      "bones": {"spine": [3, -2, -4], "upperChest": [5, 0, 0], "neck": [8, 3, 2], "head": [12, 5, 2]},
+      "left": {"from": "down", "Shoulder": [0, -6, -6], "UpperArm": [8, -14, -80]},
+      "right": {"from": "down", "Shoulder": [0, -6, -6], "UpperArm": [8, -14, -80]}
+    },
+    "leap_crouch": {
+      "keepHead": false,
+      "faces": ["joy"],
+      "bones": {"hips": [22, 0, 0], "spine": [10, 0, 0], "chest": [6, 0, 0], "neck": [-12, 0, 0], "head": [-6, 0, 0], "leftUpperLeg": [-75, 0, -4], "leftLowerLeg": [100, 0, 0], "leftFoot": [-47, 0, 0], "rightUpperLeg": [-75, 0, 4], "rightLowerLeg": [100, 0, 0], "rightFoot": [-47, 0, 0]},
+      "left": {"Shoulder": [0, 0, -4], "UpperArm": [10, 25, -76], "LowerArm": [0, -20, 0], "Hand": [0, 0, -10], "hand": {"curl": [30, 40, 25], "thumb": 0.3}},
+      "right": {"Shoulder": [0, 0, -4], "UpperArm": [10, 25, -76], "LowerArm": [0, -20, 0], "Hand": [0, 0, -10], "hand": {"curl": [30, 40, 25], "thumb": 0.3}}
+    },
+    "leap_rise": {
+      "keepHead": false,
+      "faces": ["joy"],
+      "bones": {"hips": [-4, 0, 0], "spine": [-3, 0, 0], "chest": [-3, 0, 0], "neck": [-4, 0, 0], "head": [-5, 0, 0], "leftUpperLeg": [8, 0, -2], "leftLowerLeg": [4, 0, 0], "leftFoot": [45, 0, 0], "rightUpperLeg": [-55, 0, 4], "rightLowerLeg": [65, 0, 0], "rightFoot": [25, 0, 0]},
+      "left": {"Shoulder": [0, 0, 6], "UpperArm": [-20, -55, 10], "LowerArm": [0, -30, 0], "Hand": [0, 0, 0], "hand": {"curl": [60, 70, 45], "thumb": 0.7}},
+      "right": {"Shoulder": [0, 0, 6], "UpperArm": [-20, -55, 10], "LowerArm": [0, -30, 0], "Hand": [0, 0, 0], "hand": {"curl": [60, 70, 45], "thumb": 0.7}}
+    },
+    "cheer_peak": {
+      "keepHead": false,
+      "faces": ["joy"],
+      "bones": {"hips": [-8, 0, 0], "spine": [-8, 0, 0], "chest": [-6, 0, 0], "neck": [-8, 0, 0], "head": [-12, 0, 0], "leftUpperLeg": [-55, 0, 16], "leftLowerLeg": [105, 0, 0], "leftFoot": [30, 0, 0], "rightUpperLeg": [-55, 0, -16], "rightLowerLeg": [105, 0, 0], "rightFoot": [30, 0, 0]},
+      "left": {"Shoulder": [0, 0, 14], "UpperArm": [-60, -8, 52], "LowerArm": [0, -12, 0], "Hand": [0, 0, 0], "hand": {"curl": "fist", "thumb": 1}},
+      "right": {"Shoulder": [0, 0, 14], "UpperArm": [-60, -8, 52], "LowerArm": [0, -12, 0], "Hand": [0, 0, 0], "hand": {"curl": "fist", "thumb": 1}}
+    },
+    "leap_land": {
+      "keepHead": false,
+      "faces": ["joy"],
+      "bones": {"hips": [10, 0, 0], "spine": [4, 0, 0], "chest": [0, 0, 0], "neck": [-4, 0, 0], "head": [-6, 0, 0], "leftUpperLeg": [-45, 0, -5], "leftLowerLeg": [62, 0, 0], "leftFoot": [-27, 0, 0], "rightUpperLeg": [-45, 0, 5], "rightLowerLeg": [62, 0, 0], "rightFoot": [-27, 0, 0]},
+      "left": {"Shoulder": [0, 0, 6], "UpperArm": [-20, -35, -62], "LowerArm": [0, -35, 0], "Hand": [0, 0, 0], "hand": {"curl": [50, 60, 40], "thumb": 0.6}},
+      "right": {"Shoulder": [0, 0, 6], "UpperArm": [-20, -35, -62], "LowerArm": [0, -35, 0], "Hand": [0, 0, 0], "hand": {"curl": [50, 60, 40], "thumb": 0.6}}
     }
   }
 }
