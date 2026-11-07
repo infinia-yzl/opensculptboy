@@ -27,6 +27,7 @@ page's lights and exposure, straight alpha on a transparent background.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import time
@@ -62,13 +63,19 @@ FRAMINGS = {
     "close": dict(scale=810, above=0.5, below=2.2, hands=False),
     "waist": dict(scale=660, above=0.5, below=3.6, hands=True),
     "thigh": dict(scale=330, above=0.5, below=6.0, hands=True),
-    "full": dict(scale=230, above=0.5, below=None, hands=True),
+    "full": dict(scale=160, above=0.5, below=None, hands=True),
     "thought": dict(scale=810, above=0.5, below=2.2, hands=False),
     "stern": dict(scale=810, above=0.5, below=2.2, hands=False),
     "low": dict(scale=330, above=0.5, below=6.8, hands=True),
 }
 # The framings every pack may hold without the shots' cameras; at_ease shows at each of them.
 BASE_FRAMINGS = ("close", "waist", "thigh", "full")
+# The leap's key poses hold more pixels per head than the full framing: the stage pushes in at the
+# top of the leap until the figure takes 88 % of the height, which asks for about 210.
+LEAP_SCALE = 230
+# Fewer samples where the face is small on the screen (the two-shot, the low shot's framing is its
+# own, and the full shot); every other framing and the leap take the pack's samples (16).
+FRAMING_SAMPLES = {"thigh": 8, "full": 8}
 # The poses each framing holds: the poses its shot shows. Raised hands leave the close framings;
 # a pose with a face set of its own shows where its shot needs it (the chin in the thought, the
 # bow of hand_on_chest in the medium close-up and the two-shot, the lowered head in the low shot).
@@ -85,8 +92,17 @@ FRAMING_POSES = {
 }
 # The poses of the close framing (kept for callers of the first layered pack).
 CLOSE_POSES = FRAMING_POSES["close"]
-# The expressions of the main face set at a framing whose shot shows only some (all elsewhere).
-FRAMING_EXPRESSIONS = {"stern": ("neutral", "stern")}
+# The expressions of the main face set at a framing whose shot shows only some (all elsewhere), from
+# the stage's rules (docs/portrait-pack.md, "Expressions by framing"): the stern close-up
+# shows neutral and stern; the full shot shows only the celebration (joy), with neutral and smile
+# for the moment before and after it; the close-up leaves stern to the stern framing when the pack
+# holds it.
+FRAMING_EXPRESSIONS = {
+    "stern": ("neutral", "stern"),
+    "full": ("neutral", "joy", "smile"),
+}
+# Expressions a framing leaves to another framing of the pack: framing -> {expression: the other}.
+FRAMING_LEAVES = {"close": {"stern": "stern"}}
 # The margins: around the figure's sides and top, and around the face's changing rectangle, in heads.
 SIDE_MARGIN = 0.08
 TOP_MARGIN = 0.06
@@ -110,6 +126,28 @@ DEFAULT_QUALITY = {"body": 88, "face": 90}
 # The joints that are points of the head, which the page projects by these names.
 POINTS = ("eyes", "crown", "chin")
 FORMATS = ("webp", "png")
+
+
+def parse_framing_samples(text: str | None) -> dict | None:
+    """``--framing-samples``: "thigh=8,full=8" as a mapping, "none" as an empty one, None (the
+    default, :data:`FRAMING_SAMPLES`) when not given."""
+    if text is None:
+        return None
+    if text.strip().lower() == "none":
+        return {}
+    out = {}
+    for part in text.split(","):
+        if not part.strip():
+            continue
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name not in FRAMINGS or not value.strip().isdigit() or int(value) < 1:
+            raise ValueError(
+                f"--framing-samples takes framing=samples pairs with framings of {list(FRAMINGS)} "
+                f"and samples of 1 or more, not {part.strip()!r}."
+            )
+        out[name] = int(value)
+    return out
 
 
 def layer_ok(path: pathlib.Path, size) -> bool:
@@ -294,7 +332,7 @@ class Framer:
         top = F["above"]
         left = right = 0.0
         outlines = [self._rel(pose) for pose in self.poses_of[name]]
-        if name == "full":
+        if name in ("full", "leap"):
             outlines += [self._rel(k, stage_poses.HEAD_POSE) for k in self.leap]
         for rows, x0, x1, cov in outlines:
             if F["hands"]:
@@ -321,6 +359,16 @@ class Framer:
             "width": width,
             "height": height,
         }
+
+    def alias(self, name: str, of: str, scale: float) -> None:
+        """A framing ``name`` that is ``of`` at another scale (the leap at its own pixels per head):
+        the same camera, poses and outlines."""
+        self.framings[name] = dict(self.framings[of], scale=scale)
+        self.poses_of[name] = self.poses_of[of]
+        for table in ("outlines", "figures_of", "cameras"):
+            if hasattr(self, table):
+                getattr(self, table)[name] = getattr(self, table)[of]
+        self.geo[name] = self._geometry(name)
 
     def view(self, name: str, pose: str) -> dict:
         """The camera of a framing for a pose: the head at the same pixels in every pose."""
@@ -562,13 +610,59 @@ def _shot_framer(
     )
 
 
+class Clock:
+    """The seconds a pack's render spends in each phase, for its log and its result. The writing
+    runs on a pool of threads beside the page, so its seconds overlap the page's."""
+
+    def __init__(self):
+        import threading
+
+        self.seconds: dict[str, float] = {}
+        self.lock = threading.Lock()
+
+    def add(self, phase: str, seconds: float) -> None:
+        with self.lock:
+            self.seconds[phase] = self.seconds.get(phase, 0.0) + seconds
+
+    def time(self, phase: str):
+        import contextlib
+
+        @contextlib.contextmanager
+        def timer():
+            t = time.time()
+            try:
+                yield
+            finally:
+                self.add(phase, time.time() - t)
+
+        return timer()
+
+    def report(self) -> dict:
+        with self.lock:
+            return {k: round(v, 1) for k, v in sorted(self.seconds.items())}
+
+
+# The writing of the layers runs on this many threads while the page renders the next layer, with
+# at most this many layers waiting.
+WRITERS = 4
+WAITING = 6
+# The pass files' WebP effort (0 to 6): 4 encodes about seven times faster than 6 at the same size.
+PASS_METHOD = 4
+
+
 class Lit:
     """The light passes of a pack being written (:mod:`opensculptboy.portrait_pack.light`): the rig
     on the page, each layer's passes in linear light, their scales (from the first body layer), the
-    pass files beside each layer, and the reproduction of each layer by its passes' sum. Without
-    passes it only sets the rig, and its other methods do nothing."""
+    layer itself as the passes' sum through the display pass, the pass files beside each layer, and
+    the reproduction of each layer by its stored passes' sum. Every layer, with passes or without,
+    is written on a pool of threads while the page renders the next one."""
 
-    def __init__(self, pp, passes, rig, rig_name, quality, pass_quality, log):
+    def __init__(
+        self, pp, passes, rig, rig_name, quality, pass_quality, log, clock=None
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
         self.pp = pp
         self.passes = list(passes or [])
         self.on = bool(self.passes)
@@ -580,7 +674,11 @@ class Lit:
         self.face: dict | None = None
         self.files = 0
         self.seconds = 0.0
+        self.clock = clock or Clock()
         self.repro = light_passes.Reproduction()
+        self.pool = ThreadPoolExecutor(max_workers=WRITERS)
+        self.waiting: list = []
+        self.lock = threading.Lock()
         self.display = (
             pp.tab.evaluate("(r) => window.portrait.light(r)", rig) if rig else None
         )
@@ -609,44 +707,86 @@ class Lit:
             )
         self.pp.tab.evaluate("() => window.portrait.pass('all')")
         self.seconds += time.time() - t
+        self.clock.add("render passes", time.time() - t)
         return out
 
-    def layer(self, folder, stem, kind, view, actions, samples, rgba, face=None):
-        """Render, write and measure the passes of a whole layer; returns the passes (or None)."""
-        if not self.on:
-            return None
-        passes = self.render(view, actions, samples)
-        if not self.scales:
-            alpha = rgba[..., 3]
-            self.scales = {
-                n: round(light_passes.pass_scale(p[..., :3], alpha), 5)
-                for n, p in passes.items()
-            }
-            self.face = light_passes.face_light(
-                {n: p[..., :3] for n, p in passes.items()}, alpha, face
-            )
-            self.log(
-                "light passes: scales "
-                + ", ".join(f"{n} {s:.3f}" for n, s in self.scales.items())
-            )
-        self._write(
-            folder, stem, kind, {n: p[..., :3] for n, p in passes.items()}, rgba
-        )
-        return passes
+    def compose(self, passes: dict) -> np.ndarray:
+        """The layer as the sum of its passes through the display pass (RGBA bytes): the passes add
+        up to the whole rig in linear light, so the sum gives the layer without a picture of its
+        own. The coverage comes from the passes, and the colour is zero where it is zero."""
+        t = time.time()
+        first = next(iter(passes.values()))
+        total = sum(p[..., :3] for p in passes.values())
+        alpha = np.round(np.clip(first[..., 3], 0, 1) * 255).astype(np.uint8)
+        d = self.display
+        rgb = light_passes.display8(total, d["saturation"], d["contrast"])
+        rgb[alpha == 0] = 0
+        self.clock.add("compose", time.time() - t)
+        return np.ascontiguousarray(np.dstack([rgb, alpha]))
 
-    def crop(self, folder, stem, kind, passes, rect, rgba):
-        """Write and measure the passes of a layer cut from a rendered picture's passes: the
-        rectangle ``rect`` (x, y, width, height) with the layer's own alpha (``rgba``)."""
-        if not self.on or passes is None:
-            return
-        y, x, hh, ww = rect["y"], rect["x"], rect["height"], rect["width"]
-        self._write(
-            folder,
-            stem,
-            kind,
-            {n: p[y : y + hh, x : x + ww, :3] for n, p in passes.items()},
-            rgba,
+    def ensure_scales(self, passes: dict, alpha: np.ndarray, face=None, stored=None):
+        """The pack's scales from its first body layer's passes. ``stored``: the scales an earlier
+        run stored its passes with (resume), which the pack keeps when they agree within 2 %.
+        Returns False when they disagree, so the earlier run's files cannot be kept."""
+        if self.scales:
+            return True
+        self.scales = {
+            n: round(light_passes.pass_scale(p[..., :3], alpha), 5)
+            for n, p in passes.items()
+        }
+        agree = True
+        if stored is not None:
+            agree = all(
+                n in stored and abs(stored[n] / self.scales[n] - 1) <= 0.02
+                for n in self.scales
+            )
+            if agree:
+                self.scales = {n: round(stored[n], 5) for n in self.scales}
+        self.face = light_passes.face_light(
+            {n: p[..., :3] for n, p in passes.items()}, alpha, face
         )
+        self.log(
+            "light passes: scales "
+            + ", ".join(f"{n} {s:.3f}" for n, s in self.scales.items())
+            + (
+                ""
+                if stored is None
+                else " (the earlier run's)"
+                if agree
+                else " (the earlier run's differ: its layers are rendered again)"
+            )
+        )
+        return agree
+
+    def submit(self, folder, stem, kind, rgba, quality, passes=None, ext=".webp"):
+        """Write a layer and its passes (pass name to linear colour, cut to the layer) on the pool."""
+        rgba = np.ascontiguousarray(rgba)
+        if passes is not None:
+            passes = {n: np.ascontiguousarray(p[..., :3]) for n, p in passes.items()}
+
+        def task():
+            t = time.time()
+            save_layer(folder / f"{stem}{ext}", rgba, quality)
+            if self.on and passes is not None:
+                self._write(folder, stem, kind, passes, rgba)
+            self.clock.add("write (on the pool)", time.time() - t)
+
+        with self.clock.time("wait for the pool"):
+            while len(self.waiting) >= WAITING:
+                self.waiting.pop(0).result()
+        self.waiting.append(self.pool.submit(task))
+
+    def drain(self):
+        """Wait for every layer on the pool; an error in a writer is raised here."""
+        with self.clock.time("wait for the pool"):
+            while self.waiting:
+                self.waiting.pop(0).result()
+
+    def close(self):
+        try:
+            self.drain()
+        finally:
+            self.pool.shutdown(wait=True)
 
     def _write(self, folder, stem, kind, passes, rgba):
         from PIL import Image
@@ -663,11 +803,12 @@ class Lit:
                 path,
                 format="WEBP",
                 quality=int(q),
-                method=6,
+                method=PASS_METHOD,
                 alpha_quality=100,
                 exact=True,
             )
-            self.files += 1
+            with self.lock:
+                self.files += 1
             back = np.asarray(Image.open(path).convert("RGBA"))
             total += light_passes.decode_pass(back, self.scales[name])
         d = self.display
@@ -698,6 +839,29 @@ class Lit:
         }
 
 
+def stored_scales(folder: pathlib.Path, stem: str, passes: dict, alpha: np.ndarray):
+    """The scales an earlier run stored a layer's pass files with, estimated from the same layer's
+    passes rendered again: the median ratio of the linear light to the stored light over the lit,
+    covered pixels. None when a pass file is missing or cut short."""
+    from PIL import Image
+
+    out = {}
+    cov = alpha >= 250
+    for name, p in passes.items():
+        path = folder / f"{stem}.{name}.webp"
+        if not layer_ok(path, (alpha.shape[1], alpha.shape[0])):
+            return None
+        with Image.open(path) as img:
+            stored = light_passes.decode_pass(np.asarray(img.convert("RGBA")), 1.0)
+        a = p[..., :3].max(-1)
+        b = stored.max(-1)
+        use = cov & (b > 0.1) & (a > 0)
+        if use.sum() < 100:
+            return None
+        out[name] = float(np.median(a[use] / b[use]))
+    return out
+
+
 def write_layered_pack(
     out,
     card=None,
@@ -720,6 +884,7 @@ def write_layered_pack(
     light_rig: str | None = None,
     pass_quality: int | None = None,
     resume: bool = False,
+    framing_samples: dict | None = None,
 ) -> dict:
     """
     Render the layered portrait pack of a character card (None for the default character) into
@@ -738,7 +903,9 @@ def write_layered_pack(
     layer whose file and pass files decode whole at their size is kept (the first body layer is
     rendered again, since its passes set the scales), and the rest is rendered. Returns the
     manifest, the check's report, the time taken and, with passes, how closely the passes' sum
-    reproduces each layer (``light``).
+    reproduces each layer (``light``). ``framing_samples`` gives some framings fewer samples than
+    ``samples`` (:data:`FRAMING_SAMPLES` by default; a framing never takes more than ``samples``).
+    The result's ``timing`` gives the seconds of each phase.
     """
     from opensculptboy.portrait_pack import shared_poses
     from opensculptboy.portrait_pack import shots as shot_specs
@@ -806,9 +973,19 @@ def write_layered_pack(
         if p in shared.own_head
     }
     main_xs = {
-        n: [x for x in expressions if x in FRAMING_EXPRESSIONS.get(n, expressions)]
+        n: [
+            x
+            for x in expressions
+            if x in FRAMING_EXPRESSIONS.get(n, expressions)
+            and FRAMING_LEAVES.get(n, {}).get(x) not in framings
+        ]
         for n in framings
     }
+    framing_samples = FRAMING_SAMPLES if framing_samples is None else framing_samples
+
+    def samples_at(name: str) -> int:
+        return max(1, min(samples, int(framing_samples.get(name, samples))))
+
     card_name = None
     if card is not None:
         data = json.loads(pathlib.Path(card).read_text(encoding="utf-8"))
@@ -833,12 +1010,14 @@ def write_layered_pack(
         if why or not 1 <= len(value) <= C.TEXT_LIMITS[key]:
             raise ValueError(f"The {key} {why or 'is too long'}.")
     folder = prepare_layered_folder(out, keep=resume)
-    kept = {"layers": 0}
+    kept = {"layers": 0, "on": resume, "removed": 0}
+    clock = Clock()
     ext = "." + fmt
     q_body = quality["body"] if fmt == "webp" else None
     q_face = quality["face"] if fmt == "webp" else None
     t0 = time.time()
-    with PortraitPage(card=card, page=page, log=log) as pp:
+    with contextlib.ExitStack() as stack:
+        pp = stack.enter_context(PortraitPage(card=card, page=page, log=log))
         info = pp.begin(PROBE_SIZE, PROBE_SIZE)
         lit = Lit(
             pp,
@@ -848,7 +1027,10 @@ def write_layered_pack(
             quality if fmt == "webp" else None,
             pass_quality,
             log,
+            clock,
         )
+        # the writers finish (and raise any error) before the page closes
+        stack.callback(lit.close)
         known = set(info["actions"])
         unknown = sorted({k for *_, a in pack_faces(expressions) for k in a} - known)
         if unknown:
@@ -867,7 +1049,7 @@ def write_layered_pack(
         def done(stem: str, size) -> bool:
             """With resume: the layer and its passes are already in the folder."""
             return (
-                resume
+                kept["on"]
                 and layer_ok(folder / f"{stem}{ext}", size)
                 and lit.have(folder, stem, size)
             )
@@ -911,7 +1093,17 @@ def write_layered_pack(
             )
             return pp.frame(actions, n)
 
+        def picture(view: dict, actions: dict, n: int):
+            """A layer's picture and its passes: with passes, the layer is their sum, so the
+            page renders the passes alone; without, the layer itself (passes None)."""
+            if lit.on:
+                passes_now = lit.render(view, actions, n)
+                return lit.compose(passes_now), passes_now
+            with clock.time("render layers"):
+                return render(view, actions, n), None
+
         # each pose: the figure and its outline
+        t_probes = time.time()
         figures, probes = {}, {}
         for pose in (
             []
@@ -958,9 +1150,14 @@ def write_layered_pack(
             framer = _shot_framer(
                 show, render, pp, cameras, defs, framings, poses_of, leap, neutral, log
             )
+        if leap and "full" in framings:
+            # the leap's own pixels per head, with the full framing's camera
+            framer.alias("leap", "full", LEAP_SCALE * scale)
+        clock.add("probes and framings", time.time() - t_probes)
         for n, g in framer.geo.items():
             log(
                 f"framing {n}: {g['width']} x {g['height']} pixels, {g['scale']:.0f} pixels per head"
+                + (f", {samples_at(n)} samples" if n in framings else "")
             )
 
         # the half-open eyes, measured in at_ease
@@ -971,6 +1168,10 @@ def write_layered_pack(
         def face_rect(name: str, pose: str, xs: list) -> tuple:
             """The face rectangle of a face set at a framing (the pose shown): the box of every
             pixel that one of the set's faces changes, and the face's own pixels as weights."""
+            with clock.time("face rectangles"):
+                return _face_rect(name, pose, xs)
+
+        def _face_rect(name: str, pose: str, xs: list) -> tuple:
             g = framer.geo[name]
             head = framer.head_rows(name)
             view = framer.view(name, pose)
@@ -1048,6 +1249,7 @@ def write_layered_pack(
             reg = {"x": px0, "y": py0, "w": px1 - px0, "h": py1 - py0}
             t = time.time()
             n = 0
+            ns = samples_at(name)
             for x, mouth, eyes, actions in faces:
                 if x not in xs:
                     continue
@@ -1056,33 +1258,24 @@ def write_layered_pack(
                 ):
                     kept["layers"] += 1
                     continue
-                rgba = render({**view, "region": reg}, actions, samples)
+                rgba, whole = picture({**view, "region": reg}, actions, ns)
                 ox, oy = face["x"] - px0, face["y"] - py0
-                patch = rgba[oy : oy + face["height"], ox : ox + face["width"]].copy()
+                cut = (slice(oy, oy + face["height"]), slice(ox, ox + face["width"]))
+                patch = rgba[cut].copy()
                 patch[..., 3] = np.round(patch[..., 3] * mask).astype(np.uint8)
                 patch[patch[..., 3] == 0] = 0
-                save_layer(
-                    folder / f"face.{stem}.{x}.{mouth}.{eyes}{ext}",
-                    np.ascontiguousarray(patch),
+                lit.submit(
+                    folder,
+                    f"face.{stem}.{x}.{mouth}.{eyes}",
+                    "face",
+                    patch,
                     q_face,
+                    None if whole is None else {k: w[cut] for k, w in whole.items()},
+                    ext,
                 )
                 n += 1
-                if lit.on:
-                    whole = lit.render({**view, "region": reg}, actions, samples)
-                    lit.crop(
-                        folder,
-                        f"face.{stem}.{x}.{mouth}.{eyes}",
-                        "face",
-                        whole,
-                        {
-                            "x": ox,
-                            "y": oy,
-                            "width": face["width"],
-                            "height": face["height"],
-                        },
-                        patch,
-                    )
-            log(f"{n} faces of {stem} ({time.time() - t:.1f} s)")
+            clock.add("faces", time.time() - t)
+            log(f"{n} faces of {stem} at {ns} samples ({time.time() - t:.1f} s)")
             return n
 
         manifest_framings = {}
@@ -1109,9 +1302,12 @@ def write_layered_pack(
             base_crop = None
             if face is not None and stage_poses.HEAD_POSE not in poses_of[name]:
                 show(stage_poses.HEAD_POSE)
-                rgba = render(
-                    framer.view(name, stage_poses.HEAD_POSE), neutral, samples
-                )
+                with clock.time("render layers"):
+                    rgba = render(
+                        framer.view(name, stage_poses.HEAD_POSE),
+                        neutral,
+                        samples_at(name),
+                    )
                 base_crop = rgba[
                     face["y"] : face["y"] + face["height"],
                     face["x"] : face["x"] + face["width"],
@@ -1129,19 +1325,36 @@ def write_layered_pack(
                     rgba = load_layer(folder / f"body.{pose}.{name}{ext}")
                     kept["layers"] += 1
                 else:
-                    rgba = render(view, neutral, samples)
-                    save_layer(folder / f"body.{pose}.{name}{ext}", rgba, q_body)
-                    written += 1
-                    body_passes = lit.layer(
+                    first = lit.on and not lit.scales
+                    rgba, body_passes = picture(view, neutral, samples_at(name))
+                    if first:
+                        # resume: the earlier run's scales, from this layer's pass files
+                        old = (
+                            stored_scales(
+                                folder, f"body.{pose}.{name}", body_passes, rgba[..., 3]
+                            )
+                            if kept["on"]
+                            else None
+                        )
+                        agree = lit.ensure_scales(
+                            body_passes, rgba[..., 3], face, old if kept["on"] else None
+                        )
+                        if kept["on"] and (old is None or not agree):
+                            kept["on"] = False
+                            log(
+                                "resume: the earlier run's scales cannot be read back or "
+                                "differ; every layer is rendered"
+                            )
+                    lit.submit(
                         folder,
                         f"body.{pose}.{name}",
                         "body",
-                        view,
-                        neutral,
-                        samples,
                         rgba,
-                        face=face if face is not None else None,
+                        q_body,
+                        body_passes,
+                        ext,
                     )
+                    written += 1
                 body_joints.setdefault(pose, {})[name] = joints_now()
                 manifest_poses[pose]["framings"].append(name)
                 if face is not None and pose not in own:
@@ -1160,26 +1373,31 @@ def write_layered_pack(
                         m = front_mask(crop, base_crop, mask)
                         if m is not None and body_passes is None and lit.on:
                             # a kept body layer: its passes again, for the front's
-                            body_passes = lit.render(view, neutral, samples)
+                            body_passes = lit.render(view, neutral, samples_at(name))
                         if m is not None:
                             front = crop.copy()
                             front[..., 3] = (
                                 front[..., 3].astype(np.uint16) * m // 255
                             ).astype(np.uint8)
                             front[front[..., 3] == 0] = 0
-                            save_layer(
-                                folder / f"front.{pose}.{name}{ext}", front, q_face
+                            cut = (
+                                slice(face["y"], face["y"] + face["height"]),
+                                slice(face["x"], face["x"] + face["width"]),
                             )
-                            written += 1
-                            lit.crop(
+                            lit.submit(
                                 folder,
                                 f"front.{pose}.{name}",
                                 "front",
-                                body_passes,
-                                face,
                                 front,
+                                q_face,
+                                None
+                                if body_passes is None
+                                else {k: b[cut] for k, b in body_passes.items()},
+                                ext,
                             )
+                            written += 1
                             manifest_poses[pose]["front"].append(name)
+                clock.add("bodies and fronts", time.time() - t)
                 log(f"body.{pose}.{name} ({time.time() - t:.1f} s)")
             # the face layers: the main set in at_ease, each own set in its pose
             if face is not None:
@@ -1214,19 +1432,25 @@ def write_layered_pack(
             manifest_framings[name] = entry
         # the leap: the key poses with the full framing's camera of at_ease, the face of joy
         leap_keys = []
+        leap_geo = None
         if leap and "full" in framings:
-            view = framer.view("full", stage_poses.HEAD_POSE)
-            g_full = framer.geo["full"]
+            t = time.time()
+            view = framer.view("leap", stage_poses.HEAD_POSE)
+            g_leap = framer.geo["leap"]
+            leap_geo = {
+                "frame": {"width": g_leap["width"], "height": g_leap["height"]},
+                "head": framer.head_rows("leap"),
+            }
             for key in stage_poses.LEAP:
                 show(key)
                 mouth = "open" if key in ("rise", "peak") else "half"
-                if done(f"leap.{key}", (g_full["width"], g_full["height"])):
+                if done(f"leap.{key}", (g_leap["width"], g_leap["height"])):
                     pp.tab.evaluate("(v) => window.portrait.view(v)", view)
                     leap_joints[key] = joints_now()
                     leap_keys.append(key)
                     kept["layers"] += 1
                     continue
-                rgba = render(
+                rgba, ps = picture(
                     view,
                     frame_actions(
                         "joy" if "joy" in expressions else "neutral",
@@ -1236,25 +1460,14 @@ def write_layered_pack(
                     ),
                     samples,
                 )
-                save_layer(folder / f"leap.{key}{ext}", rgba, q_body)
-                written += 1
                 leap_joints[key] = joints_now()
-                lit.layer(
-                    folder,
-                    f"leap.{key}",
-                    "leap",
-                    view,
-                    frame_actions(
-                        "joy" if "joy" in expressions else "neutral",
-                        mouth,
-                        "open",
-                        halves.get("joy"),
-                    ),
-                    samples,
-                    rgba,
-                )
+                lit.submit(folder, f"leap.{key}", "leap", rgba, q_body, ps, ext)
+                written += 1
                 leap_keys.append(key)
-            log(f"the leap: {len(leap_keys)} frames")
+            clock.add("leap", time.time() - t)
+            log(
+                f"the leap: {len(leap_keys)} frames at {g_leap['scale']:.0f} pixels per head"
+            )
         pp.end()
         renderer = pp.renderer
         if pp.errors:
@@ -1282,7 +1495,7 @@ def write_layered_pack(
         provenance=provenance(card_name),
     )
     if leap_keys:
-        manifest["leap"] = {"framing": "full", "frames": leap_keys}
+        manifest["leap"] = {"framing": "full", "frames": leap_keys, **(leap_geo or {})}
     if body_joints:
         manifest["joints"] = {
             "names": joint_names,
@@ -1295,6 +1508,16 @@ def write_layered_pack(
     if preview:
         manifest["preview"] = True
     (folder / C.MANIFEST).write_text(manifest_text(manifest), encoding="utf-8")
+    if resume:
+        # the earlier run's layers that this pack no longer names (an expression a framing no
+        # longer holds, a layer of another size) leave the folder
+        wanted = set(LC.wanted_layers(manifest)) | {C.MANIFEST}
+        for f in folder.iterdir():
+            if f.name not in wanted and LC.is_layer_name(f.name):
+                f.unlink()
+                kept["removed"] += 1
+    timing = {**clock.report(), "total": round(time.time() - t0, 1)}
+    log("timing: " + ", ".join(f"{k} {v:.0f} s" for k, v in timing.items()))
     report = (
         C.check_pack(folder)
         if not preview
@@ -1313,7 +1536,8 @@ def write_layered_pack(
         "renderer": renderer,
         "half_blinks": halves,
         "files": written + 1 + lit.files,
-        **({"kept": kept["layers"]} if resume else {}),
+        "timing": timing,
+        **({"kept": kept["layers"], "removed": kept["removed"]} if resume else {}),
         **({"light": lit.result()} if lit.on else {}),
     }
 

@@ -549,9 +549,15 @@ def _portrait_pack(args, parser) -> int:
         )  # a card that cannot be read is a usage error
     if args.layers:
         return _portrait_layers(args, parser)
-    if args.passes or args.light_rig or args.pass_quality is not None or args.resume:
+    if (
+        args.passes
+        or args.light_rig
+        or args.pass_quality is not None
+        or args.resume
+        or args.framing_samples
+    ):
         parser.error(
-            "--passes, --light-rig, --pass-quality and --resume take --layers."
+            "--passes, --light-rig, --pass-quality, --framing-samples and --resume take --layers."
         )
     try:
         result = render.write_pack(
@@ -610,6 +616,10 @@ def _portrait_layers(args, parser) -> int:
     if args.pass_quality is not None and not 1 <= args.pass_quality <= 100:
         parser.error("--pass-quality takes 1 to 100.")
     try:
+        framing_samples = layers.parse_framing_samples(args.framing_samples)
+    except ValueError as error:
+        parser.error(_one_line(error))
+    try:
         result = layers.write_layered_pack(
             args.out,
             card=args.character,
@@ -632,6 +642,7 @@ def _portrait_layers(args, parser) -> int:
             light_rig=args.light_rig,
             pass_quality=args.pass_quality,
             resume=args.resume,
+            framing_samples=framing_samples,
         )
     except ValueError as error:
         parser.error(_one_line(error))
@@ -2024,6 +2035,12 @@ def main(argv=None) -> int:
         "--pass-quality",
         type=int,
         help="with --passes: the WebP quality of the pass files (default: the layer's and 4 more)",
+    )
+    pp.add_argument(
+        "--framing-samples",
+        help="with --layers: fewer samples for some framings, as framing=samples pairs (default "
+        "thigh=8,full=8; 'none' gives every framing --samples); a framing never takes more than "
+        "--samples",
     )
     pp.add_argument(
         "--resume",
