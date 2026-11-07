@@ -1006,6 +1006,21 @@ def write_layered_pack(
                     q_face,
                 )
                 n += 1
+                if lit.on:
+                    whole = lit.render({**view, "region": reg}, actions, samples)
+                    lit.crop(
+                        folder,
+                        f"face.{stem}.{x}.{mouth}.{eyes}",
+                        "face",
+                        whole,
+                        {
+                            "x": ox,
+                            "y": oy,
+                            "width": face["width"],
+                            "height": face["height"],
+                        },
+                        patch,
+                    )
             log(f"{n} faces of {stem} ({time.time() - t:.1f} s)")
             return n
 
