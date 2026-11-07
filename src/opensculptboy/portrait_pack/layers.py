@@ -175,14 +175,9 @@ def _blur(a: np.ndarray, r: int) -> np.ndarray:
 
 
 def soft_mask(changed: np.ndarray, grow: int, soft: int) -> np.ndarray:
-    """The face's own pixels as weights 0 to 1: the changed pixels grown by ``grow`` pixels, their
-    holes filled across each row and column, and the edge softened over ``soft`` pixels."""
+    """The face's own pixels as weights 0 to 1: the changed pixels grown by ``grow`` pixels, with
+    the edge softened over ``soft`` pixels."""
     m = _grow(changed, grow)
-    # fill the holes between the eyes, the nose and the mouth: what lies between covered pixels on
-    # both its row and its column
-    rows = np.maximum.accumulate(m, 1) & np.maximum.accumulate(m[:, ::-1], 1)[:, ::-1]
-    cols = np.maximum.accumulate(m, 0) & np.maximum.accumulate(m[::-1], 0)[::-1]
-    m = m | (rows & cols)
     w = np.clip(_blur(m, soft) * 2 - 0.5, 0, 1)
     return w * m
 
@@ -500,6 +495,12 @@ def write_layered_pack(
                     {**view0, "region": hreg}, neutral, 1
                 )  # the first picture after a pose settles the page
                 base = render({**view0, "region": hreg}, neutral, 1)
+                # what differs between two pictures of the same face is noise (fur and hair drawn
+                # with a dither), which no face changes
+                noise = _grow(
+                    changed_pixels(base, render({**view0, "region": hreg}, neutral, 1)),
+                    3,
+                )
                 box = None
                 changed = np.zeros(base.shape[:2], bool)
                 for x in expressions:
@@ -509,8 +510,9 @@ def write_layered_pack(
                             frame_actions(x, mouth, eyes, halves.get(x)),
                             1,
                         )
-                        changed |= changed_pixels(base, other)
-                        b = changed_box(base, other)
+                        d = changed_pixels(base, other) & ~noise
+                        changed |= d
+                        b = changed_box(base, np.where(noise[..., None], base, other))
                         if b:
                             box = (
                                 b
