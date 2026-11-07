@@ -243,19 +243,134 @@ class TestDeltaE(unittest.TestCase):
         self.assertAlmostEqual(float(light.delta_e2000(same, same)[0]), 0.0)
 
     def test_reproduction_report(self):
-        rep = light.Reproduction()
+        # every fourth pixel by default; every pixel here
+        self.assertEqual(light.Reproduction().step, 4)
+        quarter = light.Reproduction()
+        rep = light.Reproduction(step=1)
         rendered = np.zeros((10, 10, 4), np.uint8)
         rendered[..., :3] = 120
         rendered[:5, :, 3] = 255
         summed = rendered[..., :3].copy()
         summed[0, 0] = 123
         rep.add("body", rendered, summed, rendered)
+        quarter.add("body", rendered, summed, rendered)
+        self.assertEqual(quarter.report()["body"]["pixels"], 13)
+        self.assertGreater(
+            quarter.report()["body"]["max"], 0.5, "the first pixel is measured"
+        )
         r = rep.report()
         self.assertEqual(r["body"]["pixels"], 50)
         self.assertGreater(r["body"]["max"], 0.5)
         self.assertLess(r["body"]["mean"], r["body"]["max"])
         self.assertEqual(r["body"]["webp_mean"], 0.0)
         self.assertEqual(r["all"]["pixels"], 50)
+
+
+class FakeTab:
+    def evaluate(self, script, arg=None):
+        return {"exposure": 0.45, "tone": "agx", "saturation": 1.15, "contrast": 1.05}
+
+
+class FakePage:
+    tab = FakeTab()
+
+
+def synthetic_passes(h=48, w=40):
+    """Three passes of a disc in linear light, with its coverage."""
+    yy, xx = np.mgrid[:h, :w]
+    cov = (((yy - h / 2) ** 2 + (xx - w / 2) ** 2) <= (min(h, w) / 2.5) ** 2).astype(
+        np.float32
+    )
+    out = {}
+    for name, k in (("key", 1.2), ("fill", 0.05), ("rim", 0.2)):
+        rgb = np.stack(
+            [cov * k * (0.5 + xx / w), cov * k * 0.6, cov * k * (0.4 + yy / h)], -1
+        )
+        out[name] = np.dstack([rgb, cov]).astype(np.float32)
+    return out
+
+
+class TestPassWriter(unittest.TestCase):
+    """The layer as its passes' sum, the writing on a pool of threads, the scales of an earlier run
+    read back, and the timing."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def lit(self):
+        return layers.Lit(
+            FakePage(),
+            ["key", "fill", "rim"],
+            {"x": 1},
+            "stage",
+            None,
+            None,
+            lambda m: None,
+        )
+
+    def test_compose_and_write(self):
+        lit = self.lit()
+        passes = synthetic_passes()
+        rgba = lit.compose(passes)
+        self.assertEqual(rgba.shape, (48, 40, 4))
+        total = sum(p[..., :3] for p in passes.values())
+        want = light.display8(total, 1.15, 1.05)
+        cov = rgba[..., 3] == 255
+        self.assertTrue(np.array_equal(rgba[..., :3][cov], want[cov]))
+        self.assertTrue((rgba[rgba[..., 3] == 0][:, :3] == 0).all())
+        self.assertTrue(lit.ensure_scales(passes, rgba[..., 3]))
+        for i in range(8):
+            lit.submit(
+                self.tmp, f"face.close.joy.open.half{i}", "face", rgba, 90, passes
+            )
+        lit.close()
+        files = sorted(p.name for p in self.tmp.iterdir())
+        self.assertEqual(len(files), 32)
+        self.assertEqual(lit.files, 24)
+        rep = lit.repro.report()
+        self.assertLess(rep["face"]["mean"], 2.0, rep)
+        timing = lit.clock.report()
+        for phase in ("compose", "write (on the pool)", "wait for the pool"):
+            self.assertIn(phase, timing)
+
+    def test_writer_errors_reach_the_caller(self):
+        lit = self.lit()
+        passes = synthetic_passes()
+        rgba = lit.compose(passes)
+        lit.ensure_scales(passes, rgba[..., 3])
+        lit.submit(
+            self.tmp / "missing-folder", "body.at_ease.close", "body", rgba, 88, passes
+        )
+        with self.assertRaises(OSError):
+            lit.close()
+
+    def test_scales_of_an_earlier_run(self):
+        passes = synthetic_passes(96, 80)
+        first = self.lit()
+        rgba = first.compose(passes)
+        first.ensure_scales(passes, rgba[..., 3])
+        old = {n: v * 1.01 for n, v in first.scales.items()}
+        first.scales = old
+        first.submit(self.tmp, "body.at_ease.close", "body", rgba, 88, passes)
+        first.close()
+        read = layers.stored_scales(
+            self.tmp, "body.at_ease.close", passes, rgba[..., 3]
+        )
+        for n in old:
+            self.assertAlmostEqual(read[n] / old[n], 1.0, delta=0.01)
+        again = self.lit()
+        self.assertTrue(again.ensure_scales(passes, rgba[..., 3], stored=read))
+        self.assertEqual(again.scales, {n: round(v, 5) for n, v in read.items()})
+        third = self.lit()
+        far = {n: v * 1.1 for n, v in read.items()}
+        self.assertFalse(third.ensure_scales(passes, rgba[..., 3], stored=far))
+        (self.tmp / "body.at_ease.close.rim.webp").write_bytes(b"cut")
+        self.assertIsNone(
+            layers.stored_scales(self.tmp, "body.at_ease.close", passes, rgba[..., 3])
+        )
 
 
 class TestPassCheck(unittest.TestCase):
@@ -424,6 +539,13 @@ class TestDefaultPackWithPasses(unittest.TestCase):
         self.assertEqual(m["light"]["key_side"], "right")
         rep = result["light"]["reproduction"]
         self.assertLess(rep["all"]["mean"], 2.0, rep)
+        self.assertIn("render passes", result["timing"])
+        self.assertNotIn(
+            "render layers", result["timing"], "the layers come from the passes"
+        )
+        self.assertEqual(
+            m["leap"]["head"]["size"] > m["framings"]["full"]["head"]["size"], True
+        )
         for kind in ("body", "face", "leap") + (
             ("front",) if any(p.get("front") for p in m["poses"].values()) else ()
         ):

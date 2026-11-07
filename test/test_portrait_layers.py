@@ -375,6 +375,75 @@ def synthetic_probe(dx=0.0, crown=1.6, arm_up=0.0, half_width=0.25):
     }
 
 
+class TestRenderCuts(unittest.TestCase):
+    """The cuts of the render's time: the leap at its own pixels per head, the expressions each
+    framing needs, fewer samples where the face is small, and the leap's own frame in the
+    contract."""
+
+    def test_leap_alias(self):
+        f = TestFramer().framer()
+        full = f.geo["full"]
+        f.alias("leap", "full", layers.LEAP_SCALE)
+        leap = f.geo["leap"]
+        self.assertEqual(layers.FRAMINGS["full"]["scale"], 160)
+        self.assertEqual(leap["scale"], layers.LEAP_SCALE)
+        self.assertAlmostEqual(leap["height"] / full["height"], 230 / 160, delta=0.02)
+        self.assertEqual((leap["top"], leap["below"]), (full["top"], full["below"]))
+        h = f.head_rows("leap")
+        self.assertAlmostEqual(h["y"] / f.head_rows("full")["y"], 230 / 160, delta=0.02)
+
+    def test_tables(self):
+        self.assertEqual(
+            layers.FRAMING_EXPRESSIONS["full"], ("neutral", "joy", "smile")
+        )
+        self.assertEqual(layers.FRAMING_EXPRESSIONS["stern"], ("neutral", "stern"))
+        self.assertEqual(layers.FRAMING_LEAVES["close"], {"stern": "stern"})
+        self.assertEqual(layers.FRAMING_SAMPLES, {"thigh": 8, "full": 8})
+
+    def test_framing_samples(self):
+        self.assertIsNone(layers.parse_framing_samples(None))
+        self.assertEqual(layers.parse_framing_samples("none"), {})
+        self.assertEqual(
+            layers.parse_framing_samples("thigh=4, low=8"), {"thigh": 4, "low": 8}
+        )
+        for bad in ("thigh=0", "knee=8", "full=x"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                layers.parse_framing_samples(bad)
+        code, _, err = run_cli(
+            "portrait-pack", "--out", "x", "--framing-samples", "thigh=8"
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("take --layers", err)
+
+    def test_leap_frame_in_the_contract(self):
+        m = layered_manifest()
+        m["leap"]["frame"] = {"width": 24, "height": 60}
+        m["leap"]["head"] = {"x": 12, "y": 9, "top": 4, "chin": 14, "size": 9.5}
+        self.assertEqual(LC.check_layered_manifest(m), [])
+        self.assertEqual(LC.wanted_layers(m)["leap.peak.webp"], (24, 60))
+        self.assertEqual(LC.wanted_layers(m)["body.at_ease.full.webp"], (16, 40))
+        folder = write_layered(self.tmp / "leap", m)
+        self.assertTrue(contract.check_pack(folder)["pass"])
+        for change in (
+            lambda lp: lp.pop("head"),
+            lambda lp: lp["frame"].update(width=5000),
+            lambda lp: lp["head"].update(top=20),
+            lambda lp: lp.update(scale=2),
+        ):
+            m2 = json.loads(json.dumps(m))
+            change(m2["leap"])
+            with self.subTest(leap=m2["leap"]):
+                self.assertIn(
+                    "bad_manifest", codes({"problems": LC.check_layered_manifest(m2)})
+                )
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
 class TestJoints(unittest.TestCase):
     """The joints of each body layer and leap frame in the manifest (``joints``)."""
 
@@ -1024,8 +1093,8 @@ class TestDefaultLayeredPack(unittest.TestCase):
                     self.assertAlmostEqual(xy[1], head["y"], delta=1.5)
 
     def test_resume(self):
-        """A second run with --resume keeps every layer but the first body layer, and gives the
-        same manifest."""
+        """A second run with --resume keeps every layer (a pack without passes has no scales to
+        set again), removes nothing, and gives the same manifest."""
         code, out, err = self.result
         self.assertEqual(code, 0, err[-2000:])
         first = json.loads(out)
@@ -1035,7 +1104,9 @@ class TestDefaultLayeredPack(unittest.TestCase):
         self.assertEqual(code, 0, err[-2000:])
         again = json.loads(out)
         self.assertTrue(again["check"]["pass"], again["check"]["problems"])
-        self.assertEqual(again["kept"], first["check"]["frames"] - 1)
+        self.assertEqual(again["kept"], first["check"]["frames"])
+        self.assertEqual(again["removed"], 0)
+        self.assertIn("faces", again["timing"])
         self.assertEqual(again["manifest"]["framings"], first["manifest"]["framings"])
 
     def test_faces_fit_the_bodies(self):
