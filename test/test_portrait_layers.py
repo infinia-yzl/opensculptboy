@@ -375,6 +375,53 @@ def synthetic_probe(dx=0.0, crown=1.6, arm_up=0.0, half_width=0.25):
     }
 
 
+class TestJoints(unittest.TestCase):
+    """The joints of each body layer and leap frame in the manifest (``joints``)."""
+
+    def manifest(self):
+        m = layered_manifest()
+        n = len(LC.JOINT_NAMES)
+        m["joints"] = {
+            "names": list(LC.JOINT_NAMES),
+            "poses": {
+                "at_ease": {"close": [1.5] * (2 * n), "full": [-20.0] * (2 * n)},
+                "chin": {"close": [3] * (2 * n)},
+            },
+            "leap": {"peak": [4.0] * (2 * n)},
+        }
+        return m
+
+    def test_valid(self):
+        self.assertEqual(LC.check_layered_manifest(self.manifest()), [])
+
+    def test_broken(self):
+        n = len(LC.JOINT_NAMES)
+        for change in (
+            lambda j: j.update(extra=1),
+            lambda j: j.update(names=["eyes", "eyes"]),
+            lambda j: j.update(names=["toes"]),
+            lambda j: j["poses"]["at_ease"].update(waist=[0] * (2 * n)),
+            lambda j: j["poses"].update(wave={"close": [0] * (2 * n)}),
+            lambda j: j["poses"]["chin"].update(close=[0] * 3),
+            lambda j: j["poses"]["chin"].update(close=[1e9] * (2 * n)),
+            lambda j: j["leap"].update(rise=[0] * (2 * n)),
+        ):
+            m = self.manifest()
+            change(m["joints"])
+            with self.subTest(joints=str(m["joints"])[:80]):
+                self.assertIn(
+                    "bad_manifest", codes({"problems": LC.check_layered_manifest(m)})
+                )
+
+    def test_manifest_text(self):
+        """The manifest keeps an indent of 2 and writes each list of numbers on one line."""
+        m = self.manifest()
+        text = layers.manifest_text(m)
+        self.assertEqual(json.loads(text), m)
+        self.assertIn('"peak": [4.0, 4.0', text)
+        self.assertIn('"names": [\n', text)
+
+
 class TestFramer(unittest.TestCase):
     def framer(self):
         figures = {
@@ -917,6 +964,21 @@ class TestDefaultLayeredPack(unittest.TestCase):
                 m["framings"][f]["sets"]["hand_on_chest"]["expressions"], ["neutral"]
             )
         self.assertEqual(m["leap"]["frames"], list(stage_poses.LEAP))
+        # every body layer and leap frame records its joints; the eyes lie on the head's anchor
+        j = m["joints"]
+        self.assertEqual(j["names"], list(LC.JOINT_NAMES))
+        self.assertEqual(set(j["leap"]), set(m["leap"]["frames"]))
+        e = j["names"].index("eyes")
+        for pose, p in m["poses"].items():
+            self.assertEqual(set(j["poses"][pose]), set(p["framings"]))
+            for f in p["framings"]:
+                if pose in m["framings"][f].get("sets", {}):
+                    continue  # a pose that turns its own head moves its eyes
+                with self.subTest(pose=pose, framing=f):
+                    xy = j["poses"][pose][f][2 * e : 2 * e + 2]
+                    head = m["framings"][f]["head"]
+                    self.assertAlmostEqual(xy[0], head["x"], delta=1.5)
+                    self.assertAlmostEqual(xy[1], head["y"], delta=1.5)
 
     def test_faces_fit_the_bodies(self):
         """The neutral face layer lies on every body of its framing to the pixel: where the face layer paints,
