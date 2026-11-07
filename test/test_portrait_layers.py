@@ -448,29 +448,40 @@ class TestDefaultLayeredPack(unittest.TestCase):
         self.assertEqual(m["leap"]["frames"], list(stage_poses.LEAP))
 
     def test_faces_fit_the_bodies(self):
+        """The neutral face layer lies on every body of its framing to the pixel: inside the face rectangle (away
+        from the shoulders and the front layers), the body matches the face best with no shift."""
         m = json.loads((self.folder / contract.MANIFEST).read_text())
         for name, f in m["framings"].items():
             r = f["face"]
             face = np.asarray(
                 Image.open(
                     self.folder / f"face.{name}.neutral.closed.open.webp"
-                ).convert("RGBA"),
+                ).convert("RGB"),
                 np.float32,
             )
+            h, w = face.shape[:2]
+            y0, y1, x0, x1 = h // 4, h - h // 4, w // 4, w - w // 4
             for pose in ("at_ease", "chin", "cheer"):
                 if name not in m["poses"][pose]["framings"]:
                     continue
                 with self.subTest(framing=name, pose=pose):
                     body = np.asarray(
                         Image.open(self.folder / f"body.{pose}.{name}.webp").convert(
-                            "RGBA"
+                            "RGB"
                         ),
                         np.float32,
                     )
-                    crop = body[
-                        r["y"] : r["y"] + r["height"], r["x"] : r["x"] + r["width"]
-                    ]
-                    diff = np.abs(crop - face)[..., :3].mean()
-                    # the neutral face lies on every body of its framing within the noise of one pass and lossy WebP,
-                    # apart from the hand of chin, which its front layer covers
-                    self.assertLess(diff, 25 if pose == "chin" else 8)
+
+                    def diff(dx, dy):
+                        crop = body[
+                            r["y"] + y0 + dy : r["y"] + y1 + dy,
+                            r["x"] + x0 + dx : r["x"] + x1 + dx,
+                        ]
+                        return float(np.abs(crop - face[y0:y1, x0:x1]).mean())
+
+                    shifts = {
+                        (dx, dy): diff(dx, dy)
+                        for dx in (-2, -1, 0, 1, 2)
+                        for dy in (-2, -1, 0, 1, 2)
+                    }
+                    self.assertEqual(min(shifts, key=shifts.get), (0, 0), shifts)
