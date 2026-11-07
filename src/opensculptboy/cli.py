@@ -620,6 +620,8 @@ def _portrait_layers(args, parser) -> int:
             page=args.page,
             log=lambda m: print(m, file=sys.stderr),
             preview=args.preview,
+            poses_file=args.poses_file,
+            shots_file=args.shots_file,
         )
     except ValueError as error:
         parser.error(_one_line(error))
@@ -1984,6 +1986,16 @@ def main(argv=None) -> int:
         "--preview",
         action="store_true",
         help="with --layers: the body layers alone, to look at the poses",
+    )
+    pp.add_argument(
+        "--poses-file",
+        help="with --layers: the companion's shared pose file (squire.poses/1; default: "
+        "the copy in opensculptboy/data/portrait/poses.json)",
+    )
+    pp.add_argument(
+        "--shots-file",
+        help="with --layers: the stage's shots (squire.shots/1): each framing renders "
+        "through the camera of the shot it serves",
     )
     pp.add_argument("--json", action="store_true", help="print the result as JSON")
     pp.set_defaults(portrait_parser=pp)

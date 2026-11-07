@@ -317,6 +317,198 @@ class Framer:
         }
 
 
+# ------------------------------------------------------------------ the shots' cameras
+def shot_camera(cam, figure: dict, eyes_of: dict | None = None) -> dict:
+    """The camera of a shot (:class:`opensculptboy.portrait_pack.shots.ShotCamera`) for a figure
+    as it stands (``window.portrait.figure``): level with the eyes, the chest or the hips, at the
+    distance the lens and the shot's window give, pitched by the shot's tilt. The camera follows
+    the head of ``eyes_of`` (default: the figure itself): it keeps the same place relative to the
+    eyes in every pose, so the head lands on the same pixels."""
+    from opensculptboy.portrait_pack.shots import STAGE_HEAD_UNITS
+
+    ref = eyes_of or figure
+    eyes = np.asarray(ref["eyes"], dtype=np.float64)
+    hu = (eyes[1] - float(ref["joints"]["root"][1])) / STAGE_HEAD_UNITS
+    d = cam.distance(hu)
+    t = np.radians(cam.tilt)
+    eye = eyes + np.array([0.0, -cam.below_eyes * hu, d * np.cos(t)])
+    return {"eye": eye, "pitch": float(cam.tilt), "hu": float(hu), "distance": float(d)}
+
+
+def project_points(camera: dict, points, focal: float) -> np.ndarray:
+    """Points (N, 3) through a shot camera with its principal point at (0, 0): pixels to the
+    right and down, and the depth, (N, 3)."""
+    t = np.radians(camera["pitch"])
+    fwd = np.array([0.0, -np.sin(t), -np.cos(t)])
+    up = np.array([0.0, np.cos(t), -np.sin(t)])
+    d = np.atleast_2d(np.asarray(points, dtype=np.float64)) - camera["eye"]
+    depth = d @ fwd
+    return np.stack([focal * d[:, 0] / depth, -focal * (d @ up) / depth, depth], axis=1)
+
+
+class ShotFramer(Framer):
+    """The framings with the cameras of their shots (``--shots-file``): each framing renders
+    through the camera of the shot it serves (its lens, height, tilt and the body's turn), and
+    the outlines come from probes through that camera. The geometry is that of :class:`Framer`,
+    in head heights (chin to crown) measured at the eyes' depth."""
+
+    def __init__(self, figures, outlines, framings, poses_of, cameras, leap=()):
+        # figures[name][pose], outlines[name][pose]: rows, x0, x1, covered, in heads from the
+        # crown and the eyes; cameras[name]: the shot's ShotCamera
+        self.figures_of = figures
+        self.outlines = outlines
+        self.framings = framings
+        self.poses_of = poses_of
+        self.cameras = cameras
+        self.leap = [k for k in leap if any(k in o for o in outlines.values())]
+        base = next(iter(figures.values()))[stage_poses.HEAD_POSE]
+        self.H = float(base["crown"][1] - base["chin"][1])
+        # the ground lies below the lowest point of at_ease's outline through each camera
+        lowest = []
+        for o in outlines.values():
+            rows, _, _, cov = o[stage_poses.HEAD_POSE]
+            if cov.any():
+                lowest.append(rows[cov].max())
+        self.ground_below = float(max(lowest) if lowest else 7.0) * self.H
+        self._current = next(iter(framings))
+        self.geo = {name: self._geometry(name) for name in framings}
+
+    def _geometry(self, name):
+        self._current = name
+        return super()._geometry(name)
+
+    def _rel(self, pose, head_of=None):
+        return self.outlines[self._current][pose]
+
+    def camera(self, name: str, pose: str) -> dict:
+        """The shot camera of a framing for a pose (leap keys take at_ease's)."""
+        figs = self.figures_of[name]
+        ref = figs[pose] if pose in stage_poses.POSES else figs[stage_poses.HEAD_POSE]
+        return shot_camera(self.cameras[name], figs.get(pose, ref), eyes_of=ref)
+
+    def _focal(self, name: str, camera: dict, figure: dict) -> float:
+        """The focal length that gives the framing's pixels per head at the eyes' depth."""
+        depth = project_points(camera, figure["eyes"], 1.0)[0, 2]
+        return self.geo[name]["scale"] * depth / self.H
+
+    def head_rows(self, name: str) -> dict:
+        g = self.geo[name]
+        f = self.figures_of[name][stage_poses.HEAD_POSE]
+        cam = self.camera(name, stage_poses.HEAD_POSE)
+        focal = self._focal(name, cam, f)
+        p = project_points(cam, [f["crown"], f["eyes"], f["chin"]], focal)
+        crown = g["top"] * g["scale"]
+        return {
+            "x": int(round(g["left"] * g["scale"])),
+            "y": int(round(crown + p[1, 1] - p[0, 1])),
+            "top": int(round(crown)),
+            "chin": int(round(crown + p[2, 1] - p[0, 1])),
+        }
+
+    def view(self, name: str, pose: str) -> dict:
+        g = self.geo[name]
+        figs = self.figures_of[name]
+        ref = figs[pose] if pose in stage_poses.POSES else figs[stage_poses.HEAD_POSE]
+        cam = self.camera(name, pose)
+        focal = self._focal(name, cam, ref)
+        head = self.head_rows(name)
+        u, v, _ = project_points(cam, ref["eyes"], focal)[0]
+        return {
+            "camera": {
+                "eye": [float(x) for x in cam["eye"]],
+                "pitch": cam["pitch"],
+                "focal": float(focal),
+                "px": float(head["x"] - u),
+                "py": float(head["y"] - v),
+            },
+            "turn": float(self.cameras[name].turn),
+            "halfH": float(g["height"] / 2 * self.H / g["scale"]),
+            "width": g["width"],
+            "height": g["height"],
+        }
+
+
+def probe_outline(
+    alpha: np.ndarray, camera: dict, focal: float, pp, figure: dict, H: float
+):
+    """A probe's outline in heads (chin to crown) from the crown's row and the eyes' column, as
+    :meth:`Framer._rel` gives it: rows, x0, x1, covered."""
+    x0, x1 = _mask_rows(alpha)
+    p = project_points(camera, [figure["crown"], figure["eyes"]], focal)
+    unit = focal * H / p[1, 2]  # pixels per head at the eyes' depth
+    ys = np.arange(alpha.shape[0]) + 0.5
+    rows = (ys - (pp[1] + p[0, 1])) / unit
+    ex = pp[0] + p[1, 0]
+    return rows, (x0 - ex) / unit, (x1 + 1 - ex) / unit, x0 >= 0
+
+
+def _shot_framer(
+    show, render, pp, cameras, defs, framings, poses_of, leap, neutral, log
+):
+    """The framings through their shots' cameras: each pose's figure with the shot's turn, and
+    its outline from a probe through the shot's camera."""
+    figs, outs = {}, {}
+    for name in framings:
+        cam = cameras[name]
+        keys = list(poses_of[name]) + (
+            list(stage_poses.LEAP) if leap and name == "full" else []
+        )
+        # the body's turn of the shot, for the figures and the probes
+        pp.tab.evaluate(
+            "(v) => window.portrait.view(v)",
+            {
+                "cx": 0,
+                "cy": 1,
+                "cz": 0,
+                "halfH": 1,
+                "width": PROBE_SIZE,
+                "height": PROBE_SIZE,
+                "turn": cam.turn,
+            },
+        )
+        figs[name] = {pose: show(pose) for pose in keys}
+        outs[name] = {}
+        for pose in keys:
+            t = time.time()
+            f = figs[name][pose]
+            ref = f if pose in stage_poses.POSES else figs[name][stage_poses.HEAD_POSE]
+            H = ref["crown"][1] - ref["chin"][1]
+            camera = shot_camera(cam, f, eyes_of=ref)
+            top, bottom = ref["crown"][1] + 2.4 * H, ref["ground"] - 0.1 * H
+            depth = project_points(camera, ref["eyes"], 1.0)[0, 2]
+            focal = 0.9 * PROBE_SIZE * depth / (top - bottom)
+            mid = [ref["eyes"][0], (top + bottom) / 2, ref["eyes"][2]]
+            u, v, _ = project_points(camera, mid, focal)[0]
+            pp_xy = (PROBE_SIZE / 2 - u, PROBE_SIZE / 2 - v)
+            show(pose)
+            a = render(
+                {
+                    "camera": {
+                        "eye": [float(x) for x in camera["eye"]],
+                        "pitch": camera["pitch"],
+                        "focal": float(focal),
+                        "px": float(pp_xy[0]),
+                        "py": float(pp_xy[1]),
+                    },
+                    "turn": cam.turn,
+                    "halfH": (top - bottom) / 2,
+                    "width": PROBE_SIZE,
+                    "height": PROBE_SIZE,
+                },
+                neutral,
+                1,
+            )[..., 3]
+            outs[name][pose] = probe_outline(a, camera, focal, pp_xy, ref, H)
+            if (a[:, 0] > 24).any() or (a[:, -1] > 24).any() or (a[0] > 24).any():
+                log(f"{name} {pose}: the outline reaches the probe's edge")
+            log(
+                f"{name} {pose}: posed and outlined through {cam.shot}'s camera ({time.time() - t:.1f} s)"
+            )
+    return ShotFramer(
+        figs, outs, defs, poses_of, cameras, stage_poses.LEAP if leap else ()
+    )
+
+
 def write_layered_pack(
     out,
     card=None,
@@ -333,6 +525,8 @@ def write_layered_pack(
     page=None,
     log=None,
     preview: bool = False,
+    poses_file=None,
+    shots_file=None,
 ) -> dict:
     """
     Render the layered portrait pack of a character card (None for the default character) into
@@ -340,8 +534,15 @@ def write_layered_pack(
     :data:`opensculptboy.portrait_pack.poses.POSES` and :data:`FRAMINGS`; ``scale`` multiplies
     every framing's pixels per head (below 1 for quick trials); ``fmt`` is ``"webp"`` (lossy
     with alpha) or ``"png"``. With ``preview``, only the body layers are written, for a look at
-    the poses. Returns the manifest, the check's report and the time taken.
+    the poses. ``poses_file`` is the companion's shared pose file
+    (:mod:`opensculptboy.portrait_pack.shared_poses`; its copy in data/portrait/ by default), and
+    ``shots_file`` the stage's shots (:mod:`opensculptboy.portrait_pack.shots`): with it,
+    each framing renders through the camera of the shot it serves. Returns the manifest, the
+    check's report and the time taken.
     """
+    from opensculptboy.portrait_pack import shared_poses
+    from opensculptboy.portrait_pack import shots as shot_specs
+
     log = log or (lambda m: None)
     quality = {**DEFAULT_QUALITY, **(quality or {})}
     if fmt not in FORMATS:
@@ -355,8 +556,14 @@ def write_layered_pack(
         raise ValueError(
             f"Unknown poses {unknown}; the poses are {list(stage_poses.POSES)}."
         )
-    if stage_poses.HEAD_POSE not in poses:
-        poses.insert(0, stage_poses.HEAD_POSE)
+    if stage_poses.HEAD_POSE in poses:
+        poses.remove(stage_poses.HEAD_POSE)
+    poses.insert(0, stage_poses.HEAD_POSE)
+    shared = shared_poses.load(poses_file)
+    lacking = [p for p in poses if p not in shared.bones]
+    if lacking:
+        raise ValueError(f"The pose file {shared.source} lacks the poses {lacking}.")
+    cameras = shot_specs.load(shots_file) if shots_file else None
     framings = list(framings or FRAMINGS)
     unknown = [f for f in framings if f not in FRAMINGS]
     if unknown:
@@ -405,9 +612,22 @@ def write_layered_pack(
         if not bones:
             raise PortraitError("The page holds no rig for the poses.")
         neutral = frame_actions("neutral", "closed", "open")
+        # the card's rig and its T-pose turns, for the shared poses
+        rig = shared_poses.card_rig(card)
+        if cameras is not None:
+            lacking = [f for f in framings if f not in cameras]
+            if lacking:
+                raise ValueError(
+                    f"The shots file renders no shot for the framings {lacking}."
+                )
 
         def show(pose: str) -> dict:
-            pp_pose = stage_poses.page_pose(pose, bones)
+            if pose in stage_poses.POSES:
+                pp_pose = shared_poses.page_pose(
+                    shared, pose, bones, rig.labels, rig.parents, rig.turns
+                )
+            else:
+                pp_pose = stage_poses.page_pose(pose, bones)
             return pp.tab.evaluate(
                 "([q, r, l]) => window.portrait.pose(q, r, l)",
                 [pp_pose["q"], pp_pose["root"], pp_pose["label"]],
@@ -425,8 +645,10 @@ def write_layered_pack(
 
         # each pose: the figure and its outline
         figures, probes = {}, {}
-        for pose in poses + (
-            list(stage_poses.LEAP) if leap and "full" in framings else []
+        for pose in (
+            []
+            if cameras is not None
+            else poses + (list(stage_poses.LEAP) if leap and "full" in framings else [])
         ):
             t = time.time()
             f = show(pose)
@@ -460,9 +682,14 @@ def write_layered_pack(
             if probes[pose]["edge"]:
                 log(f"{pose}: the outline reaches the probe's edge")
             log(f"{pose}: posed and outlined ({time.time() - t:.1f} s)")
-        framer = Framer(
-            figures, probes, defs, poses_of, stage_poses.LEAP if leap else ()
-        )
+        if cameras is None:
+            framer = Framer(
+                figures, probes, defs, poses_of, stage_poses.LEAP if leap else ()
+            )
+        else:
+            framer = _shot_framer(
+                show, render, pp, cameras, defs, framings, poses_of, leap, neutral, log
+            )
         for n, g in framer.geo.items():
             log(
                 f"framing {n}: {g['width']} x {g['height']} pixels, {g['scale']:.0f} pixels per head"
