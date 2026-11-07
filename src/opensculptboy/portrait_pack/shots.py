@@ -9,7 +9,10 @@ equivalent over the window's height), the body point the camera sits level with 
 chest or the hips) and how far above it, its tilt (degrees, positive looks down) and the body's
 turn toward the open side of the frame (degrees, positive toward the figure's left). The file's
 ``renders`` names, for each framing of the layered pack, the shot whose camera renders its
-stills, so a framing is rendered for the shot it serves.
+stills, so a framing is rendered for the shot it serves. A render may name a shot with an
+expression (``{"shot": "close_up", "expression": "stern"}``): the shot's ``byExpression`` values
+for that expression (its camera and its ``stills``) then apply, as they do on the stage, so the
+square-on stern close-up has a framing of its own.
 
 The stage measures the body in head heights of its own: the distance from the hips to the eyes
 divided by 3.5 (:data:`STAGE_HEAD_UNITS`), and the shot's ``span`` and ``share`` say how many of
@@ -45,6 +48,23 @@ class ShotCamera:
     turn: float  # degrees, the body's turn
     window: float  # the stage's head heights that the window's height spans
     sensor: float = 24.0
+    height: str = "eyes"  # the body point the camera sits level with
+    above: float = 0.0  # stage head heights above that point
+    expression: str | None = None  # the expression whose values the render takes
+
+    def manifest(self) -> dict:
+        """The camera as the layered pack's manifest records it."""
+        out = {"shot": self.shot}
+        if self.expression:
+            out["expression"] = self.expression
+        out.update(
+            lens=round(self.lens, 3),
+            height=self.height,
+            above=round(self.above, 3),
+            tilt=round(self.tilt, 3),
+            turn=round(self.turn, 3),
+        )
+        return out
 
     @property
     def fov(self) -> float:
@@ -88,15 +108,38 @@ def parse(data: dict, source: str = "") -> dict:
         raise ShotsError("The shots file needs 'shots' and 'renders'.")
     sensor = float(data.get("sensor", 24))
     out = {}
-    for framing, shot in renders.items():
+    for framing, render in renders.items():
+        expression = None
+        if isinstance(render, dict):
+            shot, expression = render.get("shot"), render.get("expression")
+            if not isinstance(expression, str) or set(render) != {"shot", "expression"}:
+                raise ShotsError(
+                    f"The framing {framing} renders for a shot and an expression: {{shot, expression}}."
+                )
+        else:
+            shot = render
         spec = shots.get(shot)
         if not isinstance(spec, dict):
             raise ShotsError(
                 f"The framing {framing} renders for an unknown shot {shot!r}."
             )
+        if expression is not None:
+            over = (spec.get("byExpression") or {}).get(expression)
+            if not isinstance(over, dict):
+                raise ShotsError(
+                    f"The framing {framing} renders for {shot} with {expression}, which the shot has no values for."
+                )
+            spec = {
+                **spec,
+                **over,
+                "camera": {**spec.get("camera", {}), **over.get("camera", {})},
+            }
+            shot_label = f"{shot} ({expression})"
+        else:
+            shot_label = shot
         if spec.get("stills") != framing:
             raise ShotsError(
-                f"The framing {framing} renders for {shot}, whose stills are {spec.get('stills')!r}."
+                f"The framing {framing} renders for {shot_label}, whose stills are {spec.get('stills')!r}."
             )
         c = spec.get("camera")
         if not isinstance(c, dict):
@@ -120,6 +163,9 @@ def parse(data: dict, source: str = "") -> dict:
             turn=turn,
             window=window_heads(spec),
             sensor=sensor,
+            height=c["height"],
+            above=above,
+            expression=expression,
         )
     return out
 
