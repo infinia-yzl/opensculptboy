@@ -63,6 +63,38 @@ OPTIONAL = ("companion", "leap", "extra")
 OPTIONAL_LIGHT = ("passes", "light")
 LIGHT_PASSES = (("key", "fill", "rim"), ("base", "rim"))
 PASS_FORMAT = "webp"
+# The joints of each body layer and each leap frame (``joints``), in the layer's own pixels, so an
+# app can check where its frame's edges cut the figure:
+# the point between the eyes, the crown and the chin, and VRM humanoid bones by their
+# names (each bone's head: the elbow for the lower arm, the wrist for the hand, the knee for the
+# lower leg, the ankle for the foot).
+OPTIONAL_JOINTS = ("joints",)
+JOINT_NAMES = (
+    "eyes",
+    "crown",
+    "chin",
+    "head",
+    "neck",
+    "upperChest",
+    "chest",
+    "hips",
+    "leftUpperArm",
+    "rightUpperArm",
+    "leftLowerArm",
+    "rightLowerArm",
+    "leftHand",
+    "rightHand",
+    "leftMiddleDistal",
+    "rightMiddleDistal",
+    "leftUpperLeg",
+    "rightUpperLeg",
+    "leftLowerLeg",
+    "rightLowerLeg",
+    "leftFoot",
+    "rightFoot",
+)
+# A joint may lie outside its layer (a hand the frame cuts off), within this many pixels.
+JOINT_REACH = 3 * 4096
 
 
 def _int(v) -> bool:
@@ -190,6 +222,75 @@ def check_light(m) -> list[str]:
     return out
 
 
+def check_joints(m) -> list[str]:
+    """The problems of a manifest's joints (``joints``), as messages: the names, a list of numbers
+    (x, y for each name) for each body layer of a pose at a framing it shows at, and for each leap
+    frame."""
+    if "joints" not in m:
+        return []
+    j = m["joints"]
+    shape = (
+        "The field 'joints' must hold the joints' names, 'poses' (pose to framing to the list of x, y "
+        "for each name) and may hold 'leap' (leap frame to the list)."
+    )
+    if not (
+        isinstance(j, dict)
+        and set(j) <= {"names", "poses", "leap"}
+        and isinstance(j.get("names"), list)
+        and isinstance(j.get("poses"), dict)
+        and isinstance(j.get("leap", {}), dict)
+    ):
+        return [shape]
+    names = j["names"]
+    if (
+        not names
+        or any(n not in JOINT_NAMES for n in names)
+        or len(set(names)) != len(names)
+    ):
+        return [f"The joints' names must be distinct names of {list(JOINT_NAMES)}."]
+    out = []
+
+    def coords(v) -> bool:
+        return (
+            isinstance(v, list)
+            and len(v) == 2 * len(names)
+            and all(_num(x) and abs(x) <= JOINT_REACH for x in v)
+        )
+
+    ps = m.get("poses") if isinstance(m.get("poses"), dict) else {}
+    for pose, by in j["poses"].items():
+        shows = (
+            (ps.get(pose) or {}).get("framings")
+            if isinstance(ps.get(pose), dict)
+            else None
+        )
+        if not isinstance(by, dict) or not isinstance(shows, list):
+            out.append(f"The joints of {pose!r} must belong to a pose of the pack.")
+            continue
+        for f, v in by.items():
+            if f not in shows:
+                out.append(
+                    f"The joints of {pose!r} at {f!r}: the pose does not show there."
+                )
+            elif not coords(v):
+                out.append(
+                    f"The joints of {pose!r} at {f!r} must be x, y for each name."
+                )
+    frames = (
+        (m.get("leap") or {}).get("frames") if isinstance(m.get("leap"), dict) else None
+    )
+    for k, v in j.get("leap", {}).items():
+        if not isinstance(frames, list) or k not in frames:
+            out.append(
+                f"The joints of the leap frame {k!r}: the pack has no such frame."
+            )
+        elif not coords(v):
+            out.append(
+                f"The joints of the leap frame {k!r} must be x, y for each name."
+            )
+    return out
+
+
 def webp_header(data: bytes) -> dict | None:
     """The size of a WebP file and whether it holds alpha; None when the bytes are not WebP."""
     if len(data) < 30 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
@@ -293,9 +394,14 @@ def check_layered_manifest(m) -> list[dict]:
         bad("The manifest is not a JSON object.")
         return problems
     for k in m:
-        if k not in REQUIRED and k not in OPTIONAL and k not in OPTIONAL_LIGHT:
+        if (
+            k not in REQUIRED
+            and k not in OPTIONAL
+            and k not in OPTIONAL_LIGHT
+            and k not in OPTIONAL_JOINTS
+        ):
             bad(f"The manifest has the unknown field {k!r}.", "unknown_field")
-    for message in check_light(m):
+    for message in check_light(m) + check_joints(m):
         bad(message)
     for k in REQUIRED:
         if k not in m:
