@@ -174,6 +174,25 @@ class TestEncoding(unittest.TestCase):
         self.assertTrue(np.allclose(out[10, 12 + light.BLEED + 1], 0))
 
 
+class TestFaceLight(unittest.TestCase):
+    def test_lit_side(self):
+        """The face's light counts the lit side: the pixels where the key gives at least its median."""
+        key = np.zeros((4, 4, 3), np.float32)
+        key[:, 2:] = 1.0
+        fill = np.full((4, 4, 3), 0.1, np.float32)
+        fill[:, :2] = 0.3
+        alpha = np.full((4, 4), 255, np.uint8)
+        out = light.face_light(
+            {"key": key, "fill": fill}, alpha, {"x": 0, "y": 0, "width": 4, "height": 4}
+        )
+        self.assertAlmostEqual(out["key"], 1.0, places=5)
+        self.assertAlmostEqual(out["fill"], 0.1, places=5)
+        self.assertEqual(
+            light.face_light({"key": key}, np.zeros((4, 4), np.uint8), None),
+            {"key": 0.0},
+        )
+
+
 class TestDisplay(unittest.TestCase):
     def test_agx(self):
         grey = light.agx(np.array([[0.18, 0.18, 0.18]]))[0]
