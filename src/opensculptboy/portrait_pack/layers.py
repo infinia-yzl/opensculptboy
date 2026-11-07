@@ -48,9 +48,11 @@ from opensculptboy.portrait_pack.render import (
 )
 
 # The framings: pixels per head, the room kept above the crown and the cut below it in heads
-# (None: the ground), and whether raised hands lift the frame's top. The close framing holds the
-# close-up and the thought (the head and the chest); the waist framing the medium close-up; the
-# thigh framing the two-shot and the low, far shot; the full framing the whole body and the leap.
+# (None: the ground), and whether raised hands lift the frame's top. Each framing renders through
+# the camera of one shot (``--shots-file``): the close framing for the close-up, the waist framing
+# for the medium close-up, the thigh framing for the two-shot and the full framing for the whole
+# body and the leap. The thought, the square-on stern close-up and the low, far shot have
+# framings of their own (``thought``, ``stern`` and ``low``), which need the shots' cameras.
 # The scales cover a window of 1440 x 900 pixels at device scale 2: a close-up with the face at
 # 45 % of the height asks for about 810 pixels per head, a medium close-up at 120 % about 655,
 # a two-shot at 100 % about 320 and the full shot about 150.
@@ -59,17 +61,30 @@ FRAMINGS = {
     "waist": dict(scale=660, above=0.5, below=3.6, hands=True),
     "thigh": dict(scale=330, above=0.5, below=6.0, hands=True),
     "full": dict(scale=160, above=0.5, below=None, hands=True),
+    "thought": dict(scale=810, above=0.5, below=2.2, hands=False),
+    "stern": dict(scale=810, above=0.5, below=2.2, hands=False),
+    "low": dict(scale=330, above=0.5, below=6.8, hands=True),
 }
-# The poses of each framing: raised hands leave the close framing.
-CLOSE_POSES = (
-    "at_ease",
-    "relaxed",
-    "hands_behind_head",
-    "chin",
-    "scratch_head",
-    "arms_crossed",
-    "hand_on_chest",
-)
+# The framings every pack may hold without the shots' cameras; at_ease shows at each of them.
+BASE_FRAMINGS = ("close", "waist", "thigh", "full")
+# The poses each framing holds: the poses its shot shows. Raised hands leave the close framings;
+# a pose with a face set of its own shows where its shot needs it (the chin in the thought, the
+# bow of hand_on_chest in the medium close-up and the two-shot, the lowered head in the low shot).
+_MAIN = ("at_ease", "relaxed", "hands_behind_head", "scratch_head", "arms_crossed")
+_RAISED = ("wave", "fist", "cheer")
+FRAMING_POSES = {
+    "close": _MAIN,
+    "waist": _MAIN + ("hand_on_chest",) + _RAISED,
+    "thigh": _MAIN + ("hand_on_chest",) + _RAISED,
+    "full": _MAIN + _RAISED,
+    "thought": ("chin",),
+    "stern": ("at_ease", "arms_crossed"),
+    "low": ("downcast",),
+}
+# The poses of the close framing (kept for callers of the first layered pack).
+CLOSE_POSES = FRAMING_POSES["close"]
+# The expressions of the main face set at a framing whose shot shows only some (all elsewhere).
+FRAMING_EXPRESSIONS = {"stern": ("neutral", "stern")}
 # The margins: around the figure's sides and top, and around the face's changing rectangle, in heads.
 SIDE_MARGIN = 0.08
 TOP_MARGIN = 0.06
@@ -314,7 +329,16 @@ class Framer:
             "y": int(round(eyes_y)),
             "top": int(round(crown)),
             "chin": int(round(chin)),
+            **({"size": round(stage_unit(f) * m, 2)} if "joints" in f else {}),
         }
+
+
+def stage_unit(figure: dict) -> float:
+    """The stage's head height of a figure (metres): the hips to the eyes over 3.5, as the
+    stage measures a head."""
+    from opensculptboy.portrait_pack.shots import STAGE_HEAD_UNITS
+
+    return float(figure["eyes"][1] - figure["joints"]["root"][1]) / STAGE_HEAD_UNITS
 
 
 # ------------------------------------------------------------------ the shots' cameras
@@ -398,11 +422,14 @@ class ShotFramer(Framer):
         focal = self._focal(name, cam, f)
         p = project_points(cam, [f["crown"], f["eyes"], f["chin"]], focal)
         crown = g["top"] * g["scale"]
+        # the head's size as the camera projects it: one stage head height, upright at the eyes'
+        # depth (the crown's and the chin's rows come closer together under a tilted camera)
         return {
             "x": int(round(g["left"] * g["scale"])),
             "y": int(round(crown + p[1, 1] - p[0, 1])),
             "top": int(round(crown)),
             "chin": int(round(crown + p[2, 1] - p[0, 1])),
+            "size": round(focal * stage_unit(f) / p[1, 2], 2),
         }
 
     def view(self, name: str, pose: str) -> dict:
@@ -450,7 +477,8 @@ def _shot_framer(
     figs, outs = {}, {}
     for name in framings:
         cam = cameras[name]
-        keys = list(poses_of[name]) + (
+        # at_ease gives every framing its head and its ground, whether or not the framing shows it
+        keys = list(dict.fromkeys([stage_poses.HEAD_POSE, *poses_of[name]])) + (
             list(stage_poses.LEAP) if leap and name == "full" else []
         )
         # the body's turn of the shot, for the figures and the probes
@@ -560,19 +588,45 @@ def write_layered_pack(
         poses.remove(stage_poses.HEAD_POSE)
     poses.insert(0, stage_poses.HEAD_POSE)
     shared = shared_poses.load(poses_file)
-    lacking = [p for p in poses if p not in shared.bones]
+    wanted_shared = [stage_poses.shared_name(p) for p in poses] + (
+        [stage_poses.shared_name(k) for k in stage_poses.LEAP] if leap else []
+    )
+    lacking = [p for p in wanted_shared if p not in shared.bones]
     if lacking:
         raise ValueError(f"The pose file {shared.source} lacks the poses {lacking}.")
     cameras = shot_specs.load(shots_file) if shots_file else None
-    framings = list(framings or FRAMINGS)
+    if framings:
+        framings = list(framings)
+    elif cameras is not None:
+        framings = [f for f in FRAMINGS if f in cameras]
+    else:
+        framings = list(BASE_FRAMINGS)
     unknown = [f for f in framings if f not in FRAMINGS]
     if unknown:
         raise ValueError(
             f"Unknown framings {unknown}; the framings are {list(FRAMINGS)}."
         )
+    if cameras is None:
+        alone = [f for f in framings if f not in BASE_FRAMINGS]
+        if alone:
+            raise ValueError(
+                f"The framings {alone} render through their shots' cameras: give --shots-file."
+            )
     defs = {n: dict(FRAMINGS[n], scale=FRAMINGS[n]["scale"] * scale) for n in framings}
-    poses_of = {
-        n: [p for p in poses if n != "close" or p in CLOSE_POSES] for n in framings
+    poses_of = {n: [p for p in poses if p in FRAMING_POSES[n]] for n in framings}
+    empty = [n for n in framings if not poses_of[n]]
+    if empty:
+        raise ValueError(f"The framings {empty} hold none of the poses {poses}.")
+    # the face sets: the main set, which every pose that keeps at_ease's head shares, and a set
+    # of its own for each pose that turns its head, with the expressions that suit it
+    own = {
+        p: [x for x in expressions if x in shared.faces.get(p, ())] or ["neutral"]
+        for p in poses
+        if p in shared.own_head
+    }
+    main_xs = {
+        n: [x for x in expressions if x in FRAMING_EXPRESSIONS.get(n, expressions)]
+        for n in framings
     }
     card_name = None
     if card is not None:
@@ -622,12 +676,14 @@ def write_layered_pack(
                 )
 
         def show(pose: str) -> dict:
-            if pose in stage_poses.POSES:
-                pp_pose = shared_poses.page_pose(
-                    shared, pose, bones, rig.labels, rig.parents, rig.turns
-                )
-            else:
-                pp_pose = stage_poses.page_pose(pose, bones)
+            pp_pose = shared_poses.page_pose(
+                shared,
+                stage_poses.shared_name(pose),
+                bones,
+                rig.labels,
+                rig.parents,
+                rig.turns,
+            )
             return pp.tab.evaluate(
                 "([q, r, l]) => window.portrait.pose(q, r, l)",
                 [pp_pose["q"], pp_pose["root"], pp_pose["label"]],
@@ -700,81 +756,132 @@ def write_layered_pack(
         halves = {} if preview else pp.half_blinks(expressions)
         faces = pack_faces(expressions, halves)
 
-        manifest_framings = {}
-        manifest_poses = {p: {"framings": [], "front": []} for p in poses}
-        written = 0
-        for name in framings:
+        def face_rect(name: str, pose: str, xs: list) -> tuple:
+            """The face rectangle of a face set at a framing (the pose shown): the box of every
+            pixel that one of the set's faces changes, and the face's own pixels as weights."""
             g = framer.geo[name]
             head = framer.head_rows(name)
-            # the face's changing rectangle, from at_ease: each expression's open mouth with
-            # closed eyes against the neutral face, rendered around the head at one pass
-            show(stage_poses.HEAD_POSE)
-            view0 = framer.view(name, stage_poses.HEAD_POSE)
+            view = framer.view(name, pose)
             unit = head["chin"] - head["top"]
             hx0 = max(0, head["x"] - int(0.75 * unit))
             hy0 = max(0, head["top"] - int(0.15 * unit))
             hx1 = min(g["width"], head["x"] + int(0.75 * unit))
             hy1 = min(g["height"], head["chin"] + int(0.4 * unit))
             hreg = {"x": hx0, "y": hy0, "w": hx1 - hx0, "h": hy1 - hy0}
-            face = None
-            if not preview:
-                render(
-                    {**view0, "region": hreg}, neutral, 1
-                )  # the first picture after a pose settles the page
-                base = render({**view0, "region": hreg}, neutral, 1)
-                # what differs between two pictures of the same face is noise (fur and hair drawn
-                # with a dither), which no face changes
-                noise = _grow(
-                    changed_pixels(base, render({**view0, "region": hreg}, neutral, 1)),
-                    3,
-                )
-                box = None
-                changed = np.zeros(base.shape[:2], bool)
-                for x in expressions:
-                    for mouth, eyes in (("open", "closed"), ("closed", "closed")):
-                        other = render(
-                            {**view0, "region": hreg},
-                            frame_actions(x, mouth, eyes, halves.get(x)),
-                            1,
-                        )
-                        d = changed_pixels(base, other) & ~noise
-                        changed |= d
-                        b = changed_box(base, np.where(noise[..., None], base, other))
-                        if b:
-                            box = (
-                                b
-                                if box is None
-                                else (
-                                    min(box[0], b[0]),
-                                    min(box[1], b[1]),
-                                    max(box[2], b[2]),
-                                    max(box[3], b[3]),
-                                )
+            # each expression's open mouth with closed eyes against the neutral face, rendered
+            # around the head at one pass; the first picture after a pose settles the page
+            render({**view, "region": hreg}, neutral, 1)
+            base = render({**view, "region": hreg}, neutral, 1)
+            # what differs between two pictures of the same face is noise (fur and hair drawn
+            # with a dither), which no face changes
+            noise = _grow(
+                changed_pixels(base, render({**view, "region": hreg}, neutral, 1)), 3
+            )
+            box = None
+            changed = np.zeros(base.shape[:2], bool)
+            for x in xs:
+                for mouth, eyes in (("open", "closed"), ("closed", "closed")):
+                    other = render(
+                        {**view, "region": hreg},
+                        frame_actions(x, mouth, eyes, halves.get(x)),
+                        1,
+                    )
+                    changed |= changed_pixels(base, other) & ~noise
+                    b = changed_box(base, np.where(noise[..., None], base, other))
+                    if b:
+                        box = (
+                            b
+                            if box is None
+                            else (
+                                min(box[0], b[0]),
+                                min(box[1], b[1]),
+                                max(box[2], b[2]),
+                                max(box[3], b[3]),
                             )
-                if box is None:
-                    raise PortraitError("No face changes the frame.")
-                mg = FACE_MARGIN * unit
-                face = snap_rect(
-                    hx0 + box[0] - mg,
-                    hy0 + box[1] - mg,
-                    hx0 + box[2] + mg,
-                    hy0 + box[3] + mg,
-                    g["width"],
-                    g["height"],
+                        )
+            if box is None:
+                raise PortraitError(f"No face of {pose} changes the frame at {name}.")
+            mg = FACE_MARGIN * unit
+            face = snap_rect(
+                hx0 + box[0] - mg,
+                hy0 + box[1] - mg,
+                hx0 + box[2] + mg,
+                hy0 + box[3] + mg,
+                g["width"],
+                g["height"],
+            )
+            full = np.zeros((g["height"], g["width"]), bool)
+            full[hy0:hy1, hx0:hx1] = changed
+            mask = soft_mask(
+                full[
+                    face["y"] : face["y"] + face["height"],
+                    face["x"] : face["x"] + face["width"],
+                ],
+                max(2, int(round(MASK_GROW * unit))),
+                max(1, int(round(MASK_SOFT * unit))),
+            )
+            return face, mask
+
+        def write_faces(
+            name: str, pose: str, face: dict, mask, xs: list, stem: str
+        ) -> int:
+            """A face set's layers, rendered in its pose around the face rectangle."""
+            g = framer.geo[name]
+            show(pose)
+            view = framer.view(name, pose)
+            px0 = max(0, face["x"] - FACE_PAD)
+            py0 = max(0, face["y"] - FACE_PAD)
+            px1 = min(g["width"], face["x"] + face["width"] + FACE_PAD)
+            py1 = min(g["height"], face["y"] + face["height"] + FACE_PAD)
+            reg = {"x": px0, "y": py0, "w": px1 - px0, "h": py1 - py0}
+            t = time.time()
+            n = 0
+            for x, mouth, eyes, actions in faces:
+                if x not in xs:
+                    continue
+                rgba = render({**view, "region": reg}, actions, samples)
+                ox, oy = face["x"] - px0, face["y"] - py0
+                patch = rgba[oy : oy + face["height"], ox : ox + face["width"]].copy()
+                patch[..., 3] = np.round(patch[..., 3] * mask).astype(np.uint8)
+                patch[patch[..., 3] == 0] = 0
+                save_layer(
+                    folder / f"face.{stem}.{x}.{mouth}.{eyes}{ext}",
+                    np.ascontiguousarray(patch),
+                    q_face,
                 )
-                # the face's own pixels inside the rectangle: what any face changes, grown and softened
-                full = np.zeros((g["height"], g["width"]), bool)
-                full[hy0:hy1, hx0:hx1] = changed
-                face_mask = soft_mask(
-                    full[
-                        face["y"] : face["y"] + face["height"],
-                        face["x"] : face["x"] + face["width"],
-                    ],
-                    max(2, int(round(MASK_GROW * unit))),
-                    max(1, int(round(MASK_SOFT * unit))),
-                )
+                n += 1
+            log(f"{n} faces of {stem} ({time.time() - t:.1f} s)")
+            return n
+
+        manifest_framings = {}
+        manifest_poses = {p: {"framings": [], "front": []} for p in poses}
+        written = 0
+        for name in framings:
+            g = framer.geo[name]
+            head = framer.head_rows(name)
+            main_poses = [p for p in poses_of[name] if p not in own]
+            # the main face set, rendered in at_ease, where a pose of the framing keeps its head
+            face = mask = None
+            if main_poses and not preview:
+                show(stage_poses.HEAD_POSE)
+                face, mask = face_rect(name, stage_poses.HEAD_POSE, main_xs[name])
+            sets = {}
+            if not preview:
+                for pose in poses_of[name]:
+                    if pose in own:
+                        show(pose)
+                        sets[pose] = (*face_rect(name, pose, own[pose]), own[pose])
             # the body layers, and the at_ease face rectangle for the front layers
             base_crop = None
+            if face is not None and stage_poses.HEAD_POSE not in poses_of[name]:
+                show(stage_poses.HEAD_POSE)
+                rgba = render(
+                    framer.view(name, stage_poses.HEAD_POSE), neutral, samples
+                )
+                base_crop = rgba[
+                    face["y"] : face["y"] + face["height"],
+                    face["x"] : face["x"] + face["width"],
+                ].copy()
             for pose in poses_of[name]:
                 t = time.time()
                 show(pose)
@@ -782,7 +889,7 @@ def write_layered_pack(
                 save_layer(folder / f"body.{pose}.{name}{ext}", rgba, q_body)
                 written += 1
                 manifest_poses[pose]["framings"].append(name)
-                if face is not None:
+                if face is not None and pose not in own:
                     crop = rgba[
                         face["y"] : face["y"] + face["height"],
                         face["x"] : face["x"] + face["width"],
@@ -790,7 +897,7 @@ def write_layered_pack(
                     if pose == stage_poses.HEAD_POSE:
                         base_crop = crop
                     elif base_crop is not None:
-                        m = front_mask(crop, base_crop, face_mask)
+                        m = front_mask(crop, base_crop, mask)
                         if m is not None:
                             front = crop.copy()
                             front[..., 3] = (
@@ -803,43 +910,37 @@ def write_layered_pack(
                             written += 1
                             manifest_poses[pose]["front"].append(name)
                 log(f"body.{pose}.{name} ({time.time() - t:.1f} s)")
-            # the face layers, rendered in at_ease around the rectangle
+            # the face layers: the main set in at_ease, each own set in its pose
             if face is not None:
-                show(stage_poses.HEAD_POSE)
-                px0 = max(0, face["x"] - FACE_PAD)
-                py0 = max(0, face["y"] - FACE_PAD)
-                px1 = min(g["width"], face["x"] + face["width"] + FACE_PAD)
-                py1 = min(g["height"], face["y"] + face["height"] + FACE_PAD)
-                reg = {"x": px0, "y": py0, "w": px1 - px0, "h": py1 - py0}
-                t = time.time()
-                for x, mouth, eyes, actions in faces:
-                    rgba = render({**view0, "region": reg}, actions, samples)
-                    ox, oy = face["x"] - px0, face["y"] - py0
-                    patch = rgba[
-                        oy : oy + face["height"], ox : ox + face["width"]
-                    ].copy()
-                    patch[..., 3] = np.round(patch[..., 3] * face_mask).astype(np.uint8)
-                    patch[patch[..., 3] == 0] = 0
-                    save_layer(
-                        folder / f"face.{name}.{x}.{mouth}.{eyes}{ext}",
-                        np.ascontiguousarray(patch),
-                        q_face,
-                    )
-                    written += 1
-                log(f"{len(faces)} faces at {name} ({time.time() - t:.1f} s)")
-            manifest_framings[name] = {
+                written += write_faces(
+                    name, stage_poses.HEAD_POSE, face, mask, main_xs[name], name
+                )
+            for pose, (rect, m, xs) in sets.items():
+                written += write_faces(name, pose, rect, m, xs, f"{name}.{pose}")
+            entry = {
                 "frame": {"width": g["width"], "height": g["height"]},
                 "head": head,
-                **({"face": face} if face is not None else {}),
             }
+            if cameras is not None:
+                entry["camera"] = cameras[name].manifest()
+            if face is not None:
+                entry["face"] = face
+                if main_xs[name] != expressions:
+                    entry["expressions"] = main_xs[name]
+            if sets:
+                entry["sets"] = {
+                    p: {"face": rect, "expressions": xs}
+                    for p, (rect, _, xs) in sets.items()
+                }
             if name == "full":
-                manifest_framings[name]["ground"] = int(
+                entry["ground"] = int(
                     round(
                         (g["top"] * framer.H + framer.ground_below)
                         * g["scale"]
                         / framer.H
                     )
                 )
+            manifest_framings[name] = entry
         # the leap: the key poses with the full framing's camera of at_ease, the face of joy
         leap_keys = []
         if leap and "full" in framings:

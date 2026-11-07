@@ -1953,11 +1953,12 @@ def main(argv=None) -> int:
         "layers, front layers and the leap, in WebP (docs/portrait-pack.md)",
     )
     pp.add_argument(
-        "--poses", help="with --layers: comma-separated poses (default: all ten)"
+        "--poses", help="with --layers: comma-separated poses (default: all eleven)"
     )
     pp.add_argument(
         "--framings",
-        help="with --layers: comma-separated framings among close, waist, thigh, full (default: all)",
+        help="with --layers: comma-separated framings among close, waist, thigh, full, and with "
+        "--shots-file thought, stern and low (default: every framing the shots render)",
     )
     pp.add_argument(
         "--no-leap",
