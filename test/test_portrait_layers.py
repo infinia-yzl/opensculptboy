@@ -5,8 +5,9 @@ The layered portrait pack (squire.portraits/2, opensculptboy.portrait_pack.layer
 
 In CI: the check with synthetic layered packs (a valid one, then each broken case with its reason
 code), the WebP header reader, the framings' sizes and cameras from synthetic outlines, the front
-layer's mask, the stage poses on the authoring rig (the head's turn kept, the hands where each pose
-puts them) and the command's options. Local only (Playwright with the built page): the default
+layer's mask, the shared pose file (its format, every humanoid bone resolving to a rig bone, the
+T-pose turns, the stills' skeleton landing on the VRM file's skeleton, the head kept), the shots'
+cameras and the command's options. Local only (Playwright with the built page): the default
 character's layered pack at a fifth of its scale with one pass per layer, its check, the head on
 the same pixels in every pose of a framing and the face layers fitting the bodies.
 """
@@ -27,6 +28,7 @@ from PIL import Image
 from opensculptboy import cli
 from opensculptboy.portrait_pack import contract, layered_contract as LC, layers, render
 from opensculptboy.portrait_pack import poses as stage_poses
+from opensculptboy.portrait_pack import shared_poses, shots
 from test.markers import local_only
 from test.test_hair_page import CHROMIUM, PAGE, playwright_available
 
@@ -236,9 +238,16 @@ class TestLayeredCheck(unittest.TestCase):
                 "0.5",
                 "--quality",
                 "80",
+                "--poses-file",
+                "poses.json",
+                "--shots-file",
+                "shots.json",
             )
         self.assertEqual(code, 0)
         kw = w.call_args.kwargs
+        self.assertEqual(
+            (kw["poses_file"], kw["shots_file"]), ("poses.json", "shots.json")
+        )
         self.assertEqual(kw["poses"], ["at_ease", "chin"])
         self.assertEqual(kw["framings"], ["close"])
         self.assertFalse(kw["leap"])
@@ -352,68 +361,345 @@ class TestFramer(unittest.TestCase):
         )
 
 
-class TestStagePoses(unittest.TestCase):
-    """The poses on the authoring rig: the head's turn of at_ease in every pose, and the hands
-    where the poses put them."""
+class TestSharedPoses(unittest.TestCase):
+    """The shared pose file (squire.poses/1) on the default character's rig."""
 
     @classmethod
     def setUpClass(cls):
-        cls.P, cls.L, _ = stage_poses._tools()
+        cls.shared = shared_poses.load()
+        cls.rig = shared_poses.card_rig(None)
+        cls.index = {n: j for j, n in enumerate(cls.rig.labels)}
 
-    def world(self, name):
-        return self.P.fk(stage_poses.built(name))
+    def page_fk(self, name):
+        """The rig's joints (page frame) for a shared pose, as the page poses it."""
+        rig = self.rig
+        R = shared_poses.page_rotations(
+            self.shared.local(name), rig.labels, rig.parents, rig.turns
+        )
+        W, P = np.empty_like(R), np.empty((len(R), 3))
+        for j, p in enumerate(rig.parents):
+            W[j] = R[j] if p < 0 else W[p] @ R[j]
+            P[j] = (
+                rig.heads[j] if p < 0 else P[p] + W[p] @ (rig.heads[j] - rig.heads[p])
+            )
+        return W, P
+
+    def vrm_fk(self, name):
+        """The joints of the VRM file of the same card for the same pose: the T pose's joints,
+        the humanoid bones turned by the file's normalized rotations, the forearm's twist bone by
+        its roll constraint, every other node carried by its parent; the wrist hangs from
+        lowerarm01, as in the file."""
+        from opensculptboy.export.tpose import roll_constraint
+
+        rig = self.rig
+        T = np.empty((len(rig.labels), 3))
+        for j, p in enumerate(rig.parents):
+            T[j] = (
+                rig.heads[j]
+                if p < 0
+                else T[p] + rig.turns[p] @ (rig.heads[j] - rig.heads[p])
+            )
+        local_h = self.shared.local(name)
+        to_human = {r: h for h, r in shared_poses.bone_map().items()}
+        twists = shared_poses.twist_rules()
+        parents = list(rig.parents)
+        for t, (src, _, _) in twists.items():
+            parents[self.index[src]] = parents[self.index[t]]
+        W, P = np.empty((len(T), 3, 3)), np.empty((len(T), 3))
+        for j, n in enumerate(rig.labels):
+            if n in to_human:
+                L = local_h.get(to_human[n], np.eye(3))
+            elif n in twists:
+                src, axis, w = twists[n]
+                L = roll_constraint(local_h.get(to_human[src], np.eye(3)), axis, w)
+            else:
+                L = np.eye(3)
+            p = parents[j]
+            W[j] = L if p < 0 else W[p] @ L
+            P[j] = T[j] if p < 0 else P[p] + W[p] @ (T[j] - T[p])
+        return P
+
+    def test_file(self):
+        self.assertEqual(shared_poses.DEFAULT_FILE.name, "poses.json")
+        for name in stage_poses.POSES:
+            self.assertIn(name, self.shared.bones)
+        b = self.shared.bones
+        self.assertEqual(b["at_ease"]["leftUpperArm"], (8.0, -6.0, -79.0))
+        self.assertEqual(b["at_ease"]["rightUpperArm"], (8.0, 6.0, 79.0))
+        self.assertEqual(b["fist"]["leftThumbMetacarpal"], (20.0, 45.0, -10.0))
+        self.assertEqual(b["wave"]["leftIndexProximal"], (0.0, -7.5, -4.0))
+        self.assertEqual(b["relaxed"]["rightUpperArm"], (10.0, 2.0, 80.0))
+        self.assertEqual(self.shared.keep, ("neck", "head"))
+        # angles about X, then Y, then Z in the parent's frame
+        np.testing.assert_allclose(
+            shared_poses.euler_matrix((30, 0, 40)),
+            shared_poses.euler_matrix((0, 0, 40))
+            @ shared_poses.euler_matrix((30, 0, 0)),
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            shared_poses.euler_matrix((0, -90, 0)) @ [1, 0, 0], [0, 0, 1], atol=1e-12
+        )
+
+    def test_broken_files(self):
+        data = json.loads(shared_poses.DEFAULT_FILE.read_text(encoding="utf-8"))
+        cases = [
+            ({"format": "x"}, "format"),
+            (
+                {"poses": {"p": {"bones": {"tail": [0, 0, 1]}}}},
+                "not a VRM humanoid bone",
+            ),
+            ({"poses": {"p": {"left": "up"}}}, "no arm preset"),
+            (
+                {"poses": {"p": {"left": {"hand": {"curl": "claw"}}}}},
+                "no finger preset",
+            ),
+            ({"keepHead": {"pose": "nope", "bones": ["head"]}}, "keepHead"),
+        ]
+        for change, want in cases:
+            with self.subTest(want=want):
+                with self.assertRaisesRegex(shared_poses.PosesError, want):
+                    shared_poses.parse({**data, **change})
+
+    def test_every_bone_resolves(self):
+        rig, table = self.rig, shared_poses.bone_map()
+        for human, bone in table.items():
+            self.assertIn(human, shared_poses.HUMANOID_PARENT, human)
+            self.assertIn(bone, self.index, f"{human} -> {bone}")
+        governing = shared_poses.governing(rig.labels, rig.parents)
+        self.assertEqual(set(governing), set(rig.labels))
+        self.assertEqual(governing["root"], "hips")
+        self.assertEqual(governing["spine03"], "spine")
+        self.assertEqual(governing["neck03"], "neck")
+        self.assertEqual(governing["lowerarm02.L"], "leftLowerArm")
+        self.assertEqual(governing["metacarpal2.R"], "rightHand")
+        self.assertEqual(governing["toe2-1.L"], "leftFoot")
+        for name, bones in self.shared.bones.items():
+            for human in bones:
+                with self.subTest(pose=name, bone=human):
+                    self.assertIn(human, table)
+        for twist, (src, _, _) in shared_poses.twist_rules().items():
+            self.assertIn(twist, self.index)
+            self.assertIn(src, self.index)
+
+    def test_t_pose(self):
+        """With no rotation the rig stands in the VRM file's T pose: the arms along X, the legs
+        straight down."""
+        rig = self.rig
+        W = shared_poses.rig_world({}, rig.labels, rig.parents, rig.turns)
+        _, P = self.page_fk_with(W)
+        unit = lambda v: v / np.linalg.norm(v)  # noqa: E731
+        for s, sign in (("L", 1), ("R", -1)):
+            arm = unit(
+                P[self.index[f"lowerarm01.{s}"]] - P[self.index[f"upperarm01.{s}"]]
+            )
+            np.testing.assert_allclose(arm, [sign, 0, 0], atol=1e-6)
+            leg = unit(P[self.index[f"foot.{s}"]] - P[self.index[f"upperleg01.{s}"]])
+            np.testing.assert_allclose(leg, [0, -1, 0], atol=1e-6)
+
+    def page_fk_with(self, Rw):
+        rig = self.rig
+        P = np.empty((len(Rw), 3))
+        for j, p in enumerate(rig.parents):
+            P[j] = (
+                rig.heads[j] if p < 0 else P[p] + Rw[p] @ (rig.heads[j] - rig.heads[p])
+            )
+        return Rw, P
+
+    def test_lands_on_the_vrm_skeleton(self):
+        """Every pose puts the stills' joints where the VRM file of the same card puts them."""
+        joints = [
+            "head",
+            "neck01",
+            "upperarm01.L",
+            "lowerarm01.L",
+            "lowerarm01.R",
+            "wrist.L",
+            "wrist.R",
+            "finger3-3.L",
+            "finger3-3.R",
+            "lowerleg01.L",
+            "lowerleg01.R",
+            "foot.L",
+            "foot.R",
+        ]
+        for name in stage_poses.POSES:
+            with self.subTest(pose=name):
+                _, page = self.page_fk(name)
+                vrm = self.vrm_fk(name)
+                for j in joints:
+                    i = self.index[j]
+                    self.assertLess(np.linalg.norm(page[i] - vrm[i]), 0.002, j)
 
     def test_head_kept(self):
-        ref = self.world(stage_poses.HEAD_POSE)[0]
+        ref, _ = self.page_fk("at_ease")
         for name in stage_poses.POSES:
-            for bone in stage_poses.LOCKED:
+            W, _ = self.page_fk(name)
+            for bone in ("neck01", "neck02", "neck03", "head"):
                 with self.subTest(pose=name, bone=bone):
-                    i = self.P.IDX[bone]
-                    np.testing.assert_allclose(
-                        self.world(name)[0][i], ref[i], atol=1e-6
-                    )
-
-    def test_hands(self):
-        P = self.P
-        pos = lambda name, bone: self.world(name)[1][P.IDX[bone]]  # noqa: E731
-        crown = lambda name: stage_poses._key_points(stage_poses.built(name))["crown"]  # noqa: E731
-        # hands in the air above the crown, and the waving hand above the eyes
-        for name, sides in (("cheer", "LR"), ("fist", "R")):
-            for s in sides:
-                with self.subTest(pose=name, side=s):
-                    self.assertGreater(pos(name, f"wrist.{s}")[1], crown(name)[1])
-        eyes = stage_poses._key_points(stage_poses.built("wave"))["eyes"]
-        self.assertGreater(pos("wave", "wrist.R")[1], eyes[1])
-        # behind the head: both wrists above the eyes and behind the head's joint
-        for s in "LR":
-            w, head = (
-                pos("hands_behind_head", f"wrist.{s}"),
-                pos("hands_behind_head", "head"),
-            )
-            self.assertGreater(w[1], head[1])
-            self.assertLess(w[2], head[2])
-        # the hand under the chin and the hand on the chest
-        chin = stage_poses._key_points(stage_poses.built("chin"))["chin"]
-        self.assertLess(np.linalg.norm(pos("chin", "wrist.R") - chin), 0.15)
-        chest = pos("hand_on_chest", "spine01")
-        self.assertLess(
-            np.linalg.norm(
-                pos("hand_on_chest", "wrist.R")[:2] - chest[:2] - [0.0, 0.0]
-            ),
-            0.12,
-        )
+                    i = self.index[bone]
+                    np.testing.assert_allclose(W[i], ref[i], atol=1e-9)
 
     def test_page_pose(self):
         import anny.poses
 
         bones = anny.poses.library().bones
-        for name in stage_poses.BUILDERS:
+        rig = self.rig
+        for name in stage_poses.POSES:
             with self.subTest(pose=name):
-                p = stage_poses.page_pose(name, bones)
+                p = shared_poses.page_pose(
+                    self.shared, name, bones, rig.labels, rig.parents, rig.turns
+                )
                 q = np.asarray(p["q"]).reshape(-1, 4)
                 self.assertEqual(len(q), len(bones))
-                np.testing.assert_allclose(np.linalg.norm(q, axis=1), 1, atol=1e-6)
-                self.assertEqual(len(p["root"]), 3)
+                np.testing.assert_allclose(np.linalg.norm(q, axis=1), 1, atol=1e-9)
+                self.assertEqual(p["root"], [0.0, 0.0, 0.0])
+        # the leap's key poses still come from the posing tools
+        for key in stage_poses.LEAP:
+            self.assertEqual(
+                len(stage_poses.page_pose(key, bones)["q"]), 4 * len(bones)
+            )
+
+
+def shots_data():
+    """A shots file of two framings."""
+    return {
+        "format": shots.FORMAT,
+        "sensor": 24,
+        "heights": {"eyes": 0, "chest": 1.5, "hips": 3.5},
+        "renders": {"close": "close_up", "full": "full"},
+        "shots": {
+            "close_up": {
+                "span": 1.0,
+                "share": [0.36, 0.4, 0.42],
+                "top": 0.06,
+                "stills": "close",
+                "camera": {
+                    "lens": 85,
+                    "height": "eyes",
+                    "above": 0,
+                    "tilt": 0,
+                    "turn": 20,
+                },
+            },
+            "full": {
+                "span": 9.0,
+                "share": 1,
+                "fit": "body",
+                "top": 0.3,
+                "bottom": 0.95,
+                "stills": "full",
+                "camera": {
+                    "lens": 50,
+                    "height": "hips",
+                    "above": 0,
+                    "tilt": -8,
+                    "turn": 20,
+                },
+            },
+            "thought": {
+                "span": 2.4,
+                "share": 0.95,
+                "top": 0.24,
+                "stills": "close",
+                "camera": {
+                    "lens": 85,
+                    "height": "eyes",
+                    "above": 0,
+                    "tilt": 0,
+                    "turn": 25,
+                },
+            },
+        },
+    }
+
+
+class TestShotCameras(unittest.TestCase):
+    """The shots' cameras of the framings (--shots-file)."""
+
+    def test_parse(self):
+        cams = shots.parse(shots_data())
+        self.assertEqual(set(cams), {"close", "full"})
+        c, f = cams["close"], cams["full"]
+        self.assertEqual(
+            (c.shot, c.lens, c.below_eyes, c.tilt, c.turn), ("close_up", 85, 0, 0, 20)
+        )
+        self.assertEqual((f.shot, f.below_eyes, f.tilt), ("full", 3.5, -8))
+        self.assertAlmostEqual(c.window, 1.0 / 0.4)
+        self.assertAlmostEqual(f.window, 9.0 / 0.65)
+        self.assertAlmostEqual(c.fov, 16.0714, places=3)
+        # the window's height at the eyes' distance spans the shot's head heights
+        d = c.distance(0.2)
+        self.assertAlmostEqual(2 * d * np.tan(np.radians(c.fov) / 2), c.window * 0.2)
+
+    def test_broken(self):
+        for change, want in (
+            (lambda d: d.update(format="x"), "format"),
+            (lambda d: d["renders"].update(close="full"), "whose stills are 'full'"),
+            (lambda d: d["renders"].update(waist="medium_close"), "unknown shot"),
+            (
+                lambda d: d["shots"]["close_up"]["camera"].update(height="knees"),
+                "height",
+            ),
+            (lambda d: d["shots"]["full"]["camera"].update(tilt=45), "out of range"),
+        ):
+            data = shots_data()
+            change(data)
+            with (
+                self.subTest(want=want),
+                self.assertRaisesRegex(shots.ShotsError, want),
+            ):
+                shots.parse(data)
+
+    def framer(self):
+        cams = shots.parse(shots_data())
+        figure = {
+            "crown": [0.0, 1.7, 0.03],
+            "chin": [0.0, 1.48, 0.1],
+            "eyes": [0.0, 1.6, 0.1],
+            "ground": 0.0,
+            "joints": {"root": [0.0, 0.95, 0.0]},
+        }
+        moved = {
+            **figure,
+            "crown": [0.05, 1.68, 0.03],
+            "chin": [0.05, 1.46, 0.1],
+            "eyes": [0.05, 1.58, 0.1],
+        }
+        rows = np.linspace(-1, 9, 500)
+        cov = (rows >= -0.1) & (rows <= 7.8)
+        outline = (rows, np.full(500, -1.2), np.full(500, 1.2), cov)
+        figs = {n: {"at_ease": figure, "wave": moved} for n in ("close", "full")}
+        outs = {n: {"at_ease": outline, "wave": outline} for n in ("close", "full")}
+        defs = {n: dict(layers.FRAMINGS[n]) for n in ("close", "full")}
+        poses_of = {n: ["at_ease", "wave"] for n in ("close", "full")}
+        return layers.ShotFramer(figs, outs, defs, poses_of, cams), figs
+
+    def test_camera_and_view(self):
+        f, figs = self.framer()
+        for name in ("close", "full"):
+            g, head = f.geo[name], f.head_rows(name)
+            # the scale is pixels per head at the eyes' depth; the rows are the crown's and the
+            # chin's own, which a tilted camera foreshortens (the chin lies forward of the crown)
+            self.assertLess(
+                abs((head["chin"] - head["top"]) / g["scale"] - 1), 0.06, name
+            )
+            for pose in ("at_ease", "wave"):
+                v = f.view(name, pose)
+                c = v["camera"]
+                self.assertEqual(v["turn"], 20)
+                cam = {"eye": np.array(c["eye"]), "pitch": c["pitch"]}
+                # the eyes land on the framing's anchor in every pose: the camera follows the head
+                u, w, _ = layers.project_points(
+                    cam, figs[name][pose]["eyes"], c["focal"]
+                )[0]
+                self.assertAlmostEqual(u + c["px"], head["x"], places=6)
+                self.assertAlmostEqual(w + c["py"], head["y"], places=6)
+        # the full shot's camera sits level with the hips and looks 8 degrees up
+        c = f.view("full", "at_ease")["camera"]
+        hu = (1.6 - 0.95) / 3.5
+        self.assertAlmostEqual(c["eye"][1], 1.6 - 3.5 * hu)
+        self.assertEqual(c["pitch"], -8)
 
 
 @local_only("Playwright with the built viewer page")
