@@ -3435,8 +3435,25 @@ void main(){
 }
 // the camera of a sheet view: in front of the figure's joints, the target plane through their centre
 // (a view's cz, when it has one, puts the target plane at that depth: the portrait pack's views look at the head)
+// A view with a `camera` ({eye, pitch, focal, px, py}: the portrait pack's shot cameras) puts the camera at `eye`, pitched by
+// `pitch` degrees (positive looks down), with a focal length of `focal` pixels and its principal point at (px, py) in the
+// frame's pixels: the frame is then a rectangle of a larger picture centred on the principal point (sheetVirtual).
+function sheetVirtual(view: any) {
+  const c = view.camera, W = Math.max(1, Math.round(view.width)), H = Math.max(1, Math.round(view.height));
+  const Wv = 2 * Math.ceil(Math.max(c.px, W - c.px)), Hv = 2 * Math.ceil(Math.max(c.py, H - c.py));
+  return { W: Wv, H: Hv, x: Wv / 2 - c.px, y: Hv / 2 - c.py };
+}
 function sheetCamera(view: any) {
-  const cam = SHEET.cam, d = view.halfH / Math.tan(SHEET_FOV * DEG / 2), cz = typeof view.cz === 'number' ? view.cz : (FIG.lo.z + FIG.hi.z) / 2;
+  const cam = SHEET.cam;
+  if (view.camera) {
+    const c = view.camera, v = sheetVirtual(view), t = c.pitch * DEG, e = c.eye;
+    const d = Math.hypot(e[0] - FIG.head.x, e[1] - FIG.head.y, e[2] - FIG.head.z);
+    cam.fov = 2 * Math.atan(v.H / 2 / c.focal) / DEG; cam.aspect = v.W / v.H; cam.near = Math.max(0.05, d - 3); cam.far = d + 3;
+    cam.position.set(e[0], e[1], e[2]); cam.up.set(0, 1, 0); cam.lookAt(e[0], e[1] - Math.sin(t), e[2] - Math.cos(t));
+    cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+    return cam;
+  }
+  const d = view.halfH / Math.tan(SHEET_FOV * DEG / 2), cz = typeof view.cz === 'number' ? view.cz : (FIG.lo.z + FIG.hi.z) / 2;
   cam.fov = SHEET_FOV; cam.aspect = view.width / view.height; cam.near = Math.max(0.05, d - 3); cam.far = d + 3;
   cam.position.set(view.cx, view.cy, cz + d); cam.up.set(0, 1, 0); cam.lookAt(view.cx, view.cy, cz);
   cam.updateProjectionMatrix(); cam.updateMatrixWorld();
@@ -3482,7 +3499,9 @@ function sheetPass(T: any, cam: any, w: number, h: number, s: number, off: any =
 async function sheetRender(view: any, samples: number, tick: (px: number) => Promise<void>) {
   const W = Math.max(1, Math.round(view.width)), H = Math.max(1, Math.round(view.height)), r = view.region;
   const w = r ? Math.max(1, Math.round(r.w)) : W, h = r ? Math.max(1, Math.round(r.h)) : H;
-  const off = r ? { W, H, x: Math.round(r.x), y: Math.round(r.y) } : null;
+  const virt = view.camera ? sheetVirtual(view) : null;
+  const off = virt ? { W: virt.W, H: virt.H, x: virt.x + (r ? Math.round(r.x) : 0), y: virt.y + (r ? Math.round(r.y) : 0) }
+    : r ? { W, H, x: Math.round(r.x), y: Math.round(r.y) } : null;
   let T = sheetTargets(w, h);
   sheetTurnIfNeeded(view.turn);
   // the share of the hair strands that the page's view draws for a head of this size (updateHairLod)
@@ -3617,8 +3636,14 @@ function portraitView(width: number, height: number) {
 function portraitAnchor(view: any) {
   const eyes = FIG.joints.filter((j: any) => j.name === 'eye.L' || j.name === 'eye.R');
   const p = eyes.length === 2 ? eyes[0].p.clone().add(eyes[1].p).multiplyScalar(0.5) : FIG.head.clone();
-  const n = p.project(sheetCamera(view));
-  return { x: (n.x + 1) / 2 * view.width, y: (1 - n.y) / 2 * view.height };
+  return portraitPixel(view, p);
+}
+// a point of the world in a view's frame: pixels from the frame's top-left corner
+function portraitPixel(view: any, p: any) {
+  const n = p.clone().project(sheetCamera(view));
+  if (!view.camera) return { x: (n.x + 1) / 2 * view.width, y: (1 - n.y) / 2 * view.height };
+  const v = sheetVirtual(view);
+  return { x: (n.x + 1) / 2 * v.W - v.x, y: (1 - n.y) / 2 * v.H - v.y };
 }
 function portraitBase64(d: Uint8ClampedArray) {
   let s = '';
@@ -3725,12 +3750,23 @@ async function portraitOpening(actions: Record<string, number>) {
   },
   // the figure as it stands
   figure: () => portraitFigure(),
-  // frame the next frames with this view ({cx, cy, cz, halfH, width, height, region}); returns the anchor in the
-  // frame's pixels
+  // frame the next frames with this view ({cx, cy, cz, halfH, width, height, region}, or a shot's camera: {camera: {eye,
+  // pitch, focal, px, py}, halfH, width, height, region, turn}, see sheetCamera); `turn` turns the figure about the
+  // vertical (degrees, positive toward the figure's left). Returns the anchor in the frame's pixels.
   view(view: any) {
     if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
     PORTRAIT.view = { turn: 0, ...view };
+    sheetTurnIfNeeded(PORTRAIT.view.turn);
     return { anchor: portraitAnchor(PORTRAIT.view) };
+  },
+  // the figure's joints (the rig's bone names) in the current view's frame, in pixels from its top-left corner,
+  // with 'eyes' (the point between the eyes), 'crown' and 'chin'
+  project(names: string[]) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    const out: Record<string, number[]> = {}, f: any = portraitFigure();
+    const at = (n: string) => n === 'crown' ? FIG.crown : n === 'chin' ? FIG.chin : n === 'eyes' ? new THREE.Vector3(...f.eyes) : FIG.joints.find((j: any) => j.name === n)?.p;
+    for (const n of names) { const p = at(n); if (p) { const q = portraitPixel(PORTRAIT.view, p); out[n] = [q.x, q.y]; } }
+    return out;
   },
   // the page's own view again
   end() { if (PORTRAIT.view) { PORTRAIT.view = null; PORTRAIT.eyes = null; sheetHold(false); } },
