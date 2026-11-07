@@ -2333,6 +2333,7 @@ export class PoseEditor {
       const showAnny = t && !noFigure && (st.dragging ? p.solve === POINT_BY_NAME.get(st.selected || '')?.solve : (st.selected === p.name));
       if (showAnny) { const a = toS(anny.get(p.name)!); f.anny.push({ name: p.name, x: a.x, y: a.y, tx: s.x, ty: s.y, line: true }); }
     }
+    this.clusteredHands = clustered;
     for (const side of clustered) {
       const xs = handPoints(side).map((p) => this.screen.get(p.name)).filter(Boolean) as { x: number; y: number }[];
       if (!xs.length) continue;
@@ -2616,12 +2617,10 @@ export class PoseEditor {
     }));
   }
 
-  private isClustered(side: 'L' | 'R'): boolean {
-    const xs = handPoints(side).map((p) => this.screen.get(p.name)).filter(Boolean) as { x: number; y: number }[];
-    if (!xs.length) return false;
-    const w = Math.max(...xs.map((a) => a.x)) - Math.min(...xs.map((a) => a.x)), h = Math.max(...xs.map((a) => a.y)) - Math.min(...xs.map((a) => a.y));
-    return Math.max(w, h) < 90 * settings.targetScale();
-  }
+  // whether the view draws a hand small, as one cluster: the last drawing's own answer, so that a wrist drawn alone at
+  // full size (stages 2 and 3) is picked as a point of its own
+  private isClustered(side: 'L' | 'R'): boolean { return this.clusteredHands.has(side); }
+  private clusteredHands = new Set<'L' | 'R'>();
 
   // ---------------------------------------------------------------- the status line
   statusIdle() {
