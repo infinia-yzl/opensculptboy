@@ -366,15 +366,35 @@ class Reproduction:
     (its lossy WebP) as the baseline."""
 
     BINS = np.linspace(0, 20, 401)
+    # The difference is measured on every STEP-th pixel of the figure, which keeps its mean and its
+    # spread and takes a quarter of the time.
+    STEP = 4
 
-    def __init__(self):
+    def __init__(self, step: int | None = None):
+        import threading
+
         self.kinds: dict[str, dict] = {}
+        self.step = max(1, int(step or self.STEP))
+        self.lock = threading.Lock()
 
     def add(self, kind: str, rendered: np.ndarray, summed8: np.ndarray, stored=None):
         cov = rendered[..., 3] >= FIGURE_ALPHA
         if not cov.any():
             return
-        d = delta_e2000(rendered[..., :3][cov], summed8[cov])
+        idx = np.flatnonzero(cov)[:: self.step]
+        flat = rendered[..., :3].reshape(-1, 3)[idx]
+        d = delta_e2000(flat, summed8.reshape(-1, summed8.shape[-1])[idx, :3])
+        base = (
+            float(
+                delta_e2000(flat, stored.reshape(-1, stored.shape[-1])[idx, :3]).sum()
+            )
+            if stored is not None
+            else 0.0
+        )
+        with self.lock:
+            self._count(kind, d, base)
+
+    def _count(self, kind: str, d: np.ndarray, base: float):
         k = self.kinds.setdefault(
             kind,
             {
@@ -389,10 +409,7 @@ class Reproduction:
         k["sum"] += float(d.sum())
         k["max"] = max(k["max"], float(d.max()))
         k["hist"] += np.histogram(np.clip(d, 0, 19.999), self.BINS)[0]
-        if stored is not None:
-            k["base"] += float(
-                delta_e2000(rendered[..., :3][cov], stored[..., :3][cov]).sum()
-            )
+        k["base"] += base
 
     @staticmethod
     def _p95(hist) -> float:
