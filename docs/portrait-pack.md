@@ -123,22 +123,22 @@ A full pack of the default character at 768 by 1024 pixels and 4 samples holds 4
 
 ## The layered pack
 
-A layered pack (`squire.portraits/2`) shows the character posed and at several framings, from a close-up of the head and shoulders to the whole body, for an app that stages the character as the subject of a large window. It holds layers that the app composes: a body for each pose and framing, a face over it, a front where a hand passes before the face, and the key poses of a leap of joy.
+A layered pack (`squire.portraits/2`) shows the character posed and at several framings, from a close-up of the head and shoulders to the whole body, for an app that stages the character as the subject of a large window. It holds layers that the app composes: a body for each pose and framing, a face over it (from the framing's main face set, or from the pose's own set when the pose turns its head), a front where a hand passes before the face, and the key poses of a leap of joy.
 
 ```bash
-opensculptboy portrait-pack --layers --out pack/                                     # the default character: 10 poses, 4 framings, 10 expressions, the leap
+opensculptboy portrait-pack --layers --out pack/                                     # the default character: 11 poses, 4 framings, 10 expressions, the leap
 opensculptboy portrait-pack --layers --character ada.json --out pack/ --licence CC0-1.0
 opensculptboy portrait-pack --layers --out pack/ --poses at_ease,chin --framings close,thigh --no-leap --scale 0.5 --samples 4   # a quick trial
 opensculptboy portrait-pack --layers --out poses/ --preview --scale 0.5 --samples 4  # the body layers alone, to look at the poses
-opensculptboy portrait-pack --layers --character card.json --out pack/ --poses-file poses.json --shots-file shots.json   # the stage's poses and shot cameras
+opensculptboy portrait-pack --layers --character card.json --out pack/ --poses-file poses.json --shots-file shots.json   # the stage's poses and shot cameras: 7 framings
 opensculptboy portrait-pack --check pack/                                            # the check reads the schema and checks either kind of pack
 ```
 
 | Option | Default | What it sets |
 |---|---|---|
 | `--layers` | | write a layered pack |
-| `--poses LIST` | all ten | the poses, comma-separated; `at_ease` is always in |
-| `--framings LIST` | all four | the framings, among `close`, `waist`, `thigh` and `full` |
+| `--poses LIST` | all eleven | the poses, comma-separated; `at_ease` is always in |
+| `--framings LIST` | every framing the shots render, else the first four | the framings, among `close`, `waist`, `thigh`, `full`, and with `--shots-file` `thought`, `stern` and `low` |
 | `--no-leap` | | leave out the leap's key poses |
 | `--format` | `webp` | `webp` (lossy colour with lossless alpha) or `png` |
 | `--quality N` | 88 | the WebP quality of the body layers; the faces take 2 more |
@@ -157,44 +157,49 @@ Each framing has its own scale in pixels per head (the height from the chin to t
 | `waist` | a medium close-up | 660 | from the highest raised hand to 3.6 heads below the crown |
 | `thigh` | a two-shot and a far, low shot | 330 | from the highest raised hand to 6 heads below the crown |
 | `full` | the whole body and the leap | 160 | from the highest raised hand (the leap's included) to the ground |
+| `thought` | the thought (`chin`) | 810 | as `close` |
+| `stern` | the square-on stern close-up (`at_ease`, `arms_crossed`; the main faces `neutral` and `stern`) | 810 | as `close` |
+| `low` | the low, far shot of sadness (`downcast`) | 330 | from the top of the head to 6.8 heads below the crown |
 
-The export first renders a small outline of every pose and sets each framing's width from the widest pose at its height. The close framing leaves out the poses with a hand above the head.
+The export first renders a small outline of every pose and sets each framing's width from the widest pose at its height. Each framing holds the poses its shot shows (`layers.FRAMING_POSES`): the close framing leaves out the poses with a hand above the head, `chin` shows at `thought` alone, `downcast` at `low` alone, and the bow of `hand_on_chest` at `waist` and `thigh`. `thought`, `stern` and `low` render only through their shots' cameras (`--shots-file`), and `at_ease` shows at each of the first four.
 
 ### Poses
 
-The ten poses come from the companion's shared pose file (`opensculptboy.portrait_pack.shared_poses`, format `squire.poses/1`): the file that the stage's 3D preview reads as well, so the stills show the body exactly as the VRM shows it. `data/portrait/poses.json` is the command's default, and `--poses-file` names another. The file gives angles on the normalized humanoid bones of VRM 1.0, which rest in a T pose. Each humanoid bone maps to its rig bone by the VRM export's table (`vrm_tables.HUMANOID_1`), and each rig bone first turns from its rest (an A pose) into the VRM file's T pose by its T-pose turn (`tpose.t_pose_turns`), computed for the card's own body: its rest-frame correction. A rig bone outside the humanoid (a twist bone, `spine03`, the neck's upper bones, the metacarpals, the toes) turns with the humanoid bone above it, and the forearm's twist bone takes half the hand's roll, as the VRM file's roll constraint gives it. The rig's joints then land where the VRM exported from the same card puts them (`test_lands_on_the_vrm_skeleton`, within 2 mm), and the page shows the rotations through `window.portrait.pose`.
+The eleven poses come from the companion's shared pose file (`opensculptboy.portrait_pack.shared_poses`, format `squire.poses/1`): the file that the stage's 3D preview reads as well, so the stills show the body exactly as the VRM shows it. `data/portrait/poses.json` is the command's default, and `--poses-file` names another. The file gives angles on the normalized humanoid bones of VRM 1.0, which rest in a T pose. Each humanoid bone maps to its rig bone by the VRM export's table (`vrm_tables.HUMANOID_1`), and each rig bone first turns from its rest (an A pose) into the VRM file's T pose by its T-pose turn (`tpose.t_pose_turns`), computed for the card's own body: its rest-frame correction. A rig bone outside the humanoid (a twist bone, `spine03`, the neck's upper bones, the metacarpals, the toes) turns with the humanoid bone above it, and the forearm's twist bone takes half the hand's roll, as the VRM file's roll constraint gives it. The rig's joints then land where the VRM exported from the same card puts them (`test_lands_on_the_vrm_skeleton`, within 2 mm), and the page shows the rotations through `window.portrait.pose`.
 
 | Pose | The body |
 |---|---|
-| `at_ease` | standing straight, the arms down |
+| `at_ease` | standing at rest, the weight on one leg, the arms down |
 | `relaxed` | the weight on one leg, a hand on the hip |
 | `hands_behind_head` | both hands behind the head, the elbows out |
-| `chin` | one hand under the chin, the other forearm across the waist |
+| `chin` | one hand under the chin, the head turned toward the thought |
 | `scratch_head` | one hand on the back of the head |
 | `arms_crossed` | the arms folded across the chest |
 | `hand_on_chest` | a hand on the chest with a slight bow |
 | `wave` | one hand raised beside the head |
 | `fist` | one fist raised above the head |
 | `cheer` | both hands in the air |
+| `downcast` | standing at rest with the head lowered and turned away |
 
-The leap's key poses are `crouch`, `rise`, `peak` and `land`; `opensculptboy.portrait_pack.poses` still builds them with the posing tools of the pose library (`anny.poses.authoring`) until the shared file carries them. Every pose of the table keeps the head and the neck of `at_ease` in the world (the file's `keepHead`); the leap's frames turn the head freely and carry the face of joy.
+The file's stances (`stances`, named by a pose's `stance`) give the hips, the spine and the legs: `rest` puts the weight on one leg with the hips and the shoulders tilted against each other, and `lean` is the same stance stronger. The leap's key poses `crouch`, `rise`, `peak` and `land` come from the same file, as `leap_crouch`, `leap_rise`, `cheer_peak` and `leap_land` (`poses.LEAP_POSES`), and carry the face of joy. Most poses keep the head and the neck of `at_ease` in the world (the file's `keepHead`) and share the framing's main face set; `chin`, `hand_on_chest` and `downcast` turn their own head (`keepHead: false`), and the pack renders a face set of their own at each framing they show at, with the expressions the file lists in their `faces`.
 
 ### How the layers are made
 
 - The camera of a framing follows the head: for each pose it stands where the head lands on the same pixels of the frame, and it looks at the plane through the eyes (the `cz` of `window.portrait.view`). With the head's turn kept, a face rendered in `at_ease` fits every body of the framing.
 - The face layers cover the rectangle of the face that changes between the faces: the export draws each expression's open mouth and closed eyes against the neutral face around the head at one pass and takes the box of the changed pixels with a margin of 0.05 heads, snapped to 8 pixels. It then renders the 90 faces in that rectangle alone (`region`), with 24 more pixels around it that it cuts off again, so the skin's screen-space pass sees the same neighbours as in the whole frame. Each face layer paints only the face's own pixels: those that any face changes, grown by 0.04 heads with an edge softened over 0.02 heads (pixels that differ between two pictures of one face count as noise and stay out); the rest of the rectangle (the hair, the ears, the shoulders) is transparent, so the body shows there.
 - A front layer holds the pixels of the face's own pixels that a pose covers (a hand): where the pose's body differs from `at_ease`'s by more than 40 of 255, grown by 2 pixels with a soft edge; a pose that covers less than 0.3 % of the rectangle has none.
+- A pose that turns its own head gets its own face set at each of its framings: its rectangle and its face's own pixels are found as for the main set, in the pose itself with the framing's camera, and its faces are rendered in the pose (`face.<framing>.<pose>.<expression>.<mouth>.<eyes>`), so a hand under the chin stays in place and the pose needs no front layer.
 - The leap's frames use the full framing's camera of `at_ease`, so the crouch stands lower and the raised hands reach higher in the same frame.
-- With `--shots-file`, each framing renders through the camera of the shot it serves (the file's `renders`: `close` for the close-up, `waist` for the medium close-up, `thigh` for the two-shot, `full` for the full shot), in place of the long lens from the front. The shot names a lens in millimetres, full-frame equivalent over the window's height; the body point the camera sits level with (the eyes, the chest or the hips, in the stage's head heights below the eyes: the hips-to-eyes distance over 3.5) and how far above it; a tilt; and the body's turn, which the page applies to the figure (`turn` of `window.portrait.view`). The camera stands where the lens's field of view spans the shot's window (its `span` over its `share`) at the eyes, and it follows the head as above. The outlines then come from probes through that camera, and `window.portrait.view` takes the camera as `{eye, pitch, focal, px, py}`: the frame is a rectangle of a larger picture centred on the principal point. A tilted camera foreshortens the head, so the crown's and the chin's rows of the manifest differ by up to 5 % from the framing's pixels per head, which holds at the eyes' depth.
+- With `--shots-file`, each framing renders through the camera of the shot it serves (the file's `renders`: `close` for the close-up, `waist` for the medium close-up, `thigh` for the two-shot, `full` for the full shot), in place of the long lens from the front. The shot names a lens in millimetres, full-frame equivalent over the window's height; the body point the camera sits level with (the eyes, the chest or the hips, in the stage's head heights below the eyes: the hips-to-eyes distance over 3.5) and how far above it; a tilt; and the body's turn, which the page applies to the figure (`turn` of `window.portrait.view`). The camera stands where the lens's field of view spans the shot's window (its `span` over its `share`) at the eyes, and it follows the head as above. The outlines then come from probes through that camera, and `window.portrait.view` takes the camera as `{eye, pitch, focal, px, py}`: the frame is a rectangle of a larger picture centred on the principal point. A tilted camera foreshortens the head, so the crown's and the chin's rows of the manifest differ by up to 5 % from the framing's pixels per head, which holds at the eyes' depth; the manifest therefore records the head's projected `size` (one stage head height, upright at the eyes' depth, in pixels), and each framing's `camera`: the shot (with the expression for a render such as `{"shot": "close_up", "expression": "stern"}`, whose `byExpression` values apply), the lens, the height and the distance above it, the tilt and the body's turn.
 - The body layers carry the neutral face (mouth closed, eyes open). The lights, the exposure, the long lens and the straight alpha are those of the bust pack.
 
 ### The manifest and the check
 
-`manifest.json` holds `schema` (`squire.portraits/2`), `format`, `expressions`, `framings` (each with `frame`, `head` with the anchor `x` and `y` and the crown's and the chin's rows `top` and `chin`, the face rectangle `face`, and the ground's row `ground` for `full`), `poses` (each with its `framings` and the framings of its `front` layers), `leap` (`framing` and `frames`), `extra` (`above` and `width` in heads: what the hair and a headpiece add to the figure), and `generator`, `licence`, `provenance` and the optional `companion` as in the bust pack. `opensculptboy.portrait_pack.layered_contract.check_layered_pack` checks a layered pack with the reason codes of the bust pack's check: the layers' names and sizes against the manifest, WebP with alpha or 8-bit RGBA PNG, at most 600 files, 256 MiB and 4096 pixels a side.
+`manifest.json` holds `schema` (`squire.portraits/2`), `format`, `expressions`, `framings` (each with `frame`, `head` with the anchor `x` and `y`, the crown's and the chin's rows `top` and `chin` and the projected `size`, the shot's `camera`, the main face set's rectangle `face` and its `expressions` where they are fewer than the pack's, the own face sets `sets` of the poses that turn their head, and the ground's row `ground` for `full`), `poses` (each with its `framings` and the framings of its `front` layers), `leap` (`framing` and `frames`), `extra` (`above` and `width` in heads: what the hair and a headpiece add to the figure), and `generator`, `licence`, `provenance` and the optional `companion` as in the bust pack. `opensculptboy.portrait_pack.layered_contract.check_layered_pack` checks a layered pack with the reason codes of the bust pack's check: the layers' names and sizes against the manifest, WebP with alpha or 8-bit RGBA PNG, at most 600 files, 256 MiB and 4096 pixels a side.
 
 ### Size and time
 
-A textured, dressed card renders on a graphics card in about 20 minutes: the body layers take 10 to 25 seconds each at 16 samples (the waist frames are the largest, about 3600 by 3400 pixels), and each face 1 to 3 seconds. Its full pack held 435 files and 37.4 MB (35.7 MiB), most of them in the face layers. The default character's pack at a fifth of the scale with one pass renders in under a minute.
+A textured, dressed card renders on a graphics card in about 20 minutes: the body layers take 10 to 25 seconds each at 16 samples (the waist frames are the largest, about 3600 by 3400 pixels), and each face 1 to 3 seconds. Its full pack of version 1's ten poses held 435 files and 37.4 MB (35.7 MiB), most of them in the face layers. With the seven framings of the shots and the face sets the full pack holds about 550 files and 45 MB: the main faces of `close`, `waist`, `thigh` and `full` (360) and of `stern` (18), the own sets of `chin`, `hand_on_chest` and `downcast` (99), 35 body layers, about 30 front layers and the leap. The default character's pack at a fifth of the scale with one pass renders in under a minute.
 
 ## Tests
 
