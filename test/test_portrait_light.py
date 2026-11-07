@@ -28,7 +28,12 @@ from opensculptboy.portrait_pack import contract, layered_contract as LC, layers
 from opensculptboy.portrait_pack import light
 from test.markers import local_only
 from test.test_hair_page import CHROMIUM, PAGE, playwright_available
-from test.test_portrait_layers import layered_manifest, run_cli, write_layered
+from test.test_portrait_layers import (
+    layered_manifest,
+    run_cli,
+    shots_data,
+    write_layered,
+)
 
 MAIN_TS = pathlib.Path(__file__).resolve().parents[1] / "viewer" / "src" / "main.ts"
 
@@ -78,6 +83,12 @@ class TestPassNames(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(LC.pass_of(name))
         self.assertTrue(LC.is_layer_name("front.chin.close.fill.webp"))
+        # a pose's own face set at a shot's framing
+        self.assertEqual(
+            LC.pass_of("face.thought.chin.thinking.open.half.key.webp"),
+            ("face.thought.chin.thinking.open.half.webp", "key"),
+        )
+        self.assertTrue(LC.is_layer_name("body.downcast.low.rim.webp"))
 
 
 class TestRigs(unittest.TestCase):
@@ -262,6 +273,35 @@ class TestPassCheck(unittest.TestCase):
         self.assertEqual(report["frames"], 15 * 4)
         self.assertTrue((folder / "face.close.neutral.half.open.rim.webp").is_file())
 
+    def test_shot_framings_and_face_sets(self):
+        """A shot's own framing and a pose's own face set carry the passes like every other layer."""
+        m = lit_manifest()
+        m["expressions"] = ["neutral", "thinking"]
+        m["framings"]["thought"] = {
+            "frame": {"width": 24, "height": 32},
+            "head": {"x": 12, "y": 10, "top": 4, "chin": 16},
+            "sets": {
+                "chin": {
+                    "face": {"x": 8, "y": 8, "width": 8, "height": 8},
+                    "expressions": ["neutral", "thinking"],
+                }
+            },
+        }
+        m["poses"]["chin"] = {"framings": ["thought"]}
+        folder = write_layered(self.tmp / "sets", m)
+        report = contract.check_pack(folder)
+        self.assertTrue(report["pass"], report["problems"])
+        for p in ("key", "fill", "rim"):
+            self.assertTrue(
+                (folder / f"face.thought.chin.thinking.open.half.{p}.webp").is_file()
+            )
+            self.assertTrue((folder / f"body.chin.thought.{p}.webp").is_file())
+        (folder / "face.thought.chin.neutral.closed.open.fill.webp").unlink()
+        self.assertEqual(
+            sorted({x["code"] for x in contract.check_pack(folder)["problems"]}),
+            ["missing_frame"],
+        )
+
     def test_broken(self):
         def codes_of(change, m=None):
             folder = write_layered(
@@ -331,12 +371,19 @@ class TestPassCheck(unittest.TestCase):
     playwright_available(), "Playwright and the built viewer page are needed"
 )
 class TestDefaultPackWithPasses(unittest.TestCase):
-    """The default character's layered pack with the light passes, at a fifth of its scale."""
+    """The default character's layered pack with the light passes, at a fifth of its scale, through
+    the shots' cameras: the main face sets, the thought's own framing with the chin's own face set,
+    and the leap."""
 
     @classmethod
     def setUpClass(cls):
         cls.tmp = pathlib.Path(tempfile.mkdtemp())
         cls.folder = cls.tmp / "pack"
+        data = shots_data()
+        data["shots"]["thought"]["stills"] = "thought"
+        data["renders"]["thought"] = "thought"
+        shots_file = cls.tmp / "shots.json"
+        shots_file.write_text(json.dumps(data), encoding="utf-8")
         env = {render.CHROMIUM_ENV: str(CHROMIUM)} if CHROMIUM.exists() else {}
         with mock.patch.dict(os.environ, env):
             cls.result = run_cli(
@@ -351,9 +398,11 @@ class TestDefaultPackWithPasses(unittest.TestCase):
                 "--expressions",
                 "neutral,joy",
                 "--poses",
-                "at_ease,chin",
+                "at_ease,chin,scratch_head",
                 "--framings",
-                "close,full",
+                "close,thought,full",
+                "--shots-file",
+                str(shots_file),
                 "--passes",
                 "key,fill,rim",
                 "--page",
@@ -375,8 +424,22 @@ class TestDefaultPackWithPasses(unittest.TestCase):
         self.assertEqual(m["light"]["key_side"], "right")
         rep = result["light"]["reproduction"]
         self.assertLess(rep["all"]["mean"], 2.0, rep)
-        for kind in ("body", "face", "front", "leap"):
+        for kind in ("body", "face", "leap") + (
+            ("front",) if any(p.get("front") for p in m["poses"].values()) else ()
+        ):
             self.assertIn(kind, rep)
+        # the thought's own framing and the chin's own face set carry their passes too
+        self.assertEqual(m["poses"]["chin"]["framings"], ["thought"])
+        self.assertIn("chin", m["framings"]["thought"]["sets"])
+        for name in (
+            "body.chin.thought",
+            "face.thought.chin.neutral.closed.open",
+            "face.close.joy.open.half",
+            "leap.peak",
+        ):
+            for p in ("key", "fill", "rim"):
+                with self.subTest(layer=name, light=p):
+                    self.assertTrue((self.folder / f"{name}.{p}.webp").is_file())
 
     def test_key_from_the_right(self):
         """The key pass lights the face's right half (the frame's) more than its left."""

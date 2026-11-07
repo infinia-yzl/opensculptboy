@@ -937,7 +937,8 @@ class TestDefaultLayeredPack(unittest.TestCase):
             self.assertGreater(
                 inner.mean(), 0.3, "the face layer paints the middle of the face"
             )
-            for pose in ("at_ease", "chin", "cheer"):
+            # the poses that share the main face set (hand_on_chest has its own)
+            for pose in ("at_ease", "cheer"):
                 if name not in m["poses"][pose]["framings"]:
                     continue
                 with self.subTest(framing=name, pose=pose):
