@@ -112,13 +112,16 @@ def _mask_rows(alpha: np.ndarray, threshold: int = 24):
     return first, last
 
 
-def changed_box(a: np.ndarray, b: np.ndarray, threshold: int = 10):
-    """The box (x0, y0, x1, y1) of the pixels that differ by more than ``threshold``, or None."""
+def changed_box(a: np.ndarray, b: np.ndarray, threshold: int = 16, least: int = 3):
+    """The box (x0, y0, x1, y1) of the pixels that differ by more than ``threshold``, over the
+    rows and columns with at least ``least`` of them (so a few stray pixels do not widen it), or
+    None."""
     d = np.abs(a.astype(np.int16) - b.astype(np.int16)).max(-1) > threshold
-    if not d.any():
+    rows = np.nonzero(d.sum(1) >= least)[0]
+    cols = np.nonzero(d.sum(0) >= least)[0]
+    if not len(rows) or not len(cols):
         return None
-    ys, xs = np.nonzero(d)
-    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+    return int(cols.min()), int(rows.min()), int(cols.max()) + 1, int(rows.max()) + 1
 
 
 def snap_rect(x0, y0, x1, y1, width, height, grid=GRID) -> dict:
@@ -434,6 +437,9 @@ def write_layered_pack(
             hreg = {"x": hx0, "y": hy0, "w": hx1 - hx0, "h": hy1 - hy0}
             face = None
             if not preview:
+                render(
+                    {**view0, "region": hreg}, neutral, 1
+                )  # the first picture after a pose settles the page
                 base = render({**view0, "region": hreg}, neutral, 1)
                 box = None
                 for x in expressions:
