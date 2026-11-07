@@ -5,9 +5,10 @@ The contract of a layered portrait pack (``squire.portraits/2``) and its check.
 
 A layered pack is one flat folder that holds ``manifest.json`` and the layers of
 :mod:`opensculptboy.portrait_pack.layers`: a body layer per pose and framing, a face layer per
-framing and face, a front layer where a pose's hand passes in front of the face, and the key
-frames of the leap. :func:`check_layered_pack` applies every rule and gives a reason code for
-each failure, with the codes of the bust pack's check (``contract.CODES``).
+framing and face, a face layer per face of each face set of its own (a pose that turns its head),
+a front layer where a pose's hand passes in front of the face, and the key frames of the leap.
+:func:`check_layered_pack` applies every rule and gives a reason code for each failure, with
+the codes of the bust pack's check (``contract.CODES``).
 """
 
 from __future__ import annotations
@@ -30,7 +31,11 @@ from opensculptboy.portrait_pack.contract import (
 )
 
 SCHEMA_V2 = "squire.portraits/2"
-FRAMING_NAMES = ("close", "waist", "thigh", "full")
+FRAMING_NAMES = ("close", "waist", "thigh", "full", "thought", "stern", "low")
+# The framings at which at_ease shows whenever the pack holds them; the others hold the poses of
+# their shot alone.
+BASE_FRAMINGS = ("close", "waist", "thigh", "full")
+CAMERA_HEIGHTS = ("eyes", "chest", "hips")
 LEAP_KEYS = ("crouch", "rise", "peak", "land")
 BASE_POSE = "at_ease"
 POSE_ID = re.compile(r"^[a-z][a-z_]{0,31}$")
@@ -63,8 +68,9 @@ def _num(v) -> bool:
 
 def layer_kind(name: str):
     """The kind and the parts of a layer's file name: ("body", pose, framing, ext),
-    ("face", framing, expression, mouth, eyes, ext), ("front", pose, framing, ext) or
-    ("leap", key, ext); None for any other name."""
+    ("face", framing, expression, mouth, eyes, ext), ("face", framing, set, expression, mouth,
+    eyes, ext) for a pose's own face set, ("front", pose, framing, ext) or ("leap", key, ext);
+    None for any other name."""
     parts = name.split(".")
     if len(parts) < 2 or parts[-1] not in FORMATS:
         return None
@@ -92,6 +98,16 @@ def layer_kind(name: str):
         and parts[4] in EYES
     ):
         return ("face", parts[1], parts[2], parts[3], parts[4], ext)
+    if (
+        parts[0] == "face"
+        and len(parts) == 7
+        and parts[1] in FRAMING_NAMES
+        and POSE_ID.match(parts[2])
+        and parts[3] in EXPRESSIONS
+        and parts[4] in MOUTHS
+        and parts[5] in EYES
+    ):
+        return ("face", parts[1], parts[2], parts[3], parts[4], parts[5], ext)
     if parts[0] == "leap" and len(parts) == 3 and parts[1] in LEAP_KEYS:
         return ("leap", parts[1], ext)
     return None
@@ -146,6 +162,50 @@ def _rect(r, w, h) -> bool:
         and r["height"] >= 1
         and r["x"] + r["width"] <= w
         and r["y"] + r["height"] <= h
+    )
+
+
+def _expression_list(xs, pack) -> bool:
+    """A face set's expressions: expressions of the pack, each once."""
+    return (
+        isinstance(xs, list)
+        and bool(xs)
+        and all(isinstance(x, str) and x in pack for x in xs)
+        and len(set(xs)) == len(xs)
+    )
+
+
+def _camera(c) -> bool:
+    """A framing's camera: the shot, an optional expression, the lens, the height and the
+    distance above it, the tilt and the body's turn."""
+    if not isinstance(c, dict) or not {
+        "shot",
+        "lens",
+        "height",
+        "above",
+        "tilt",
+        "turn",
+    } <= set(c):
+        return False
+    if any(
+        k not in ("shot", "expression", "lens", "height", "above", "tilt", "turn")
+        for k in c
+    ):
+        return False
+    if not isinstance(c["shot"], str) or not POSE_ID.match(c["shot"]):
+        return False
+    if "expression" in c and c["expression"] not in EXPRESSIONS:
+        return False
+    return (
+        c["height"] in CAMERA_HEIGHTS
+        and _num(c["lens"])
+        and 14 <= c["lens"] <= 300
+        and _num(c["above"])
+        and abs(c["above"]) <= 10
+        and _num(c["tilt"])
+        and abs(c["tilt"]) <= 20
+        and _num(c["turn"])
+        and abs(c["turn"]) <= 60
     )
 
 
@@ -207,12 +267,25 @@ def check_layered_manifest(m) -> list[dict]:
                 continue
             if (
                 not isinstance(f, dict)
-                or any(k not in ("frame", "head", "face", "ground") for k in f)
+                or any(
+                    k
+                    not in (
+                        "frame",
+                        "head",
+                        "face",
+                        "ground",
+                        "camera",
+                        "expressions",
+                        "sets",
+                    )
+                    for k in f
+                )
                 or "frame" not in f
                 or "head" not in f
             ):
                 bad(
-                    f"The framing {name!r} must hold frame and head, and may hold face and ground."
+                    f"The framing {name!r} must hold frame and head, and may hold face, expressions, "
+                    "sets, camera and ground."
                 )
                 continue
             fw = f["frame"]
@@ -233,11 +306,18 @@ def check_layered_manifest(m) -> list[dict]:
             hd = f["head"]
             if not (
                 isinstance(hd, dict)
-                and set(hd) == {"x", "y", "top", "chin"}
-                and all(_int(hd[k]) for k in hd)
+                and {"x", "y", "top", "chin"}
+                <= set(hd)
+                <= {"x", "y", "top", "chin", "size"}
+                and all(_int(hd[k]) for k in ("x", "y", "top", "chin"))
+                and (
+                    "size" not in hd
+                    or (_num(hd["size"]) and 1 <= hd["size"] <= MAX_SIDE_V2)
+                )
             ):
                 bad(
-                    f"The head of {name!r} must be {{x, y, top, chin}} in whole pixels."
+                    f"The head of {name!r} must be {{x, y, top, chin}} in whole pixels, with an "
+                    "optional size in pixels."
                 )
             elif not (
                 0 <= hd["x"] <= w
@@ -255,6 +335,36 @@ def check_layered_manifest(m) -> list[dict]:
                 )
             if "ground" in f and not (_int(f["ground"]) and 0 <= f["ground"] <= h):
                 bad(f"The ground of {name!r} must be a row of the frame.")
+            if "camera" in f and not _camera(f["camera"]):
+                bad(
+                    f"The camera of {name!r} must be {{shot, expression (optional), lens, height, "
+                    "above, tilt, turn}} within their ranges."
+                )
+            pack_xs = xs if isinstance(xs, list) else []
+            if "expressions" in f and not (
+                "face" in f
+                and _expression_list(f["expressions"], pack_xs)
+                and f["expressions"][0] == REQUIRED_EXPRESSION
+            ):
+                bad(
+                    f"The expressions of {name!r} must list expressions of the pack, neutral first, "
+                    "each once, for its face."
+                )
+            sets = f.get("sets", {})
+            if not isinstance(sets, dict) or any(
+                not (
+                    POSE_ID.match(str(set_name))
+                    and isinstance(fs, dict)
+                    and set(fs) == {"face", "expressions"}
+                    and _rect(fs["face"], w, h)
+                    and _expression_list(fs["expressions"], pack_xs)
+                )
+                for set_name, fs in sets.items()
+            ):
+                bad(
+                    f"The sets of {name!r} must map a pose to {{face, expressions}}: a rectangle "
+                    "inside the frame and expressions of the pack, each once."
+                )
     ps = m.get("poses")
     if "poses" in m:
         if not isinstance(ps, dict) or not ps:
@@ -294,11 +404,33 @@ def check_layered_manifest(m) -> list[dict]:
                 bad(
                     f"The front of {name!r} must list framings of the pose that have a face."
                 )
+            if not isinstance(pf, list):
+                continue
+            own = [x for x in pf if name in ((fr.get(x) or {}).get("sets") or {})]
+            if own and len(own) != len(pf):
+                bad(
+                    f"The pose {name!r} has a face set of its own at {own}; it needs one at each of "
+                    "its framings."
+                )
+            if own and isinstance(ft, list) and ft:
+                bad(f"The pose {name!r} has a face set of its own, so it has no front.")
+        if isinstance(fr, dict):
+            for n, f in fr.items():
+                for set_name in (f.get("sets") or {}) if isinstance(f, dict) else ():
+                    if n not in ((ps.get(set_name) or {}).get("framings") or []):
+                        bad(
+                            f"The framing {n!r} holds a face set for {set_name!r}, which does not show there."
+                        )
         if isinstance(fr, dict) and isinstance(ps.get(BASE_POSE), dict):
-            missing = [n for n in fr if n not in (ps[BASE_POSE].get("framings") or [])]
+            missing = [
+                n
+                for n in fr
+                if n in BASE_FRAMINGS and n not in (ps[BASE_POSE].get("framings") or [])
+            ]
             if missing:
                 bad(
-                    f"The pose {BASE_POSE!r} must show in every framing; it lacks {missing}."
+                    f"The pose {BASE_POSE!r} must show in every framing of {list(BASE_FRAMINGS)} the "
+                    f"pack holds; it lacks {missing}."
                 )
     lp = m.get("leap")
     if "leap" in m:
@@ -344,10 +476,19 @@ def wanted_layers(m) -> dict:
         for f, d in fr.items():
             if "face" in d:
                 r = d["face"]
-                for x in m["expressions"]:
+                for x in d.get("expressions", m["expressions"]):
                     for mo in MOUTHS:
                         for e in EYES:
                             out[f"face.{f}.{x}.{mo}.{e}.{ext}"] = (
+                                r["width"],
+                                r["height"],
+                            )
+            for pose, fs in (d.get("sets") or {}).items():
+                r = fs["face"]
+                for x in fs["expressions"]:
+                    for mo in MOUTHS:
+                        for e in EYES:
+                            out[f"face.{f}.{pose}.{x}.{mo}.{e}.{ext}"] = (
                                 r["width"],
                                 r["height"],
                             )
