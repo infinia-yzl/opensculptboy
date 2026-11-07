@@ -51,6 +51,13 @@ REQUIRED = (
     "provenance",
 )
 OPTIONAL = ("companion", "leap", "extra")
+# The light passes (opensculptboy.portrait_pack.light): each layer may come with one file per pass,
+# named after the layer with the pass before the format (``body.at_ease.close.key.webp``). The pack
+# then lists its passes with their scales and describes its light; its bound on files grows by the
+# files of the passes.
+OPTIONAL_LIGHT = ("passes", "light")
+LIGHT_PASSES = (("key", "fill", "rim"), ("base", "rim"))
+PASS_FORMAT = "webp"
 
 
 def _int(v) -> bool:
@@ -98,7 +105,73 @@ def layer_kind(name: str):
 
 
 def is_layer_name(name: str) -> bool:
-    return layer_kind(name) is not None
+    return layer_kind(name) is not None or pass_of(name) is not None
+
+
+def pass_of(name: str):
+    """The layer and the pass of a pass file's name (``body.at_ease.close.key.webp`` gives
+    ``("body.at_ease.close.webp", "key")`` for a pack in WebP); None for any other name."""
+    parts = name.split(".")
+    if len(parts) < 3 or parts[-1] != PASS_FORMAT:
+        return None
+    if parts[-2] not in {p for s in LIGHT_PASSES for p in s}:
+        return None
+    layer = ".".join(parts[:-2] + [PASS_FORMAT])
+    return (layer, parts[-2]) if layer_kind(layer) is not None else None
+
+
+def check_light(m) -> list[str]:
+    """The problems of a manifest's light passes (``passes`` and ``light``), as messages."""
+    out = []
+    if ("passes" in m) != ("light" in m):
+        return ["The fields 'passes' and 'light' come together."]
+    if "passes" not in m:
+        return out
+    ps = m["passes"]
+    names = (
+        [p.get("name") for p in ps]
+        if isinstance(ps, list) and all(isinstance(p, dict) for p in ps)
+        else None
+    )
+    if names is None or tuple(names) not in LIGHT_PASSES:
+        out.append(
+            "The field 'passes' must list the passes key, fill and rim, or base and rim, "
+            "each {name, scale}."
+        )
+    else:
+        for p in ps:
+            if set(p) != {"name", "scale"} or not (
+                _num(p["scale"]) and 0 < p["scale"] <= 64
+            ):
+                out.append(
+                    f"The pass {p['name']!r} must hold its scale, above 0 and at most 64."
+                )
+    if m.get("format") != PASS_FORMAT:
+        out.append("A pack with light passes is in WebP.")
+    lt = m["light"]
+    tone = lt.get("tone") if isinstance(lt, dict) else None
+    if not (
+        isinstance(lt, dict)
+        and set(lt)
+        <= {"rig", "key_side", "exposure", "tone", "encoding", "lights", "face"}
+        and isinstance(lt.get("rig"), str)
+        and lt.get("key_side") in ("left", "right")
+        and _num(lt.get("exposure"))
+        and lt["exposure"] > 0
+        and lt.get("encoding") == "srgb"
+        and isinstance(tone, dict)
+        and tone.get("curve") == "agx"
+        and _num(tone.get("saturation"))
+        and _num(tone.get("contrast"))
+        and isinstance(lt.get("lights", {}), dict)
+        and isinstance(lt.get("face", {}), dict)
+        and all(_num(v) and v >= 0 for v in lt.get("face", {}).values())
+    ):
+        out.append(
+            "The field 'light' must hold the rig, the key's side (left or right), the exposure, the tone "
+            "(curve agx, saturation, contrast) and the encoding srgb, and may hold the lights and the face's light."
+        )
+    return out
 
 
 def webp_header(data: bytes) -> dict | None:
@@ -160,8 +233,10 @@ def check_layered_manifest(m) -> list[dict]:
         bad("The manifest is not a JSON object.")
         return problems
     for k in m:
-        if k not in REQUIRED and k not in OPTIONAL:
+        if k not in REQUIRED and k not in OPTIONAL and k not in OPTIONAL_LIGHT:
             bad(f"The manifest has the unknown field {k!r}.", "unknown_field")
+    for message in check_light(m):
+        bad(message)
     for k in REQUIRED:
         if k not in m:
             bad(f"The manifest has no {k!r} field.")
@@ -355,9 +430,24 @@ def wanted_layers(m) -> dict:
             fw = fr[m["leap"]["framing"]]["frame"]
             for k in m["leap"]["frames"]:
                 out[f"leap.{k}.{ext}"] = (fw["width"], fw["height"])
+        for p in m.get("passes") or []:
+            for name, size in list(out.items()):
+                if pass_of(name) is None:
+                    out[f"{name[: -len(ext) - 1]}.{p['name']}.{ext}"] = size
     except (KeyError, TypeError, AttributeError):
         return out
     return out
+
+
+def _pass_count(folder: pathlib.Path) -> int:
+    """The number of light passes a pack's manifest lists (0 when it lists none or cannot be read)."""
+    try:
+        ps = json.loads((folder / MANIFEST).read_bytes().decode("utf-8-sig")).get(
+            "passes"
+        )
+        return min(len(ps), 3) if isinstance(ps, list) else 0
+    except (OSError, ValueError, AttributeError):
+        return 0
 
 
 def check_layered_pack(folder) -> dict:
@@ -382,10 +472,11 @@ def check_layered_pack(folder) -> dict:
             bad("extra_file", f"{p.name} is not a regular file.", p.name)
         else:
             files.append(p)
-    if len(entries) > MAX_FILES_V2:
+    max_files = MAX_FILES_V2 * (1 + _pass_count(folder))
+    if len(entries) > max_files:
         bad(
             "too_many_files",
-            f"The pack holds {len(entries)} entries; at most {MAX_FILES_V2}.",
+            f"The pack holds {len(entries)} entries; at most {max_files}.",
         )
     sizes = {p.name: p.stat().st_size for p in files}
     total = sum(sizes.values())
