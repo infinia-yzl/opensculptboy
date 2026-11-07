@@ -1,0 +1,88 @@
+{
+  "$comment": "The companion's key poses: the one source of every pose for a 3D preview and for the portrait pack's stills.",
+  "format": "squire.poses/1",
+  "convention": {
+    "bones": "the normalized humanoid bones of VRM 1.0: at rest each bone has no rotation, in a T pose",
+    "axes": "the figure faces +Z (toward the camera), its left is +X and up is +Y; at rest the arms point along +X and -X",
+    "angles": "degrees about X, then Y, then Z, each in the parent's frame (three.js Euler order ZYX)",
+    "sides": "an arm or a hand is written as for the left side; the right side takes [x, -y, -z]"
+  },
+  "fingers": {
+    "relaxed": [12, 18, 10],
+    "fist": [88, 100, 62],
+    "open": [4, 4, 2]
+  },
+  "thumb": {
+    "rest": { "ThumbMetacarpal": [0, 22, -4], "ThumbProximal": [0, 8, -4], "ThumbDistal": [0, 6, 0] },
+    "fist": { "ThumbMetacarpal": [20, 45, -10], "ThumbProximal": [0, 35, -5], "ThumbDistal": [0, 30, 0] }
+  },
+  "arms": {
+    "down": {
+      "Shoulder": [0, 0, -4],
+      "UpperArm": [8, -6, -79],
+      "LowerArm": [0, -12, 0],
+      "Hand": [0, 0, -2],
+      "hand": { "curl": "relaxed" }
+    }
+  },
+  "keepHead": { "pose": "at_ease", "bones": ["neck", "head"] },
+  "poses": {
+    "at_ease": {
+      "left": "down",
+      "right": "down"
+    },
+    "relaxed": {
+      "bones": {
+        "hips": [0, 4, 3],
+        "spine": [-2, -2, -4],
+        "chest": [-2, -2, -2],
+        "leftUpperLeg": [-8, 0, 2],
+        "leftLowerLeg": [16, 0, 0],
+        "leftFoot": [-6, -8, 0],
+        "rightUpperLeg": [0, 0, -3]
+      },
+      "left": { "Shoulder": [0, 0, -2], "UpperArm": [70, 25, -48], "LowerArm": [0, -110, 0], "Hand": [0, 0, 30], "hand": { "curl": [20, 30, 20], "thumb": 0.3 } },
+      "right": { "from": "down", "UpperArm": [10, -2, -80] }
+    },
+    "hands_behind_head": {
+      "bones": { "spine": [-3, 0, 0], "chest": [-3, 0, 0] },
+      "left": { "Shoulder": [0, 0, 8], "UpperArm": [-125, 10, 38], "LowerArm": [0, -115, 0], "Hand": [0, 0, 0], "hand": { "curl": [40, 50, 30], "thumb": 0.4 } },
+      "right": { "Shoulder": [0, 0, 8], "UpperArm": [-125, 10, 38], "LowerArm": [0, -115, 0], "Hand": [0, 0, 0], "hand": { "curl": [40, 50, 30], "thumb": 0.4 } }
+    },
+    "chin": {
+      "bones": { "chest": [4, 0, 0] },
+      "right": { "UpperArm": [60, -40, -108], "LowerArm": [0, -135, 0], "Hand": [0, 0, 24], "hand": { "curl": [55, 80, 50], "thumb": 0.5 } },
+      "left": { "UpperArm": [65, -30, -74], "LowerArm": [0, -100, 0], "Hand": [0, 0, 0], "hand": { "curl": "relaxed" } }
+    },
+    "scratch_head": {
+      "right": { "Shoulder": [0, 0, 8], "UpperArm": [-130, 5, 55], "LowerArm": [0, -120, 0], "Hand": [0, 20, 0], "hand": { "curl": [30, 40, 20], "thumb": 0.3 } },
+      "left": "down",
+      "wiggle": [{ "bone": "rightHand", "amount": [0, 0, 10], "periodMs": 420 }]
+    },
+    "arms_crossed": {
+      "bones": { "spine": [-2, 0, 0] },
+      "left": { "UpperArm": [65, -32, -74], "LowerArm": [0, -116, 0], "Hand": [0, 0, 0], "hand": { "curl": [20, 40, 20], "thumb": 0.2 } },
+      "right": { "UpperArm": [55, -42, -70], "LowerArm": [0, -112, 0], "Hand": [0, 0, 0], "hand": { "curl": [20, 40, 20], "thumb": 0.2 } }
+    },
+    "hand_on_chest": {
+      "bones": { "spine": [5, 0, 0], "chest": [4, 0, 0] },
+      "right": { "UpperArm": [60, -24, -84], "LowerArm": [0, -125, 0], "Hand": [-60, -10, -20], "hand": { "curl": "open", "thumb": 0 } },
+      "left": "down"
+    },
+    "wave": {
+      "left": { "Shoulder": [0, 0, 6], "UpperArm": [-90, -10, 10], "LowerArm": [0, -88, 0], "Hand": [0, 0, 0], "hand": { "curl": "open", "thumb": -1, "spread": 5 } },
+      "right": "down",
+      "wiggle": [{ "bone": "leftLowerArm", "amount": [0, 0, 16], "periodMs": 760 }]
+    },
+    "fist": {
+      "bones": { "chest": [-2, 0, 0] },
+      "left": { "Shoulder": [0, 0, 10], "UpperArm": [-90, -10, 45], "LowerArm": [0, -75, 0], "Hand": [0, 0, 0], "hand": { "curl": "fist", "thumb": 1 } },
+      "right": "down"
+    },
+    "cheer": {
+      "bones": { "spine": [-4, 0, 0], "chest": [-4, 0, 0] },
+      "left": { "Shoulder": [0, 0, 12], "UpperArm": [-60, -8, 50], "LowerArm": [0, -25, 0], "Hand": [0, 0, 0], "hand": { "curl": "fist", "thumb": 1 } },
+      "right": { "Shoulder": [0, 0, 12], "UpperArm": [-60, -8, 50], "LowerArm": [0, -25, 0], "Hand": [0, 0, 0], "hand": { "curl": "fist", "thumb": 1 } }
+    }
+  }
+}

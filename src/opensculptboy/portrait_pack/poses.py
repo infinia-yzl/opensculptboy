@@ -4,20 +4,21 @@
 The poses of the layered portrait pack (``squire.portraits/2``): body language for a companion
 who talks, as character games and visual novels show it.
 
-Each pose is built with the posing tools of the pose library (:mod:`anny.poses.authoring`) on
-the authoring rig: the legs and the spine of a standing stance, the arms placed by two-bone IK
-on targets around the head and the chest, and the hands curled. The rotations follow the
-library's convention (each bone at rest along the world axes, a rotation relative to the
-parent), so they fit every body as the library's poses do, and the web viewer takes them as
-they are (``window.portrait.pose``).
+The ten stage poses of :data:`POSES` come from the companion's shared pose file
+(:mod:`opensculptboy.portrait_pack.shared_poses`): the same file that the stage's 3D
+preview reads, so the stills and the 3D preview show the same body. That file keeps the head
+and the neck of ``at_ease`` in every pose, so the pack's face layers, rendered once for each
+framing in ``at_ease``, fit every pose of that framing (``opensculptboy.portrait_pack.layers``).
 
-The head and the neck keep their turns in the world in every pose of :data:`POSES`: those of
-``at_ease``.
-The pack's face layers are then rendered once for each framing and fit every pose of that
-framing, since the camera of a framing follows the head (``opensculptboy.portrait_pack.layers``).
-The frames of the leap (:data:`LEAP`) turn the head freely and carry their own face.
+The key poses of the leap (:data:`LEAP`) are built here with the posing tools of the pose
+library (:mod:`anny.poses.authoring`) on the authoring rig, until the shared file carries them:
+the legs of a jump placed by the library's stance tools and the arms placed by two-bone IK on
+targets around the shoulders. The rotations follow the library's convention (each bone at rest
+along the world axes, a rotation relative to the parent), and the web viewer takes them as they
+are (``window.portrait.pose``). The frames of the leap turn the head freely and carry their own
+face.
 
-    python -m opensculptboy.portrait_pack.poses     # every pose's rotations as JSON, for a check
+    python -m opensculptboy.portrait_pack.poses     # the leap's rotations as JSON, for a check
 """
 
 from __future__ import annotations
@@ -27,13 +28,14 @@ import json
 
 import numpy as np
 
-# The poses, in the order of the pack, with what each shows.
+# The poses, in the order of the pack, with what each shows. Their rotations come from the shared
+# pose file.
 POSES = {
     "at_ease": "standing straight, the arms down",
-    "relaxed": "the weight on one leg, the shoulders loose",
+    "relaxed": "the weight on one leg, a hand on the hip",
     "hands_behind_head": "both hands behind the head, the elbows out",
-    "chin": "one hand on the chin, the other arm across the waist",
-    "scratch_head": "one hand scratching the side of the head",
+    "chin": "one hand under the chin, the other forearm across the waist",
+    "scratch_head": "one hand on the back of the head",
     "arms_crossed": "the arms folded across the chest",
     "hand_on_chest": "a hand on the chest with a slight bow",
     "wave": "one hand raised in a wave",
@@ -83,173 +85,6 @@ def _key_points(p):
     )
 
 
-def _hang(p, s, amount=0.28):
-    """A relaxed arm at the side, as the relaxed stance holds it."""
-    _, L, _ = _tools()
-    L.arm_fk(p, s, abd=7, flex=4, twist=-5, elbow=14, pron=-5)
-    L.hands(p, s, amount)
-
-
-def _legs():
-    """The relaxed stance's legs, spine and head, with the arms at rest: each pose sets its arms
-    once, since the posing tools turn the arm's bones from where they are."""
-    _, L, PS = _tools()
-    p, feet = PS.base_stance()
-    PS.place_legs(p, feet)
-    L.head(p, pitch=2)
-    return p
-
-
-def _stance(hang="LR"):
-    """The relaxed stance with the arms of ``hang`` hanging at the sides."""
-    p = _legs()
-    for s in hang:
-        _hang(p, s)
-    return p
-
-
-def at_ease():
-    return _stance()
-
-
-def relaxed():
-    _, _, PS = _tools()
-    return PS.weight_shift()
-
-
-def arms_crossed():
-    _, _, PS = _tools()
-    return PS.arms_crossed()
-
-
-def chin():
-    """The right hand under the chin, its elbow on the left forearm, which crosses the waist."""
-    P, L, _ = _tools()
-    p = _stance("")
-    L.spine(p, bend=2)
-    k = _key_points(p)
-    sg = -1  # the right side: the figure's right is -X
-    wrist = k["chin"] + np.array([sg * 0.012, -0.105, 0.05])
-    L.arm_ik(
-        p,
-        "R",
-        wrist,
-        pole=k["chest"] + np.array([sg * 0.12, -0.45, 0.35]),
-        fingers=P.unit([0.15, 0.9, 0.25]),
-        palm=np.array([0.2, 0.1, -1.0]),
-    )
-    L.hands(p, "R", 0.55, thumb=0.2)
-    elbow = _key_points(p)["elbow"]["R"]
-    L.arm_ik(
-        p,
-        "L",
-        elbow + np.array([0.075, -0.035, 0.01]),
-        pole=k["chest"] + np.array([0.5, -0.4, 0.1]),
-        fingers=P.unit([-1.0, 0.0, 0.1]),
-        palm=np.array([0.0, 1.0, 0.0]),
-    )
-    L.hands(p, "L", 0.4)
-    return p
-
-
-def scratch_head():
-    """The right hand on the side of the head above the ear, the elbow out to the side."""
-    P, L, _ = _tools()
-    p = _stance("L")
-    k = _key_points(p)
-    sg = -1
-    target = k["crown"] + np.array([sg * 0.075, -0.05, -0.04])
-    L.arm_ik(
-        p,
-        "R",
-        target - P.unit([-sg * 0.4, 0.75, 0.0]) * 0.07,
-        pole=k["shoulder"]["R"] + np.array([sg * 0.7, 0.15, 0.25]),
-        fingers=P.unit([-sg * 0.45, 0.85, -0.15]),
-        palm=np.array([-sg, -0.2, 0.0]),
-    )
-    L.hands(p, "R", 0.45, thumb=0.25)
-    return p
-
-
-def hands_behind_head():
-    """Both hands behind the head, the fingers laced, the elbows out to the sides."""
-    P, L, _ = _tools()
-    p = _stance("")
-    L.spine(p, bend=-3)
-    k = _key_points(p)
-    for s in "LR":
-        sg = L.side_sign(s)
-        L.arm_ik(
-            p,
-            s,
-            k["head"] + np.array([sg * 0.06, 0.1, -0.13]),
-            pole=k["shoulder"][s] + np.array([sg * 0.7, 0.35, 0.05]),
-            fingers=P.unit([-sg * 0.9, 0.35, -0.1]),
-            palm=np.array([0.0, 0.0, 1.0]),
-        )
-        L.hands(p, s, 0.35, thumb=0.2)
-    return p
-
-
-def hand_on_chest():
-    """The right hand flat on the left of the chest, with a slight bow."""
-    P, L, _ = _tools()
-    p = _stance("L")
-    L.spine(p, bend=7)
-    k = _key_points(p)
-    fingers = P.unit([0.55, 0.8, 0.05])
-    palm_centre = k["chest"] + np.array([0.045, 0.05, 0.165])
-    L.arm_ik(
-        p,
-        "R",
-        palm_centre - fingers * 0.075,
-        pole=k["chest"] + np.array([-0.45, -0.6, 0.15]),
-        fingers=fingers,
-        palm=np.array([0.0, 0.0, -1.0]),
-    )
-    L.hands(p, "R", 0.12, thumb=0.1)
-    return p
-
-
-def wave():
-    """The right hand raised beside the head, the palm forward, the fingers spread."""
-    P, L, _ = _tools()
-    p = _stance("L")
-    L.spine(p, side=-2)
-    k = _key_points(p)
-    sg = -1
-    L.arm_ik(
-        p,
-        "R",
-        k["shoulder"]["R"] + np.array([sg * 0.32, 0.24, 0.08]),
-        pole=k["shoulder"]["R"] + np.array([sg * 0.8, -0.2, -0.1]),
-        fingers=P.unit([sg * 0.15, 1.0, 0.05]),
-        palm=np.array([0.0, 0.0, 1.0]),
-    )
-    L.hands(p, "R", 0.05, thumb=0.0, spread=6)
-    return p
-
-
-def fist():
-    """The right fist raised above the head, the elbow bent."""
-    P, L, _ = _tools()
-    p = _legs()
-    _hang(p, "L", 0.6)
-    L.spine(p, side=-3, bend=-2)
-    k = _key_points(p)
-    sg = -1
-    L.arm_ik(
-        p,
-        "R",
-        k["shoulder"]["R"] + np.array([sg * 0.12, 0.5, 0.08]),
-        pole=k["shoulder"]["R"] + np.array([sg * 0.8, 0.1, 0.1]),
-        fingers=P.unit([sg * 0.1, 1.0, 0.1]),
-        palm=np.array([-sg * 0.6, 0.0, 0.8]),
-    )
-    L.hands(p, "R", 1.0, thumb=0.6)
-    return p
-
-
 def _arms_up(p, spread=0.27, lift=0.52, forward=0.06, fist_amount=0.15):
     P, L, _ = _tools()
     k = _key_points(p)
@@ -264,15 +99,6 @@ def _arms_up(p, spread=0.27, lift=0.52, forward=0.06, fist_amount=0.15):
             palm=np.array([-sg * 0.2, 0.0, 1.0]),
         )
         L.hands(p, s, fist_amount, thumb=0.05, spread=4 if fist_amount < 0.5 else 0)
-
-
-def cheer():
-    """Both arms up in a V, the hands open."""
-    _, L, _ = _tools()
-    p = _stance("")
-    L.spine(p, bend=-4)
-    _arms_up(p)
-    return p
 
 
 # ------------------------------------------------------------------ the leap
@@ -339,59 +165,21 @@ def land():
     return p
 
 
-BUILDERS = dict(
-    at_ease=at_ease,
-    relaxed=relaxed,
-    hands_behind_head=hands_behind_head,
-    chin=chin,
-    scratch_head=scratch_head,
-    arms_crossed=arms_crossed,
-    hand_on_chest=hand_on_chest,
-    wave=wave,
-    fist=fist,
-    cheer=cheer,
-    crouch=crouch,
-    rise=rise,
-    peak=peak,
-    land=land,
-)
-
-
-# The bones that keep their turn in the world: the neck carries the skin of the jaw and the
-# throat, so the neck turns with the head, and the lower face then matches in every pose.
-LOCKED = ("neck01", "neck02", "neck03", "head")
-
-
-def _lock_head(p, reference):
-    """Give the neck and the head the turns in the world of the pose ``reference``."""
-    P, _, _ = _tools()
-    ref = P.fk(reference)[0]
-    for bone in LOCKED:
-        P.set_world_rot(p, bone, ref[P.IDX[bone]])
+BUILDERS = dict(crouch=crouch, rise=rise, peak=peak, land=land)
 
 
 @functools.lru_cache(maxsize=None)
 def built(name: str):
-    """The pose ``name`` on the authoring rig (a posing.Pose), with the head of HEAD_POSE for
-    the poses of POSES."""
-    P, _, _ = _tools()
+    """The leap's key pose ``name`` on the authoring rig (a posing.Pose)."""
     if name not in BUILDERS:
-        raise KeyError(f"Unknown pose {name!r}; the poses are {list(BUILDERS)}.")
-    p = BUILDERS[name]()
-    if name in POSES and name != HEAD_POSE:
-        _lock_head(p, built(HEAD_POSE))
-    return p
-
-
-def head_turn(name: str) -> np.ndarray:
-    """The head's turn in the world (3, 3) in a pose."""
-    P, _, _ = _tools()
-    return P.fk(built(name))[0][P.IDX["head"]]
+        raise KeyError(f"Unknown key pose {name!r}; the leap's are {list(BUILDERS)}.")
+    return BUILDERS[name]()
 
 
 def page_pose(name: str, bones) -> dict:
-    """A pose for the web viewer's ``window.portrait.pose``: ``q`` one rotation (x, y, z, w) per
-    bone in the order of ``bones`` (the page's rig), ``root`` the root's offset in hip heights."""
+    """A key pose of the leap for the web viewer's ``window.portrait.pose``: ``q`` one rotation
+    (x, y, z, w) per bone in the order of ``bones`` (the page's rig), ``root`` the root's offset
+    in hip heights."""
     P, _, _ = _tools()
     p = built(name)
     q = []
