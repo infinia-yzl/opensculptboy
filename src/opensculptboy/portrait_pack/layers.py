@@ -85,6 +85,10 @@ FACE_PAD = 24
 # from at_ease's by more than this (0 to 255), with at least this share of the rectangle.
 FRONT_THRESHOLD = 40
 FRONT_MIN_SHARE = 0.003
+# The face layer paints only the face's own pixels: those that any face changes, grown by this
+# share of a head, with an edge this soft.
+MASK_GROW = 0.04
+MASK_SOFT = 0.02
 DEFAULT_QUALITY = {"body": 88, "face": 90}
 FORMATS = ("webp", "png")
 
@@ -133,11 +137,66 @@ def snap_rect(x0, y0, x1, y1, width, height, grid=GRID) -> dict:
     return {"x": x0, "y": y0, "width": max(grid, x1 - x0), "height": max(grid, y1 - y0)}
 
 
-def front_mask(pose_crop: np.ndarray, base_crop: np.ndarray):
+def changed_pixels(a: np.ndarray, b: np.ndarray, threshold: int = 16) -> np.ndarray:
+    """The pixels where two pictures differ by more than ``threshold`` in a channel."""
+    return np.abs(a.astype(np.int16) - b.astype(np.int16)).max(-1) > threshold
+
+
+def _grow(m: np.ndarray, r: int) -> np.ndarray:
+    """A mask grown by ``r`` pixels (a square neighbourhood, by doubling steps)."""
+    out = m.copy()
+    step = 1
+    left = r
+    while left > 0:
+        k = min(step, left)
+        g = out.copy()
+        g[k:] |= out[:-k]
+        g[:-k] |= out[k:]
+        g[:, k:] |= g[:, :-k].copy()
+        g[:, :-k] |= g[:, k:].copy()
+        out = g
+        left -= k
+        step *= 2
+    return out
+
+
+def _blur(a: np.ndarray, r: int) -> np.ndarray:
+    """A box blur of radius ``r`` along both axes."""
+    out = a.astype(np.float32)
+    for axis in (0, 1):
+        pad = [(0, 0), (0, 0)]
+        pad[axis] = (r + 1, r)
+        c = np.cumsum(np.pad(out, pad, mode="edge"), axis=axis)
+        n = out.shape[axis]
+        hi = np.take(c, np.arange(2 * r + 1, 2 * r + 1 + n), axis=axis)
+        lo = np.take(c, np.arange(0, n), axis=axis)
+        out = (hi - lo) / (2 * r + 1)
+    return out
+
+
+def soft_mask(changed: np.ndarray, grow: int, soft: int) -> np.ndarray:
+    """The face's own pixels as weights 0 to 1: the changed pixels grown by ``grow`` pixels, their
+    holes filled across each row and column, and the edge softened over ``soft`` pixels."""
+    m = _grow(changed, grow)
+    # fill the holes between the eyes, the nose and the mouth: what lies between covered pixels on
+    # both its row and its column
+    rows = np.maximum.accumulate(m, 1) & np.maximum.accumulate(m[:, ::-1], 1)[:, ::-1]
+    cols = np.maximum.accumulate(m, 0) & np.maximum.accumulate(m[::-1], 0)[::-1]
+    m = m | (rows & cols)
+    w = np.clip(_blur(m, soft) * 2 - 0.5, 0, 1)
+    return w * m
+
+
+def front_mask(
+    pose_crop: np.ndarray, base_crop: np.ndarray, within: np.ndarray | None = None
+):
     """The pixels of a pose's face rectangle that lie in front of the face (a hand), as alpha
-    0 to 255; None when the pose leaves the rectangle as at_ease shows it."""
+    0 to 255, inside the face's own pixels ``within`` (weights 0 to 1) when given; None when the
+    pose leaves them as at_ease shows them."""
     d = np.abs(pose_crop.astype(np.int16) - base_crop.astype(np.int16)).max(-1)
     m = d > FRONT_THRESHOLD
+    if within is not None:
+        m &= within > 0.01
     if m.mean() < FRONT_MIN_SHARE:
         return None
     # two pixels of growth and a soft edge of one pixel
@@ -442,16 +501,16 @@ def write_layered_pack(
                 )  # the first picture after a pose settles the page
                 base = render({**view0, "region": hreg}, neutral, 1)
                 box = None
+                changed = np.zeros(base.shape[:2], bool)
                 for x in expressions:
                     for mouth, eyes in (("open", "closed"), ("closed", "closed")):
-                        b = changed_box(
-                            base,
-                            render(
-                                {**view0, "region": hreg},
-                                frame_actions(x, mouth, eyes, halves.get(x)),
-                                1,
-                            ),
+                        other = render(
+                            {**view0, "region": hreg},
+                            frame_actions(x, mouth, eyes, halves.get(x)),
+                            1,
                         )
+                        changed |= changed_pixels(base, other)
+                        b = changed_box(base, other)
                         if b:
                             box = (
                                 b
@@ -474,6 +533,17 @@ def write_layered_pack(
                     g["width"],
                     g["height"],
                 )
+                # the face's own pixels inside the rectangle: what any face changes, grown and softened
+                full = np.zeros((g["height"], g["width"]), bool)
+                full[hy0:hy1, hx0:hx1] = changed
+                face_mask = soft_mask(
+                    full[
+                        face["y"] : face["y"] + face["height"],
+                        face["x"] : face["x"] + face["width"],
+                    ],
+                    max(2, int(round(MASK_GROW * unit))),
+                    max(1, int(round(MASK_SOFT * unit))),
+                )
             # the body layers, and the at_ease face rectangle for the front layers
             base_crop = None
             for pose in poses_of[name]:
@@ -491,7 +561,7 @@ def write_layered_pack(
                     if pose == stage_poses.HEAD_POSE:
                         base_crop = crop
                     elif base_crop is not None:
-                        m = front_mask(crop, base_crop)
+                        m = front_mask(crop, base_crop, face_mask)
                         if m is not None:
                             front = crop.copy()
                             front[..., 3] = (
@@ -516,7 +586,11 @@ def write_layered_pack(
                 for x, mouth, eyes, actions in faces:
                     rgba = render({**view0, "region": reg}, actions, samples)
                     ox, oy = face["x"] - px0, face["y"] - py0
-                    patch = rgba[oy : oy + face["height"], ox : ox + face["width"]]
+                    patch = rgba[
+                        oy : oy + face["height"], ox : ox + face["width"]
+                    ].copy()
+                    patch[..., 3] = np.round(patch[..., 3] * face_mask).astype(np.uint8)
+                    patch[patch[..., 3] == 0] = 0
                     save_layer(
                         folder / f"face.{name}.{x}.{mouth}.{eyes}{ext}",
                         np.ascontiguousarray(patch),

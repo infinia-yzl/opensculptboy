@@ -327,6 +327,20 @@ class TestFramer(unittest.TestCase):
         self.assertEqual(m[25, 15], 255)
         self.assertEqual(m[5, 5], 0)
 
+    def test_soft_mask(self):
+        changed = np.zeros((60, 80), bool)
+        changed[20:22, 20:30] = changed[40:43, 30:50] = True
+        w = layers.soft_mask(changed, 3, 2)
+        self.assertEqual(w[21, 25], 1.0)
+        self.assertEqual(w[5, 5], 0.0)
+        self.assertTrue(((w > 0) & (w < 1)).any())
+        self.assertTrue((w[changed] > 0.4).all())
+        m = layers.front_mask(
+            np.full((60, 80, 4), 90, np.uint8), np.full((60, 80, 4), 200, np.uint8), w
+        )
+        self.assertEqual(m[5, 5], 0)
+        self.assertEqual(m[21, 25], 255)
+
     def test_snap_rect(self):
         self.assertEqual(
             layers.snap_rect(3, 9, 21, 30, 64, 64),
@@ -448,19 +462,24 @@ class TestDefaultLayeredPack(unittest.TestCase):
         self.assertEqual(m["leap"]["frames"], list(stage_poses.LEAP))
 
     def test_faces_fit_the_bodies(self):
-        """The neutral face layer lies on every body of its framing to the pixel: inside the face rectangle (away
-        from the shoulders and the front layers), the body matches the face best with no shift."""
+        """The neutral face layer lies on every body of its framing to the pixel: where the face layer paints,
+        inside the middle of its rectangle, the body matches it best with no shift."""
         m = json.loads((self.folder / contract.MANIFEST).read_text())
         for name, f in m["framings"].items():
             r = f["face"]
-            face = np.asarray(
+            rgba = np.asarray(
                 Image.open(
                     self.folder / f"face.{name}.neutral.closed.open.webp"
-                ).convert("RGB"),
+                ).convert("RGBA"),
                 np.float32,
             )
+            face, opaque = rgba[..., :3], rgba[..., 3] > 200
             h, w = face.shape[:2]
             y0, y1, x0, x1 = h // 4, h - h // 4, w // 4, w - w // 4
+            inner = opaque[y0:y1, x0:x1]
+            self.assertGreater(
+                inner.mean(), 0.3, "the face layer paints the middle of the face"
+            )
             for pose in ("at_ease", "chin", "cheer"):
                 if name not in m["poses"][pose]["framings"]:
                     continue
@@ -477,7 +496,7 @@ class TestDefaultLayeredPack(unittest.TestCase):
                             r["y"] + y0 + dy : r["y"] + y1 + dy,
                             r["x"] + x0 + dx : r["x"] + x1 + dx,
                         ]
-                        return float(np.abs(crop - face[y0:y1, x0:x1]).mean())
+                        return float(np.abs(crop - face[y0:y1, x0:x1])[inner].mean())
 
                     shifts = {
                         (dx, dy): diff(dx, dy)
