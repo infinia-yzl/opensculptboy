@@ -130,6 +130,7 @@ opensculptboy portrait-pack --layers --out pack/                                
 opensculptboy portrait-pack --layers --character ada.json --out pack/ --licence CC0-1.0
 opensculptboy portrait-pack --layers --out pack/ --poses at_ease,chin --framings close,thigh --no-leap --scale 0.5 --samples 4   # a quick trial
 opensculptboy portrait-pack --layers --out poses/ --preview --scale 0.5 --samples 4  # the body layers alone, to look at the poses
+opensculptboy portrait-pack --layers --character card.json --out pack/ --poses-file poses.json --shots-file shots.json   # the stage's poses and shot cameras
 opensculptboy portrait-pack --check pack/                                            # the check reads the schema and checks either kind of pack
 ```
 
@@ -143,6 +144,8 @@ opensculptboy portrait-pack --check pack/                                       
 | `--quality N` | 88 | the WebP quality of the body layers; the faces take 2 more |
 | `--scale F` | 1 | a factor on every framing's pixels per head, at most 1, for trials |
 | `--preview` | | the body layers and the leap alone, with no faces |
+| `--poses-file FILE` | `opensculptboy/data/portrait/poses.json` | the companion's shared pose file (`squire.poses/1`) |
+| `--shots-file FILE` | | the stage's shots (`squire.shots/1`): each framing renders through the camera of the shot it serves |
 
 ### Framings
 
@@ -159,22 +162,22 @@ The export first renders a small outline of every pose and sets each framing's w
 
 ### Poses
 
-`opensculptboy.portrait_pack.poses` builds the poses with the posing tools of the pose library (`anny.poses.authoring`): the relaxed stance's legs, the arms placed by two-bone IK on targets around the head and the chest, and the hands curled. Their rotations follow the library's convention, so they fit every body, and the page shows them through `window.portrait.pose`.
+The ten poses come from the companion's shared pose file (`opensculptboy.portrait_pack.shared_poses`, format `squire.poses/1`): the file that the stage's 3D preview reads as well, so the stills show the body exactly as the VRM shows it. `data/portrait/poses.json` is the command's default, and `--poses-file` names another. The file gives angles on the normalized humanoid bones of VRM 1.0, which rest in a T pose. Each humanoid bone maps to its rig bone by the VRM export's table (`vrm_tables.HUMANOID_1`), and each rig bone first turns from its rest (an A pose) into the VRM file's T pose by its T-pose turn (`tpose.t_pose_turns`), computed for the card's own body: its rest-frame correction. A rig bone outside the humanoid (a twist bone, `spine03`, the neck's upper bones, the metacarpals, the toes) turns with the humanoid bone above it, and the forearm's twist bone takes half the hand's roll, as the VRM file's roll constraint gives it. The rig's joints then land where the VRM exported from the same card puts them (`test_lands_on_the_vrm_skeleton`, within 2 mm), and the page shows the rotations through `window.portrait.pose`.
 
 | Pose | The body |
 |---|---|
 | `at_ease` | standing straight, the arms down |
-| `relaxed` | the weight on one leg, the shoulders loose |
+| `relaxed` | the weight on one leg, a hand on the hip |
 | `hands_behind_head` | both hands behind the head, the elbows out |
-| `chin` | one hand under the chin, the other arm across the waist |
-| `scratch_head` | one hand on the side of the head |
+| `chin` | one hand under the chin, the other forearm across the waist |
+| `scratch_head` | one hand on the back of the head |
 | `arms_crossed` | the arms folded across the chest |
 | `hand_on_chest` | a hand on the chest with a slight bow |
 | `wave` | one hand raised beside the head |
 | `fist` | one fist raised above the head |
 | `cheer` | both hands in the air |
 
-The leap's key poses are `crouch`, `rise`, `peak` and `land`. Every pose of the table keeps the head's turn of `at_ease`; the leap's frames turn the head freely and carry the face of joy.
+The leap's key poses are `crouch`, `rise`, `peak` and `land`; `opensculptboy.portrait_pack.poses` still builds them with the posing tools of the pose library (`anny.poses.authoring`) until the shared file carries them. Every pose of the table keeps the head and the neck of `at_ease` in the world (the file's `keepHead`); the leap's frames turn the head freely and carry the face of joy.
 
 ### How the layers are made
 
@@ -182,6 +185,7 @@ The leap's key poses are `crouch`, `rise`, `peak` and `land`. Every pose of the 
 - The face layers cover the rectangle of the face that changes between the faces: the export draws each expression's open mouth and closed eyes against the neutral face around the head at one pass and takes the box of the changed pixels with a margin of 0.05 heads, snapped to 8 pixels. It then renders the 90 faces in that rectangle alone (`region`), with 24 more pixels around it that it cuts off again, so the skin's screen-space pass sees the same neighbours as in the whole frame. Each face layer paints only the face's own pixels: those that any face changes, grown by 0.04 heads with an edge softened over 0.02 heads (pixels that differ between two pictures of one face count as noise and stay out); the rest of the rectangle (the hair, the ears, the shoulders) is transparent, so the body shows there.
 - A front layer holds the pixels of the face's own pixels that a pose covers (a hand): where the pose's body differs from `at_ease`'s by more than 40 of 255, grown by 2 pixels with a soft edge; a pose that covers less than 0.3 % of the rectangle has none.
 - The leap's frames use the full framing's camera of `at_ease`, so the crouch stands lower and the raised hands reach higher in the same frame.
+- With `--shots-file`, each framing renders through the camera of the shot it serves (the file's `renders`: `close` for the close-up, `waist` for the medium close-up, `thigh` for the two-shot, `full` for the full shot), in place of the long lens from the front. The shot names a lens in millimetres, full-frame equivalent over the window's height; the body point the camera sits level with (the eyes, the chest or the hips, in the stage's head heights below the eyes: the hips-to-eyes distance over 3.5) and how far above it; a tilt; and the body's turn, which the page applies to the figure (`turn` of `window.portrait.view`). The camera stands where the lens's field of view spans the shot's window (its `span` over its `share`) at the eyes, and it follows the head as above. The outlines then come from probes through that camera, and `window.portrait.view` takes the camera as `{eye, pitch, focal, px, py}`: the frame is a rectangle of a larger picture centred on the principal point. A tilted camera foreshortens the head, so the crown's and the chin's rows of the manifest differ by up to 5 % from the framing's pixels per head, which holds at the eyes' depth.
 - The body layers carry the neutral face (mouth closed, eyes open). The lights, the exposure, the long lens and the straight alpha are those of the bust pack.
 
 ### The manifest and the check
@@ -194,4 +198,4 @@ A textured, dressed card renders on a graphics card in about 20 minutes: the bod
 
 ## Tests
 
-`test/test_portrait_layers.py` checks synthetic layered packs, the framings, the front layer's mask and the poses on the authoring rig in CI, and renders the default character's layered pack at a fifth of its scale locally. `test/test_portrait_pack.py` checks synthetic packs in CI: a valid pack, each broken case with its reason code, the manifest's rules, the faces of every frame, the folder rules and the command's exit codes. Its local tests need Playwright with the built page: the default character's full pack (90 frames at 288 by 384 pixels with one pass each, about 30 minutes in software) passes the check, the outline of the figure stays within one pixel in every frame apart from the face, the mouth differs between `closed`, `half` and `open` and the eyes between `open`, `half` and `closed` for each expression, the half-open eyes of every expression leave 45 to 55 % of the open eyes' opening, and `--expressions neutral` gives a valid pack of nine frames. `OPENSCULPTBOY_PORTRAIT_PACK=FOLDER` checks a pack of the default character that was rendered before, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable for Playwright.
+`test/test_portrait_layers.py` checks synthetic layered packs, the framings, the front layer's mask, the shared pose file (its format, every bone resolving, the T pose, the joints against the VRM file's, the head kept) and the shots' cameras in CI, and renders the default character's layered pack at a fifth of its scale locally. `test/test_portrait_pack.py` checks synthetic packs in CI: a valid pack, each broken case with its reason code, the manifest's rules, the faces of every frame, the folder rules and the command's exit codes. Its local tests need Playwright with the built page: the default character's full pack (90 frames at 288 by 384 pixels with one pass each, about 30 minutes in software) passes the check, the outline of the figure stays within one pixel in every frame apart from the face, the mouth differs between `closed`, `half` and `open` and the eyes between `open`, `half` and `closed` for each expression, the half-open eyes of every expression leave 45 to 55 % of the open eyes' opening, and `--expressions neutral` gives a valid pack of nine frames. `OPENSCULPTBOY_PORTRAIT_PACK=FOLDER` checks a pack of the default character that was rendered before, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable for Playwright.
