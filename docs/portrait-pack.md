@@ -156,12 +156,26 @@ Each framing has its own scale in pixels per head (the height from the chin to t
 | `close` | a close-up and a thought | 810 | from the top of the hair or headpiece to 2.2 heads below the crown |
 | `waist` | a medium close-up | 660 | from the highest raised hand to 3.6 heads below the crown |
 | `thigh` | a two-shot and a far, low shot | 330 | from the highest raised hand to 6 heads below the crown |
-| `full` | the whole body and the leap | 230 | from the highest raised hand (the leap's included) to the ground; the stage pushes in at the top of the leap until the figure takes 90 % of the height, which asks for about 210 |
+| `full` | the whole body and the leap | 160; the leap's frames 230 | from the highest raised hand (the leap's included) to the ground; the leap's frames have the same camera and a frame of their own (`leap.frame`, `leap.head`), since the stage pushes in at the top of the leap until the figure takes 88 % of the height, which asks for about 210 |
 | `thought` | the thought (`chin`) | 810 | as `close` |
 | `stern` | the square-on stern close-up (`at_ease`, `arms_crossed`; the main faces `neutral` and `stern`) | 810 | as `close` |
 | `low` | the low, far shot of sadness (`downcast`) | 330 | from the top of the head to 6.8 heads below the crown |
 
 The export first renders a small outline of every pose and sets each framing's width from the widest pose at its height. Each framing holds the poses its shot shows (`layers.FRAMING_POSES`): the close framing leaves out the poses with a hand above the head, `chin` shows at `thought` alone, `downcast` at `low` alone, and the bow of `hand_on_chest` at `waist` and `thigh`. `thought`, `stern` and `low` render only through their shots' cameras (`--shots-file`), and `at_ease` shows at each of the first four.
+
+### Expressions by framing
+
+A framing's main face set holds only the expressions its shots show (`layers.FRAMING_EXPRESSIONS` and `FRAMING_LEAVES`), as the stage's rules give them (each rule's expressions, through the shots it takes at each intensity and window size, to the framing of each shot's stills):
+
+| Framing | The rules that show it | The expressions they show | The main set holds |
+|---|---|---|---|
+| `close` | `reply` at intensity 3 | every expression but `stern`, which the stern close-up takes | every expression but `stern` when the pack holds `stern`, else all |
+| `waist` | `joy`, `moved`, `relaxed`, `reply`, `stern` | all | all |
+| `thigh` | `held`, `joy`, `listen`, `reply`, `state`, `stern` | all | all |
+| `full` | `joy` (the celebration) | `joy` | `neutral`, `joy` and `smile` (the moment before and after the leap; the leap's frames carry their own face of joy) |
+| `stern` | `reply` and `stern` with the stern expression | `stern` | `neutral` and `stern` |
+| `thought` | `thinking` | `chin`'s own set | `chin`'s own set: `neutral`, `thinking` |
+| `low` | `sad` | `sad`, `worried` | `downcast`'s own set: `neutral`, `sad`, `worried` |
 
 ### Poses
 
@@ -199,9 +213,20 @@ The file's stances (`stances`, named by a pose's `stance`) give the hips, the sp
 
 ### Resuming a stopped run
 
-`--resume` continues a layered pack that a stopped run left in `--out`, with the same settings. The folder is kept, and each layer whose file and pass files decode whole at their size is kept; a file that a stopped run cut short fails to decode and is rendered again. The first body layer is always rendered again, since its passes set the pack's scales, and a kept body layer whose front layer is missing has its passes rendered again for the front's. The probes, the framings, the face rectangles and the joints are measured again, which takes a minute or two. The result's `kept` counts the layers kept.
+`--resume` continues a layered pack that a stopped run left in `--out`, with the same settings (the cuts of the next section included: a layer of another size or an expression the framing no longer holds is rendered again or removed). The folder is kept, and each layer whose file and pass files decode whole at their size is kept; a file that a stopped run cut short fails to decode and is rendered again. The first body layer is always rendered again, since its passes set the pack's scales, and a kept body layer whose front layer is missing has its passes rendered again for the front's. The probes, the framings, the face rectangles and the joints are measured again, which takes a minute or two. The result's `kept` counts the layers kept.
 
 ### Size and time
+
+**Where the time goes.** Each layer with light passes was four pictures until 2026-11-07: the layer, then the key, the fill and the rim, each at 16 samples, each pass read back from the page as half floats and written as WebP at the slowest effort with its colour difference measured on every pixel. A dressed card's close framing took about 110 seconds for each body layer and 1,842 seconds for its 90 faces (20 seconds a face), and its waist bodies about 160 seconds each; the graphics card stood mostly idle while Python encoded and measured. The render now cuts that time:
+
+- **The layer is its passes' sum.** With passes, the page renders the three passes alone and the export writes the layer as their sum through the display pass (`Lit.compose`): three pictures for each layer, and the layer is the very sum an app gives at the strengths of 1, up to the files' compression.
+- **Only the expressions each framing needs** (the table above): the full framing's faces fall from 90 to 27.
+- **Fewer samples where the face is small:** `--framing-samples` (default `thigh=8,full=8`; `none` gives every framing `--samples`); every other framing and the leap take `--samples` (16), and a framing never takes more.
+- **The leap at its own scale:** the full framing's bodies and faces at 160 pixels per head, the leap's four frames alone at 230.
+- **Writing beside the page:** every layer is written on a pool of four threads while the page renders the next one, with at most six waiting; the pass files use WebP's effort 4 (about seven times faster than 6 at the same size), and the colour difference is measured on every fourth pixel of the figure.
+- **The timing.** The log and the result's `timing` give the seconds of each phase: the probes and framings, the face rectangles, the passes' rendering, composing, the bodies and fronts, the faces, the leap, the writing on the pool (which overlaps the page) and the waits for it.
+
+The cuts give, for the same card and the seven framings (estimates from the measured rates above; the next full render measures them): about 12 seconds for each face at 16 samples and 5 to 7 at 8, about 75 seconds for each large body layer, and about 1 hour 50 minutes for the whole pack, against about 4 hours before. With `--resume` a run keeps the earlier run's layers when the scales it reads back from the first body layer's pass files agree within 2 % with the scales it measures again, and uses those scales; otherwise it renders every layer again. The layers the new settings no longer name (an expression a framing no longer holds, a layer of another size) leave the folder at the end, and the result counts them (`removed`).
 
 A textured, dressed card renders on a graphics card in about 20 minutes: the body layers take 10 to 25 seconds each at 16 samples (the waist frames are the largest, about 3600 by 3400 pixels), and each face 1 to 3 seconds. Its full pack of version 1's ten poses held 435 files and 37.4 MB (35.7 MiB), most of them in the face layers. With the seven framings of the shots and the face sets the full pack holds about 550 files and 45 MB: the main faces of `close`, `waist`, `thigh` and `full` (360) and of `stern` (18), the own sets of `chin`, `hand_on_chest` and `downcast` (99), 35 body layers, about 30 front layers and the leap. The default character's pack at a fifth of the scale with one pass renders in under a minute.
 
