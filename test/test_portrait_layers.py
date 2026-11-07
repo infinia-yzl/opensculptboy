@@ -422,6 +422,48 @@ class TestJoints(unittest.TestCase):
         self.assertIn('"names": [\n', text)
 
 
+class TestResume(unittest.TestCase):
+    """--resume: the layers an unfinished run left behind are kept when they decode whole."""
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_layer_ok(self):
+        rgba = np.zeros((32, 24, 4), np.uint8)
+        rgba[8:24, 6:18] = (200, 150, 120, 255)
+        good = self.tmp / "body.at_ease.close.webp"
+        layers.save_layer(good, rgba, 80)
+        self.assertTrue(layers.layer_ok(good, (24, 32)))
+        self.assertFalse(layers.layer_ok(good, (32, 24)), "the wrong size")
+        cut = self.tmp / "body.wave.close.webp"
+        cut.write_bytes(good.read_bytes()[: len(good.read_bytes()) // 2])
+        self.assertFalse(
+            layers.layer_ok(cut, (24, 32)), "a file a stopped run cut short"
+        )
+        self.assertFalse(layers.layer_ok(self.tmp / "missing.webp", (24, 32)))
+        flat = self.tmp / "body.fist.close.webp"
+        Image.fromarray(rgba[..., :3]).save(flat, format="WEBP")
+        self.assertFalse(layers.layer_ok(flat, (24, 32)), "no alpha")
+
+    def test_folder_kept(self):
+        folder = write_layered(self.tmp / "p")
+        n = len(list(folder.iterdir()))
+        layers.prepare_layered_folder(folder, keep=True)
+        self.assertEqual(len(list(folder.iterdir())), n)
+        layers.prepare_layered_folder(folder)
+        self.assertEqual(list(folder.iterdir()), [])
+
+    def test_command(self):
+        code, _, err = run_cli(
+            "portrait-pack", "--out", str(self.tmp / "x"), "--resume"
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("take --layers", err)
+
+
 class TestFramer(unittest.TestCase):
     def framer(self):
         figures = {
@@ -926,24 +968,25 @@ class TestDefaultLayeredPack(unittest.TestCase):
         cls.tmp = pathlib.Path(tempfile.mkdtemp())
         cls.folder = cls.tmp / "pack"
         env = {render.CHROMIUM_ENV: str(CHROMIUM)} if CHROMIUM.exists() else {}
+        cls.args = (
+            "portrait-pack",
+            "--layers",
+            "--out",
+            str(cls.folder),
+            "--scale",
+            "0.2",
+            "--samples",
+            "1",
+            "--expressions",
+            "neutral,joy",
+            "--poses",
+            "at_ease,hand_on_chest,cheer",
+            "--page",
+            str(PAGE),
+            "--json",
+        )
         with mock.patch.dict(os.environ, env):
-            cls.result = run_cli(
-                "portrait-pack",
-                "--layers",
-                "--out",
-                str(cls.folder),
-                "--scale",
-                "0.2",
-                "--samples",
-                "1",
-                "--expressions",
-                "neutral,joy",
-                "--poses",
-                "at_ease,hand_on_chest,cheer",
-                "--page",
-                str(PAGE),
-                "--json",
-            )
+            cls.result = run_cli(*cls.args)
 
     @classmethod
     def tearDownClass(cls):
@@ -979,6 +1022,21 @@ class TestDefaultLayeredPack(unittest.TestCase):
                     head = m["framings"][f]["head"]
                     self.assertAlmostEqual(xy[0], head["x"], delta=1.5)
                     self.assertAlmostEqual(xy[1], head["y"], delta=1.5)
+
+    def test_resume(self):
+        """A second run with --resume keeps every layer but the first body layer, and gives the
+        same manifest."""
+        code, out, err = self.result
+        self.assertEqual(code, 0, err[-2000:])
+        first = json.loads(out)
+        env = {render.CHROMIUM_ENV: str(CHROMIUM)} if CHROMIUM.exists() else {}
+        with mock.patch.dict(os.environ, env):
+            code, out, err = run_cli(*self.args, "--resume")
+        self.assertEqual(code, 0, err[-2000:])
+        again = json.loads(out)
+        self.assertTrue(again["check"]["pass"], again["check"]["problems"])
+        self.assertEqual(again["kept"], first["check"]["frames"] - 1)
+        self.assertEqual(again["manifest"]["framings"], first["manifest"]["framings"])
 
     def test_faces_fit_the_bodies(self):
         """The neutral face layer lies on every body of its framing to the pixel: where the face layer paints,
