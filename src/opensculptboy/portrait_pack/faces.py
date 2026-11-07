@@ -47,24 +47,58 @@ EXPRESSION_MIXES = {
     "neutral": Expression({}),
     "smile": Expression({"happy": 0.6}),
     "joy": Expression({"happy": 1.0}, lids=0.25),
+    # a look up and aside, one brow up and the other down, the mouth pressed and pushed to one side
     "thinking": Expression(
-        {"relaxed": 0.4, "lookUp": 0.35},
-        {"mouthPressLeft": 0.2, "mouthPressRight": 0.2},
+        {"relaxed": 0.2, "lookUp": 0.7},
+        {
+            "eyeLookOutRight": 0.7,
+            "eyeLookInLeft": 0.7,
+            "browOuterUpLeft": 1.0,
+            "browInnerUp": 0.2,
+            "browDownRight": 0.6,
+            "mouthRight": 1.0,
+            "mouthPressLeft": 0.4,
+            "mouthPressRight": 0.4,
+        },
     ),
     "surprised": Expression({"surprised": 1.0}),
+    # the inner brows raised high, the eyes wide and the mouth stretched: apart from sad's frown
     "worried": Expression(
-        {"sad": 0.45},
+        {"sad": 0.2},
         {
-            "browInnerUp": 0.45,
-            "eyeWideLeft": 0.15,
-            "eyeWideRight": 0.15,
+            "browInnerUp": 0.85,
+            "browDownLeft": 0.15,
+            "browDownRight": 0.15,
+            "eyeWideLeft": 0.45,
+            "eyeWideRight": 0.45,
+            "mouthFrownLeft": 0.2,
+            "mouthFrownRight": 0.2,
+            "mouthStretchLeft": 0.65,
+            "mouthStretchRight": 0.65,
+        },
+    ),
+    "sad": Expression({"sad": 0.9}),
+    "stern": Expression(
+        {"angry": 0.9},
+        {
+            "browDownLeft": 0.1,
+            "browDownRight": 0.1,
+            "mouthPressLeft": 0.4,
+            "mouthPressRight": 0.4,
+        },
+    ),
+    # a shy smile with the gaze down and the inner brows up: apart from smile
+    "embarrassed": Expression(
+        {"happy": 0.6, "lookDown": 0.75},
+        {
+            "browInnerUp": 0.5,
+            "cheekSquintLeft": 0.2,
+            "cheekSquintRight": 0.2,
+            "mouthRollLower": 0.35,
             "mouthPressLeft": 0.25,
             "mouthPressRight": 0.25,
         },
     ),
-    "sad": Expression({"sad": 0.9}),
-    "stern": Expression({"angry": 0.6}),
-    "embarrassed": Expression({"happy": 0.35, "lookDown": 0.3}, {"browInnerUp": 0.2}),
     "drowsy": Expression({"relaxed": 0.8}, lids=0.15),
 }
 # The mouths as vowels with their weights.
@@ -98,9 +132,13 @@ def _add(into: dict, mix: dict, weight: float = 1.0) -> None:
         into[k] = into.get(k, 0.0) + weight * v
 
 
-def frame_actions(expression: str, mouth: str, eyes: str) -> dict:
+def frame_actions(
+    expression: str, mouth: str, eyes: str, half: dict | None = None
+) -> dict:
     """The facial actions of one frame: the action names with weights in (0, 1], every other
-    action at 0."""
+    action at 0. ``half`` gives the blinks of the half-open eyes (``eyeBlinkLeft`` and
+    ``eyeBlinkRight``), as the export measures them on the character; without it the half-open
+    eyes close half way from the expression's own lids to a full blink."""
     if expression not in EXPRESSION_MIXES:
         raise ValueError(
             f"Unknown expression {expression!r}; the expressions are {list(EXPRESSIONS)}."
@@ -125,6 +163,9 @@ def frame_actions(expression: str, mouth: str, eyes: str) -> dict:
     for wide in WIDE:
         if wide in w:
             w[wide] *= 1.0 - close
+    if half and eyes == "half":
+        for blink in BLINKS:
+            w[blink] = half[blink]
     out = {}
     for k in sorted(w):
         v = round(min(1.0, max(0.0, w[k])), 4)
@@ -133,11 +174,14 @@ def frame_actions(expression: str, mouth: str, eyes: str) -> dict:
     return out
 
 
-def pack_faces(expressions=EXPRESSIONS) -> list[tuple[str, str, str, dict]]:
+def pack_faces(
+    expressions=EXPRESSIONS, halves: dict | None = None
+) -> list[tuple[str, str, str, dict]]:
     """Every frame of these expressions as ``(expression, mouth, eyes, actions)``, in the order
-    of the contract."""
+    of the contract; ``halves`` maps an expression to the blinks of its half-open eyes."""
+    halves = halves or {}
     return [
-        (x, m, e, frame_actions(x, m, e))
+        (x, m, e, frame_actions(x, m, e, halves.get(x)))
         for x in expressions
         for m in MOUTHS
         for e in EYES

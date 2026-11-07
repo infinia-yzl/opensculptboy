@@ -35,7 +35,7 @@ from opensculptboy.portrait_pack.contract import (
     is_frame_name,
     text_problem,
 )
-from opensculptboy.portrait_pack.faces import pack_faces
+from opensculptboy.portrait_pack.faces import frame_actions, pack_faces
 
 DEFAULT_SIZE = (768, 1024)
 # The accumulated passes of each frame. A browser with a graphics card draws a pass in a few
@@ -322,6 +322,35 @@ class PortraitPage:
         rgba[rgba[..., 3] == 0] = 0
         return rgba
 
+    def half_blinks(self, expressions, share: float = 0.5, steps: int = 5) -> dict:
+        """For each expression, the blinks of its half-open eyes: the weights that leave
+        ``share`` of the eye's opening with its own eyes open, measured on the character in
+        the page (the closed mouth), with the openings in millimetres."""
+        out = {}
+        for x in expressions:
+            t = time.time()
+            r = self.tab.evaluate(
+                "([h, o, s, n]) => window.portrait.halfBlink(h, o, s, n)",
+                [
+                    frame_actions(x, "closed", "half"),
+                    frame_actions(x, "closed", "open"),
+                    share,
+                    steps,
+                ],
+            )
+            mm = lambda d: {k: round(v * 1000, 2) for k, v in d.items()}  # noqa: E731
+            out[x] = {
+                "eyeBlinkLeft": round(r["eyeBlinkLeft"], 4),
+                "eyeBlinkRight": round(r["eyeBlinkRight"], 4),
+                "open_mm": mm(r["open"]),
+                "half_mm": mm(r["half"]),
+            }
+            self.log(
+                f"{x}: half-open eyes at blink {out[x]['eyeBlinkLeft']:.3f} and {out[x]['eyeBlinkRight']:.3f} "
+                f"({time.time() - t:.0f} s)"
+            )
+        return out
+
     def end(self) -> None:
         """Give the page its own view again."""
         self.tab.evaluate("() => window.portrait.end()")
@@ -457,14 +486,15 @@ def write_pack(
                 f"The {key} {why or 'is too long'}: it takes 1 to {TEXT_LIMITS[key]} characters on one line."
             )
     folder = prepare_folder(out)
-    faces = pack_faces(expressions)
     t0 = time.time()
     with PortraitPage(card=card, page=page, log=log) as pp:
         info = pp.begin(width, height)
         known = set(info["actions"])
-        unknown = sorted({k for *_, a in faces for k in a} - known)
+        unknown = sorted({k for *_, a in pack_faces(expressions) for k in a} - known)
         if unknown:
             raise PortraitError(f"The page does not know the facial actions {unknown}.")
+        halves = pp.half_blinks(expressions)
+        faces = pack_faces(expressions, {x: h for x, h in halves.items()})
         for i, (x, m, e, actions) in enumerate(faces):
             t = time.time()
             save_frame(folder / frame_name(x, m, e), pp.frame(actions, samples))
@@ -495,4 +525,5 @@ def write_pack(
         "seconds": round(time.time() - t0, 1),
         "samples": samples,
         "renderer": renderer,
+        "half_blinks": halves,
     }

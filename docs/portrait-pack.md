@@ -45,7 +45,7 @@ The export opens the viewer's page in headless Chromium through Playwright, open
 
 Chromium draws on the graphics card when there is one: the export launches it with the graphics card's arguments for the platform (ANGLE on Direct3D 11 on Windows, on Metal on macOS, the default GL elsewhere), reads the WebGL renderer, and launches it again in software (SwiftShader) when WebGL 2 is missing. The log names the renderer that the run used, and the JSON result holds it as `renderer`. `OPENSCULPTBOY_CHROMIUM_ARGS` sets Chromium's arguments (separated by spaces) in place of both, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable.
 
-On a graphics card a frame takes about a second, and a full pack takes under two minutes. In software each pass takes about 40 seconds at 768 by 1024 pixels: a full pack takes about 16 hours at 16 samples and about 4 hours at 4. `--samples 4` keeps the hair smooth; one pass leaves the hair grainy.
+On a graphics card a frame takes about a second, and a full pack takes under two minutes. In software each pass takes about 40 seconds at 768 by 1024 pixels: a full pack takes about 16 hours at 16 samples and about 4 hours at 4, and the measure of the half-open eyes adds about 20 minutes. `--samples 4` keeps the hair smooth; one pass leaves the hair grainy.
 
 ## The faces
 
@@ -56,12 +56,12 @@ Each frame is a mix of Anny's 52 ARKit facial actions. The page plays them as it
 | `neutral` | none | | |
 | `smile` | `happy` 0.6 | | |
 | `joy` | `happy` 1.0 | | blink 0.25 (the eyes close a little in the smile) |
-| `thinking` | `relaxed` 0.4, `lookUp` 0.35 | `mouthPressLeft` and `mouthPressRight` 0.2 | |
+| `thinking` | `relaxed` 0.2, `lookUp` 0.7 | the gaze aside (`eyeLookOutRight` and `eyeLookInLeft` 0.7), one brow up and the other down (`browOuterUpLeft` 1.0, `browDownRight` 0.6, `browInnerUp` 0.2), the mouth pushed to one side and pressed (`mouthRight` 1.0, `mouthPressLeft` and `mouthPressRight` 0.4) | |
 | `surprised` | `surprised` 1.0 | | |
-| `worried` | `sad` 0.45 | `browInnerUp` 0.45, `eyeWideLeft` and `eyeWideRight` 0.15, `mouthPressLeft` and `mouthPressRight` 0.25 | |
+| `worried` | `sad` 0.2 | `browInnerUp` 0.85, `browDownLeft` and `browDownRight` 0.15, `eyeWideLeft` and `eyeWideRight` 0.45, `mouthFrownLeft` and `mouthFrownRight` 0.2, `mouthStretchLeft` and `mouthStretchRight` 0.65 | |
 | `sad` | `sad` 0.9 | | |
-| `stern` | `angry` 0.6 | | |
-| `embarrassed` | `happy` 0.35, `lookDown` 0.3 | `browInnerUp` 0.2 | |
+| `stern` | `angry` 0.9 | `browDownLeft` and `browDownRight` 0.1, `mouthPressLeft` and `mouthPressRight` 0.4 | |
+| `embarrassed` | `happy` 0.6, `lookDown` 0.75 | `browInnerUp` 0.5, `cheekSquintLeft` and `cheekSquintRight` 0.2, `mouthRollLower` 0.35, `mouthPressLeft` and `mouthPressRight` 0.25 | |
 | `drowsy` | `relaxed` 0.8 | | blink 0.15 (heavy lids) |
 
 | Mouth | Vowels |
@@ -70,7 +70,11 @@ Each frame is a mix of Anny's 52 ARKit facial actions. The page plays them as it
 | `half` | `aa` 0.4, `ih` 0.2 |
 | `open` | `aa` 0.9, `oh` 0.2 |
 
-The eyes start from the expression's own lids: the blink that its presets hold (`sad` and `relaxed` hold some) and the lids of the table. `open` keeps them, `half` closes them half way to a full blink, and `closed` closes them fully, so the three states differ for every expression. As the lids close, the blink takes over the widened eyes of `surprised` and `worried`. Anny has no blush, so `embarrassed` uses the presets and the brows alone. `opensculptboy.portrait_pack.faces` holds the mixes (`EXPRESSION_MIXES`, `MOUTH_MIXES`, `EYE_CLOSE`), and `frame_actions(expression, mouth, eyes)` gives the actions of one frame.
+The eyes start from the expression's own lids: the blink that its presets hold (`sad` and `relaxed` hold some) and the lids of the table. `open` keeps them, and `closed` closes them with a full blink. As the lids close, the blink takes over the widened eyes of `surprised` and `worried`. `thinking` and `worried` keep apart from `sad` by the gaze, the brows and the mouth; `embarrassed` keeps apart from `smile` by its lowered gaze and raised inner brows. Anny has no blush, so `embarrassed` holds no colour change. `opensculptboy.portrait_pack.faces` holds the mixes (`EXPRESSION_MIXES`, `MOUTH_MIXES`, `EYE_CLOSE`), and `frame_actions(expression, mouth, eyes, half)` gives the actions of one frame.
+
+### Half-open eyes
+
+The eye looks closed well before a blink of 0.5: on the default character a blink of 0.5 leaves about a third of the visible eye, because the lashes and the lids' own thickness cover the eyeball sooner than the lid margins meet. So the export measures the half-open eyes on each character in the page, with the character's own lids, eye targets and lashes. For each expression it draws a small picture of the eyes from the front twice, once with the eyeballs drawn plain white and once without them; the pixels that differ are the eyeball that the camera sees. The opening of each eye is the height of those pixels in the columns through its middle. A bisection of `eyeBlinkLeft` and `eyeBlinkRight` between the open eyes' blink and a full blink (`window.portrait.halfBlink`, five steps) finds the blinks that leave half of the open eyes' opening, and the half frames of every mouth use them. On the default character the half-open blink lies near 0.4 for `neutral`. The JSON result lists the blinks and the openings in millimetres under `half_blinks`, and the log names them. Without the page, `frame_actions` closes the half-open eyes half way from the expression's own lids to a full blink.
 
 ## The contract
 
@@ -119,4 +123,4 @@ A full pack of the default character at 768 by 1024 pixels and 4 samples holds 4
 
 ## Tests
 
-`test/test_portrait_pack.py` checks synthetic packs in CI: a valid pack, each broken case with its reason code, the manifest's rules, the faces of every frame, the folder rules and the command's exit codes. Its local tests need Playwright with the built page: the default character's full pack (90 frames at 288 by 384 pixels with one pass each, about 30 minutes in software) passes the check, the outline of the figure stays within one pixel in every frame apart from the face, the mouth differs between `closed`, `half` and `open` and the eyes between `open`, `half` and `closed` for each expression, and `--expressions neutral` gives a valid pack of nine frames. `OPENSCULPTBOY_PORTRAIT_PACK=FOLDER` checks a pack of the default character that was rendered before, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable for Playwright.
+`test/test_portrait_pack.py` checks synthetic packs in CI: a valid pack, each broken case with its reason code, the manifest's rules, the faces of every frame, the folder rules and the command's exit codes. Its local tests need Playwright with the built page: the default character's full pack (90 frames at 288 by 384 pixels with one pass each, about 30 minutes in software) passes the check, the outline of the figure stays within one pixel in every frame apart from the face, the mouth differs between `closed`, `half` and `open` and the eyes between `open`, `half` and `closed` for each expression, the half-open eyes of every expression leave 45 to 55 % of the open eyes' opening, and `--expressions neutral` gives a valid pack of nine frames. `OPENSCULPTBOY_PORTRAIT_PACK=FOLDER` checks a pack of the default character that was rendered before, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable for Playwright.

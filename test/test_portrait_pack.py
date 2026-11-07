@@ -330,13 +330,28 @@ class TestFaces(unittest.TestCase):
         self.assertAlmostEqual(half["jawOpen"], 0.42 * 0.4 + 0.06 * 0.2)
         self.assertAlmostEqual(half["eyeBlinkLeft"], 0.5)
         up = frame_actions("thinking", "closed", "open")
-        self.assertAlmostEqual(up["eyeLookUpLeft"], 0.35)
+        self.assertAlmostEqual(up["eyeLookUpLeft"], 0.7)
         # the blink takes over the widened eyes
         self.assertNotIn("eyeWideLeft", frame_actions("surprised", "closed", "closed"))
         drowsy = frame_actions("drowsy", "closed", "open")["eyeBlinkLeft"]
         self.assertAlmostEqual(drowsy, 0.35 * 0.8 + 0.15)
         with self.assertRaises(ValueError):
             frame_actions("grin", "closed", "open")
+
+    def test_measured_half(self):
+        # the export's measured blinks replace the half-open eyes' own, for every mouth
+        half = {"eyeBlinkLeft": 0.41, "eyeBlinkRight": 0.43}
+        for m in MOUTHS:
+            f = frame_actions("worried", m, "half", half)
+            self.assertEqual((f["eyeBlinkLeft"], f["eyeBlinkRight"]), (0.41, 0.43))
+            self.assertEqual(
+                frame_actions("worried", m, "open", half),
+                frame_actions("worried", m, "open"),
+            )
+        faces = pack_faces(["neutral"], {"neutral": half})
+        self.assertEqual(
+            [f[3].get("eyeBlinkLeft") for f in faces if f[2] == "half"], [0.41] * 3
+        )
 
 
 class TestCommand(unittest.TestCase):
@@ -472,6 +487,19 @@ class TestCommand(unittest.TestCase):
             render.card_files(card)
 
 
+def assertHalfEyes(test, halves, expressions):
+    """The half-open eyes leave 45 to 55 % of the open eyes' opening, measured on the frames'
+    faces in the page, for every expression and both eyes."""
+    test.assertEqual(sorted(halves), sorted(expressions))
+    for x, h in halves.items():
+        for side in ("Left", "Right"):
+            with test.subTest(expression=x, eye=side):
+                share = h["half_mm"][side] / h["open_mm"][side]
+                test.assertGreaterEqual(share, 0.45, h)
+                test.assertLessEqual(share, 0.55, h)
+                test.assertLess(h["eyeBlink" + side], 1.0)
+
+
 def alpha_box(a):
     ys, xs = np.nonzero(a[..., 3])
     return np.array([xs.min(), ys.min(), xs.max(), ys.max()])
@@ -545,6 +573,10 @@ class TestDefaultPack(unittest.TestCase):
             self.assertIs(type(v), int)
         if hasattr(self, "result"):
             self.assertEqual(self.result[0], 0, self.result[2][-2000:])
+            self.assertHalfEyes(json.loads(self.result[1])["half_blinks"], EXPRESSIONS)
+
+    def assertHalfEyes(self, halves, expressions):
+        assertHalfEyes(self, halves, expressions)
 
     def test_frames(self):
         m = json.loads((self.folder / MANIFEST).read_text())
@@ -642,6 +674,7 @@ class TestNeutralPack(unittest.TestCase):
                 sorted([MANIFEST, *frame_names(["neutral"])]),
             )
             self.assertTrue(result["renderer"])
+            assertHalfEyes(self, result["half_blinks"], ["neutral"])
             m = json.loads((folder / MANIFEST).read_text())
             self.assertEqual(m["companion"], "Test")
             self.assertEqual(m["expressions"], ["neutral"])
