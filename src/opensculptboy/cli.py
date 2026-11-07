@@ -547,6 +547,8 @@ def _portrait_pack(args, parser) -> int:
         _load_character(
             args.character, parser
         )  # a card that cannot be read is a usage error
+    if args.layers:
+        return _portrait_layers(args, parser)
     try:
         result = render.write_pack(
             args.out,
@@ -585,6 +587,66 @@ def _portrait_pack(args, parser) -> int:
     else:
         _result(
             f"{args.out}: {check['frames']} frames, {check['bytes'] / 2**20:.1f} MiB, "
+            f"check {'passed' if check['pass'] else 'failed'} ({result['seconds']} s)"
+        )
+    for p in check["problems"]:
+        print(f"check failed: {p['code']}: {p['message']}", file=sys.stderr)
+    return 0 if check["pass"] else 1
+
+
+def _portrait_layers(args, parser) -> int:
+    """Write a layered pack (squire.portraits/2): 0 when its check passes, 1 otherwise."""
+    from opensculptboy.portrait_pack import layers, render
+
+    split = lambda v: [x.strip() for x in v.split(",") if x.strip()] if v else None  # noqa: E731
+    if args.scale <= 0 or args.scale > 1:
+        parser.error("--scale takes a number above 0 and at most 1.")
+    if not 1 <= args.quality <= 100:
+        parser.error("--quality takes 1 to 100.")
+    try:
+        result = layers.write_layered_pack(
+            args.out,
+            card=args.character,
+            expressions=render.parse_expressions(args.expressions),
+            poses=split(args.poses),
+            framings=split(args.framings),
+            leap=not args.no_leap,
+            licence=args.licence,
+            companion=args.companion,
+            samples=args.samples,
+            fmt=args.format,
+            quality={"body": args.quality, "face": min(100, args.quality + 2)},
+            scale=args.scale,
+            page=args.page,
+            log=lambda m: print(m, file=sys.stderr),
+            preview=args.preview,
+        )
+    except ValueError as error:
+        parser.error(_one_line(error))
+    except (OSError, render.PortraitError) as error:
+        if args.json:
+            _result(
+                {
+                    "ok": False,
+                    "command": "portrait-pack --layers",
+                    "error": {"code": "render_error", "message": _one_line(error)},
+                }
+            )
+        print(f"error: {_one_line(error)}", file=sys.stderr)
+        return 1
+    check = result["check"]
+    if args.json:
+        _result(
+            {
+                "ok": check["pass"],
+                "command": "portrait-pack --layers",
+                "folder": args.out,
+                **result,
+            }
+        )
+    else:
+        _result(
+            f"{args.out}: {result['files']} files, {check['bytes'] / 2**20:.1f} MiB, "
             f"check {'passed' if check['pass'] else 'failed'} ({result['seconds']} s)"
         )
     for p in check["problems"]:
@@ -1881,6 +1943,47 @@ def main(argv=None) -> int:
     pp.add_argument(
         "--page",
         help="the built viewer page (default: viewer/dist/anny_viewer.html of the repository)",
+    )
+    pp.add_argument(
+        "--layers",
+        action="store_true",
+        help="write a layered pack (squire.portraits/2): body layers per pose and framing, face "
+        "layers, front layers and the leap, in WebP (docs/portrait-pack.md)",
+    )
+    pp.add_argument(
+        "--poses", help="with --layers: comma-separated poses (default: all ten)"
+    )
+    pp.add_argument(
+        "--framings",
+        help="with --layers: comma-separated framings among close, waist, thigh, full (default: all)",
+    )
+    pp.add_argument(
+        "--no-leap",
+        action="store_true",
+        help="with --layers: leave out the leap's frames",
+    )
+    pp.add_argument(
+        "--format",
+        default="webp",
+        choices=("webp", "png"),
+        help="with --layers: the layers' format (default webp)",
+    )
+    pp.add_argument(
+        "--quality",
+        type=int,
+        default=88,
+        help="with --layers: the WebP quality of the body layers (default 88; faces take 2 more)",
+    )
+    pp.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+        help="with --layers: a factor on every framing's pixels per head, for quick trials (default 1)",
+    )
+    pp.add_argument(
+        "--preview",
+        action="store_true",
+        help="with --layers: the body layers alone, to look at the poses",
     )
     pp.add_argument("--json", action="store_true", help="print the result as JSON")
     pp.set_defaults(portrait_parser=pp)
