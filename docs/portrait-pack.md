@@ -121,6 +121,77 @@ The check gives one reason code for each problem:
 
 A full pack of the default character at 768 by 1024 pixels and 4 samples holds 40,993,641 bytes (39.1 MiB) in 91 files: the frames hold from 452,568 to 458,192 bytes each (about 445 KiB). A fitted card with its own textures, rendered at the default size on a graphics card with 16 samples, gave 90 frames of about 940 KB each, 80.6 MiB in all. A textured card therefore needs the 128 MiB limit of the contract. Most of the bytes lie in the hair and the skin, and more samples give smoother pictures that compress a little better.
 
+## The layered pack
+
+A layered pack (`squire.portraits/2`) shows the character posed and at several framings, from a close-up of the head and shoulders to the whole body, for an app that stages the character as the subject of a large window. It holds layers that the app composes: a body for each pose and framing, a face over it, a front where a hand passes before the face, and the key poses of a leap of joy.
+
+```bash
+opensculptboy portrait-pack --layers --out pack/                                     # the default character: 10 poses, 4 framings, 10 expressions, the leap
+opensculptboy portrait-pack --layers --character ada.json --out pack/ --licence CC0-1.0
+opensculptboy portrait-pack --layers --out pack/ --poses at_ease,chin --framings close,thigh --no-leap --scale 0.5 --samples 4   # a quick trial
+opensculptboy portrait-pack --layers --out poses/ --preview --scale 0.5 --samples 4  # the body layers alone, to look at the poses
+opensculptboy portrait-pack --check pack/                                            # the check reads the schema and checks either kind of pack
+```
+
+| Option | Default | What it sets |
+|---|---|---|
+| `--layers` | | write a layered pack |
+| `--poses LIST` | all ten | the poses, comma-separated; `at_ease` is always in |
+| `--framings LIST` | all four | the framings, among `close`, `waist`, `thigh` and `full` |
+| `--no-leap` | | leave out the leap's key poses |
+| `--format` | `webp` | `webp` (lossy colour with lossless alpha) or `png` |
+| `--quality N` | 88 | the WebP quality of the body layers; the faces take 2 more |
+| `--scale F` | 1 | a factor on every framing's pixels per head, at most 1, for trials |
+| `--preview` | | the body layers and the leap alone, with no faces |
+
+### Framings
+
+Each framing has its own scale in pixels per head (the height from the chin to the crown), so that an app with a window of 1440 by 900 pixels at device scale 2 never shows a layer larger than its pixels.
+
+| Framing | For | Pixels per head | The frame |
+|---|---|---|---|
+| `close` | a close-up and a thought | 810 | from the top of the hair or headpiece to 2.2 heads below the crown |
+| `waist` | a medium close-up | 660 | from the highest raised hand to 3.6 heads below the crown |
+| `thigh` | a two-shot and a far, low shot | 330 | from the highest raised hand to 6 heads below the crown |
+| `full` | the whole body and the leap | 160 | from the highest raised hand (the leap's included) to the ground |
+
+The export first renders a small outline of every pose and sets each framing's width from the widest pose at its height. The close framing leaves out the poses with a hand above the head.
+
+### Poses
+
+`opensculptboy.portrait_pack.poses` builds the poses with the posing tools of the pose library (`anny.poses.authoring`): the relaxed stance's legs, the arms placed by two-bone IK on targets around the head and the chest, and the hands curled. Their rotations follow the library's convention, so they fit every body, and the page shows them through `window.portrait.pose`.
+
+| Pose | The body |
+|---|---|
+| `at_ease` | standing straight, the arms down |
+| `relaxed` | the weight on one leg, the shoulders loose |
+| `hands_behind_head` | both hands behind the head, the elbows out |
+| `chin` | one hand under the chin, the other arm across the waist |
+| `scratch_head` | one hand on the side of the head |
+| `arms_crossed` | the arms folded across the chest |
+| `hand_on_chest` | a hand on the chest with a slight bow |
+| `wave` | one hand raised beside the head |
+| `fist` | one fist raised above the head |
+| `cheer` | both hands in the air |
+
+The leap's key poses are `crouch`, `rise`, `peak` and `land`. Every pose of the table keeps the head's turn of `at_ease`; the leap's frames turn the head freely and carry the face of joy.
+
+### How the layers are made
+
+- The camera of a framing follows the head: for each pose it stands where the head lands on the same pixels of the frame, and it looks at the plane through the eyes (the `cz` of `window.portrait.view`). With the head's turn kept, a face rendered in `at_ease` fits every body of the framing.
+- The face layers cover the rectangle of the face that changes between the faces: the export draws each expression's open mouth and closed eyes against the neutral face around the head at one pass and takes the box of the changed pixels with a margin of 0.05 heads, snapped to 8 pixels. It then renders the 90 faces in that rectangle alone (`region`), with 24 more pixels around it that it cuts off again, so the skin's screen-space pass sees the same neighbours as in the whole frame.
+- A front layer holds the pixels of a pose's face rectangle that differ from `at_ease`'s by more than 40 of 255 (a hand), grown by 2 pixels with a soft edge; a pose that changes less than 0.3 % of the rectangle has none.
+- The leap's frames use the full framing's camera of `at_ease`, so the crouch stands lower and the raised hands reach higher in the same frame.
+- The body layers carry the neutral face (mouth closed, eyes open). The lights, the exposure, the long lens and the straight alpha are those of the bust pack.
+
+### The manifest and the check
+
+`manifest.json` holds `schema` (`squire.portraits/2`), `format`, `expressions`, `framings` (each with `frame`, `head` with the anchor `x` and `y` and the crown's and the chin's rows `top` and `chin`, the face rectangle `face`, and the ground's row `ground` for `full`), `poses` (each with its `framings` and the framings of its `front` layers), `leap` (`framing` and `frames`), `extra` (`above` and `width` in heads: what the hair and a headpiece add to the figure), and `generator`, `licence`, `provenance` and the optional `companion` as in the bust pack. `opensculptboy.portrait_pack.layered_contract.check_layered_pack` checks a layered pack with the reason codes of the bust pack's check: the layers' names and sizes against the manifest, WebP with alpha or 8-bit RGBA PNG, at most 600 files, 256 MiB and 4096 pixels a side.
+
+### Size and time
+
+A textured, dressed card renders on a graphics card in about 25 minutes: the body layers take 10 to 25 seconds each at 16 samples (the waist frames are the largest, about 3600 by 3400 pixels), and each face 2 to 3 seconds. The pack holds about 400 files.
+
 ## Tests
 
-`test/test_portrait_pack.py` checks synthetic packs in CI: a valid pack, each broken case with its reason code, the manifest's rules, the faces of every frame, the folder rules and the command's exit codes. Its local tests need Playwright with the built page: the default character's full pack (90 frames at 288 by 384 pixels with one pass each, about 30 minutes in software) passes the check, the outline of the figure stays within one pixel in every frame apart from the face, the mouth differs between `closed`, `half` and `open` and the eyes between `open`, `half` and `closed` for each expression, the half-open eyes of every expression leave 45 to 55 % of the open eyes' opening, and `--expressions neutral` gives a valid pack of nine frames. `OPENSCULPTBOY_PORTRAIT_PACK=FOLDER` checks a pack of the default character that was rendered before, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable for Playwright.
+`test/test_portrait_layers.py` checks synthetic layered packs, the framings, the front layer's mask and the poses on the authoring rig in CI, and renders the default character's layered pack at a fifth of its scale locally. `test/test_portrait_pack.py` checks synthetic packs in CI: a valid pack, each broken case with its reason code, the manifest's rules, the faces of every frame, the folder rules and the command's exit codes. Its local tests need Playwright with the built page: the default character's full pack (90 frames at 288 by 384 pixels with one pass each, about 30 minutes in software) passes the check, the outline of the figure stays within one pixel in every frame apart from the face, the mouth differs between `closed`, `half` and `open` and the eyes between `open`, `half` and `closed` for each expression, the half-open eyes of every expression leave 45 to 55 % of the open eyes' opening, and `--expressions neutral` gives a valid pack of nine frames. `OPENSCULPTBOY_PORTRAIT_PACK=FOLDER` checks a pack of the default character that was rendered before, and `OPENSCULPTBOY_CHROMIUM` names a Chromium executable for Playwright.
