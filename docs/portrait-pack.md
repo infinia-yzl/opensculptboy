@@ -156,7 +156,7 @@ Each framing has its own scale in pixels per head (the height from the chin to t
 | `close` | a close-up and a thought | 810 | from the top of the hair or headpiece to 2.2 heads below the crown |
 | `waist` | a medium close-up | 660 | from the highest raised hand to 3.6 heads below the crown |
 | `thigh` | a two-shot and a far, low shot | 330 | from the highest raised hand to 6 heads below the crown |
-| `full` | the whole body and the leap | 160 | from the highest raised hand (the leap's included) to the ground |
+| `full` | the whole body and the leap | 230 | from the highest raised hand (the leap's included) to the ground; the stage pushes in at the top of the leap until the figure takes 90 % of the height, which asks for about 210 |
 | `thought` | the thought (`chin`) | 810 | as `close` |
 | `stern` | the square-on stern close-up (`at_ease`, `arms_crossed`; the main faces `neutral` and `stern`) | 810 | as `close` |
 | `low` | the low, far shot of sadness (`downcast`) | 330 | from the top of the head to 6.8 heads below the crown |

@@ -56,12 +56,13 @@ from opensculptboy.portrait_pack.render import (
 # framings of their own (``thought``, ``stern`` and ``low``), which need the shots' cameras.
 # The scales cover a window of 1440 x 900 pixels at device scale 2: a close-up with the face at
 # 45 % of the height asks for about 810 pixels per head, a medium close-up at 120 % about 655,
-# a two-shot at 100 % about 320 and the full shot about 150.
+# a two-shot at 100 % about 320, and the full shot about 150 at rest and about 210 at the top of
+# the leap, where the stage pushes in until the figure takes 90 % of the height.
 FRAMINGS = {
     "close": dict(scale=810, above=0.5, below=2.2, hands=False),
     "waist": dict(scale=660, above=0.5, below=3.6, hands=True),
     "thigh": dict(scale=330, above=0.5, below=6.0, hands=True),
-    "full": dict(scale=160, above=0.5, below=None, hands=True),
+    "full": dict(scale=230, above=0.5, below=None, hands=True),
     "thought": dict(scale=810, above=0.5, below=2.2, hands=False),
     "stern": dict(scale=810, above=0.5, below=2.2, hands=False),
     "low": dict(scale=330, above=0.5, below=6.8, hands=True),
