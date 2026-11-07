@@ -30,6 +30,7 @@ import unittest
 import numpy as np
 
 from test.markers import local_only
+from test.test_pose_edit_stages_page import click, quiet
 from test.test_viewer_starters import (
     DROP,
     open_tab,
@@ -52,6 +53,10 @@ PANEL = """() => { const sc = document.querySelector('#insp-left .insp-scroll');
   const at = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
   return { scroll: [s.top, s.bottom], foot: [f.top, f.bottom], row: [r.top, r.bottom], hit: !!at && last.contains(at),
     inFoot: !!at && !!at.closest('.pe-foot'), rows: rows.length }; }"""
+
+
+def xy(s):
+    return (s["x"], s["y"])
 
 
 def report(tab):
@@ -115,9 +120,7 @@ class TestFigureAndScan(unittest.TestCase):
                 " return s.on && s.scan.available && !s.scan.loading; }",
                 timeout=120000,
             )
-            not_now = tab.get_by_role("button", name="Not now")
-            if not_now.count() and not_now.first.is_visible():
-                not_now.first.click()
+            quiet(tab)
             tab.evaluate("() => window.__poseEdit.placeAll()")
             tab.wait_for_function(
                 "() => window.poseEditReport().state.counts.placed > 0", timeout=120000
@@ -134,16 +137,12 @@ class TestFigureAndScan(unittest.TestCase):
             elbow_at = (
                 "() => window.__studio.project(window.__studio.joint('lowerarm01.L'))"
             )
-            sword = tab.evaluate(sword_at)
-            tab.mouse.click(sword["x"], sword["y"])
-            settle(tab)
+            click(tab, lambda: xy(tab.evaluate(sword_at)))
             self.assertEqual(report(tab)["state"]["prop"], "statue/sword")
             tab.evaluate("() => window.__poseEdit.selectProp(null)")
             press_in_view(tab, "2")
             settle(tab)
-            elbow = tab.evaluate(elbow_at)
-            tab.mouse.click(elbow["x"], elbow["y"])
-            settle(tab)
+            click(tab, lambda: xy(tab.evaluate(elbow_at)))
             self.assertIsNotNone(report(tab)["state"]["joint"])
             tab.evaluate("() => window.__poseEdit.selectJoint(null)")
             press_in_view(tab, "1")
@@ -202,8 +201,10 @@ class TestFigureAndScan(unittest.TestCase):
             )
             self.assertNotIn('"figure"', card)
 
-            # a point placed on the scan is picked; a joint and a prop under the pointer are not
+            # a point placed on the scan is picked; a joint and a prop under the pointer are not. The points
+            # shown are the stage's that the placement left open, and a wrist among them is a point of its own
             r = report(tab)
+            self.assertGreater(r["state"]["stage"], 1, "Place points leaves stage 1")
             name, pt = next(
                 (k, v)
                 for k, v in r["points"].items()
@@ -212,19 +213,14 @@ class TestFigureAndScan(unittest.TestCase):
                 and v["screen"]
                 and 200 < v["screen"]["x"] < 1400
             )
-            tab.mouse.click(pt["screen"]["x"], pt["screen"]["y"])
-            settle(tab)
+            click(tab, lambda: xy(report(tab)["points"][name]["screen"]))
             self.assertEqual(report(tab)["state"]["selected"], name)
             press_in_view(tab, "Escape")
-            sword = tab.evaluate(sword_at)
-            tab.mouse.click(sword["x"], sword["y"])
-            settle(tab)
+            click(tab, lambda: xy(tab.evaluate(sword_at)))
             self.assertIsNone(report(tab)["state"]["prop"])
             press_in_view(tab, "2")
             settle(tab)
-            elbow = tab.evaluate(elbow_at)
-            tab.mouse.click(elbow["x"], elbow["y"])
-            settle(tab)
+            click(tab, lambda: xy(tab.evaluate(elbow_at)))
             self.assertIsNone(report(tab)["state"]["joint"])
             press_in_view(tab, "1")
 

@@ -110,19 +110,30 @@ def quiet(tab):
 ON_VIEW = "(a) => { const e = document.elementFromPoint(a[0], a[1]); return e ? (e.id || e.tagName) : null; }"
 
 
-def drag(tab, start, end, steps=24):
-    """A drag with the mouse from start() to end() (client pixels), both read once the view has settled
-    and nothing stands over the view at the start."""
+def clear_press(tab, where):
+    """The place where() (client pixels), read once the view has settled and nothing stands over it."""
     for _ in range(3):
         quiet(tab)
         settle(tab, 6)
-        a = start()
+        a = where()
         if tab.evaluate(ON_VIEW, list(a)) == "c":
-            break
-    else:
-        raise AssertionError(
-            f"the press at {a} meets {tab.evaluate(ON_VIEW, list(a))}, not the view"
-        )
+            return a
+    raise AssertionError(
+        f"the press at {a} meets {tab.evaluate(ON_VIEW, list(a))}, not the view"
+    )
+
+
+def click(tab, where):
+    """A click with the mouse at where(), once the view has settled and nothing stands over it."""
+    a = clear_press(tab, where)
+    tab.mouse.click(a[0], a[1])
+    settle(tab)
+
+
+def drag(tab, start, end, steps=24):
+    """A drag with the mouse from start() to end() (client pixels), both read once the view has settled
+    and nothing stands over the view at the start."""
+    a = clear_press(tab, start)
     b = end()
     tab.mouse.move(a[0], a[1])
     tab.mouse.down()
@@ -237,6 +248,15 @@ class TestPointStagesPage(unittest.TestCase):
             self.assertEqual(r["state"]["counts"]["total"], 5)
             self.assertIn("Stage 2 of 4", panel.inner_text())
             self.assertEqual(tab.locator(".body-map .map-point").count(), 5)
+            # a click on a wrist selects it, and the panel keeps the stage's body map
+            click(tab, lambda: point_at(tab, "wrist.R"))
+            r = report(tab)
+            self.assertEqual(r["state"]["selected"], "wrist.R")
+            self.assertIsNone(r["state"]["hand"])
+            self.assertIn("Stage 2 of 4", panel.inner_text())
+            tab.evaluate("() => window.__poseEdit.select(null)")
+            settle(tab)
+            r = report(tab)
             pelvis = r["figure"]["pelvis"]
             still = {
                 n: r["points"][n]["anny"] for n in ("knee.L", "wrist.R", "head_top")
@@ -324,6 +344,23 @@ class TestPointStagesPage(unittest.TestCase):
             looks = r["state"]["counts"]["look"]
             self.assertEqual(looks, len(r["state"]["looks"]))
             shot("stage3_placed")
+            # with the figure hidden, a placed point of the stage shown is still picked by a click
+            tab.evaluate("() => window.__poseEdit.setFigure(false)")
+            settle(tab)
+            r = report(tab)
+            name = next(
+                n
+                for n in ("wrist.L", "elbow.L", "knee.L", "head_top")
+                if r["points"][n]["target"] is not None
+                and r["points"][n]["visible"]
+                and r["points"][n]["screen"]
+            )
+            click(tab, lambda: point_at(tab, name))
+            self.assertEqual(report(tab)["state"]["selected"], name)
+            tab.evaluate(
+                "() => { window.__poseEdit.select(null); window.__poseEdit.setFigure(true); }"
+            )
+            settle(tab)
 
             # ---------------------------------------------------------- back, and a session reopened
             tab.locator(".pe-stage[data-stage='1']").click()
