@@ -112,6 +112,27 @@ POINTS = ("eyes", "crown", "chin")
 FORMATS = ("webp", "png")
 
 
+def layer_ok(path: pathlib.Path, size) -> bool:
+    """A layer file that an earlier run finished: it decodes whole, with alpha, at ``size``
+    (width, height)."""
+    from PIL import Image
+
+    try:
+        with Image.open(path) as img:
+            img.load()
+            return img.size == tuple(size) and "A" in img.getbands()
+    except (OSError, ValueError, SyntaxError):
+        return False
+
+
+def load_layer(path: pathlib.Path) -> np.ndarray:
+    """A layer file as RGBA bytes."""
+    from PIL import Image
+
+    with Image.open(path) as img:
+        return np.asarray(img.convert("RGBA"))
+
+
 def save_layer(path: pathlib.Path, rgba: np.ndarray, quality: int | None) -> None:
     """One layer: lossy WebP with alpha kept losslessly at ``quality``, or lossless PNG when
     ``quality`` is None."""
@@ -654,6 +675,12 @@ class Lit:
         stored = np.asarray(Image.open(folder / f"{stem}.webp").convert("RGBA"))
         self.repro.add(kind, rgba, summed, stored)
 
+    def have(self, folder, stem, size) -> bool:
+        """Every pass file of a layer decodes whole at its size (True without passes)."""
+        return all(
+            layer_ok(folder / f"{stem}.{name}.webp", size) for name in self.passes
+        )
+
     def manifest_passes(self) -> list:
         return [
             {"name": n, "scale": round(self.scales.get(n, 1.0), 5)} for n in self.passes
@@ -692,6 +719,7 @@ def write_layered_pack(
     passes=None,
     light_rig: str | None = None,
     pass_quality: int | None = None,
+    resume: bool = False,
 ) -> dict:
     """
     Render the layered portrait pack of a character card (None for the default character) into
@@ -706,8 +734,11 @@ def write_layered_pack(
     :data:`opensculptboy.portrait_pack.light.PASS_SETS`) adds the light passes of every layer, lit by
     ``light_rig`` (:data:`opensculptboy.portrait_pack.light.RIGS`; the stage's rig with passes, the
     page's own preset without), each stored at ``pass_quality`` (the layer's quality and 4 more by
-    default). Returns the manifest, the check's report, the time taken and, with passes, how closely
-    the passes' sum reproduces each layer (``light``).
+    default). With ``resume``, the folder may hold an unfinished pack of the same settings: each
+    layer whose file and pass files decode whole at their size is kept (the first body layer is
+    rendered again, since its passes set the scales), and the rest is rendered. Returns the
+    manifest, the check's report, the time taken and, with passes, how closely the passes' sum
+    reproduces each layer (``light``).
     """
     from opensculptboy.portrait_pack import shared_poses
     from opensculptboy.portrait_pack import shots as shot_specs
@@ -801,7 +832,8 @@ def write_layered_pack(
         why = text_problem(value)
         if why or not 1 <= len(value) <= C.TEXT_LIMITS[key]:
             raise ValueError(f"The {key} {why or 'is too long'}.")
-    folder = prepare_layered_folder(out)
+    folder = prepare_layered_folder(out, keep=resume)
+    kept = {"layers": 0}
     ext = "." + fmt
     q_body = quality["body"] if fmt == "webp" else None
     q_face = quality["face"] if fmt == "webp" else None
@@ -831,6 +863,14 @@ def write_layered_pack(
         humanoid = shared_poses.bone_map()
         joint_names = [n for n in LC.JOINT_NAMES if n in humanoid or n in POINTS]
         page_names = [n if n in POINTS else humanoid[n] for n in joint_names]
+
+        def done(stem: str, size) -> bool:
+            """With resume: the layer and its passes are already in the folder."""
+            return (
+                resume
+                and layer_ok(folder / f"{stem}{ext}", size)
+                and lit.have(folder, stem, size)
+            )
 
         def joints_now() -> list:
             """The joints of the picture just rendered, in its pixels: x, y for each name."""
@@ -1011,6 +1051,11 @@ def write_layered_pack(
             for x, mouth, eyes, actions in faces:
                 if x not in xs:
                     continue
+                if done(
+                    f"face.{stem}.{x}.{mouth}.{eyes}", (face["width"], face["height"])
+                ):
+                    kept["layers"] += 1
+                    continue
                 rgba = render({**view, "region": reg}, actions, samples)
                 ox, oy = face["x"] - px0, face["y"] - py0
                 patch = rgba[oy : oy + face["height"], ox : ox + face["width"]].copy()
@@ -1074,20 +1119,30 @@ def write_layered_pack(
             for pose in poses_of[name]:
                 t = time.time()
                 show(pose)
-                rgba = render(framer.view(name, pose), neutral, samples)
-                save_layer(folder / f"body.{pose}.{name}{ext}", rgba, q_body)
-                written += 1
+                view = framer.view(name, pose)
+                body_passes = None
+                # the first body layer's passes set the pack's scales, so it is rendered again
+                if done(f"body.{pose}.{name}", (g["width"], g["height"])) and (
+                    not lit.on or lit.scales
+                ):
+                    pp.tab.evaluate("(v) => window.portrait.view(v)", view)
+                    rgba = load_layer(folder / f"body.{pose}.{name}{ext}")
+                    kept["layers"] += 1
+                else:
+                    rgba = render(view, neutral, samples)
+                    save_layer(folder / f"body.{pose}.{name}{ext}", rgba, q_body)
+                    written += 1
+                    body_passes = lit.layer(
+                        folder,
+                        f"body.{pose}.{name}",
+                        "body",
+                        view,
+                        neutral,
+                        samples,
+                        rgba,
+                        face=face if face is not None else None,
+                    )
                 body_joints.setdefault(pose, {})[name] = joints_now()
-                body_passes = lit.layer(
-                    folder,
-                    f"body.{pose}.{name}",
-                    "body",
-                    framer.view(name, pose),
-                    neutral,
-                    samples,
-                    rgba,
-                    face=face if face is not None else None,
-                )
                 manifest_poses[pose]["framings"].append(name)
                 if face is not None and pose not in own:
                     crop = rgba[
@@ -1096,8 +1151,16 @@ def write_layered_pack(
                     ].copy()
                     if pose == stage_poses.HEAD_POSE:
                         base_crop = crop
+                    elif base_crop is not None and done(
+                        f"front.{pose}.{name}", (face["width"], face["height"])
+                    ):
+                        kept["layers"] += 1
+                        manifest_poses[pose]["front"].append(name)
                     elif base_crop is not None:
                         m = front_mask(crop, base_crop, mask)
+                        if m is not None and body_passes is None and lit.on:
+                            # a kept body layer: its passes again, for the front's
+                            body_passes = lit.render(view, neutral, samples)
                         if m is not None:
                             front = crop.copy()
                             front[..., 3] = (
@@ -1153,9 +1216,16 @@ def write_layered_pack(
         leap_keys = []
         if leap and "full" in framings:
             view = framer.view("full", stage_poses.HEAD_POSE)
+            g_full = framer.geo["full"]
             for key in stage_poses.LEAP:
                 show(key)
                 mouth = "open" if key in ("rise", "peak") else "half"
+                if done(f"leap.{key}", (g_full["width"], g_full["height"])):
+                    pp.tab.evaluate("(v) => window.portrait.view(v)", view)
+                    leap_joints[key] = joints_now()
+                    leap_keys.append(key)
+                    kept["layers"] += 1
+                    continue
                 rgba = render(
                     view,
                     frame_actions(
@@ -1243,6 +1313,7 @@ def write_layered_pack(
         "renderer": renderer,
         "half_blinks": halves,
         "files": written + 1 + lit.files,
+        **({"kept": kept["layers"]} if resume else {}),
         **({"light": lit.result()} if lit.on else {}),
     }
 
@@ -1262,9 +1333,9 @@ def manifest_text(manifest: dict) -> str:
     )
 
 
-def prepare_layered_folder(out) -> pathlib.Path:
-    """The pack's folder, emptied of a previous layered pack; refuses a folder that holds
-    anything else."""
+def prepare_layered_folder(out, keep: bool = False) -> pathlib.Path:
+    """The pack's folder, emptied of a previous layered pack (kept with ``keep``, for a run that
+    resumes it); refuses a folder that holds anything else."""
     out = pathlib.Path(out)
     if out.exists() and not out.is_dir():
         raise ValueError(f"{out} is a file; name a folder for the pack.")
@@ -1278,6 +1349,7 @@ def prepare_layered_folder(out) -> pathlib.Path:
                     "name an empty folder or a previous pack."
                 )
         for p in out.iterdir():
-            p.unlink()
+            if not keep:
+                p.unlink()
     out.mkdir(parents=True, exist_ok=True)
     return out

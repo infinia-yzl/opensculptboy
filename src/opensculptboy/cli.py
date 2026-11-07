@@ -549,8 +549,10 @@ def _portrait_pack(args, parser) -> int:
         )  # a card that cannot be read is a usage error
     if args.layers:
         return _portrait_layers(args, parser)
-    if args.passes or args.light_rig or args.pass_quality is not None:
-        parser.error("--passes, --light-rig and --pass-quality take --layers.")
+    if args.passes or args.light_rig or args.pass_quality is not None or args.resume:
+        parser.error(
+            "--passes, --light-rig, --pass-quality and --resume take --layers."
+        )
     try:
         result = render.write_pack(
             args.out,
@@ -629,6 +631,7 @@ def _portrait_layers(args, parser) -> int:
             passes=light.parse_passes(args.passes),
             light_rig=args.light_rig,
             pass_quality=args.pass_quality,
+            resume=args.resume,
         )
     except ValueError as error:
         parser.error(_one_line(error))
@@ -2021,6 +2024,12 @@ def main(argv=None) -> int:
         "--pass-quality",
         type=int,
         help="with --passes: the WebP quality of the pass files (default: the layer's and 4 more)",
+    )
+    pp.add_argument(
+        "--resume",
+        action="store_true",
+        help="with --layers: continue a pack an earlier run left unfinished in --out: every layer "
+        "whose file and pass files already decode at their size is kept, and the rest is rendered",
     )
     pp.add_argument("--json", action="store_true", help="print the result as JSON")
     pp.set_defaults(portrait_parser=pp)
