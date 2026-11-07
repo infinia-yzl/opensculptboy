@@ -66,7 +66,7 @@ void main() {
 
 export const GARMENT_FS = /* glsl */`
 ${GLSL_COMMON}
-uniform vec4 uBase; uniform float uMetal; uniform float uRough; uniform vec3 uEmissive; uniform float uCutoff; uniform float uNormalScale;
+uniform vec4 uBase; uniform float uMetal; uniform float uRough; uniform vec3 uEmissive; uniform float uCutoff; uniform float uNormalScale; uniform float uEmit;
 uniform sampler2D uMap; uniform sampler2D uMR; uniform sampler2D uNormalMap; uniform sampler2D uAO; uniform sampler2D uEmissiveMap;
 varying vec3 vWPos; varying vec3 vN; varying vec2 vUv; varying vec4 vT;
 #ifdef HAS_VCOLOR
@@ -119,6 +119,6 @@ void main() {
 #ifdef HAS_EMISSIVE_MAP
   em *= texture(uEmissiveMap, vUv).rgb;
 #endif
-  col += em;
+  col += em * uEmit;
   gl_FragColor = vec4(min(col, vec3(64.0)), 1.0);
 }`;

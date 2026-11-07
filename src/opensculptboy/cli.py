@@ -549,6 +549,8 @@ def _portrait_pack(args, parser) -> int:
         )  # a card that cannot be read is a usage error
     if args.layers:
         return _portrait_layers(args, parser)
+    if args.passes or args.light_rig or args.pass_quality is not None:
+        parser.error("--passes, --light-rig and --pass-quality take --layers.")
     try:
         result = render.write_pack(
             args.out,
@@ -596,13 +598,15 @@ def _portrait_pack(args, parser) -> int:
 
 def _portrait_layers(args, parser) -> int:
     """Write a layered pack (squire.portraits/2): 0 when its check passes, 1 otherwise."""
-    from opensculptboy.portrait_pack import layers, render
+    from opensculptboy.portrait_pack import layers, light, render
 
     split = lambda v: [x.strip() for x in v.split(",") if x.strip()] if v else None  # noqa: E731
     if args.scale <= 0 or args.scale > 1:
         parser.error("--scale takes a number above 0 and at most 1.")
     if not 1 <= args.quality <= 100:
         parser.error("--quality takes 1 to 100.")
+    if args.pass_quality is not None and not 1 <= args.pass_quality <= 100:
+        parser.error("--pass-quality takes 1 to 100.")
     try:
         result = layers.write_layered_pack(
             args.out,
@@ -622,6 +626,9 @@ def _portrait_layers(args, parser) -> int:
             preview=args.preview,
             poses_file=args.poses_file,
             shots_file=args.shots_file,
+            passes=light.parse_passes(args.passes),
+            light_rig=args.light_rig,
+            pass_quality=args.pass_quality,
         )
     except ValueError as error:
         parser.error(_one_line(error))
@@ -1997,6 +2004,23 @@ def main(argv=None) -> int:
         "--shots-file",
         help="with --layers: the stage's shots (squire.shots/1): each framing renders "
         "through the camera of the shot it serves",
+    )
+    pp.add_argument(
+        "--passes",
+        help="with --layers: the light passes of every layer, for a stage that relights the stills: "
+        "key,fill,rim or base,rim (the key and the fill in one pass), each in linear light "
+        "(docs/portrait-pack.md)",
+    )
+    pp.add_argument(
+        "--light-rig",
+        choices=("studio", "stage"),
+        help="with --layers: the lights: the page's studio preset, or the stage's rig with "
+        "the key from the open side (default: stage with --passes, else the page's own preset)",
+    )
+    pp.add_argument(
+        "--pass-quality",
+        type=int,
+        help="with --passes: the WebP quality of the pass files (default: the layer's and 4 more)",
     )
     pp.add_argument("--json", action="store_true", help="print the result as JSON")
     pp.set_defaults(portrait_parser=pp)
