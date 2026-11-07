@@ -11,7 +11,8 @@ library's convention (each bone at rest along the world axes, a rotation relativ
 parent), so they fit every body as the library's poses do, and the web viewer takes them as
 they are (``window.portrait.pose``).
 
-The head keeps one turn in the world in every pose of :data:`POSES`: the turn of ``at_ease``.
+The head and the neck keep their turns in the world in every pose of :data:`POSES`: those of
+``at_ease``.
 The pack's face layers are then rendered once for each framing and fit every pose of that
 framing, since the camera of a framing follows the head (``opensculptboy.portrait_pack.layers``).
 The frames of the leap (:data:`LEAP`) turn the head freely and carry their own face.
@@ -356,10 +357,17 @@ BUILDERS = dict(
 )
 
 
-def _lock_head(p, head_world):
-    """Give the head this turn in the world; the neck keeps its own."""
+# The bones that keep their turn in the world: the neck carries the skin of the jaw and the
+# throat, so the neck turns with the head, and the lower face then matches in every pose.
+LOCKED = ("neck01", "neck02", "neck03", "head")
+
+
+def _lock_head(p, reference):
+    """Give the neck and the head the turns in the world of the pose ``reference``."""
     P, _, _ = _tools()
-    P.set_world_rot(p, "head", head_world)
+    ref = P.fk(reference)[0]
+    for bone in LOCKED:
+        P.set_world_rot(p, bone, ref[P.IDX[bone]])
 
 
 @functools.lru_cache(maxsize=None)
@@ -371,7 +379,7 @@ def built(name: str):
         raise KeyError(f"Unknown pose {name!r}; the poses are {list(BUILDERS)}.")
     p = BUILDERS[name]()
     if name in POSES and name != HEAD_POSE:
-        _lock_head(p, P.fk(built(HEAD_POSE))[0][P.IDX["head"]])
+        _lock_head(p, built(HEAD_POSE))
     return p
 
 

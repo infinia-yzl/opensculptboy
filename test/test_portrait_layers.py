@@ -350,10 +350,14 @@ class TestStagePoses(unittest.TestCase):
         return self.P.fk(stage_poses.built(name))
 
     def test_head_kept(self):
-        ref = stage_poses.head_turn(stage_poses.HEAD_POSE)
+        ref = self.world(stage_poses.HEAD_POSE)[0]
         for name in stage_poses.POSES:
-            with self.subTest(pose=name):
-                np.testing.assert_allclose(stage_poses.head_turn(name), ref, atol=1e-6)
+            for bone in stage_poses.LOCKED:
+                with self.subTest(pose=name, bone=bone):
+                    i = self.P.IDX[bone]
+                    np.testing.assert_allclose(
+                        self.world(name)[0][i], ref[i], atol=1e-6
+                    )
 
     def test_hands(self):
         P = self.P
