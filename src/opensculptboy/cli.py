@@ -15,6 +15,8 @@ The ``opensculptboy`` command.
     opensculptboy bake-tiers me.json                 # the normal maps of the cheaper tiers
     opensculptboy export me_low.vrm --character me.json --tier low --author "Me"
     opensculptboy portraits --character me.json --out avatars/   # a portrait, five expressions
+    opensculptboy portrait-pack --character me.json --out pack/ --licence CC-BY-4.0   # 90 frames
+    opensculptboy portrait-pack --check pack/          # check a portrait pack (squire.portraits/1)
     opensculptboy viewer build                       # the web viewer (python -m anny.viewer build)
     opensculptboy export me.glb --character me.json --outfit travel --hide cape   # an outfit
     opensculptboy export me_wardrobe.glb --character me.json --wardrobe   # every piece a node
@@ -481,6 +483,113 @@ def _portraits(args, parser) -> int:
     )
     _result(written)
     return 0
+
+
+def _portrait_pack(args, parser) -> int:
+    """Write a pack (0 when its check passes, 1 when it fails), or check one with --check (0
+    pass, 1 fail, 2 error)."""
+    from opensculptboy.portrait_pack import contract
+
+    if args.check is not None:
+        if args.out or args.character:
+            parser.error(
+                "--check takes a pack folder alone; leave out --out and --character."
+            )
+        try:
+            report = contract.check_pack(args.check)
+        except OSError as error:
+            if args.json:
+                _result(
+                    {
+                        "ok": False,
+                        "command": "portrait-pack --check",
+                        "error": {"code": "file_error", "message": _one_line(error)},
+                    }
+                )
+            print(f"error: {_one_line(error)}", file=sys.stderr)
+            return 2
+        if args.json:
+            _result(
+                {
+                    "ok": True,
+                    "command": "portrait-pack --check",
+                    "folder": args.check,
+                    **report,
+                }
+            )
+        else:
+            lines = [f"{p['code']}: {p['message']}" for p in report["problems"]]
+            verdict = "pass" if report["pass"] else "fail"
+            _result(
+                "\n".join(
+                    [
+                        f"{args.check}: {verdict}, {report['frames']} frames, {report['bytes']} bytes",
+                        *lines,
+                    ]
+                )
+            )
+        return 0 if report["pass"] else 1
+
+    from opensculptboy.portrait_pack import render
+
+    if not args.out:
+        parser.error(
+            "name the pack's folder with --out, or check a pack with --check FOLDER."
+        )
+    try:
+        size = render.parse_size(args.size)
+        expressions = render.parse_expressions(args.expressions)
+    except ValueError as error:
+        parser.error(_one_line(error))
+    if args.samples < 1:
+        parser.error("--samples takes 1 or more.")
+    if args.character:
+        _load_character(
+            args.character, parser
+        )  # a card that cannot be read is a usage error
+    try:
+        result = render.write_pack(
+            args.out,
+            card=args.character,
+            size=size,
+            expressions=expressions,
+            licence=args.licence,
+            companion=args.companion,
+            samples=args.samples,
+            page=args.page,
+            log=lambda m: print(m, file=sys.stderr),
+        )
+    except ValueError as error:
+        parser.error(_one_line(error))
+    except (OSError, render.PortraitError) as error:
+        if args.json:
+            _result(
+                {
+                    "ok": False,
+                    "command": "portrait-pack",
+                    "error": {"code": "render_error", "message": _one_line(error)},
+                }
+            )
+        print(f"error: {_one_line(error)}", file=sys.stderr)
+        return 1
+    check = result["check"]
+    if args.json:
+        _result(
+            {
+                "ok": check["pass"],
+                "command": "portrait-pack",
+                "folder": args.out,
+                **result,
+            }
+        )
+    else:
+        _result(
+            f"{args.out}: {check['frames']} frames, {check['bytes'] / 2**20:.1f} MiB, "
+            f"check {'passed' if check['pass'] else 'failed'} ({result['seconds']} s)"
+        )
+    for p in check["problems"]:
+        print(f"check failed: {p['code']}: {p['message']}", file=sys.stderr)
+    return 0 if check["pass"] else 1
 
 
 def _pose(args) -> int:
@@ -1729,6 +1838,53 @@ def main(argv=None) -> int:
         "--size", type=int, default=512, help="side of each expression (default 512)"
     )
 
+    pp = sub.add_parser(
+        "portrait-pack",
+        help="render a portrait pack (squire.portraits/1) with the web viewer, or check one",
+        description="Render the character with the web viewer's page in headless Chromium into "
+        "a portrait pack: one flat folder with manifest.json and one PNG per frame, named "
+        "<expression>.<mouth>.<eyes>.png (10 expressions, 3 mouths, 3 eyes: 90 frames), for an "
+        "app that shows the character as a 2D portrait that talks and blinks. With --check, "
+        "check a pack folder against the contract instead (exit 0 pass, 1 fail, 2 error). "
+        "Rendering needs the portrait extra (Playwright and its Chromium) and the built page.",
+    )
+    pp.add_argument(
+        "--character", help="a character card (JSON); the default character"
+    )
+    pp.add_argument("--out", help="the pack's folder: empty, new, or a previous pack")
+    pp.add_argument(
+        "--check", metavar="FOLDER", help="check this pack folder and write nothing"
+    )
+    pp.add_argument(
+        "--size",
+        default="768x1024",
+        help="frame size WIDTHxHEIGHT, each side up to 1024 (default 768x1024)",
+    )
+    pp.add_argument(
+        "--expressions",
+        help="comma-separated expressions to render (default: all ten; neutral is always in)",
+    )
+    pp.add_argument(
+        "--licence",
+        help="the licence of the images (required for a card; the default character has its own)",
+    )
+    pp.add_argument(
+        "--companion",
+        help="the character's name in the manifest (default: the card's name)",
+    )
+    pp.add_argument(
+        "--samples",
+        type=int,
+        default=16,
+        help="accumulated passes per frame (default 16; fewer render faster without a graphics card)",
+    )
+    pp.add_argument(
+        "--page",
+        help="the built viewer page (default: viewer/dist/anny_viewer.html of the repository)",
+    )
+    pp.add_argument("--json", action="store_true", help="print the result as JSON")
+    pp.set_defaults(portrait_parser=pp)
+
     wear = sub.add_parser(
         "wearables",
         help="list and change a card's outfits, bind a garment, import MakeHuman clothes, "
@@ -2150,6 +2306,8 @@ def _run(args, e, wear, f, b, c, t, q) -> int:
         return _bake_tiers(args, t)
     if args.command == "portraits":
         return _portraits(args, q)
+    if args.command == "portrait-pack":
+        return _portrait_pack(args, args.portrait_parser)
     if args.command == "viewer":
         from anny.viewer.__main__ import main as viewer_main
 

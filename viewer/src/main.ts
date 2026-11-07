@@ -3592,6 +3592,120 @@ const SHEET_HOST = {
   characterName: () => (WEAR?.loaded ? WEAR.cardName : '') || (currentLook.name && currentLook.name !== 'Custom' ? currentLook.name : '') || 'Character',
 };
 
+// ------------------------------------------------------------------ the portrait pack
+// The portrait pack (opensculptboy.portrait_pack, docs/portrait-pack.md) drives window.portrait from headless Chromium.
+// It renders through the sheet's machinery: the sheet's hold (the hair at rest, no blink timer, the clip paused), the
+// page's lights and exposure, the sheet's camera in front of the figure, and the sheet's display pass, which divides
+// the accumulated colour by the coverage, so the pixels come out with straight alpha on a transparent background. The
+// camera, the lights and the pose stay the same for every frame; only the face changes.
+// The bust in heads (the height from the chin to the crown): the frame's top lies this far above the crown, and the
+// frame is this many heads high, so the bottom edge cuts the figure across the upper chest.
+const PORTRAIT_BUST = { above: 0.3, height: 2.5 };
+const PORTRAIT: any = { view: null, eyes: null };
+function portraitView(width: number, height: number) {
+  const f = SHEET_HOST.figure(), H = f.crown[1] - f.chin[1];
+  const top = f.crown[1] + PORTRAIT_BUST.above * H, halfH = PORTRAIT_BUST.height * H / 2;
+  return { turn: 0, cx: f.head[0], cy: top - halfH, halfH, width, height };
+}
+// the point between the eyes (the middle of the eye bones' heads, else the face), projected by the camera: pixels from
+// the frame's top-left corner
+function portraitAnchor(view: any) {
+  const eyes = FIG.joints.filter((j: any) => j.name === 'eye.L' || j.name === 'eye.R');
+  const p = eyes.length === 2 ? eyes[0].p.clone().add(eyes[1].p).multiplyScalar(0.5) : FIG.head.clone();
+  const n = p.project(sheetCamera(view));
+  return { x: (n.x + 1) / 2 * view.width, y: (1 - n.y) / 2 * view.height };
+}
+function portraitBase64(d: Uint8ClampedArray) {
+  let s = '';
+  for (let i = 0; i < d.length; i += 0x8000) s += String.fromCharCode.apply(null, Array.from(d.subarray(i, i + 0x8000)));
+  return btoa(s);
+}
+// The open eye for the half-open frames: how much of each eyeball the camera sees, in a small picture of the eyes from
+// the front drawn twice, with the eyeballs and without them. The pixels that differ show the eyeball between the
+// lids and the lashes; their count in the columns through the middle of each eye measures the eye's opening, on a
+// card's own lids, eye targets and lashes as well as on Anny's.
+const PORTRAIT_EYES = { width: 384, height: 96, spans: 2.6, columns: 2, threshold: 12 };
+function portraitEyeView() {
+  const eyes = ['eye.L', 'eye.R'].map((n) => FIG.joints.find((j: any) => j.name === n));
+  if (!eyes[0] || !eyes[1]) throw new Error('The figure has no eye bones.');
+  const L = eyes[0].p, R = eyes[1].p, w = PORTRAIT_EYES.spans * Math.abs(L.x - R.x);
+  const view = { turn: 0, cx: (L.x + R.x) / 2, cy: (L.y + R.y) / 2, halfH: w * PORTRAIT_EYES.height / PORTRAIT_EYES.width / 2, width: PORTRAIT_EYES.width, height: PORTRAIT_EYES.height };
+  const cam = sheetCamera(view), col = (p: any) => Math.round((p.clone().project(cam).x + 1) / 2 * view.width);
+  return { view, columns: { Left: col(L), Right: col(R) }, metres: 2 * view.halfH / view.height };
+}
+// the opening of each eye under a face, in metres of the eye's height seen from the front
+async function portraitOpening(actions: Record<string, number>) {
+  const E = PORTRAIT.eyes || (PORTRAIT.eyes = portraitEyeView());
+  await FACE!.set({ actions });
+  // the eyeballs drawn plain white without a pupil, so that a dark pupil does not pass for the dark socket
+  const white = PORTRAIT.white || (PORTRAIT.white = Object.assign(new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1), { needsUpdate: true }));
+  const keptU = RIG.eyes.map((e: any) => [e.u?.uIris?.value, e.u?.uPupil?.value]);
+  const kept = RIG.eyes.map((e: any) => e.mesh.visible);
+  let shown, bare;
+  try {
+    RIG.eyes.forEach((e: any) => { if (e.u?.uIris) e.u.uIris.value = white; if (e.u?.uPupil) e.u.uPupil.value = 0; });
+    shown = await sheetRender(E.view, 1, async () => {});
+    RIG.eyes.forEach((e: any) => { e.mesh.visible = false; });
+    bare = await sheetRender(E.view, 1, async () => {});
+  } finally {
+    RIG.eyes.forEach((e: any, i: number) => {
+      e.mesh.visible = kept[i];
+      if (e.u?.uIris) e.u.uIris.value = keptU[i][0];
+      if (e.u?.uPupil) e.u.uPupil.value = keptU[i][1];
+    });
+  }
+  const A = shown.data, B = bare.data, W = E.view.width, H = E.view.height, k = PORTRAIT_EYES.columns, out: Record<string, number> = {};
+  for (const [side, c] of Object.entries(E.columns as Record<string, number>)) {
+    let sum = 0, n = 0;
+    for (let x = Math.max(0, c - k); x <= Math.min(W - 1, c + k); x++, n++) {
+      for (let y = 0; y < H; y++) {
+        const o = (y * W + x) * 4;
+        if (Math.max(Math.abs(A[o] - B[o]), Math.abs(A[o + 1] - B[o + 1]), Math.abs(A[o + 2] - B[o + 2])) > PORTRAIT_EYES.threshold) sum++;
+      }
+    }
+    out[side] = n ? sum / n * E.metres : 0;
+  }
+  return out;
+}
+(window as any).portrait = {
+  // hold the scene for a pack of width x height frames: returns the framing, the anchor and the facial actions
+  begin(width: number, height: number) {
+    if (!RIG.ready || !FACE || !FACE.ready) throw new Error('The figure and its face are not ready.');
+    sheetHold(true);
+    sheetLights('page');
+    sheetTurnIfNeeded(0);
+    PORTRAIT.view = portraitView(width, height);
+    PORTRAIT.eyes = null;
+    return { view: PORTRAIT.view, anchor: portraitAnchor(PORTRAIT.view), exposure: renderer.toneMappingExposure, actions: FACE.actionNames() };
+  },
+  // one frame: the face of these facial actions (weights 0 to 1, every other action at 0), `samples` accumulated
+  // passes, and the RGBA bytes with the rows from the top, in base64
+  async frame(actions: Record<string, number>, samples = 16) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    await FACE!.set({ actions });
+    const img = await sheetRender(PORTRAIT.view, Math.max(1, samples | 0), async () => {});
+    return portraitBase64(img.data);
+  },
+  // the opening of each eye under a face (metres)
+  opening: (actions: Record<string, number>) => portraitOpening(actions),
+  // the blink of each eye that leaves `share` of the opening of the eyes of the face `open`, on top of the face
+  // `half`: a bisection of eyeBlinkLeft and eyeBlinkRight between the open face's blink and a full blink, since the
+  // eye looks closed well before a blink of 1; returns the weights and the openings
+  async halfBlink(half: Record<string, number>, open: Record<string, number>, share = 0.5, steps = 5) {
+    const o0 = await portraitOpening(open), lo: Record<string, number> = {}, hi: Record<string, number> = {}, want: Record<string, number> = {};
+    for (const side of ['Left', 'Right']) { lo[side] = open['eyeBlink' + side] || 0; hi[side] = 1; want[side] = share * o0[side]; }
+    const at = (s: Record<string, number>) => ({ ...half, eyeBlinkLeft: s.Left, eyeBlinkRight: s.Right });
+    for (let i = 0; i < steps; i++) {
+      const mid = { Left: (lo.Left + hi.Left) / 2, Right: (lo.Right + hi.Right) / 2 }, o = await portraitOpening(at(mid));
+      for (const side of ['Left', 'Right']) { if (o[side] > want[side]) lo[side] = mid[side]; else hi[side] = mid[side]; }
+    }
+    const w = { Left: (lo.Left + hi.Left) / 2, Right: (lo.Right + hi.Right) / 2 }, o = await portraitOpening(at(w));
+    return { eyeBlinkLeft: w.Left, eyeBlinkRight: w.Right, open: o0, half: o };
+  },
+  // the page's own view again
+  end() { if (PORTRAIT.view) { PORTRAIT.view = null; PORTRAIT.eyes = null; sheetHold(false); } },
+};
+
 // ------------------------------------------------------------------ what the interface sees of the renderer
 // ------------------------------------------------------------------ the pose editor's host (pose_edit/host.ts)
 // The editor (DESIGN-0013) reads the rig, the coarse body and the card, shows its edited pose at once as the clip
