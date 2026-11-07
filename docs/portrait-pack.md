@@ -190,7 +190,7 @@ The leap's key poses are `crouch`, `rise`, `peak` and `land`. Every pose of the 
 
 ### Size and time
 
-A textured, dressed card renders on a graphics card in about 25 minutes: the body layers take 10 to 25 seconds each at 16 samples (the waist frames are the largest, about 3600 by 3400 pixels), and each face 2 to 3 seconds. The pack holds about 400 files.
+A textured, dressed card renders on a graphics card in about 20 minutes: the body layers take 10 to 25 seconds each at 16 samples (the waist frames are the largest, about 3600 by 3400 pixels), and each face 1 to 3 seconds. Its full pack held 435 files and 37.4 MB (35.7 MiB), most of them in the face layers. The default character's pack at a fifth of the scale with one pass renders in under a minute.
 
 ## Tests
 
