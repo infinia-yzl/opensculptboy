@@ -853,8 +853,21 @@ export const EYE_CARD_FS = /* glsl */`
 ${GLSL_COMMON}
 uniform mat3 uEyeRot;
 uniform sampler2D uEyeLayout; uniform float uEyeLeft; uniform float uScleraRough; uniform float uCoatRough; uniform float uCoatF0;
+uniform float uIrisR; uniform float uIrisZ;
 varying vec3 vWPos; varying vec3 vL; varying vec3 vNl; varying float vAO;
 const float FRONT_SHARE = 0.9;
+const float CORNEA_IOR = 1.376;
+// the layout's texel for a point of the eye's frame (eyeball radii): the distance from the gaze axis in front, 2 minus
+// it behind, and the angle about the gaze
+vec3 layoutAt(vec3 q) {
+  float rho = length(q.xy);
+  float s = q.z >= 0.0 ? rho : 2.0 - rho;
+  float phi = atan(q.y, q.x);
+  float t = s <= 1.0 ? 0.5 * FRONT_SHARE * s : 0.5 * FRONT_SHARE + 0.5 * (1.0 - FRONT_SHARE) * (s - 1.0);
+  t = min(t, 0.5);
+  vec2 uv = vec2(mix(0.75, 0.25, uEyeLeft) + 0.5 * t * cos(phi), 1.0 - (0.5 + t * sin(phi)));
+  return texture2D(uEyeLayout, uv).rgb;
+}
 void main() {
   studioCut(vWPos);
   vec3 lp = vL;
@@ -873,20 +886,55 @@ void main() {
     gl_FragColor = vec4(min(c, vec3(64.0)), 1.0);
     return;
   }
-  // the layout: the distance from the gaze axis in front, 2 minus it behind, and the angle about the gaze
+  mat3 toLocal = transpose(uEyeRot);
+  vec3 Nl = normalize(vNl), V = toLocal * Vw, Ll = toLocal * L;
   float rho = length(lp.xy);
-  float s = lp.z >= 0.0 ? rho : 2.0 - rho;
-  float phi = atan(lp.y, lp.x);
-  float t = s <= 1.0 ? 0.5 * FRONT_SHARE * s : 0.5 * FRONT_SHARE + 0.5 * (1.0 - FRONT_SHARE) * (s - 1.0);
-  t = min(t, 0.5);
-  vec2 uv = vec2(mix(0.75, 0.25, uEyeLeft) + 0.5 * t * cos(phi), 1.0 - (0.5 + t * sin(phi)));
-  vec3 base = texture2D(uEyeLayout, uv).rgb;
-  vec3 diff = base * (uKeyColor * max(dot(Nw, L), 0.0) * vis + uRimColor * max(dot(Nw, Lr), 0.0) * 0.4 * ao + shIrr(Nw) * uEnvDiff * ao);
-  // the eyeball's own surface and the clear coat (the wet cornea)
-  vec3 spec = PI * uKeyColor * specSphere(Nw, Vw, L, uScleraRough, 0.04, uKeyTan) * vis * 0.3;
+  // the iris lies on a plane behind the clear cornea: the view ray bends into the cornea and meets the iris there, so the
+  // iris shifts against the limbus as the eye turns (parallax), as the glTF export's cornea shell shows it
+  float inIris = (lp.z > 0.0 && uIrisR > 0.0) ? 1.0 - smoothstep(uIrisR * 0.9, uIrisR * 1.02, rho) : 0.0;
+  vec3 q = lp;
+  vec3 In = vec3(0.0, 0.0, 1.0);
+  if (inIris > 0.0) {
+    vec3 Rf = refract(-V, Nl, 1.0 / CORNEA_IOR);
+    float t = (uIrisZ - lp.z) / min(Rf.z, -0.05);
+    vec3 ip = lp + Rf * max(t, 0.0);
+    q.xy = mix(lp.xy, ip.xy, inIris);
+    // the iris is a shallow cone toward the pupil
+    In = normalize(vec3(-ip.xy * 0.18 / max(uIrisR, 1e-3), 1.0));
+  }
+  vec3 base = layoutAt(q);
+  // the light on the eyeball's surface, and on the iris through the cornea: the key bends into the cornea, the rim of
+  // the limbus shades the iris on the key's side, and the light gathers on the far side (the caustic)
+  vec3 Lin = -refract(-Ll, Nl, 1.0 / CORNEA_IOR);
+  float irisKey = max(dot(In, Lin), 0.0);
+  float qr = length(q.xy);
+  vec2 dirL = normalize(Ll.xy + 1e-6), dirQ = normalize(q.xy + 1e-6);
+  float side = dot(dirQ, dirL);
+  float limbShade = 1.0 - 0.55 * smoothstep(0.55, 1.0, qr / max(uIrisR, 1e-3)) * smoothstep(0.0, 0.8, side);
+  float caustic = 1.0 + 0.6 * smoothstep(0.2, 0.9, qr / max(uIrisR, 1e-3)) * smoothstep(0.0, 0.8, -side) * smoothstep(0.0, 0.5, Ll.z);
+  float keyLit = mix(max(dot(Nw, L), 0.0), irisKey * limbShade * caustic, inIris);
+  // the lids' contact shadow (ao) falls on the key as well, at two thirds of its strength, since the key's shadow map is
+  // too coarse for the lid's edge; the environment, which the lids and the brow ridge hide from most of the eyeball's
+  // sky, takes it squared
+  float contact = 0.35 + 0.65 * ao;
+  vec3 diff = base * (uKeyColor * keyLit * vis * contact + uRimColor * max(dot(Nw, Lr), 0.0) * 0.4 * ao + shIrr(Nw) * uEnvDiff * ao * ao * mix(1.0, 0.75, inIris));
+  // the eyeball's own surface
+  vec3 spec = PI * uKeyColor * specSphere(Nw, Vw, L, uScleraRough, 0.04, uKeyTan) * vis * 0.3 * (1.0 - inIris);
+  // the clear coat (the wet cornea and the tear film): the key's catchlight is the mirror image of its round source, a
+  // disc of the key's angular radius with an edge as soft as the coat's roughness, of the source's radiance (its
+  // irradiance, PI times the key colour as the diffuse term counts it, over its solid angle) times the Fresnel reflectance; a lobe as wide as the source made the catchlight a
+  // soft glow, which read as plastic
   vec3 dnx = dFdx(Nw), dny = dFdy(Nw);
-  float rc = sqrt(sqrt(uCoatRough * uCoatRough * uCoatRough * uCoatRough + min(0.5 * (dot(dnx, dnx) + dot(dny, dny)), 0.2)));
-  spec += PI * uKeyColor * specSphere(Nw, Vw, L, rc, uCoatF0, uKeyTan) * vis;
+  float curvK = min(0.5 * (dot(dnx, dnx) + dot(dny, dny)), 0.2);
+  float rc = sqrt(sqrt(uCoatRough * uCoatRough * uCoatRough * uCoatRough + curvK));
+  float srcR = atan(uKeyTan);
+  float soft = 0.25 * srcR + 2.0 * rc * rc + 2.0 * sqrt(curvK);
+  vec3 Rw = reflect(-Vw, Nw);
+  float ang = acos(clamp(dot(Rw, L), -1.0, 1.0));
+  float disc = 1.0 - smoothstep(srcR - soft, srcR + soft, ang);
+  float solid = 6.2831853 * (1.0 - cos(srcR + 0.5 * soft));
+  float fres = F_Schlick(uCoatF0, max(dot(Nw, Vw), 0.0));
+  spec += PI * uKeyColor * (disc / max(solid, 1e-4)) * fres * vis * step(0.0, dot(Nw, L));
   spec += PI * uRimColor * specSphere(Nw, Vw, Lr, rc, uCoatF0, 0.05) * ao;
   spec += envSpecular(Nw, Vw, rc, uCoatF0) * uEnvSpec * pow(ao, 1.5) * headEnvOcc(vWPos, Nw, Vw);
   vec3 col = min(diff + spec, vec3(64.0));

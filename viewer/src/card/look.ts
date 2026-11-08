@@ -313,10 +313,16 @@ export class CardLook {
       const cornea = Math.max(plan.eyes!.corneaRadiusMm / 1000 / rAnny, iris * 1.05);
       const { bulge, sphere } = this.clearance(c, r, P, iris, cornea);
       const geo = eyeGeometry(T, c, r * sphere, P, iris, cornea, bulge);
+      // the lids' contact shadow on the eyeball: the occlusion of the skin around the eye, in the eye's light
+      const lid = lidOcclusion(geo.attributes.position.array as Float32Array, geo.attributes.normal.array as Float32Array,
+        geo.attributes.eyelocal.array as Float32Array, this.lidPoints(c, r), r);
+      const aoAttr = geo.attributes.eyeao.array as Float32Array;
+      for (let v = 0; v < aoAttr.length; v++) aoAttr[v] *= lid[v];
       let mat = this.eyeState!.meshes[i]?.material;
       if (!mat) {
         const u = { uEyeRot: { value: new T.Matrix3() }, uEyeLayout: { value: tex }, uEyeLeft: { value: side === 'L' ? 1 : 0 },
-          uScleraRough: { value: 0.45 }, uCoatRough: { value: plan.eyes!.corneaRoughness }, uCoatF0: { value: ((plan.eyes!.corneaIor - 1) / (plan.eyes!.corneaIor + 1)) ** 2 } };
+          uScleraRough: { value: 0.45 }, uCoatRough: { value: plan.eyes!.corneaRoughness }, uCoatF0: { value: ((plan.eyes!.corneaIor - 1) / (plan.eyes!.corneaIor + 1)) ** 2 },
+          uIrisR: { value: iris }, uIrisZ: { value: irisPlane(iris) } };
         mat = this.host.eyeMaterial(u);
         this.eyeState!.meshes[i] = { material: mat };
       }
@@ -325,7 +331,21 @@ export class CardLook {
       e.mesh.userData.rot0 = new T.Matrix3().set(P[0], P[1], P[2], P[3], P[4], P[5], P[6], P[7], P[8]);
       if (old !== this.eyeState!.saved[i].geo) old.dispose();
       e.card = { iris, cornea, bulge, sphere, radius: r, center: c };
+      if (mat.uniforms.uIrisR) { mat.uniforms.uIrisR.value = iris; mat.uniforms.uIrisZ.value = irisPlane(iris); }
     });
+  }
+
+  // the skin around an eye that can shade it: the body's points within 1.6 eyeball radii of the centre and outside the
+  // eyeball, facing out
+  private lidPoints(c: number[], r: number): Float32Array {
+    const body = this.host.body(), P = body.pos, N = body.nrm, n = body.nWeld, out: number[] = [];
+    for (let v = 0; v < n; v++) {
+      const dx = P[v * 3] - c[0], dy = P[v * 3 + 1] - c[1], dz = P[v * 3 + 2] - c[2], d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > (1.6 * r) ** 2 || d2 < (0.98 * r) ** 2) continue;
+      if (N[v * 3] * dx + N[v * 3 + 1] * dy + N[v * 3 + 2] * dz <= 0) continue;
+      out.push(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
+    }
+    return Float32Array.from(out);
   }
 
   // the iris of each baked eye: the limbus where the rings of the layout turn bright (data.ts irisRadius)
@@ -850,6 +870,57 @@ export class CardLook {
       blinks: this.blink ? { targets: this.blink.data.names, level: this.blink.data.level, vertices: this.blink.vertices, auto: this.blink.auto,
         close: this.blink.close, squint: this.blink.squint } : null };
   }
+}
+
+// the share of the skin's diffuse light that the page's screen-space scattering spreads: the card's subsurface weight,
+// raised toward the whole light. A path tracer's random walk carries light under the skin for the whole weight of a
+// Principled BSDF's subsurface and mixes the rest as a Lambertian surface, which still scatters between the pores; the
+// page's single screen-space blur stands in for both, so a low weight (a game's material at 0.1) left the skin as hard
+// as plastic
+export const SCATTER_LIFT = 0.4;
+export function scatterShare(weight: number): number {
+  const w = Math.min(1, Math.max(0, weight));
+  return w + (1 - w) * SCATTER_LIFT;
+}
+
+// the iris's plane in the eye's frame (eyeball radii): a little behind the limbus, where the cornea meets the sclera
+export function irisPlane(iris: number): number {
+  return Math.sqrt(Math.max(1 - iris * iris, 0)) - 0.02;
+}
+
+// the lids' occlusion of each eyeball vertex in front (horizon-based ambient occlusion): for each of 12 directions
+// about the vertex's normal, the highest skin point within 0.8 eyeball radii, weighted down with its distance; the
+// vertex keeps 1 minus the mean of their sines. The skin of the lids rises above the eyeball where they meet it, so
+// the sclera and the iris darken in a band under the upper lid and along the lower one, as in a path-traced eye.
+export const LID_DIRECTIONS = 12;
+export function lidOcclusion(pos: ArrayLike<number>, nrm: ArrayLike<number>, loc: ArrayLike<number>, skin: ArrayLike<number>, r: number): Float32Array {
+  const nv = pos.length / 3, ns = skin.length / 3, out = new Float32Array(nv).fill(1), K = LID_DIRECTIONS, reach = 0.8 * r;
+  const best = new Float32Array(K);
+  for (let i = 0; i < nv; i++) {
+    if (loc[i * 3 + 2] < -0.2) continue;
+    const qx = pos[i * 3], qy = pos[i * 3 + 1], qz = pos[i * 3 + 2];
+    const nx = nrm[i * 3], ny = nrm[i * 3 + 1], nz = nrm[i * 3 + 2];
+    // a tangent frame about the normal
+    let ax = Math.abs(nx) < 0.9 ? 1 : 0, ay = ax ? 0 : 1, az = 0;
+    let t1x = ay * nz - az * ny, t1y = az * nx - ax * nz, t1z = ax * ny - ay * nx;
+    const l1 = Math.hypot(t1x, t1y, t1z) || 1; t1x /= l1; t1y /= l1; t1z /= l1;
+    const t2x = ny * t1z - nz * t1y, t2y = nz * t1x - nx * t1z, t2z = nx * t1y - ny * t1x;
+    best.fill(0);
+    for (let s = 0; s < ns; s++) {
+      const dx = skin[s * 3] - qx, dy = skin[s * 3 + 1] - qy, dz = skin[s * 3 + 2] - qz;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 > reach * reach || d2 < 1e-14) continue;
+      const d = Math.sqrt(d2), h = (dx * nx + dy * ny + dz * nz) / d;
+      if (h <= 0) continue;
+      const k = Math.min(K - 1, Math.floor(((Math.atan2(dx * t2x + dy * t2y + dz * t2z, dx * t1x + dy * t1y + dz * t1z) + Math.PI) / (2 * Math.PI)) * K));
+      const w = h * (1 - d2 / (reach * reach));
+      if (w > best[k]) best[k] = w;
+    }
+    let m = 0;
+    for (let k = 0; k < K; k++) m += best[k];
+    out[i] = 1 - m / K;
+  }
+  return out;
 }
 
 // the single-surface eyeball of opensculptboy.eyes.geometry.single_profile on a latitude-longitude grid: in the eye's
