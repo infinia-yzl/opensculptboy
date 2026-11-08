@@ -1363,9 +1363,23 @@ def write_layered_pack(
                     rgba, body_passes = picture(view, neutral, samples_at(name))
                     if first:
                         # resume: the earlier run's scales, from this layer's pass files
+                        # the scales of the folder's manifest when an earlier run wrote one, else
+                        # those read back from this layer's pass files
                         old = (
-                            stored_scales(
-                                folder, f"body.{pose}.{name}", body_passes, rgba[..., 3]
+                            (
+                                {
+                                    q["name"]: float(q["scale"])
+                                    for q in previous.get("passes") or []
+                                    if isinstance(q, dict)
+                                    and "name" in q
+                                    and "scale" in q
+                                }
+                                or stored_scales(
+                                    folder,
+                                    f"body.{pose}.{name}",
+                                    body_passes,
+                                    rgba[..., 3],
+                                )
                             )
                             if kept["on"]
                             else None
