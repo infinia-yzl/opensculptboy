@@ -24,7 +24,11 @@ the VRM export of the same card turns (:mod:`opensculptboy.export.tpose`):
 - the humanoid bone ``h`` then turns it by its rotation in the world ``R_h``: the rig bone's
   rotation in the world is ``R_h U_j``. A rig bone outside the humanoid takes the humanoid bone
   above it in the VRM file (:func:`governing`), and the forearm's twist bone takes the roll of
-  the VRM file's constraint (half the hand's roll about the forearm).
+  the VRM file's constraint (half the hand's roll about the forearm). The upper arm's own roll
+  is shared the same way (:data:`UPPER_ARM_ROLL`): its first bone keeps half of it and its second
+  bone, at mid-arm, takes the rest, so a raised arm's roll no longer twists the armpit's skin at
+  the shoulder joint. A roll about the bone's own axis moves no joint, so the skeleton stays the
+  VRM's.
 
 The rig bones' places then follow by forward kinematics from their own rest heads, as the
 VRM's joints follow from the T pose, so the stills' skeleton lands on the VRM's skeleton.
@@ -90,6 +94,8 @@ FINGERS = ("Index", "Middle", "Ring", "Little")
 # Anny's frame (metres, Z up, the figure facing -Y) to the page's and the VRM file's frame (Y up,
 # the figure facing +Z): (x, y, z) -> (x, z, -y), as opensculptboy.export.body.ANNY_TO_GLTF.
 ANNY_TO_PAGE = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
+# the arms' axis in the T pose, about which an arm rolls
+_X = np.array([1.0, 0.0, 0.0])
 
 
 class PosesError(ValueError):
@@ -288,6 +294,17 @@ def bone_map() -> dict:
     return dict(HUMANOID_1)
 
 
+# The share of the upper arm's own roll (its turn about the arm, X in the T pose) that the
+# upper arm's first rig bone keeps; the second (upperarm02, at mid-arm) takes the rest, as
+# the forearm's twist bone takes half the hand's roll. With the whole roll at the shoulder
+# joint, the armpit's skin twisted about the arm in the raised-arm poses (hands behind the
+# head, scratching the head), which the texture showed as stretched streaks.
+UPPER_ARM_ROLL = {
+    "upperarm01.L": ("leftUpperArm", 0.5),
+    "upperarm01.R": ("rightUpperArm", 0.5),
+}
+
+
 def twist_rules() -> dict:
     """Rig twist bone -> (rig bone whose roll it follows, its axis, the weight), as the VRM file's
     roll constraints."""
@@ -378,6 +395,9 @@ def rig_world(local: dict, labels, parents, turns) -> np.ndarray:
             hand = to_human.get(src)
             if hand is not None and src in index:
                 R = R @ roll_constraint(local.get(hand, np.eye(3)), axis, weight)
+        if name in UPPER_ARM_ROLL:
+            arm, keep = UPPER_ARM_ROLL[name]
+            R = R @ roll_constraint(local.get(arm, np.eye(3)), _X, keep - 1.0)
         out[j] = R @ turns[j]
     return out
 
