@@ -78,11 +78,17 @@ EXPRESSION_MIXES = {
         },
     ),
     "sad": Expression({"sad": 0.9}),
+    # stern: the brows pulled fully down and the lower lids raised (a furrowed, hard look), the
+    # lips pressed
     "stern": Expression(
         {"angry": 0.9},
         {
-            "browDownLeft": 0.1,
-            "browDownRight": 0.1,
+            "browDownLeft": 0.2,
+            "browDownRight": 0.2,
+            "eyeSquintLeft": 0.25,
+            "eyeSquintRight": 0.25,
+            "noseSneerLeft": 0.2,
+            "noseSneerRight": 0.2,
             "mouthPressLeft": 0.4,
             "mouthPressRight": 0.4,
         },
