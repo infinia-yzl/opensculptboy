@@ -45,6 +45,7 @@ export interface Wearable {
   weights: 'body' | 'rigid' | 'own';
   covers: Uint8Array | null; groupCovers: Record<string, Uint8Array>; coverRay: boolean;
   hides: { piece: string; groups: string[] }[];
+  springs: number;   // the package's spring chains (its loose parts, which a game or a VRM file moves as cloth)
   garment: Garment; binding: Binding;
 }
 
@@ -192,6 +193,6 @@ export async function readWearable(json: any, file: FileSource): Promise<Wearabl
   return {
     name: json.name, label: json.label || json.name, slot: json.slot, layer: Number(json.layer), provenance: json.provenance || 'public',
     licence: json.licence || {}, weights: json.weights || 'body', covers: mask(tensors.covers), groupCovers, coverRay: !!json.cover_ray,
-    hides: json.hides || [], garment, binding,
+    hides: json.hides || [], springs: Array.isArray(json.springs) ? json.springs.length : 0, garment, binding,
   };
 }

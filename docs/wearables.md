@@ -133,6 +133,10 @@ Loose parts of a piece (a cape, a skirt, a long hem) swing on chains of extra jo
 - **Colliders.** A sphere inside the head and capsules on the neck, the chest, the shoulders, the spine, the hips, the upper and lower legs and the upper arms, fitted inside the skin of each character. The neck, the chest and the shoulders take the ends, quantiles and spans of the viewer's hair colliders. Each joint's hit radius stays within its clearance from the colliders at rest, so a chain rests where the garment was made.
 - **Off.** `--springs off` (or `Dressing(springs=False)`) leaves every piece on the body's bones.
 
+
+### A cloak in the page
+
+The page simulates no cloth. A cloak with spring chains (`slot` `cloak` and `springs`) would follow the arms and the legs that its weights name, so a raised arm would lift the cape into a flat panel and tucked knees would spread its hem. In the page, the cloak's vertices away from a limb take that limb's weights onto the bone the limb hangs from (an arm's onto `shoulder01`, a leg's onto `pelvis`): fully beyond 13 cm of the limb's bones and not at all within 6 cm (`hangWeights` in `viewer/src/wearables/dress.ts`), so the cloak hangs from the shoulders and the hips, and the part that lies on a limb (the fur over the shoulder) still follows it. The exports keep the package's weights and its spring chains.
 ## In the viewer
 
 The viewer page dresses a character in the outfits of its card, from the user's own files, with the same bindings, skin weights, push-out, hides rules and covered skin ([Web viewer](viewer.md#wearables)).
