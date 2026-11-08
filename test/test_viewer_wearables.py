@@ -409,7 +409,6 @@ class TestViewerWearables(unittest.TestCase):
             )
 
 
-
 @unittest.skipUnless(
     node_available(), "node 22 or later is needed to run the page's TypeScript"
 )
@@ -427,6 +426,7 @@ class TestViewerCloakHang(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 0, r.stderr[-2000:])
         self.assertIn("ok", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
