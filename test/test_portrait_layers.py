@@ -585,6 +585,14 @@ class TestFramer(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(m[25, 15], 255)
         self.assertEqual(m[5, 5], 0)
+        # a pose that moves only a little of the collar beside the face still gets a front
+        wide = np.zeros((100, 100, 4), np.uint8)
+        wide[..., :] = (180, 140, 120, 255)
+        collar = wide.copy()
+        collar[60:63, 70:73] = (60, 50, 40, 255)
+        m = layers.front_mask(collar, wide)
+        self.assertIsNotNone(m)
+        self.assertEqual(m[61, 71], 255)
 
     def test_soft_mask(self):
         changed = np.zeros((60, 80), bool)
@@ -1068,7 +1076,7 @@ class TestDefaultLayeredPack(unittest.TestCase):
         self.assertTrue(result["check"]["pass"], result["check"]["problems"])
         m = result["manifest"]
         self.assertEqual(set(m["framings"]), set(layers.BASE_FRAMINGS))
-        self.assertEqual(m["poses"]["cheer"]["framings"], ["waist", "thigh", "full"])
+        self.assertEqual(m["poses"]["cheer"]["framings"], ["thigh", "full"])
         # the bow turns the head: its own face set at the framings it shows at
         self.assertEqual(m["poses"]["hand_on_chest"]["framings"], ["waist", "thigh"])
         for f in ("waist", "thigh"):

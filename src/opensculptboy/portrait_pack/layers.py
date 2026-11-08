@@ -61,7 +61,7 @@ from opensculptboy.portrait_pack.render import (
 # the leap, where the stage pushes in until the figure takes 90 % of the height.
 FRAMINGS = {
     "close": dict(scale=810, above=0.5, below=2.2, hands=False),
-    "waist": dict(scale=660, above=0.5, below=3.6, hands=True),
+    "waist": dict(scale=660, above=0.5, below=5.0, hands=True),
     "thigh": dict(scale=330, above=0.5, below=6.0, hands=True),
     "full": dict(scale=160, above=0.5, below=None, hands=True),
     "thought": dict(scale=810, above=0.5, below=2.2, hands=False),
@@ -76,14 +76,15 @@ LEAP_SCALE = 230
 # Fewer samples where the face is small on the screen (the two-shot, the low shot's framing is its
 # own, and the full shot); every other framing and the leap take the pack's samples (16).
 FRAMING_SAMPLES = {"thigh": 8, "full": 8}
-# The poses each framing holds: the poses its shot shows. Raised hands leave the close framings;
+# The poses each framing holds: the poses its shot shows. Raised hands leave the close and waist
+# framings (the medium close-up cuts raised hands at mid-thigh, which the thigh framing holds);
 # a pose with a face set of its own shows where its shot needs it (the chin in the thought, the
 # bow of hand_on_chest in the medium close-up and the two-shot, the lowered head in the low shot).
 _MAIN = ("at_ease", "relaxed", "hands_behind_head", "scratch_head", "arms_crossed")
 _RAISED = ("wave", "fist", "cheer")
 FRAMING_POSES = {
     "close": _MAIN,
-    "waist": _MAIN + ("hand_on_chest",) + _RAISED,
+    "waist": _MAIN + ("hand_on_chest",),
     "thigh": _MAIN + ("hand_on_chest",) + _RAISED,
     "full": _MAIN + _RAISED,
     "thought": ("chin",),
@@ -115,9 +116,11 @@ GRID = 8
 # sees the same neighbours as in the whole frame.
 FACE_PAD = 24
 # The front layer: a pixel of the face rectangle belongs to the pose's front when it differs
-# from at_ease's by more than this (0 to 255), with at least this share of the rectangle.
+# from at_ease's by more than this (0 to 255), with at least this share of the rectangle. The
+# share is small, so a pose that moves only a little of the collar or the neck beside the face
+# still gets a front, and the face layer never paints at_ease's skin over the pose's garment.
 FRONT_THRESHOLD = 40
-FRONT_MIN_SHARE = 0.003
+FRONT_MIN_SHARE = 0.0003
 # The face layer paints only the face's own pixels: those that any face changes, grown by this
 # share of a head, with an edge this soft.
 MASK_GROW = 0.04
