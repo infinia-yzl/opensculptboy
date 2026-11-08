@@ -835,6 +835,37 @@ class TestSharedPoses(unittest.TestCase):
                     i = self.index[j]
                     self.assertLess(np.linalg.norm(page[i] - vrm[i]), 0.002, j)
 
+    def test_upper_arm_roll_shared(self):
+        """The upper arm's first bone keeps half of the arm's own roll and its second bone takes
+        the rest, and the joints stay within 2 mm of where the whole roll at the shoulder puts
+        them (the roll turns about X, and upperarm02's head lies about a millimetre off that
+        line), as close as the VRM file's joints."""
+        from opensculptboy.export.tpose import roll_constraint
+
+        rig = self.rig
+        local = self.shared.local("hands_behind_head")
+        W = shared_poses.rig_world(local, rig.labels, rig.parents, rig.turns)
+        saved = dict(shared_poses.UPPER_ARM_ROLL)
+        try:
+            shared_poses.UPPER_ARM_ROLL.clear()
+            whole = shared_poses.rig_world(local, rig.labels, rig.parents, rig.turns)
+        finally:
+            shared_poses.UPPER_ARM_ROLL.update(saved)
+        _, P = self.page_fk_with(W)
+        _, P_whole = self.page_fk_with(whole)
+        np.testing.assert_allclose(P, P_whole, atol=0.002)
+        for s, arm in (("L", "leftUpperArm"), ("R", "rightUpperArm")):
+            with self.subTest(side=s):
+                i, k = self.index[f"upperarm01.{s}"], self.index[f"upperarm02.{s}"]
+                T = rig.turns[i]
+                taken = (whole[i] @ T.T).T @ (W[i] @ T.T)
+                np.testing.assert_allclose(
+                    taken, roll_constraint(local[arm], [1, 0, 0], -0.5), atol=1e-9
+                )
+                angle = np.degrees(np.arccos(np.clip((np.trace(taken) - 1) / 2, -1, 1)))
+                self.assertGreater(angle, 20.0)
+                np.testing.assert_allclose(W[k], whole[k], atol=1e-12)
+
     def test_head_kept(self):
         ref, _ = self.page_fk("at_ease")
         for name in stage_poses.POSES:
