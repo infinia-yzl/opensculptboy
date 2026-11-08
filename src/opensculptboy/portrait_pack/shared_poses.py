@@ -27,8 +27,8 @@ the VRM export of the same card turns (:mod:`opensculptboy.export.tpose`):
   the VRM file's constraint (half the hand's roll about the forearm). The upper arm's own roll
   is shared the same way (:data:`UPPER_ARM_ROLL`): its first bone keeps half of it and its second
   bone, at mid-arm, takes the rest, so a raised arm's roll no longer twists the armpit's skin at
-  the shoulder joint. A roll about the bone's own axis moves no joint, so the skeleton stays the
-  VRM's.
+  the shoulder joint. The roll turns about the arm's axis in the T pose, which moves the joints
+  by about a millimetre at most, so the skeleton stays the VRM's.
 
 The rig bones' places then follow by forward kinematics from their own rest heads, as the
 VRM's joints follow from the T pose, so the stills' skeleton lands on the VRM's skeleton.
