@@ -426,6 +426,7 @@ uniform sampler2D uCardBase; uniform sampler2D uCardNormal; uniform sampler2D uC
 uniform sampler2D uHeadBase; uniform sampler2D uHeadNormal; uniform sampler2D uHeadRough; uniform vec4 uHeadXf;
 uniform float uCardNormalScale; uniform float uCardRoughK; uniform float uCardF0; uniform float uCardSSS;
 uniform float uCardBounce;   // the share of the key light that the skin around reflects (card/look.ts)
+uniform sampler2D uCardThick; uniform float uCardThickMm;   // the card's thickness map (grey: thickness / thickness_mm)
 uniform float uCardHide;   // 1: the faces that a sculpt card's patches replace leave the picture
 varying vec2 vCardUV; varying float vCardTile; varying float vCardHide;
 // the tangent frame of the UVs from the screen derivatives of the position and the UV (three.js perturbNormal2Arb);
@@ -545,6 +546,11 @@ void main() {
   float ao = A.x, lip = A.y, hocc = A.z, scalp = A.w;
   float wet = Bv.x, ear = Bv.y, curv = Bv.z * 0.4 * uCurvScale, fuzz = Bv.w;
   float thickB = Cv.x * Cv.x * 0.03, oil = Cv.y, vein = Cv.z, face = Cv.w;
+#ifdef CARD_THICK
+  // a card's own thickness, baked from its fitted mesh, in place of Anny's: light passes through its thin parts (the ears,
+  // the nostrils, the fingers) as the card's shape has them
+  thickB = texture(uCardThick, vCardUV).g * uCardThickMm * 0.001;
+#endif
   float pore = Dv.x * uPoreAmt;
   vec3 L = normalize(uKeyDir), Lr = normalize(uRimDir);
   vec2 sh = keyShadow(vWPos, N, 1.0);
@@ -688,7 +694,9 @@ void main() {
   // (only where the key light does not reach the surface directly)
   vec3 trans = uKeyColor * skinTransmit(tK) * max(-dot(Ns, L), 0.0) * (1.0 - sh.x) * sh.y;
   vec3 tb = skinTransmit(thickB * 1124.0);
-  trans += uRimColor * tb * sqrt(max(-dot(Ns, Lr), 0.0) * max(-dot(N, Lr), 0.0)) * hocc;
+  // the rim from behind through a thin part: strongest where the surface faces away from it, and still some at the
+  // terminator, since the light crosses the whole thin part (a backlit ear glows warm across, not only at its back)
+  trans += uRimColor * tb * smoothstep(-0.3, 0.7, -dot(N, Lr)) * mix(0.6, 1.0, max(-dot(Ns, Lr), 0.0)) * hocc;
   trans += shIrr(-Ns) * uEnvDiff * tb * 0.6;
   E += trans * uTrans * (1.0 - 0.65 * uMelanin) * sqrt(ao) / max(albedo, vec3(0.05));
 #ifdef CARD_SKIN
@@ -715,6 +723,8 @@ void main() {
 #ifdef CARD_SKIN
   // the card's roughness map and factor in one lobe, with the reflectance of its IOR and specular factor
   rough1 = rough2 = clamp(cardRough * uCardRoughK, 0.08, 1.0);
+  // the moist lining of the lids (the tear line along the lower lid, the caruncle) stays wet whatever the map says
+  rough1 = rough2 = mix(rough1, 0.1, wet);
   rough1 = rough2 = sqrt(sqrt(rough1 * rough1 * rough1 * rough1 + kvar));
   f0 = uCardF0;
 #endif
@@ -727,7 +737,7 @@ void main() {
   float kr = mix(specSphere(Nd, V, Lr, rough1, f0, 0.05), specSphere(Nd, V, Lr, rough2, f0, 0.05), 0.18);
   float gz = smoothstep(0.02, 0.25, dot(N, V));
   float hor = clamp(1.0 + dot(reflect(-V, Nd), N), 0.0, 1.0); hor *= hor;
-  vec3 spec = PI * (uKeyColor * min(ks, 6.0) * vis * keyOcc * mix(0.5, 1.0, cav) * mix(specOcc, 1.0, 0.35) + uRimColor * min(kr, 3.0) * ao * ao * hocc * gz * rimOcc);
+  vec3 spec = PI * (uKeyColor * min(ks, 6.0) * vis * keyOcc * mix(0.5, 1.0, cav) * mix(specOcc, 1.0, 0.35) + uRimColor * min(kr, 0.8) * ao * ao * ao * hocc * gz * rimOcc);
   spec += (envSpecular(Nd, V, rough1, f0) * (1.0 - w2) + envSpecular(Nd, V, rough2, f0) * w2) * uEnvSpec * specOcc * headEnvOccDir(hOut, Nd, V) * hor;
   // fine vellus hair: a soft sheen at grazing angles, strongest with light from behind
   float nvs = clamp(dot(Ns, V), 0.0, 1.0);

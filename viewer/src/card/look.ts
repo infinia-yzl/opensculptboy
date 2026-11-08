@@ -255,8 +255,10 @@ export class CardLook {
         uHeadXf: { value: new T.Vector4(box ? box.scale[0] : 1, box ? box.scale[1] : 1, box ? box.offset[0] : 0, box ? box.offset[1] : 0) },
         uCardNormalScale: { value: plan.skin.normalScale }, uCardRoughK: { value: plan.skin.roughness },
         uCardF0: { value: Math.min(1, ((plan.skin.ior - 1) / (plan.skin.ior + 1)) ** 2) * plan.skin.specular },
-        uCardSSS: { value: Math.min(1, Math.max(0, plan.skin.subsurface)) },
+        uCardSSS: { value: scatterShare(plan.skin.subsurface) },
+        uCardThick: { value: null }, uCardThickMm: { value: plan.skin.thicknessMm },
       };
+      if (this.images.has('thickness')) { defines.CARD_THICK = ''; uniforms.uCardThick.value = tex('thickness', false); }
       if (this.images.has('normal')) { defines.CARD_NORMAL = ''; uniforms.uCardNormal.value = tex('normal', false); }
       if (this.images.has('roughness')) { defines.CARD_ROUGH = ''; uniforms.uCardRough.value = tex('roughness', false); }
       if (box && this.images.has('head_base_color')) {
@@ -267,6 +269,7 @@ export class CardLook {
       }
       if (!uniforms.uCardNormal.value) uniforms.uCardNormal.value = uniforms.uCardBase.value;
       if (!uniforms.uCardRough.value) uniforms.uCardRough.value = uniforms.uCardBase.value;
+      if (!uniforms.uCardThick.value) uniforms.uCardThick.value = uniforms.uCardBase.value;
       for (const k of ['uHeadBase', 'uHeadNormal', 'uHeadRough']) if (!uniforms[k].value) uniforms[k].value = uniforms.uCardBase.value;
       uniforms.uCardBounce = { value: CARD_BOUNCE };
       this.skin = this.host.skinMaterial(defines, uniforms);
