@@ -66,7 +66,7 @@ FRAMINGS = {
     "full": dict(scale=160, above=0.5, below=None, hands=True),
     "thought": dict(scale=810, above=0.5, below=2.2, hands=False),
     "stern": dict(scale=810, above=0.5, below=2.2, hands=False),
-    "low": dict(scale=330, above=0.5, below=6.8, hands=True),
+    "low": dict(scale=330, above=0.5, below=7.8, hands=True),
 }
 # The framings every pack may hold without the shots' cameras; at_ease shows at each of them.
 BASE_FRAMINGS = ("close", "waist", "thigh", "full")
@@ -1054,6 +1054,27 @@ def write_layered_pack(
                 and lit.have(folder, stem, size)
             )
 
+        previous = {}
+        if resume and (folder / C.MANIFEST).is_file():
+            try:
+                previous = json.loads((folder / C.MANIFEST).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                previous = {}
+
+        def previous_face(name: str, pose: str):
+            """The face rectangle an earlier run's manifest gives a framing's main set (at_ease) or
+            a pose's own set, when the folder holds one."""
+            f = (previous.get("framings") or {}).get(name) or {}
+            r = (
+                f.get("face")
+                if pose == stage_poses.HEAD_POSE
+                else ((f.get("sets") or {}).get(pose) or {}).get("face")
+            )
+            ok = isinstance(r, dict) and all(
+                isinstance(r.get(k), int) for k in ("x", "y", "width", "height")
+            )
+            return r if ok else None
+
         def joints_now() -> list:
             """The joints of the picture just rendered, in its pixels: x, y for each name."""
             got = pp.tab.evaluate("(n) => window.portrait.project(n)", page_names)
@@ -1223,6 +1244,19 @@ def write_layered_pack(
                 g["width"],
                 g["height"],
             )
+            # resume: the earlier run's rectangle when it lies within a few pixels (the noise of the
+            # measure moves the box by a step of the grid), so its face layers stay valid
+            old = previous_face(name, pose)
+            if (
+                old is not None
+                and all(
+                    abs(old[k] - face[k]) <= 3 * GRID
+                    for k in ("x", "y", "width", "height")
+                )
+                and old["x"] + old["width"] <= g["width"]
+                and old["y"] + old["height"] <= g["height"]
+            ):
+                face = dict(old)
             full = np.zeros((g["height"], g["width"]), bool)
             full[hy0:hy1, hx0:hx1] = changed
             mask = soft_mask(

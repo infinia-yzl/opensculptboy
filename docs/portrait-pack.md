@@ -159,7 +159,7 @@ Each framing has its own scale in pixels per head (the height from the chin to t
 | `full` | the whole body and the leap | 160; the leap's frames 230 | from the highest raised hand (the leap's included) to the ground; the leap's frames have the same camera and a frame of their own (`leap.frame`, `leap.head`), since the stage pushes in at the top of the leap until the figure takes 88 % of the height, which asks for about 210 |
 | `thought` | the thought (`chin`) | 810 | as `close` |
 | `stern` | the square-on stern close-up (`at_ease`, `arms_crossed`; the main faces `neutral` and `stern`) | 810 | as `close` |
-| `low` | the low, far shot of sadness (`downcast`) | 330 | from the top of the head to 6.8 heads below the crown |
+| `low` | the low, far shot of sadness (`downcast`) | 330 | from the top of the head to 7.8 heads below the crown, so the shot's mid-shin cut lies inside the frame |
 
 The export first renders a small outline of every pose and sets each framing's width from the widest pose at its height. Each framing holds the poses its shot shows (`layers.FRAMING_POSES`): the close framing leaves out the poses with a hand above the head, `chin` shows at `thought` alone, `downcast` at `low` alone, and the bow of `hand_on_chest` at `waist` and `thigh`. `thought`, `stern` and `low` render only through their shots' cameras (`--shots-file`), and `at_ease` shows at each of the first four.
 
@@ -213,7 +213,7 @@ The file's stances (`stances`, named by a pose's `stance`) give the hips, the sp
 
 ### Resuming a stopped run
 
-`--resume` continues a layered pack that a stopped run left in `--out`, with the same settings (the cuts of the next section included: a layer of another size or an expression the framing no longer holds is rendered again or removed). The folder is kept, and each layer whose file and pass files decode whole at their size is kept; a file that a stopped run cut short fails to decode and is rendered again. The first body layer is always rendered again, since its passes set the pack's scales, and a kept body layer whose front layer is missing has its passes rendered again for the front's. The probes, the framings, the face rectangles and the joints are measured again, which takes a minute or two. The result's `kept` counts the layers kept.
+`--resume` continues a layered pack that a stopped run left in `--out`, with the same settings (the cuts of the next section included: a layer of another size or an expression the framing no longer holds is rendered again or removed). The folder is kept, and each layer whose file and pass files decode whole at their size is kept; a file that a stopped run cut short fails to decode and is rendered again. The first body layer is always rendered again, since its passes set the pack's scales, and a kept body layer whose front layer is missing has its passes rendered again for the front's. The probes, the framings, the face rectangles and the joints are measured again, which takes a minute or two; a face rectangle within three steps of the grid of the one the folder's manifest gives keeps the earlier rectangle, since the measure's noise moves the box by a step, so the earlier faces stay valid. The result's `kept` counts the layers kept.
 
 ### Size and time
 
