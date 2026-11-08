@@ -121,6 +121,12 @@ FACE_PAD = 24
 # still gets a front, and the face layer never paints at_ease's skin over the pose's garment.
 FRONT_THRESHOLD = 40
 FRONT_MIN_SHARE = 0.0003
+# The front also takes the shade a pose casts on the skin beside the face (the raised shoulders and
+# the fur of crossed arms darken the neck): the difference smoothed over this many pixels, from the
+# first value of the ramp (none) to the second (all), outside the pixels that the faces themselves
+# change. The renders' noise stays far under the ramp once smoothed.
+FRONT_SHADE = (6.0, 16.0)
+FRONT_SHADE_BLUR = 3
 # The face layer paints only the face's own pixels: those that any face changes, grown by this
 # share of a head, with an edge this soft.
 MASK_GROW = 0.04
@@ -264,16 +270,26 @@ def soft_mask(changed: np.ndarray, grow: int, soft: int) -> np.ndarray:
 
 
 def front_mask(
-    pose_crop: np.ndarray, base_crop: np.ndarray, within: np.ndarray | None = None
+    pose_crop: np.ndarray,
+    base_crop: np.ndarray,
+    within: np.ndarray | None = None,
+    core: np.ndarray | None = None,
 ):
     """The pixels of a pose's face rectangle that lie in front of the face (a hand), as alpha
     0 to 255, inside the face's own pixels ``within`` (weights 0 to 1) when given; None when the
-    pose leaves them as at_ease shows them."""
+    pose leaves them as at_ease shows them. The shade the pose casts on the skin beside the face
+    joins them with a soft ramp (:data:`FRONT_SHADE`), outside ``core``, the pixels the faces
+    themselves change, when given."""
     d = np.abs(pose_crop.astype(np.int16) - base_crop.astype(np.int16)).max(-1)
     m = d > FRONT_THRESHOLD
+    lo, hi = FRONT_SHADE
+    shade = np.clip((_blur(d, FRONT_SHADE_BLUR) - lo) / (hi - lo), 0.0, 1.0)
+    if core is not None:
+        shade[core] = 0.0
     if within is not None:
         m &= within > 0.01
-    if m.mean() < FRONT_MIN_SHARE:
+        shade[within <= 0.01] = 0.0
+    if m.mean() < FRONT_MIN_SHARE and (shade >= 1.0).mean() < FRONT_MIN_SHARE:
         return None
     # two pixels of growth and a soft edge of one pixel
     grown = m.copy()
@@ -293,7 +309,7 @@ def front_mask(
         + soft[1:-1, :-2]
         + soft[1:-1, 2:]
     ) / 8
-    return np.clip(s * 255, 0, 255).astype(np.uint8)
+    return np.clip(np.maximum(s, shade) * 255, 0, 255).astype(np.uint8)
 
 
 class Framer:
@@ -1189,6 +1205,10 @@ def write_layered_pack(
         halves = {} if preview else pp.half_blinks(expressions)
         faces = pack_faces(expressions, halves)
 
+        # the pixels each face set's faces change, in its rectangle, a little grown: the front leaves them
+        # to the faces (front_mask's core)
+        cores: dict = {}
+
         def face_rect(name: str, pose: str, xs: list) -> tuple:
             """The face rectangle of a face set at a framing (the pose shown): the box of every
             pixel that one of the set's faces changes, and the face's own pixels as weights."""
@@ -1265,14 +1285,16 @@ def write_layered_pack(
                 face = dict(old)
             full = np.zeros((g["height"], g["width"]), bool)
             full[hy0:hy1, hx0:hx1] = changed
+            inside = full[
+                face["y"] : face["y"] + face["height"],
+                face["x"] : face["x"] + face["width"],
+            ]
             mask = soft_mask(
-                full[
-                    face["y"] : face["y"] + face["height"],
-                    face["x"] : face["x"] + face["width"],
-                ],
+                inside,
                 max(2, int(round(MASK_GROW * unit))),
                 max(1, int(round(MASK_SOFT * unit))),
             )
+            cores[(name, pose)] = _grow(inside, max(2, int(round(MASK_SOFT * unit))))
             return face, mask
 
         def write_faces(
@@ -1424,7 +1446,12 @@ def write_layered_pack(
                         kept["layers"] += 1
                         manifest_poses[pose]["front"].append(name)
                     elif base_crop is not None:
-                        m = front_mask(crop, base_crop, mask)
+                        m = front_mask(
+                            crop,
+                            base_crop,
+                            mask,
+                            cores.get((name, stage_poses.HEAD_POSE)),
+                        )
                         if m is not None and body_passes is None and lit.on:
                             # a kept body layer: its passes again, for the front's
                             body_passes = lit.render(view, neutral, samples_at(name))

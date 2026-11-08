@@ -594,6 +594,30 @@ class TestFramer(unittest.TestCase):
         self.assertIsNotNone(m)
         self.assertEqual(m[61, 71], 255)
 
+    def test_front_mask_takes_the_shade_beside_the_face(self):
+        # a pose darkens the neck beside the face by less than the threshold: the front takes it,
+        # with a soft ramp, and leaves the pixels the faces change to the faces
+        base = np.zeros((80, 80, 4), np.uint8)
+        base[..., :] = (200, 160, 140, 255)
+        pose = base.copy()
+        pose[40:80, 50:80, :3] -= 25
+        m = layers.front_mask(pose, base)
+        self.assertIsNotNone(m)
+        self.assertEqual(m[60, 65], 255)
+        self.assertEqual(m[60, 30], 0)
+        core = np.zeros((80, 80), bool)
+        core[40:80, 60:80] = True
+        m = layers.front_mask(pose, base, core=core)
+        self.assertEqual(m[60, 70], 0)
+        self.assertEqual(m[60, 54], 255)
+        # the renders' noise stays out of it
+        rng = np.random.default_rng(1)
+        noisy = base.copy()
+        noisy[..., :3] = np.clip(
+            base[..., :3].astype(np.int16) + rng.integers(-4, 5, (80, 80, 3)), 0, 255
+        ).astype(np.uint8)
+        self.assertIsNone(layers.front_mask(noisy, base))
+
     def test_soft_mask(self):
         changed = np.zeros((60, 80), bool)
         changed[20:22, 20:30] = changed[40:43, 30:50] = True
