@@ -1247,7 +1247,10 @@ def write_layered_pack(
             # resume: the earlier run's rectangle when it lies within a few pixels (the noise of the
             # measure moves the box by a step of the grid), so its face layers stay valid
             old = previous_face(name, pose)
-            if (
+            # only when the framing's head lands on the same pixels as in the earlier run
+            was = ((previous.get("framings") or {}).get(name) or {}).get("head") or {}
+            same_head = (was.get("x"), was.get("y")) == (head["x"], head["y"])
+            if same_head and (
                 old is not None
                 and all(
                     abs(old[k] - face[k]) <= 3 * GRID
