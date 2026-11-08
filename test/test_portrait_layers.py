@@ -610,6 +610,13 @@ class TestFramer(unittest.TestCase):
         m = layers.front_mask(pose, base, core=core)
         self.assertEqual(m[60, 70], 0)
         self.assertEqual(m[60, 54], 255)
+        # with the faces' own change: inside the core the pose's shade joins where it changes the
+        # pixel by more than the faces do, and the faces keep the pixels they change more
+        change = np.zeros((80, 80), np.float32)
+        change[40:80, 70:80] = 60.0
+        m = layers.front_mask(pose, base, core=core, change=change)
+        self.assertEqual(m[60, 64], 255)
+        self.assertEqual(m[60, 77], 0)
         # the renders' noise stays out of it
         rng = np.random.default_rng(1)
         noisy = base.copy()
