@@ -123,6 +123,9 @@ JOINTS = {
             radius=0.24,
             plain_keys=("up_in", "back_up"),
             borrowed_keys=("overhead_back", "overhead_side"),
+            rolls=(-70, -35, 0, 35, 70),
+            roll_from=120,
+            roll_bones=("upperarm01", "upperarm02"),
             bones=(
                 "upperarm01.L",
                 "upperarm02.L",
@@ -324,6 +327,31 @@ def borrowed_keys(j):
     return JOINTS[j].get("slide", {}).get("borrowed_keys", ())
 
 
+def roll_samples(j, key):
+    """the rolls of the limb, in degrees, that the shape of a key is fitted over: the driver
+    reads the limb's direction alone, so the shape of a raised key has to suit every roll"""
+    S = JOINTS[j].get("slide", {})
+    if "rolls" not in S or JOINTS[j]["targets"][key][0] < S["roll_from"]:
+        return (0,)
+    return S["rolls"]
+
+
+def rolled(pose, j, deg, side="L"):
+    """the pose with the limb rolled about its own axis, shared evenly over the joint's roll
+    bones as the shared poses share the upper arm's roll"""
+    J = JOINTS[j]
+    q = pose.copy()
+    F = P.fk(q)
+    a, b = (x + "." + side for x in J["bones"])
+    turn = P.qmat(
+        P.qaxis(unit(F[1][IX[b]] - F[1][IX[a]]), deg / len(J["slide"]["roll_bones"]))
+    )
+    for bone in J["slide"]["roll_bones"]:
+        F = P.fk(q)
+        P.set_world_rot(q, bone + "." + side, turn @ F[0][IX[bone + "." + side]], F)
+    return q
+
+
 def shape_names(j):
     J = JOINTS[j]
     if J["kind"] == "hinge":
@@ -502,18 +530,34 @@ def fit_shapes():
                 + mu * Lap
                 + J.get("ridge", 1e-8) * sp.eye(3 * n_r)
             )
+            own = np.zeros_like(Vs)
+            if k in borrowed_keys(j):
+                own = base - Vs
+            elif free is not None and k not in plain_keys(j):
+                b0 = np.einsum("nki,nk->ni", A, d["X"][reg] - Xl).ravel()
+                plain_delta = spla.spsolve(Mtx.tocsc(), b0).reshape(n_r, 3)
+                own[reg] = plain_delta * mask[reg][:, None]
+                unslid[k] = own
+            rolls = [r for r in roll_samples(j, k) if r != 0]
+            if rolls:
+                for r in rolls:
+                    Fr = P.fk(rolled(p, j, r))
+                    Xr = SL.slide(Vs, P.skin(Fr, Vs + own, si, sw), T, free)
+                    Ar = np.einsum("nk,nkij->nij", sw[reg], Fr[0][si[reg]])
+                    AtA = AtA + np.einsum("nki,nkj->nij", Ar, Ar)
+                    Xlr = P.skin(Fr, Vs[reg], si[reg], sw[reg])
+                    b = b + np.einsum("nki,nk->ni", Ar, Xr[reg] - Xlr).ravel()
+                AtA, b = AtA / (len(rolls) + 1), b / (len(rolls) + 1)
+                Mtx = (
+                    sp.coo_matrix(
+                        (AtA.ravel(), (rows, cols)), shape=(3 * n_r, 3 * n_r)
+                    ).tocsr()
+                    + mu * Lap
+                    + J.get("ridge", 1e-8) * sp.eye(3 * n_r)
+                )
             delta = spla.spsolve(Mtx.tocsc(), b).reshape(n_r, 3)
             D = np.zeros_like(Vs)
             D[reg] = delta * mask[reg][:, None]
-            if (
-                older is not None
-                and k not in plain_keys(j)
-                and k not in borrowed_keys(j)
-            ):
-                b0 = np.einsum("nki,nk->ni", A, d["X"][reg] - Xl).ravel()
-                plain_delta = spla.spsolve(Mtx.tocsc(), b0).reshape(n_r, 3)
-                unslid[k] = np.zeros_like(Vs)
-                unslid[k][reg] = plain_delta * mask[reg][:, None]
             keep = np.linalg.norm(D, axis=1) > 2e-5
             left = np.where(keep)[0]
             shapes.append(dict(name=f"{nm}.L", idx=left, D=D[left]))
