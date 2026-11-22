@@ -76,7 +76,6 @@ class TestHollow(unittest.TestCase):
         axis=np.array([0.0, 1.0, 0.0]),
         outward=np.array([0.0, 0.0, 1.0]),
         half_width=0.15,
-        reach=0.2,
     )
 
     def test_a_dome_has_no_hollow(self):
@@ -111,11 +110,66 @@ class TestHollow(unittest.TestCase):
         alone = SM.hollow_depth(V, F, **self.FRAME)
         self.assertAlmostEqual(got["depth"], alone["depth"], 9)
 
+    def test_the_line_of_a_cut_is_connected(self):
+        V, F = sheet(nx=41)
+        V[:, 2] = -2.0 * V[:, 0] ** 2
+        segments, rows, edges = SM.section(V, F, np.zeros(3), np.array([0.0, 1.0, 0.0]))
+        line, seed, closed = SM.section_line(segments, edges, len(segments) // 2)
+        self.assertFalse(closed)
+        self.assertEqual(len(line), len(segments) + 1)
+        np.testing.assert_allclose(line[seed], segments[len(segments) // 2, 0])
+        steps = np.diff(line[:, 0])
+        self.assertTrue((steps >= -1e-12).all() or (steps <= 1e-12).all())
+        np.testing.assert_allclose(line[:, 1], 0.0, atol=1e-12)
+        self.assertAlmostEqual(abs(line[0, 0]), 0.2, 9)
+        self.assertAlmostEqual(abs(line[-1, 0]), 0.2, 9)
+
+    def test_a_limb_bulges_and_a_groove_in_it_dips(self):
+        n, m, radius = 96, 21, 0.05
+        angle = np.linspace(0.0, 2 * np.pi, n, endpoint=False)
+        along = np.linspace(-0.1, 0.1, m)
+        A, Y = np.meshgrid(angle, along, indexing="ij")
+        dip = 0.012 * np.exp(-((np.angle(np.exp(1j * (A - np.pi / 2))) / 0.35) ** 2))
+        R = radius - dip
+        tube = np.stack([R * np.cos(A), Y, R * np.sin(A)], -1).reshape(-1, 3)
+        round_tube = np.stack([radius * np.cos(A), Y, radius * np.sin(A)], -1).reshape(
+            -1, 3
+        )
+        i, j = np.meshgrid(np.arange(n), np.arange(m - 1), indexing="ij")
+        a = (i * m + j).ravel()
+        b = (((i + 1) % n) * m + j).ravel()
+        F = np.concatenate([np.stack([a, a + 1, b + 1], 1), np.stack([a, b + 1, b], 1)])
+        frame = dict(
+            centre=np.array([0.0, 0.0, radius]),
+            axis=np.array([0.0, 1.0, 0.0]),
+            outward=np.array([0.0, 0.0, 1.0]),
+            half_width=0.04,
+        )
+        segments, rows, edges = SM.section(tube, F, frame["centre"], frame["axis"])
+        line, seed, closed = SM.section_line(segments, edges, 0)
+        self.assertTrue(closed)
+        self.assertEqual(len(line), len(segments))
+        self.assertEqual(seed, len(line) // 2 - 1)
+        height = (radius - dip[:, 0]) * np.sin(angle)
+        near = np.abs(radius * np.cos(angle)) < 0.04
+        want = height[near & (height > 0)].max() - height[n // 4]
+        for direction in (1.0, -1.0):
+            with self.subTest(direction=direction):
+                frame["axis"] = np.array([0.0, direction, 0.0])
+                self.assertLess(SM.hollow_depth(round_tube, F, **frame)["depth"], 1e-4)
+                got = SM.hollow_depth(tube, F, **frame)
+                self.assertAlmostEqual(got["depth"], want, delta=5e-4)
+                self.assertLess(abs(got["floor"]), 0.005)
+                self.assertLess(got["front"], 0.0)
+                self.assertGreater(got["back"], 0.0)
+                self.assertTrue((np.diff(got["profile"][:, 0]) > -1e-9).all())
+
     def test_frame_of_a_raised_arm(self):
         shoulder = np.array([0.2, 0.0, 1.4])
         elbow = shoulder + 0.3 * np.array([0.5, 0.0, 0.866])
         centre = np.array([0.24, 0.01, 1.33])
         axis, outward, across = SM.armpit_frame(shoulder, elbow, centre)
+        self.assertAlmostEqual(axis[1], 0.0, 12)
         M = np.stack([axis, outward, across])
         np.testing.assert_allclose(M @ M.T, np.eye(3), atol=1e-12)
         self.assertGreater(outward @ (centre - shoulder), 0)
