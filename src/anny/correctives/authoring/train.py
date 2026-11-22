@@ -109,6 +109,8 @@ JOINTS = {
             "back_side": (60, -40),
             "up_in": (155, 175),
             "back_up": (150, -90),
+            "overhead_back": (140, -15),
+            "overhead_side": (155, 15),
         },
         # overhead and across or behind the head, the simulation folds the armpit in on itself,
         # so the correction fades out toward these keys
@@ -399,7 +401,8 @@ def fit_shapes():
     (:mod:`anny.correctives.authoring.slide`), so that the shape also spreads the stretch of
     the skin; its report then holds the stretch of the armpit on the simulated surface, on
     the slid surface and on the fitted shape (the value that 95 % of the area stays below,
-    and the peak).
+    and the peak), and the number of the joint's vertices where the simulated surface and the
+    fitted shape pass through themselves.
 
     Returns a list of dicts (name, idx, D) in the legacy frame, and a report per key.
     """
@@ -504,6 +507,19 @@ def fit_shapes():
                     summary = SM.stretch_summary(s1, s2, area, armpit)
                     r[f"stretch_{label}_p95"] = summary["p95"]
                     r[f"stretch_{label}_peak"] = summary["peak"]
+                from .sim import crossing_vertices
+
+                r["crossing_sim"] = int(
+                    np.isin(crossing_vertices(d["X"], T), reg).sum()
+                )
+                r["crossing_fit"] = int(
+                    np.isin(crossing_vertices(fitted, T), reg).sum()
+                )
+                print(
+                    f"{'':>24}  vertices of the joint where the surface passes through itself: "
+                    f"simulation {r['crossing_sim']}, shape {r['crossing_fit']}",
+                    flush=True,
+                )
                 print(
                     f"{'':>24}  armpit stretch (95 % / peak): simulation "
                     f"{r['stretch_sim_p95']:.2f} / {r['stretch_sim_peak']:.2f}, slid "
