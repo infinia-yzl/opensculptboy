@@ -547,6 +547,18 @@ def _portrait_pack(args, parser) -> int:
         _load_character(
             args.character, parser
         )  # a card that cannot be read is a usage error
+    if args.layers:
+        return _portrait_layers(args, parser)
+    if (
+        args.passes
+        or args.light_rig
+        or args.pass_quality is not None
+        or args.resume
+        or args.framing_samples
+    ):
+        parser.error(
+            "--passes, --light-rig, --pass-quality, --framing-samples and --resume take --layers."
+        )
     try:
         result = render.write_pack(
             args.out,
@@ -585,6 +597,79 @@ def _portrait_pack(args, parser) -> int:
     else:
         _result(
             f"{args.out}: {check['frames']} frames, {check['bytes'] / 2**20:.1f} MiB, "
+            f"check {'passed' if check['pass'] else 'failed'} ({result['seconds']} s)"
+        )
+    for p in check["problems"]:
+        print(f"check failed: {p['code']}: {p['message']}", file=sys.stderr)
+    return 0 if check["pass"] else 1
+
+
+def _portrait_layers(args, parser) -> int:
+    """Write a layered pack (squire.portraits/2): 0 when its check passes, 1 otherwise."""
+    from opensculptboy.portrait_pack import layers, light, render
+
+    split = lambda v: [x.strip() for x in v.split(",") if x.strip()] if v else None  # noqa: E731
+    if args.scale <= 0 or args.scale > 1:
+        parser.error("--scale takes a number above 0 and at most 1.")
+    if not 1 <= args.quality <= 100:
+        parser.error("--quality takes 1 to 100.")
+    if args.pass_quality is not None and not 1 <= args.pass_quality <= 100:
+        parser.error("--pass-quality takes 1 to 100.")
+    try:
+        framing_samples = layers.parse_framing_samples(args.framing_samples)
+    except ValueError as error:
+        parser.error(_one_line(error))
+    try:
+        result = layers.write_layered_pack(
+            args.out,
+            card=args.character,
+            expressions=render.parse_expressions(args.expressions),
+            poses=split(args.poses),
+            framings=split(args.framings),
+            leap=not args.no_leap,
+            licence=args.licence,
+            companion=args.companion,
+            samples=args.samples,
+            fmt=args.format,
+            quality={"body": args.quality, "face": min(100, args.quality + 2)},
+            scale=args.scale,
+            page=args.page,
+            log=lambda m: print(m, file=sys.stderr),
+            preview=args.preview,
+            poses_file=args.poses_file,
+            shots_file=args.shots_file,
+            passes=light.parse_passes(args.passes),
+            light_rig=args.light_rig,
+            pass_quality=args.pass_quality,
+            resume=args.resume,
+            framing_samples=framing_samples,
+        )
+    except ValueError as error:
+        parser.error(_one_line(error))
+    except (OSError, render.PortraitError) as error:
+        if args.json:
+            _result(
+                {
+                    "ok": False,
+                    "command": "portrait-pack --layers",
+                    "error": {"code": "render_error", "message": _one_line(error)},
+                }
+            )
+        print(f"error: {_one_line(error)}", file=sys.stderr)
+        return 1
+    check = result["check"]
+    if args.json:
+        _result(
+            {
+                "ok": check["pass"],
+                "command": "portrait-pack --layers",
+                "folder": args.out,
+                **result,
+            }
+        )
+    else:
+        _result(
+            f"{args.out}: {result['files']} files, {check['bytes'] / 2**20:.1f} MiB, "
             f"check {'passed' if check['pass'] else 'failed'} ({result['seconds']} s)"
         )
     for p in check["problems"]:
@@ -1881,6 +1966,87 @@ def main(argv=None) -> int:
     pp.add_argument(
         "--page",
         help="the built viewer page (default: viewer/dist/anny_viewer.html of the repository)",
+    )
+    pp.add_argument(
+        "--layers",
+        action="store_true",
+        help="write a layered pack (squire.portraits/2): body layers per pose and framing, face "
+        "layers, front layers and the leap, in WebP (docs/portrait-pack.md)",
+    )
+    pp.add_argument(
+        "--poses", help="with --layers: comma-separated poses (default: all eleven)"
+    )
+    pp.add_argument(
+        "--framings",
+        help="with --layers: comma-separated framings among close, waist, thigh, full, and with "
+        "--shots-file thought, stern and low (default: every framing the shots render)",
+    )
+    pp.add_argument(
+        "--no-leap",
+        action="store_true",
+        help="with --layers: leave out the leap's frames",
+    )
+    pp.add_argument(
+        "--format",
+        default="webp",
+        choices=("webp", "png"),
+        help="with --layers: the layers' format (default webp)",
+    )
+    pp.add_argument(
+        "--quality",
+        type=int,
+        default=88,
+        help="with --layers: the WebP quality of the body layers (default 88; faces take 2 more)",
+    )
+    pp.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+        help="with --layers: a factor on every framing's pixels per head, for quick trials (default 1)",
+    )
+    pp.add_argument(
+        "--preview",
+        action="store_true",
+        help="with --layers: the body layers alone, to look at the poses",
+    )
+    pp.add_argument(
+        "--poses-file",
+        help="with --layers: the companion's shared pose file (squire.poses/1; default: "
+        "the copy in opensculptboy/data/portrait/poses.json)",
+    )
+    pp.add_argument(
+        "--shots-file",
+        help="with --layers: the stage's shots (squire.shots/1): each framing renders "
+        "through the camera of the shot it serves",
+    )
+    pp.add_argument(
+        "--passes",
+        help="with --layers: the light passes of every layer, for a stage that relights the stills: "
+        "key,fill,rim or base,rim (the key and the fill in one pass), each in linear light "
+        "(docs/portrait-pack.md)",
+    )
+    pp.add_argument(
+        "--light-rig",
+        choices=("studio", "stage"),
+        help="with --layers: the lights: the page's studio preset, or the stage's rig with "
+        "the key from the open side (default: stage with --passes, else the page's own preset)",
+    )
+    pp.add_argument(
+        "--pass-quality",
+        type=int,
+        help="with --passes: the WebP quality of the pass files (default: the layer's and 4 more)",
+    )
+    pp.add_argument(
+        "--framing-samples",
+        help="with --layers: fewer samples for some framings, as framing=samples pairs (default "
+        "thigh=8,full=8; 'none' gives every framing --samples); a framing never takes more than "
+        "--samples",
+    )
+    pp.add_argument(
+        "--resume",
+        action="store_true",
+        help="with --layers: continue a pack an earlier run left unfinished in --out: every layer "
+        "whose file and pass files already decode at their size is kept, and the rest is rendered",
     )
     pp.add_argument("--json", action="store_true", help="print the result as JSON")
     pp.set_defaults(portrait_parser=pp)

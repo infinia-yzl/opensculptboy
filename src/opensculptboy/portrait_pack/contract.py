@@ -259,6 +259,18 @@ def check_manifest(manifest) -> list[dict]:
     return problems
 
 
+def _schema_of(folder: pathlib.Path):
+    """The schema a pack's manifest names, or None."""
+    try:
+        data = (folder / MANIFEST).read_bytes()
+        if len(data) > MAX_MANIFEST_BYTES:
+            return None
+        m = json.loads(data.decode("utf-8-sig"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    return m.get("schema") if isinstance(m, dict) else None
+
+
 def check_pack(folder) -> dict:
     """
     Check a pack folder against the contract. Returns ``{"pass", "problems", "frames",
@@ -271,6 +283,10 @@ def check_pack(folder) -> dict:
         raise FileNotFoundError(f"{folder} does not exist.")
     if not folder.is_dir():
         raise NotADirectoryError(f"{folder} is not a folder.")
+    if _schema_of(folder) == "squire.portraits/2":
+        from opensculptboy.portrait_pack.layered_contract import check_layered_pack
+
+        return check_layered_pack(folder)
     problems: list[dict] = []
 
     def bad(code, message, file=None):

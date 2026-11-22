@@ -311,6 +311,7 @@ const U = {
   uRimDir: { value: new THREE.Vector3() }, uRimColor: { value: new THREE.Vector3() },
   uSH: { value: Array.from({ length: 9 }, () => new THREE.Vector3()) },
   uEnv: { value: null }, uEnvKey: { value: null }, uEnvSpec: { value: 1.0 }, uEnvDiff: { value: 1.0 },
+  uEmit: { value: 1.0 },   // the garments' own light (emissive); the portrait pack's light passes keep it in the fill pass
   uShadowRaw: { value: null }, uShadowCmp: { value: null }, uHairShadow: { value: null }, uShadowMat: { value: new THREE.Matrix4() },
   uShadowP: { value: new THREE.Vector4() }, uShadowRot: { value: new THREE.Matrix3() },
   uBodyShadowCmp: { value: null }, uBodyShadowMat: { value: new THREE.Matrix4() }, uBodyShadowP: { value: new THREE.Vector4() },
@@ -3434,15 +3435,34 @@ void main(){
   return SHEET.disp;
 }
 // the camera of a sheet view: in front of the figure's joints, the target plane through their centre
+// (a view's cz, when it has one, puts the target plane at that depth: the portrait pack's views look at the head)
+// A view with a `camera` ({eye, pitch, focal, px, py}: the portrait pack's shot cameras) puts the camera at `eye`, pitched by
+// `pitch` degrees (positive looks down), with a focal length of `focal` pixels and its principal point at (px, py) in the
+// frame's pixels: the frame is then a rectangle of a larger picture centred on the principal point (sheetVirtual).
+function sheetVirtual(view: any) {
+  const c = view.camera, W = Math.max(1, Math.round(view.width)), H = Math.max(1, Math.round(view.height));
+  const Wv = 2 * Math.ceil(Math.max(c.px, W - c.px)), Hv = 2 * Math.ceil(Math.max(c.py, H - c.py));
+  return { W: Wv, H: Hv, x: Wv / 2 - c.px, y: Hv / 2 - c.py };
+}
 function sheetCamera(view: any) {
-  const cam = SHEET.cam, d = view.halfH / Math.tan(SHEET_FOV * DEG / 2), cz = (FIG.lo.z + FIG.hi.z) / 2;
+  const cam = SHEET.cam;
+  if (view.camera) {
+    const c = view.camera, v = sheetVirtual(view), t = c.pitch * DEG, e = c.eye;
+    const d = Math.hypot(e[0] - FIG.head.x, e[1] - FIG.head.y, e[2] - FIG.head.z);
+    cam.fov = 2 * Math.atan(v.H / 2 / c.focal) / DEG; cam.aspect = v.W / v.H; cam.near = Math.max(0.05, d - 3); cam.far = d + 3;
+    cam.position.set(e[0], e[1], e[2]); cam.up.set(0, 1, 0); cam.lookAt(e[0], e[1] - Math.sin(t), e[2] - Math.cos(t));
+    cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+    return cam;
+  }
+  const d = view.halfH / Math.tan(SHEET_FOV * DEG / 2), cz = typeof view.cz === 'number' ? view.cz : (FIG.lo.z + FIG.hi.z) / 2;
   cam.fov = SHEET_FOV; cam.aspect = view.width / view.height; cam.near = Math.max(0.05, d - 3); cam.far = d + 3;
   cam.position.set(view.cx, view.cy, cz + d); cam.up.set(0, 1, 0); cam.lookAt(view.cx, view.cy, cz);
   cam.updateProjectionMatrix(); cam.updateMatrixWorld();
   return cam;
 }
-// one accumulated pass of a sheet picture (sample s), as renderPass draws one of the page's view
-function sheetPass(T: any, cam: any, w: number, h: number, s: number) {
+// one accumulated pass of a sheet picture (sample s), as renderPass draws one of the page's view; with `off`, the
+// picture is the rectangle (x, y, w, h) of a frame of W x H pixels, drawn with that frame's projection
+function sheetPass(T: any, cam: any, w: number, h: number, s: number, off: any = null) {
   if (HAIR && HAIR.update(renderer)) shadowsDirty = true;
   if (shadowsDirty) renderShadows();
   const bgOn = bgMesh.visible, floorOn = floorMesh.visible;
@@ -3450,9 +3470,9 @@ function sheetPass(T: any, cam: any, w: number, h: number, s: number) {
   for (const rt of T.all) setRegion(rt, w, h);
   sssU.uUvScale.value.set(w / T.W, h / T.H);
   BG.uRes.value.set(w, h);
-  for (const o of hairObjs) o.userData.hu.uViewportH.value = h;
+  for (const o of hairObjs) o.userData.hu.uViewportH.value = off ? off.H : h;
   const jx = s === 0 ? 0 : halton(s, 2) - 0.5, jy = s === 0 ? 0 : halton(s, 3) - 0.5;
-  cam.setViewOffset(w, h, jx, jy, w, h);
+  if (off) cam.setViewOffset(off.W, off.H, off.x + jx, off.y + jy, w, h); else cam.setViewOffset(w, h, jx, jy, w, h);
   U.uFrame.value = s;
   renderer.setClearColor(0x000000, 0);
   renderer.setRenderTarget(T.scene); renderer.clear(); renderer.render(scene, cam);
@@ -3460,7 +3480,7 @@ function sheetPass(T: any, cam: any, w: number, h: number, s: number) {
   const near = sssU.uNear.value, far = sssU.uFar.value;
   if (SSS_ON) {
     sssU.tSSS.value = T.scene.textures[1]; sssU.tDepth.value = T.scene.depthTexture;
-    sssU.uProj.value = h / (2 * Math.tan(cam.fov * DEG / 2));
+    sssU.uProj.value = (off ? off.H : h) / (2 * Math.tan(cam.fov * DEG / 2));
     sssU.uTexel.value.set(1 / T.W, 1 / T.H);
     sssU.uFrameS.value = s; sssU.uNear.value = cam.near; sssU.uFar.value = cam.far;
     quadMesh.material = sssMat;
@@ -3476,22 +3496,27 @@ function sheetPass(T: any, cam: any, w: number, h: number, s: number) {
   renderer.setRenderTarget(null);
   bgMesh.visible = bgOn; floorMesh.visible = floorOn;
 }
-async function sheetRender(view: any, samples: number, tick: (px: number) => Promise<void>) {
-  const w = Math.max(1, Math.round(view.width)), h = Math.max(1, Math.round(view.height));
+// a view's region {x, y, w, h} (optional, in whole pixels of the frame) draws that rectangle of the frame alone
+async function sheetRender(view: any, samples: number, tick: (px: number) => Promise<void>, readout = true) {
+  const W = Math.max(1, Math.round(view.width)), H = Math.max(1, Math.round(view.height)), r = view.region;
+  const w = r ? Math.max(1, Math.round(r.w)) : W, h = r ? Math.max(1, Math.round(r.h)) : H;
+  const virt = view.camera ? sheetVirtual(view) : null;
+  const off = virt ? { W: virt.W, H: virt.H, x: virt.x + (r ? Math.round(r.x) : 0), y: virt.y + (r ? Math.round(r.y) : 0) }
+    : r ? { W, H, x: Math.round(r.x), y: Math.round(r.y) } : null;
   let T = sheetTargets(w, h);
   sheetTurnIfNeeded(view.turn);
   // the share of the hair strands that the page's view draws for a head of this size (updateHairLod)
   if (HAIR) {
-    const px = 0.24 * HEADMAP.k / (2 * view.halfH) * h, want = Math.min(1, (px / LOD.full) ** 2);
+    const px = 0.24 * HEADMAP.k / (2 * view.halfH) * H, want = Math.min(1, (px / LOD.full) ** 2);
     const lod = LOD.steps.find((v: number) => v <= want * 1.1) ?? LOD.steps[LOD.steps.length - 1];
     if (lod !== HAIR.lod) { HAIR.setLod(lod); applyHairWidth(); shadowsDirty = true; }
   }
   for (let s = 0; s < samples; s++) {
     T = sheetTargets(w, h);
-    sheetPass(T, sheetCamera(view), w, h, s);
+    sheetPass(T, sheetCamera(view), w, h, s, off);
     await tick(w * h);
   }
-  return sheetReadout(w, h, SHEET.lights === 'page' ? renderer.toneMappingExposure : SHEET.exposure);
+  return readout ? sheetReadout(w, h, SHEET.lights === 'page' ? renderer.toneMappingExposure : SHEET.exposure) : (null as any);
 }
 // the accumulated picture through the display pass at an exposure, as an ImageData with the rows from the top
 async function sheetReadout(w: number, h: number, exposure: number) {
@@ -3509,6 +3534,38 @@ async function sheetReadout(w: number, h: number, exposure: number) {
   const img = new ImageData(w, h), row = w * 4;
   for (let j = 0; j < h; j++) img.data.set(px.subarray((h - 1 - j) * row, (h - j) * row), j * row);
   return img;
+}
+// the accumulated picture in linear light: the straight colour times the exposure, before the display pass's tone curve,
+// with the coverage as alpha, as floats with the rows from the top (the portrait pack's light passes)
+async function sheetReadoutLinear(w: number, h: number, exposure: number) {
+  const T = SHEET.T;
+  if (!SHEET.lin || SHEET.lin.width !== T.W || SHEET.lin.height !== T.H) {
+    SHEET.lin?.dispose();
+    SHEET.lin = new THREE.WebGLRenderTarget(T.W, T.H, { type: THREE.FloatType, depthBuffer: false, generateMipmaps: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+  }
+  SHEET.linMat = SHEET.linMat || new THREE.ShaderMaterial({
+    uniforms: { tAcc: { value: null }, uUvScale: { value: new THREE.Vector2(1, 1) }, uExposure: { value: 1 } },
+    vertexShader: FSQ_VS,
+    fragmentShader: `uniform sampler2D tAcc; uniform vec2 uUvScale; uniform float uExposure; varying vec2 vUv;
+void main(){
+  vec4 c = texture2D(tAcc, vUv * uUvScale);
+  float a = clamp(c.a, 0.0, 1.0);
+  vec3 rgb = a > 0.002 ? min(c.rgb / a, vec3(64.0)) : vec3(0.0);
+  gl_FragColor = vec4(rgb * uExposure, a);
+}`,
+    depthTest: false, depthWrite: false, toneMapped: false, blending: THREE.NoBlending,
+  });
+  const m = SHEET.linMat;
+  m.uniforms.tAcc.value = T.acc[0].texture; m.uniforms.uUvScale.value.set(w / T.W, h / T.H); m.uniforms.uExposure.value = exposure;
+  quadMesh.material = m;
+  setRegion(SHEET.lin, w, h);
+  renderer.setRenderTarget(SHEET.lin); renderer.render(quadScene, quadCam); renderer.setRenderTarget(null);
+  const px = new Float32Array(w * h * 4);
+  if (renderer.readRenderTargetPixelsAsync) await renderer.readRenderTargetPixelsAsync(SHEET.lin, 0, 0, w, h, px);
+  else renderer.readRenderTargetPixels(SHEET.lin, 0, 0, w, h, px);
+  const out = new Float32Array(w * h * 4), row = w * 4;
+  for (let j = 0; j < h; j++) out.set(px.subarray((h - 1 - j) * row, (h - j) * row), j * row);
+  return out;
 }
 // the sheet's lights: 'studio' (SHEET_LIGHTS, with a metered exposure) or 'page' (the page's preset, its rotation and
 // its exposure)
@@ -3612,8 +3669,14 @@ function portraitView(width: number, height: number) {
 function portraitAnchor(view: any) {
   const eyes = FIG.joints.filter((j: any) => j.name === 'eye.L' || j.name === 'eye.R');
   const p = eyes.length === 2 ? eyes[0].p.clone().add(eyes[1].p).multiplyScalar(0.5) : FIG.head.clone();
-  const n = p.project(sheetCamera(view));
-  return { x: (n.x + 1) / 2 * view.width, y: (1 - n.y) / 2 * view.height };
+  return portraitPixel(view, p);
+}
+// a point of the world in a view's frame: pixels from the frame's top-left corner
+function portraitPixel(view: any, p: any) {
+  const n = p.clone().project(sheetCamera(view));
+  if (!view.camera) return { x: (n.x + 1) / 2 * view.width, y: (1 - n.y) / 2 * view.height };
+  const v = sheetVirtual(view);
+  return { x: (n.x + 1) / 2 * v.W - v.x, y: (1 - n.y) / 2 * v.H - v.y };
 }
 function portraitBase64(d: Uint8ClampedArray) {
   let s = '';
@@ -3702,9 +3765,125 @@ async function portraitOpening(actions: Record<string, number>) {
     const w = { Left: (lo.Left + hi.Left) / 2, Right: (lo.Right + hi.Right) / 2 }, o = await portraitOpening(at(w));
     return { eyeBlinkLeft: w.Left, eyeBlinkRight: w.Right, open: o0, half: o };
   },
+  // The layered pack (squire.portraits/2) poses the figure and frames it per framing:
+  // the names of the rig's bones, in the order of the pose library's rotations
+  bones: () => (MOTION.nb ? RIG.bones.slice(0, MOTION.nb).map((b: any) => b.name) : []),
+  // show a still pose: q holds one rotation per bone (x, y, z, w, in the pose library's convention and the page's
+  // axes, the order of bones()), root the root's offset in hip heights; the page grounds it as it grounds the
+  // library's poses. Returns the figure as it stands (SHEET_HOST.figure, with the point between the eyes).
+  pose(q: number[], root: number[] = [0, 0, 0], label = 'Portrait pose') {
+    if (!MOTION.nb || q.length !== MOTION.nb * 4) throw new Error(`A pose takes ${MOTION.nb * 4} numbers.`);
+    writePoseFrame('portrait_pose', label, q);
+    // the rotations unrounded, as the pose editor keeps its own pose
+    const c = MOTION.byName.portrait_pose;
+    c.exact = { q: Float32Array.from(q), root: [root[0] || 0, root[1] || 0, root[2] || 0] };
+    setMotion('portrait_pose', { instant: true, t: 0, remember: false });
+    PORTRAIT.eyes = null;
+    return portraitFigure();
+  },
+  // the figure as it stands
+  figure: () => portraitFigure(),
+  // frame the next frames with this view ({cx, cy, cz, halfH, width, height, region}, or a shot's camera: {camera: {eye,
+  // pitch, focal, px, py}, halfH, width, height, region, turn}, see sheetCamera); `turn` turns the figure about the
+  // vertical (degrees, positive toward the figure's left). Returns the anchor in the frame's pixels.
+  view(view: any) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    PORTRAIT.view = { turn: 0, ...view };
+    sheetTurnIfNeeded(PORTRAIT.view.turn);
+    return { anchor: portraitAnchor(PORTRAIT.view) };
+  },
+  // the figure's joints (the rig's bone names) in the current view's frame, in pixels from its top-left corner,
+  // with 'eyes' (the point between the eyes), 'crown' and 'chin'
+  project(names: string[]) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    const out: Record<string, number[]> = {}, f: any = portraitFigure();
+    const at = (n: string) => n === 'crown' ? FIG.crown : n === 'chin' ? FIG.chin : n === 'eyes' ? new THREE.Vector3(...f.eyes) : FIG.joints.find((j: any) => j.name === n)?.p;
+    for (const n of names) { const p = at(n); if (p) { const q = portraitPixel(PORTRAIT.view, p); out[n] = [q.x, q.y]; } }
+    return out;
+  },
+  // The light passes of the stage (opensculptboy.portrait_pack.light): `light(rig)` lights the next frames with a
+  // rig of the shape of PRESETS (sky, horizon, ground, boxes, key, rim and exposure), or with the page's preset again
+  // when `rig` is null; `pass(name)` keeps one part of the rig's light for the next frames; `linear(actions, samples)`
+  // gives a frame in linear light. Returns the display pass's settings, which the stage repeats on the sum.
+  light(rig: any) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    portraitPass('all');
+    if (rig) { PASS.rig = rig; SHEET.lights = 'rig'; SHEET.exposure = rig.exposure; applyLights(rig); }
+    else { PASS.rig = null; sheetLights('page'); }
+    PASS.black = null;
+    return portraitDisplay();
+  },
+  // 'all', 'key' (the key light and its soft box's reflection), 'fill' (the environment: the sky, the ground and the soft
+  // boxes, with the garments' own light), 'rim' (the rim light) or 'base' (the key and the fill together)
+  pass(name: string) {
+    if (!PASS_NAMES.includes(name)) throw new Error(`Unknown light pass ${name}; the passes are ${PASS_NAMES.join(', ')}.`);
+    portraitPass(name);
+    return name;
+  },
+  // one frame in linear light: the straight colour times the display's exposure, before the tone curve, and the coverage
+  // as alpha, as half floats (four a pixel, the rows from the top) in base64
+  async linear(actions: Record<string, number>, samples = 16) {
+    if (!PORTRAIT.view) throw new Error('Call portrait.begin first.');
+    await FACE!.set({ actions });
+    const view = PORTRAIT.view, r = view.region;
+    const w = r ? Math.max(1, Math.round(r.w)) : Math.max(1, Math.round(view.width));
+    const h = r ? Math.max(1, Math.round(r.h)) : Math.max(1, Math.round(view.height));
+    await sheetRender(view, Math.max(1, samples | 0), async () => {}, false);
+    const f = await sheetReadoutLinear(w, h, SHEET.lights === 'page' ? renderer.toneMappingExposure : SHEET.exposure);
+    return portraitBase64(new Uint8Array(halfFloats(f).buffer));
+  },
   // the page's own view again
-  end() { if (PORTRAIT.view) { PORTRAIT.view = null; PORTRAIT.eyes = null; sheetHold(false); } },
+  end() { if (PORTRAIT.view) { portraitPass('all'); if (PASS.rig) { PASS.rig = null; sheetLights('page'); } PORTRAIT.view = null; PORTRAIT.eyes = null; sheetHold(false); } },
 };
+// The light passes. A pass zeroes the lights it leaves out, so the passes add up to the whole rig in linear light: the
+// lights reach the colour only through uKeyColor (with the key's soft box in uEnvKey), uRimColor, the environment
+// (uEnvDiff, uEnvSpec) and the garments' own light (uEmit).
+const PASS_NAMES = ['all', 'key', 'fill', 'rim', 'base'];
+const PASS: any = { rig: null, name: 'all', saved: null, black: null };
+function portraitPass(name: string) {
+  if (PASS.name === 'all' && name !== 'all') PASS.saved = { key: U.uKeyColor.value.clone(), rim: U.uRimColor.value.clone(), envKey: U.uEnvKey.value };
+  const S = PASS.saved;
+  PASS.name = name;
+  if (!S) return;
+  const all = name === 'all', key = all || name === 'key' || name === 'base', fill = all || name === 'fill' || name === 'base', rim = all || name === 'rim';
+  U.uKeyColor.value.copy(S.key).multiplyScalar(key ? 1 : 0);
+  U.uRimColor.value.copy(S.rim).multiplyScalar(rim ? 1 : 0);
+  U.uEnvDiff.value = fill ? 1 : 0; U.uEnvSpec.value = fill ? 1 : 0; U.uEmit.value = fill ? 1 : 0;
+  if (key) U.uEnvKey.value = S.envKey;
+  else {
+    // a key's soft box of no light, the size of the key's own, so the shaders' defines stay
+    const p = PASS.rig || rotatedPreset(PRESETS[currentPreset]);
+    PASS.black = PASS.black || buildEnvironment(Object.assign({}, p, { key: Object.assign({}, p.key, { c: [0, 0, 0] }) }), true);
+    U.uEnvKey.value = PASS.black.pmrem;
+  }
+  if (all) PASS.saved = null;
+}
+function portraitDisplay() {
+  return {
+    exposure: SHEET.lights === 'page' ? renderer.toneMappingExposure : SHEET.exposure,
+    tone: renderer.toneMapping === THREE.AgXToneMapping ? 'agx' : String(renderer.toneMapping),
+    saturation: dispMat.uniforms.uSat.value, contrast: dispMat.uniforms.uContrast.value,
+    lights: SHEET.lights === 'page' ? rotatedPreset(PRESETS[currentPreset]) : PASS.rig,
+  };
+}
+// float32 to IEEE half floats, rounded to the nearest
+function halfFloats(f: Float32Array) {
+  const u = new Uint32Array(f.buffer, f.byteOffset, f.length), out = new Uint16Array(f.length);
+  for (let i = 0; i < u.length; i++) {
+    const x = u[i], sign = (x >>> 16) & 0x8000, e = ((x >>> 23) & 0xff) - 112;
+    let m = x & 0x7fffff;
+    if (e <= 0) { if (e < -10) { out[i] = sign; continue; } m = (m | 0x800000) >> (1 - e); out[i] = sign | ((m + 0x1000) >> 13); continue; }
+    if (e >= 31) { out[i] = sign | 0x7c00; continue; }
+    out[i] = (sign | (e << 10) | (m >> 13)) + ((m >> 12) & 1);
+  }
+  return out;
+}
+function portraitFigure() {
+  const f: any = SHEET_HOST.figure();
+  const eyes = FIG.joints.filter((j: any) => j.name === 'eye.L' || j.name === 'eye.R');
+  const p = eyes.length === 2 ? eyes[0].p.clone().add(eyes[1].p).multiplyScalar(0.5) : FIG.head.clone();
+  return { ...f, eyes: [p.x, p.y, p.z] };
+}
 
 // ------------------------------------------------------------------ what the interface sees of the renderer
 // ------------------------------------------------------------------ the pose editor's host (pose_edit/host.ts)

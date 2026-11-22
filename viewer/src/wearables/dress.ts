@@ -162,6 +162,77 @@ export function bodyWeights(w: Wearable, body: BodySurface, k = MAX_INFLUENCES):
   return { weights, joints };
 }
 
+// ------------------------------------------------------------------ a cloak that hangs
+// The page simulates no cloth, so a cloak with spring chains (its loose parts, which a game or a VRM file moves as
+// cloth) would follow the arms and the legs that its weights name: a raised arm lifts the cape into a flat panel, and
+// tucked knees spread its hem between the legs. Its vertices away from a limb take that limb's weights onto the torso
+// bone the limb hangs from (the arm's onto the shoulder, the leg's onto the pelvis), fully beyond HANG_FAR of the limb's
+// bones and not at all within HANG_NEAR, so the cloak hangs from the shoulders and the hips and the part that lies on a
+// limb (a sleeve, the fur over the shoulder) still follows it.
+export const HANG_NEAR = 0.06;   // metres
+export const HANG_FAR = 0.13;    // metres
+const LIMBS: [RegExp, string, string[]][] = [
+  [/^(upperarm0[12]|lowerarm0[12]|wrist|finger\d-\d|metacarpal\d)\.(L|R)$/, 'shoulder01', ['upperarm01', 'lowerarm01', 'wrist']],
+  [/^(upperleg0[12]|lowerleg0[12]|foot|toe\d-\d(-\d)?)\.(L|R)$/, 'pelvis', ['upperleg01', 'lowerleg01', 'foot']],
+];
+export function hangs(w: Wearable): boolean {
+  return w.slot === 'cloak' && w.springs > 0;
+}
+export function hangWeights(V: F64, weights: Float32Array, joints: Uint16Array, body: BodySurface, k = MAX_INFLUENCES): { weights: Float32Array; joints: Uint16Array } {
+  const H = body.heads, bones = body.bones;
+  if (!H) return { weights, joints };
+  const head = (name: string) => { const i = bones.indexOf(name); return i < 0 ? null : [H[i * 3], H[i * 3 + 1], H[i * 3 + 2]]; };
+  // for each limb bone of the rig: the bone it hangs from, and the limb's segments on that side
+  const plan = new Map<number, { to: number; segs: number[][][] }>();
+  for (let b = 0; b < bones.length; b++) {
+    for (const [re, root, chain] of LIMBS) {
+      const m = re.exec(bones[b]);
+      if (!m) continue;
+      const side = bones[b].slice(-1), to = bones.indexOf(`${root}.${side}`);
+      if (to < 0) continue;
+      const pts = chain.map((c) => head(`${c}.${side}`));
+      if (pts.some((p) => !p)) continue;
+      plan.set(b, { to, segs: [[pts[0]!, pts[1]!], [pts[1]!, pts[2]!]] });
+    }
+  }
+  if (!plan.size) return { weights, joints };
+  const near = HANG_NEAR * body.unit, far = HANG_FAR * body.unit, n = V.length / 3;
+  const W = Float32Array.from(weights), J = Uint16Array.from(joints), merged = new Map<number, number>();
+  const segDist = (p: number[], [a, b]: number[][]) => {
+    const ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    const t = Math.min(1, Math.max(0, (ab[0] * ap[0] + ab[1] * ap[1] + ab[2] * ap[2]) / Math.max(ab[0] ** 2 + ab[1] ** 2 + ab[2] ** 2, 1e-18)));
+    return Math.hypot(ap[0] - t * ab[0], ap[1] - t * ab[1], ap[2] - t * ab[2]);
+  };
+  for (let i = 0; i < n; i++) {
+    const p = [V[i * 3], V[i * 3 + 1], V[i * 3 + 2]];
+    let moved = false;
+    merged.clear();
+    for (let c = 0; c < k; c++) {
+      const x = weights[i * k + c], b = joints[i * k + c];
+      if (!(x > 0)) continue;
+      const pl = plan.get(b);
+      let share = 0;
+      if (pl) {
+        const d = Math.min(segDist(p, pl.segs[0]), segDist(p, pl.segs[1]));
+        const t = Math.min(1, Math.max(0, (d - near) / (far - near)));
+        share = t * t * (3 - 2 * t);
+      }
+      if (share > 0) { moved = true; merged.set(pl!.to, (merged.get(pl!.to) || 0) + x * share); }
+      if (share < 1) merged.set(b, (merged.get(b) || 0) + x * (1 - share));
+    }
+    if (!moved) continue;
+    const order = [...merged.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, k);
+    let sum = 0;
+    for (const [, x] of order) sum += x;
+    for (let c = 0; c < k; c++) {
+      const e = order[c];
+      W[i * k + c] = e ? e[1] / Math.max(sum, 1e-12) : 0;
+      J[i * k + c] = e ? e[0] : 0;
+    }
+  }
+  return { weights: W, joints: J };
+}
+
 // ------------------------------------------------------------------ rigid poses in the page
 // The page has the bone heads of every body but no rest rotations. A rigid piece then turns with its bone's skin, as
 // Anny's rig finds a bone's rest rotation (the rotation that carries the template's vertices under the bone, about
@@ -537,7 +608,11 @@ export function* dressSteps(body: BodySurface, pieces: WornPiece[], opts: DressO
     }
     t0 = now();
     let sw = cache.weights.get(w);
-    if (!sw || sw.source !== body.weights) { sw = { source: body.weights, ...bodyWeights(w, body) }; cache.weights.set(w, sw); }
+    if (!sw || sw.source !== body.weights) {
+      const bw = bodyWeights(w, body);
+      sw = { source: body.weights, ...(hangs(w) ? hangWeights(vertices, bw.weights, bw.joints, body) : bw) };
+      cache.weights.set(w, sw);
+    }
     let { weights, joints } = sw;
     timing.weights = (timing.weights || 0) + now() - t0;
     let base: DressedPiece['base'];

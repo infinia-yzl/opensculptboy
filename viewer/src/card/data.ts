@@ -24,7 +24,7 @@ export interface CardPlan {
   shown: number;                       // the level the page shows (0 for the coarse level alone)
   textures: Record<string, string>;    // skin slots and eye_layout to files
   bakeLevel: number | null;
-  skin: { roughness: number; specular: number; ior: number; normalScale: number; subsurface: number; radiusMm: number[] };
+  skin: { roughness: number; specular: number; ior: number; normalScale: number; subsurface: number; radiusMm: number[]; thicknessMm: number };
   eyes: null | { corneaRadiusMm: number; corneaRoughness: number; corneaIor: number; gaze: Record<string, number[]> | null };
   lashes: null | { mesh: string; baseColor: string | null; roughness: number };
   mouth: null | { mesh: string; baseColor: string | null; normal: string | null; roughness: string | null };
@@ -81,7 +81,11 @@ export function cardPlan(card: any): CardPlan {
   const ss = material.subsurface || {};
   const skin = { roughness: num(material.roughness_factor, 1), specular: num(material.specular, 1), ior: num(material.ior, 1.5),
     normalScale: num(material.normal_scale, 1), subsurface: num(ss.weight, 0.1),
-    radiusMm: Array.isArray(ss.radius_mm) && ss.radius_mm.length === 3 ? ss.radius_mm.map(Number) : [5.4, 2.1, 1.2] };
+    radiusMm: Array.isArray(ss.radius_mm) && ss.radius_mm.length === 3 ? ss.radius_mm.map(Number) : [5.4, 2.1, 1.2],
+    thicknessMm: num(material.thickness_mm, 30) };
+  // the thickness map of the skin material (opensculptboy.material: grey, thickness / thickness_mm), for the light
+  // through thin parts
+  if (typeof material.thickness === 'string') textures.thickness = material.thickness;
   // the eyes of a fitted card: on when its bake measured the reference's eyes or baked their layout, unless switched off
   let eyes: CardPlan['eyes'] = null;
   const re = material.reference_eyes, me = material.eyes;
