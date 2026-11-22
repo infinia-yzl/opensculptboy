@@ -12,8 +12,10 @@ with other slider values checks how the shapes, fitted on anny's default body an
 the size of their support, carry over to that body. For each pose the simulation moves the
 whole body, and the report counts the skin vertices where plain skinning lies more than 2 mm
 from the simulated surface. It gives the mean distance of these vertices from the simulated
-surface for plain skinning and for the corrected body, in anny's millimetres. The results go
-to the cache folder of the correctives as JSON.
+surface for plain skinning and for the corrected body, in anny's millimetres: once between the
+same vertices, and once to the nearest point of the simulated surface. The shoulder shapes slide
+the skin along the surface, so the distance to the surface is the measure of their shape. The
+results go to the cache folder of the correctives as JSON.
 """
 
 import json
@@ -29,7 +31,7 @@ from anny.poses import library
 from anny.poses.authoring import posing as P
 from anny.poses.authoring.rig import ANNY_TO_LEGACY, authoring_phenotype
 
-from . import sim, train
+from . import sim, slide, train
 
 THRESHOLD = 0.002  # anny metres
 
@@ -91,6 +93,10 @@ def evaluate(names):
     used = coarse["used"]
     Vs = coarse["V"][used]
     si, sw = coarse["si"][used], coarse["sw"][used]
+    remap = -np.ones(len(coarse["V"]), np.int64)
+    remap[used] = np.arange(len(used))
+    T = remap[coarse["quads"]]
+    T = np.concatenate([T[:, [0, 1, 2]], T[:, [0, 2, 3]]])
     shapes = shapes_on_body()
     rows = []
     for name in names:
@@ -103,6 +109,11 @@ def evaluate(names):
         d_plain = np.linalg.norm(plain - X, axis=1) / P.RIG.scale
         d_corr = np.linalg.norm(corrected - X, axis=1) / P.RIG.scale
         far = d_plain > THRESHOLD
+        surface = slide.Surface(X, T)
+        s_plain = np.linalg.norm(plain - surface.project(plain), axis=1) / P.RIG.scale
+        s_corr = (
+            np.linalg.norm(corrected - surface.project(corrected), axis=1) / P.RIG.scale
+        )
         rows.append(
             dict(
                 pose=name,
@@ -110,6 +121,13 @@ def evaluate(names):
                 plain_mm=float(d_plain[far].mean() * 1000) if far.any() else 0.0,
                 corrected_mm=float(d_corr[far].mean() * 1000) if far.any() else 0.0,
                 corrected_max_mm=float(d_corr.max() * 1000),
+                plain_surface_mm=float(s_plain[far].mean() * 1000)
+                if far.any()
+                else 0.0,
+                corrected_surface_mm=float(s_corr[far].mean() * 1000)
+                if far.any()
+                else 0.0,
+                corrected_surface_max_mm=float(s_corr.max() * 1000),
                 iterations=S.last["iters"],
                 seconds=round(S.last["time"], 1),
             )
@@ -117,7 +135,9 @@ def evaluate(names):
         r = rows[-1]
         print(
             f"{name:>12}: {r['vertices']} vertices, plain {r['plain_mm']:.1f} mm, "
-            f"corrected {r['corrected_mm']:.1f} mm ({r['seconds']} s)",
+            f"corrected {r['corrected_mm']:.1f} mm; to the surface: plain "
+            f"{r['plain_surface_mm']:.1f} mm, corrected {r['corrected_surface_mm']:.1f} mm "
+            f"({r['seconds']} s)",
             flush=True,
         )
     phenotype = authoring_phenotype()
