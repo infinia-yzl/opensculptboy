@@ -1,7 +1,7 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-The studio's display states on every mesh of the built page (viewer/src/studio, DESIGN-0014):
+The studio's display states on every mesh of the built page (viewer/src/studio):
 X-ray, the cut-away and the parts hidden or isolated by bone reach the worn pieces, the props,
 the eyes and the hair as well as the body, so a point by a sword hand can be reached. In
 Chromium through Playwright (local only), with the synthetic outfit of test_viewer_wearables (a

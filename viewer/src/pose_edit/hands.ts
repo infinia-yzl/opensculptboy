@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The hand controls of the pose editor (DESIGN-0013, "Hands"; artboard 2b), on the joint coordinates of joints.ts:
+// The hand controls of the pose editor, on the joint coordinates of joints.ts:
 // - a finger's Curl bends its three joints together in the ratio of the library fist (mh_fight, as
 //   opensculptboy.posing.contact.FIST_BENDS has it), 0 % at the reference pose and 100 % at the fist;
 // - a finger's Spread turns its knuckle sideways, away from the middle finger (each finger's side axis is told by

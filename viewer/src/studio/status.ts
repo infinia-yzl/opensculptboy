@@ -1,11 +1,11 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The status line under the view (DESIGN-0014, "Feedback"; artboard 3b): it says what the mouse does now. Each part of
+// The status line under the view: it says what the mouse does now. Each part of
 // the page sets its own line under a source name (`setStatus('pose-edit', parts)`); the line shows the source of the
 // highest priority, and the newest among equals. While Shift, Ctrl or Alt is held, the line shows that key's variant:
 // a whole line given for it, else each part's own variant, and the held key as a cap at the start. Holding a modifier
-// for half a second also opens the overlay of that key's combinations (artboard 3c), from the action registry. A note
+// for half a second also opens the overlay of that key's combinations, from the action registry. A note
 // ('Figure hidden') stays at the start of the line whichever source shows, until its source clears it.
 
 export type Held = 'shift' | 'ctrl' | 'alt';

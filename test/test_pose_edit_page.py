@@ -1,7 +1,7 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-The pose editor in the built viewer page (DESIGN-0013, phase 1), in Chromium through Playwright
+The pose editor in the built viewer page, in Chromium through Playwright
 (local only). A synthetic statue (``pose_edit_fixtures.points_statue``: the default body's skin in
 another pose as its scan) opens as a dropped card; then, as a person would:
 
@@ -470,7 +470,7 @@ class TestPoseEditPage(unittest.TestCase):
     def test_saved_hand_on_another_character(self):
         """A hand pose saved in the library applies to another character: the statue's right hand
         made a fist and saved, then Anny's default body opened and the pose applied to its right
-        hand alone (DESIGN-0013, P4)."""
+        hand alone."""
         from playwright.sync_api import sync_playwright
 
         folder = pathlib.Path(tempfile.mkdtemp())

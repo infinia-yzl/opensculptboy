@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The studio's camera, as the rest of the page sees it (DESIGN-0014, "The camera model"): framing a part, the pivot,
+// The studio's camera, as the rest of the page sees it: framing a part, the pivot,
 // the view history, isolate and X-ray, and a callback on every change. The navigation (ui/camera_nav.ts) implements
 // it and registers it with `registerCamera`; until then every call is a no-op, so a part of the page can use the
 // interface before the camera exists (the same pattern as face/api.ts).

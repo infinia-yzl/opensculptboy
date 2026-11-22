@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The Controls panel (DESIGN-0014, "Settings"; More › Controls): four speeds from half to twice their default, each
+// The Controls panel (More › Controls): four speeds from half to twice their default, each
 // with its reset, Larger targets, and the Blender middle mouse. The settings stay in this browser (studio/settings.ts).
 
 import { useState } from 'react';

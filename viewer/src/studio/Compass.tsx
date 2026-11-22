@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The body compass (DESIGN-0014, "Orientation and depth aids"; artboard 3k): a small figure in the lower right of the
+// The body compass: a small figure in the lower right of the
 // view that turns with the camera, its left side teal and its right side orange with L and R (the character's own
 // sides), a nose that marks the front, and a ring on the floor. A click on it flies to the side of the figure under
 // the pointer (front, back, the sides, top or bottom, as a ViewCube's faces do), a drag on it turns the view, and its

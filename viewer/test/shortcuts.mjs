@@ -3,7 +3,7 @@
 //
 // The key map version 2 without a browser (run by test/test_viewer_shortcuts.py):
 //   node viewer/test/shortcuts.mjs
-// It registers the studio's key map (src/studio/keymap.ts) and the posing editor's keys of DESIGN-0014's table, then
+// It registers the studio's key map (src/studio/keymap.ts) and the posing editor's keys, then
 // checks: the chords that a keydown event means on other keyboards (Caps Lock, Shift, a keyboard in another script, an
 // input method, AZERTY's digit row, the numpad, the backquote as a dead key); that no two actions share a key in one
 // scope; that no action takes a key the browser keeps; that every key in the help has an action and every key of an
@@ -68,7 +68,7 @@ registerKeymap({
   app: stubApp, nav: stubNav, undo: () => ran.push('undo'), redo: () => ran.push('redo'), saveCard: () => ran.push('save'), hosted: false,
   help: () => ran.push('help'), commands: () => ran.push('commands'), ringMenu: (m) => ran.push('ring:' + m), escape: () => false, toast: () => {},
 });
-// the posing editor's scopes and keys as DESIGN-0014's table gives them (stream P registers them in the page)
+// the posing editor's scopes and keys (the editor registers them in the page)
 let editOn = false, selected = false;
 defineScope({ id: 'pose-edit', parent: 'pose', active: () => editOn });
 defineScope({ id: 'pose-select', parent: 'pose-edit', active: () => selected });

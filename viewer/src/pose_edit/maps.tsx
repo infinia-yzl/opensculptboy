@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The hand map and the body map of the pose editor (DESIGN-0013, "Picking a bone"): flat diagrams in the panel with a
+// The hand map and the body map of the pose editor: flat diagrams in the panel with a
 // point per reference point, each at least 24 pixels across, so every finger joint is easy to hit whatever the camera
 // shows. The hand map shows one hand seen from the back (the right hand with its thumb on the left, the left hand
 // mirrored); the body map shows the figure from the front, its right side on the viewer's left, the left side teal
@@ -117,7 +117,7 @@ export function BodyMap({ points, hands, selected, onPick, onHover, onHand, show
   );
 }
 
-// the joints of the body (artboard 2a): the middle grey, the left side teal and the right side orange
+// the joints of the body: the middle grey, the left side teal and the right side orange
 export function JointMap({ selected, onPick }: { selected: string | null; onPick: (label: string) => void }) {
   return (
     <svg className="pose-map body-map joint-map" viewBox="0 0 220 324" role="group" aria-label="The body's joints, the figure seen from the front">

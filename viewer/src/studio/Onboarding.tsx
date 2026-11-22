@@ -1,8 +1,8 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// Learning the controls in the studio itself (DESIGN-0014, "Onboarding and discoverability"; artboards 3g, 3h and
-// 3i): the first-run card of a desktop with the six most used inputs, the tour prompt the first time posing's Edit
+// Learning the controls in the studio itself:
+// the first-run card of a desktop with the six most used inputs, the tour prompt the first time posing's Edit
 // opens (Show me, Not now, Don't ask again), and the tour's six steps, each of which ticks itself when the camera or
 // the registry shows it done. The person's answers stay in this browser.
 
@@ -35,7 +35,7 @@ const TILES: { pic?: 'left' | 'middle' | 'wheel'; keys?: string[]; title: string
   { keys: ['Ctrl', 'Z'], title: 'Ctrl+Z', text: 'Undo' },
 ];
 
-// the first-run card of a desktop (artboard 3i)
+// the first-run card of a desktop
 export function FirstRun({ onClose, note }: { onClose: () => void; note?: React.ReactNode }) {
   const got = useRef<HTMLButtonElement>(null);
   return (

@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The starter characters (DESIGN-0012, "Statue starters"): classical statues fitted to public-domain scans, each a
+// The starter characters: classical statues fitted to public-domain scans, each a
 // character card with its sculpted detail and its props (wearables of the slot `prop`: a base, a tree stump, what the
 // statue holds) in one package, `<statue>.zip`, made by `python -m opensculptboy.statues starter`. The packages are
 // too large for the repository and go out as files of a release; the person puts them in the folder `starters/`

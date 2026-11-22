@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// Key map version 2 (DESIGN-0014): the studio's own actions in the registry of actions.ts, with their keys, their
+// Key map version 2: the studio's own actions in the registry of actions.ts, with their keys, their
 // groups in the help and their tiers. The posing editor registers its own actions (pose.*) in the scopes `pose-edit`
 // and below; this file holds the modes, the files, the history, the view, the display and the help.
 //

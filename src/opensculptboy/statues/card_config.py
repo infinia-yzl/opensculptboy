@@ -3,8 +3,7 @@
 """
 A character card saved in the studio, applied to its statue's config: the points placed on the
 scan become the config's ``reference_points``, and the hands posed on the card become
-``posed_hands.<hand>.key``, so that the pipeline rebuilds the starter in the card's pose
-(DESIGN-0013, "History, library and files").
+``posed_hands.<hand>.key``, so that the pipeline rebuilds the starter in the card's pose.
 
 The card is a statue starter's card (its ``detail.fit.placement`` places it on the scan) as the
 page saves it:

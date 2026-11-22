@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// shadcn/ui's Tooltip (Radix Tooltip) in one pattern everywhere (artboard 3a): the name, its key caps, and one line of
+// shadcn/ui's Tooltip (Radix Tooltip) in one pattern everywhere: the name, its key caps, and one line of
 // what the control does, after the design system's wait. A control of a registered action names it (`action`), so the
 // tooltip shows the registry's label, line and keys. Touch screens show no tooltip.
 

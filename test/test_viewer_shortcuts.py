@@ -163,8 +163,8 @@ STATE = """() => { const s = window.__shell.ui.get(); return { mode: s.mode, ope
 )
 class TestShortcutsPage(unittest.TestCase):
     """Key map version 2 in the built page: every key of the registry pressed in its scope, with its action run and
-    its effect seen; a text field keeps the keys; and the camera's drags with recorded mouse input (DESIGN-0014,
-    "How to test it"): no coast, the turn per pixel, the pan 1:1 under the pointer, the zoom steps from a framed
+    its effect seen; a text field keeps the keys; and the camera's drags with recorded mouse input:
+    no coast, the turn per pixel, the pan 1:1 under the pointer, the zoom steps from a framed
     hand, Alt+right-drag, Esc during a drag, the double-click's pivot, the view history and the Hand framing."""
 
     def test_keys_and_drags(self):
@@ -371,8 +371,8 @@ class TestShortcutsPage(unittest.TestCase):
                 if h and h[3] < 0.045:
                     break
             self.assertIsNotNone(near)
-            # DESIGN-0014 asks for 10 notches or fewer; at 12 % a notch the Hand framing (its margin of 30 %) measured
-            # 12 notches to 15 cm on the PC (2026-11-03), and the 4 cm stop lies about 20 notches away
+            # the design asks for 10 notches or fewer; at 12 % a notch the Hand framing (its margin of 30 %) measured
+            # 12 notches to 15 cm (2026-11-03), and the 4 cm stop lies about 20 notches away
             self.assertLessEqual(near, MEASURED_NOTCHES)
             self.assertGreater(h[3], 0.035)
             # Alt+right-drag zooms

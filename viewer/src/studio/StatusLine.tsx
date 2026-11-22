@@ -1,16 +1,16 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The status line under the view (artboard 3b): what the mouse does now, from studio/status.ts. A held Shift, Ctrl
+// The status line under the view: what the mouse does now, from studio/status.ts. A held Shift, Ctrl
 // or Alt shows as a cap at the start of the line, and after half a second the overlay of that key's combinations
-// opens at the left edge of the view (artboard 3c). A note ('Figure hidden') stands first, in the accent colour, so the
+// opens at the left edge of the view. A note ('Figure hidden') stands first, in the accent colour, so the
 // person always knows that a part of the view is hidden.
 
 import { capsOf, modifierActions, rowLabelOf } from './actions.ts';
 import { useActionsVersion, useStatusLine } from './react.ts';
 import type { StatusPart } from './status.ts';
 
-// the keys and the mouse of a part in bold, as the artboards write them ('Left-drag', 'F', 'Ctrl+Z')
+// the keys and the mouse of a part in bold ('Left-drag', 'F', 'Ctrl+Z')
 const caps = (keys: string) => <b>{keys}</b>;
 
 function Part({ p, lit }: { p: StatusPart; lit: boolean }) {

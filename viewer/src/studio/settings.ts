@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The studio's control settings (DESIGN-0014, "Settings", View menu › Controls): four speeds, each from half to twice
+// The studio's control settings (View menu › Controls): four speeds, each from half to twice
 // its default, Larger targets, the Blender middle mouse, and the prompt before leaving with unsaved edits. The camera reads the turn, move and zoom speeds; the
 // posing editor reads the drag speed of points and rings and the picking radius. The settings stay in this browser
 // for this person; a browser that keeps nothing (a private window, blocked storage) gets the defaults.

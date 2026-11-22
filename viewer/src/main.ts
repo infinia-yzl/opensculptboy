@@ -147,7 +147,7 @@ function fitFrame(name: string, t1: any, p1: any) {
   }
 }
 // smooth move between framings
-// flights between views last 300 ms with an ease-out (DESIGN-0014): quick enough for repeated moves
+// flights between views last 300 ms with an ease-out: quick enough for repeated moves
 const FLIGHT_MS = 300;
 let tween = null;
 // the damping of the controls carries a drag on for a few frames; a camera move clears it, so it lands where it aims
@@ -3903,7 +3903,7 @@ function portraitFigure() {
 
 // ------------------------------------------------------------------ what the interface sees of the renderer
 // ------------------------------------------------------------------ the pose editor's host (pose_edit/host.ts)
-// The editor (DESIGN-0013) reads the rig, the coarse body and the card, shows its edited pose at once as the clip
+// The editor reads the rig, the coarse body and the card, shows its edited pose at once as the clip
 // 'edit', and draws its scan over the picture. The edit's root keeps the offset of the pose it began from, less that
 // pose's floor, and each edit stands the figure on the floor that its own pose finds (groundFor, as a pose of the
 // library and a card's pose stand), so the same pose always stands at the same height, and an undo or a redo gives

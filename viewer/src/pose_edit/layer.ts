@@ -6,7 +6,7 @@
 // and dashed (an X-ray look), the selected point with a gold ring, Anny's own points as small white rings with a line
 // to their places, a pushed point as a hollow ring with its depth, the magnifier's ring, the contact pins and the
 // balance mark. Every mark has a dark outline and a light halo, so it holds 3 to 1 against white marble and the grey
-// stage (DESIGN-0014, "Outlines for contrast"). The layer takes no pointer events; studio/pointer.ts asks the editor.
+// stage. The layer takes no pointer events; studio/pointer.ts asks the editor.
 
 const NS = 'http://www.w3.org/2000/svg';
 export const COLOURS = { placed: '#2f6fd6', look: '#f0a030', off: '#9e968a', behind: '#5f86b3', selected: '#d4ae52', outline: '#1d1b19', halo: '#ffffff',
@@ -174,7 +174,7 @@ export class PointLayer {
   }
 
   // a hand's or foot's handle (gold, hollow when free, dark and filled with a pin when pinned) and a pole handle
-  // (small and blue, with a line to its elbow or knee), artboard 2d
+  // (small and blue, with a line to its elbow or knee)
   private handle(g: SVGGElement, h: DrawHandle, s: number) {
     const grow = h.hovered ? 4 / 3 : 1;
     if (h.kind === 'pole') {

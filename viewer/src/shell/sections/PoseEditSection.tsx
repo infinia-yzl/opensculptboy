@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The Pose mode's Edit panel (DESIGN-0013, phase 1; artboards 1a to 1f): the figure and the scan (each shown or
+// The Pose mode's Edit panel: the figure and the scan (each shown or
 // hidden, Shift+Z to swap them; the scan see-through, ghost or solid), the reference points in four stages from coarse
 // to fine (pose_edit/stages.ts: the figure, the head, hands and feet, the joints in between, the fingers; each with its
 // points on the body map, its line, its counts and its own placement), the selected point (its weight, Use this point, its depth in the
@@ -26,7 +26,7 @@ export function useEditState(): EditState { return useSyncExternalStore(editStor
 
 const pct = (v: number) => Math.round(v * 100);
 const TAB_ICONS = ['focus', 'bones', 'hand', 'move', 'save'];
-// the Limbs tool (artboard 2d): the hands' and feet's handles in the view, their pins, the pole of the limb chosen and
+// the Limbs tool: the hands' and feet's handles in the view, their pins, the pole of the limb chosen and
 // Body follows
 function LimbsPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!;
@@ -50,7 +50,7 @@ function LimbsPanel({ st }: { st: EditState }) {
   );
 }
 
-// the Library tool (artboard 2e): saved poses as tiles and the page's 50 built-in poses in folds with a search, each
+// the Library tool: saved poses as tiles and the page's 50 built-in poses in folds with a search, each
 // applied to the whole body or one part, two poses (saved or built-in) blended, and mirror and copy
 function LibraryPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!;
@@ -253,7 +253,7 @@ function ContactFolds({ st }: { st: EditState }) {
   </>;
 }
 
-// the tools at the view's top left (artboard 1a): Select (Q), Move (W), Turn (E, with the joint dial)
+// the tools at the view's top left: Select (Q), Move (W), Turn (E, with the joint dial)
 function ViewTools({ st }: { st: EditState }) {
   const tools = [{ id: 'select', icon: 'cursor', action: 'pose.tool.select' }, { id: 'move', icon: 'move', action: 'pose.tool.move' }, { id: 'turn', icon: 'rotate', action: 'pose.tool.turn' }];
   return createPortal(
@@ -268,7 +268,7 @@ function ViewTools({ st }: { st: EditState }) {
     </div>, document.body);
 }
 
-// the side view of a pushed point (artboard 1e): the camera's ray, the surface where it meets the stone and the point
+// the side view of a pushed point: the camera's ray, the surface where it meets the stone and the point
 // further in, as a diagram with the depth written on it
 function DepthInset({ p }: { p: PointInfo }) {
   const d = p.depth, x = 150 + Math.min(150, d * 12);
@@ -294,7 +294,7 @@ function DepthInset({ p }: { p: PointInfo }) {
     </aside>, document.body);
 }
 
-// the Joints tool (artboard 2a): the body map of joints, the selected joint's Bend, Twist and Side-Side, the range
+// the Joints tool: the body map of joints, the selected joint's Bend, Twist and Side-Side, the range
 // switch and the resets
 function JointsPanel({ st }: { st: EditState }) {
   const ed = poseEditor()!, jv = st.jv;
@@ -340,7 +340,7 @@ function HandIcon({ curl, spread }: { curl: number[]; spread: number }) {
   );
 }
 
-// the gesture pad (artboard 2b): four presets at its corners, a point dragged between them
+// the gesture pad: four presets at its corners, a point dragged between them
 function GesturePad({ st }: { st: EditState }) {
   const ed = poseEditor()!;
   const [corners, setCorners] = useState(['open', 'pointing', 'fist', 'pinch']);
@@ -368,9 +368,9 @@ function GesturePad({ st }: { st: EditState }) {
   </>;
 }
 
-// the Hands tool (artboard 2b): Fist, Spread, Thumb, Relax; each finger's Curl, with its spread behind a fold; the
+// the Hands tool: Fist, Spread, Thumb, Relax; each finger's Curl, with its spread behind a fold; the
 // presets, the gesture pad, and Copy to the other hand
-// Grip a prop (artboard 2c): the prop this hand holds, Squeeze, and each finger's touch
+// Grip a prop: the prop this hand holds, Squeeze, and each finger's touch
 function GripBlock({ st }: { st: EditState }) {
   const ed = poseEditor()!, side = st.handSide, on = st.grip && st.grip.hand === side;
   if (!st.props.length) return null;
@@ -408,7 +408,7 @@ function GripBlock({ st }: { st: EditState }) {
     </> : null}
   </>;
 }
-// the props (moved by hand): the list of the rigid props shown, and the selected prop's panel (artboard 2c's Grip has
+// the props (moved by hand): the list of the rigid props shown, and the selected prop's panel (the Hands tool's Grip has
 // the hand's side): Held by, the point turns go round, its move and turn as typed values, Put it back, and the skin
 // inside it
 function PropsBlock({ st }: { st: EditState }) {

@@ -1,8 +1,8 @@
 # OpenSculptBoy
 # Apache License, Version 2.0
 """
-A statue starter's light scan: the figure's scan as the studio's ghost (DESIGN-0013, "Reference
-in the view"), a ``scan.glb`` of a few megabytes in the starter package.
+A statue starter's light scan: the figure's scan as the studio's ghost, a ``scan.glb`` of a few
+megabytes in the starter package.
 
 The scan is the run's handoff ``replica.glb`` (the figure's skin with its carved hair and
 drapery, such as a hat and locks; the removed pieces, such as a sword or a base, stay out),

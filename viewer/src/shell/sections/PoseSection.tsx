@@ -23,7 +23,7 @@ export function PoseSection({ shown }: { shown: boolean }) {
   // the pose editor (pose_edit/editor.ts) registers its keys once the page's renderer is there
   useEffect(() => { const h = poseHost(); if (h) installPoseEditor(h); }, []);
   const edit = useEditState();
-  // posing is a desktop task (DESIGN-0013): a phone shows the pose and plays poses, and the editor stays closed
+  // posing is a desktop task: a phone shows the pose and plays poses, and the editor stays closed
   const phone = useUI((s) => s.width === 'phone');
   useEffect(() => { if (phone && edit.on) poseEditor()?.setOn(false); }, [phone, edit.on]);
   const clips = app.clips();

@@ -671,7 +671,7 @@ class TestStatuePoints(unittest.TestCase):
                 self.assertTrue(by[n]["on"], n)
                 self.assertLess(by[n]["distance_mm"], 3.0)
             self.assertFalse(by["middle_mcp.L"]["on"])
-            # the owner's points: where the true body has them (the masks' frame)
+            # the person's points: where the true body has them (the masks' frame)
             rig, R_true = _rig(true, M, c)
             chosen = {}
             for chain in ("arm.r", "arm.l"):

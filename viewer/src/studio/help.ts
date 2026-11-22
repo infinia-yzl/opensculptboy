@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The help (F1 or ?; artboards 2f and 3j): the keys and the mouse from the action registry, in three tabs. By use
+// The help (F1 or ?): the keys and the mouse from the action registry, in three tabs. By use
 // groups them by how often each is used (constant, frequent, occasional, rare); the current mode's tab and Every mode
 // group them by task. The search field has the focus when the help opens, and a key typed there filters the rows.
 

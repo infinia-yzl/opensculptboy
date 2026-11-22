@@ -1,5 +1,5 @@
 /* OpenSculptBoy, Apache License, Version 2.0
-   The pose editor (DESIGN-0013, artboards 1a to 1f): its panel, the tools at the view's top left, the labels over the
+   The pose editor: its panel, the tools at the view's top left, the labels over the
    view and the maps. The marks over the view draw in SVG (pose_edit/layer.ts); these rules size and colour the rest. */
 
 /* ------------------------------------------------------------ the tools at the view's top left */
@@ -71,7 +71,7 @@ body:not(.pose-edit-on) .pe-tools, body.shot .pe-tools, body.shot .pose-points, 
 .pe-panel-foot:empty { display: none; }
 .pe-foot { display: flex; flex: 1; justify-content: space-between; align-items: center; gap: var(--space-2); }
 
-/* ------------------------------------------------------------ the side view of a pushed point (artboard 1e) */
+/* ------------------------------------------------------------ the side view of a pushed point */
 .pe-inset { position: fixed; z-index: 9; right: calc(var(--space-4) + 96px); bottom: calc(var(--space-12) + var(--space-8)); width: 352px; padding: var(--space-3);
   border-radius: var(--radius-m); box-shadow: var(--shadow-float); }
 body.tool-open .pe-inset { right: calc(var(--insp-w) + var(--space-6)); }
@@ -80,7 +80,7 @@ body.tool-open .pe-inset { right: calc(var(--insp-w) + var(--space-6)); }
 .pe-inset-note { margin: var(--space-2) 0 0; font: 400 13px/18px var(--font-sans); color: var(--text-muted); }
 body:not(.pose-edit-on) .pe-inset, body.shot .pe-inset { display: none !important; }
 
-/* ------------------------------------------------------------ the dial's tags (artboard 2a) */
+/* ------------------------------------------------------------ the dial's tags */
 .pose-ring-tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: var(--radius-s); font: 600 12px/18px var(--font-sans);
   color: var(--text); white-space: nowrap; }
 .pose-ring-tag i { display: inline-block; width: 8px; height: 8px; border-radius: 1px; }

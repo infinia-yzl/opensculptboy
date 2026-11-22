@@ -1,8 +1,8 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The ring menus round the pointer (the view menu on the backtick, the display menu on Z; artboards 3d and 3e, after
-// Blender's pies) and the command list (F3 or Ctrl+K; artboard 3f). Both read the action registry: a ring menu shows
+// The ring menus round the pointer (the view menu on the backtick, the display menu on Z, after
+// Blender's pies) and the command list (F3 or Ctrl+K). Both read the action registry: a ring menu shows
 // the live actions of its `menu`, clockwise from the top, and the command list every action by name, with its key and
 // the place it lives.
 //

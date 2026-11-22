@@ -174,7 +174,7 @@ export class EditSession {
   solveAll(iterations = FULL_STEPS) { for (const c of this.placedChains()) this.solve(c, iterations); }
 
   // the chains with enough confident points for the automatic placement to turn them (solvableChains); every other
-  // chain keeps its pose until the owner places points there
+  // chain keeps its pose until the person places points there
   confidentChains(minPoints = MIN_POINTS, minBones = MIN_BONES): string[] {
     const entries: { chain: string; bone: number }[] = [];
     for (const [name, t] of this.targets) {
@@ -202,7 +202,7 @@ export class EditSession {
   // the point's new place (card frame): a few warm steps of the solve
   dragTo(name: string, position: V3, extra: Partial<Target> = {}) {
     const t = this.targets.get(name)!;
-    // a point the owner moves is on
+    // a point the person moves is on
     Object.assign(t, extra, { position, placed: 'owner' as const, on: true });
     if (!this.drag) return;
     const d = this.drag;

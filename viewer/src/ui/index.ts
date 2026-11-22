@@ -366,7 +366,7 @@ export function initUI(app: App): UI {
   // the height rail after the interface, so the focus reaches it after the top bar, the panel and the view bar
   document.body.append(nav.rail);
   app.canvas.tabIndex = -1;
-  // the line under the view, with nothing held, Shift held and Alt held (artboard 3b)
+  // the line under the view, with nothing held, Shift held and Alt held
   setStatus('idle', [{ keys: 'Left-drag', text: 'turn' }, { keys: 'Middle-drag', text: 'move the view' }, { keys: 'Wheel', text: 'zoom' }, { keys: 'F', text: 'frame' },
     { keys: 'Double-click', text: 'turn round this spot' }], {
     priority: PRIORITY.idle,

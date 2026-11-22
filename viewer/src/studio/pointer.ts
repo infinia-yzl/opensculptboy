@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// Pointer arbitration in the 3D view (DESIGN-0014, "Selection, picking and occlusion" and the mouse map of key map
+// Pointer arbitration in the 3D view (the mouse map of key map
 // version 2). Parts of the page that put things to pick in the view (points, rings, handles, joints) register a
 // picker; on a press of the left button the pickers are asked in priority order, the nearest hit within the picking
 // radius wins (visible items before hidden ones, then the nearest to the pointer), and its picker owns the click or

@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// Blender's modal grab and turn (G and R of key map version 2; DESIGN-0014): once started, the selection follows the
+// Blender's modal grab and turn (G and R of key map version 2): once started, the selection follows the
 // mouse without a button held until a click or Enter confirms it; Esc or a right-click puts it back; X, Y or Z during
 // the operation locks an axis (again: the axis in the item's own frame, a third time: free); a typed number sets the
 // distance in millimetres or the angle in degrees; Shift moves at a quarter of the speed and Ctrl snaps. The posing

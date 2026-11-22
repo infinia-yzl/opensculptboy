@@ -1,4 +1,4 @@
-/* OpenSculptBoy: the studio's navigation, keys and hints (DESIGN-0014; artboards 3a to 3k), on the design system's tokens. */
+/* OpenSculptBoy: the studio's navigation, keys and hints, on the design system's tokens. */
 
 /* ------------------------------------------------------------ tooltips: the name, its key caps, a line of what it does */
 .osb-tip-head { display: flex; align-items: center; gap: 4px; }
@@ -26,7 +26,7 @@ body.tool-open .status-line { right: calc(var(--insp-w) + var(--space-4)); }
 body:not([data-width="phone"]) .viewbar { bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); }
 body.shot .status-line, body.shot .pivot-dot, body.shot .compass, body.shot .held-overlay { display: none !important; }
 
-/* the combinations of a held modifier, faint at the left edge of the view (artboard 3c) */
+/* the combinations of a held modifier, faint at the left edge of the view */
 .held-overlay {
   position: fixed; z-index: 9; left: calc(var(--inset-l, 0px) + var(--space-4)); top: 50%; translate: 0 -50%; max-height: 70vh; overflow: hidden;
   padding: var(--space-3) var(--space-4); background: color-mix(in srgb, var(--panel) 72%, transparent); border: 1px solid var(--line); border-radius: var(--radius-m);
@@ -38,7 +38,7 @@ body.shot .status-line, body.shot .pivot-dot, body.shot .compass, body.shot .hel
 .held-row dt { display: flex; gap: 3px; }
 .held-row dd { margin: 0; }
 
-/* ------------------------------------------------------------ the pivot dot while the camera turns (artboard 3k) */
+/* ------------------------------------------------------------ the pivot dot while the camera turns */
 .pivot-dot {
   position: fixed; z-index: 8; box-sizing: border-box; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; border-radius: 50%;
   border: 2px solid #fff; box-shadow: 0 0 0 1.5px #1d1b19, inset 0 0 0 1.5px #1d1b19; background: transparent;
@@ -47,7 +47,7 @@ body.shot .status-line, body.shot .pivot-dot, body.shot .compass, body.shot .hel
 .pivot-dot::before { left: -10px; right: -10px; top: 6px; height: 2px; clip-path: polygon(0 0, 8px 0, 8px 100%, 0 100%, 0 0, 100% 0, 100% 100%, calc(100% - 8px) 100%, calc(100% - 8px) 0); }
 .pivot-dot::after { top: -10px; bottom: -10px; left: 6px; width: 2px; clip-path: polygon(0 0, 100% 0, 100% 8px, 0 8px, 0 0, 0 100%, 100% 100%, 100% calc(100% - 8px), 0 calc(100% - 8px)); }
 
-/* ------------------------------------------------------------ the ring menus (artboards 3d and 3e) */
+/* ------------------------------------------------------------ the ring menus */
 .ring-menu { position: fixed; inset: 0; z-index: 70; }
 .ring-line { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; overflow: visible; }
 .ring-line line { stroke: var(--accent); stroke-width: 2; }
@@ -75,7 +75,7 @@ body.shot .status-line, body.shot .pivot-dot, body.shot .compass, body.shot .hel
 .ring-item.off .osb-ico, .ring-item.off .ring-check { opacity: 0.5; }
 .ring-item.off.lit { background: var(--panel); border-color: var(--line-strong); }
 
-/* ------------------------------------------------------------ the command list (artboard 3f) */
+/* ------------------------------------------------------------ the command list */
 dialog.cmd {
   margin: 0 auto; top: 14vh; width: min(640px, calc(100vw - 32px)); max-height: 70vh; padding: var(--space-4); display: none; flex-direction: column; gap: var(--space-2);
   background: var(--panel); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--radius-m); box-shadow: var(--shadow-dialog);
@@ -99,7 +99,7 @@ dialog.cmd::backdrop { background: var(--scrim); }
 .cmd-foot .osb-key + .osb-key { margin-left: 2px; }
 .cmd-count { margin-left: 12px; }
 
-/* ------------------------------------------------------------ the help with its tabs (artboards 2f and 3j) */
+/* ------------------------------------------------------------ the help with its tabs */
 .help.help-v2 { width: min(1720px, calc(100vw - 48px)); }
 .help-v2 .help-head h2 { display: flex; align-items: center; gap: 12px; }
 .help-v2 .help-head h2 .osb-key { font-size: 12px; letter-spacing: 0; }
@@ -118,7 +118,7 @@ dialog.cmd::backdrop { background: var(--scrim); }
 .help-mouse { color: var(--text); }
 .help-foot { padding: 0 var(--space-6) var(--space-5); margin: 0; }
 
-/* ------------------------------------------------------------ the body compass (artboard 3k) */
+/* ------------------------------------------------------------ the body compass */
 .compass {
   position: fixed; z-index: 9; right: var(--space-2); bottom: calc(env(safe-area-inset-bottom, 0px) + 46px); width: 104px; height: 108px;
   border-radius: var(--radius-s); display: grid; place-items: end center; transition: right var(--duration-move) var(--ease-standard);
@@ -159,7 +159,7 @@ body[data-width="phone"] .compass { display: none; }
 .mouse-pic .mouse-wheel { fill: var(--panel); stroke: var(--text); stroke-width: 2; }
 .mouse-pic .mouse-lit { fill: var(--accent); }
 
-/* ------------------------------------------------------------ the first-run card (artboard 3i) */
+/* ------------------------------------------------------------ the first-run card */
 .welcome.first-run { width: 420px; padding: var(--space-5) var(--space-6) var(--space-5); gap: var(--space-4); }
 .first-run-head { display: flex; align-items: center; justify-content: space-between; }
 .first-run-head .welcome-title { font: 600 16px/24px var(--font-display); letter-spacing: 0.06em; }
@@ -173,7 +173,7 @@ body[data-width="phone"] .compass { display: none; }
 .first-run-foot { display: flex; align-items: center; justify-content: space-between; }
 .first-run-foot .osb-note { margin: 0; }
 
-/* ------------------------------------------------------------ the tour (artboards 3g and 3h) */
+/* ------------------------------------------------------------ the tour */
 .tour-prompt {
   position: fixed; z-index: 16; left: calc(var(--inset-l, 0px) + 88px); top: calc(var(--top-h) + var(--space-4)); width: 400px; box-sizing: border-box;
   display: flex; gap: var(--space-4); padding: var(--space-5); border-radius: var(--radius-m); box-shadow: var(--shadow-pop); animation: osb-pop var(--duration-toast) var(--ease-spring) both;

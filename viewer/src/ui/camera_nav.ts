@@ -2,7 +2,7 @@
 // Copyright (C) 2025 NAVER Corp.
 // Apache License, Version 2.0
 //
-// Navigation around the figure (DESIGN-0014, "The camera model"): a turntable orbit round an explicit pivot with no
+// Navigation around the figure: a turntable orbit round an explicit pivot with no
 // coast after release, a pan that keeps the grabbed spot under the pointer, a zoom to the pointer of 12 % a notch that
 // slows near the skin and stops 4 cm from it, Alt+right-drag to zoom by dragging, a double-click that sets the pivot on
 // the body (or frames the whole figure on the background), framings that fit a part into the free space between the
@@ -85,8 +85,7 @@ export function cameraNav(app: App): CameraNav {
   const emitStart = () => { controls.dispatchEvent({ type: 'start' }); document.body.classList.add('interacted'); };
   const emitChange = () => { controls.dispatchEvent({ type: 'change' }); app.resetAccum(); changed(); };
   // the automatic cut-away: when the camera works close to a pivot on a part (a double-click, a framing) and the body
-  // stands between them more than 5 cm before the pivot, the skin nearer than that opens (DESIGN-0014, "The camera
-  // model")
+  // stands between them more than 5 cm before the pivot, the skin nearer than that opens
   let cutAt = 0, cutR = 0, cutLater: any = 0;
   function cutCheck(force = false) {
     const now = performance.now();
@@ -235,7 +234,7 @@ export function cameraNav(app: App): CameraNav {
     { kind: 'none', x: 0, y: 0, theta0: 0, phi0: 0, ax: 0, ay: 0, depth: 1, moved: false };
   let lastWheel = 0, startView: View | null = null;
   const pivotDot = h('div.pivot-dot', { 'aria-hidden': 'true', hidden: true });
-  // the floor mark while the camera turns (DESIGN-0014, P2): a faint ring on the floor round the feet, with a tick at
+  // the floor mark while the camera turns: a faint ring on the floor round the feet, with a tick at
   // the figure's front
   const NS = 'http://www.w3.org/2000/svg';
   const floorMark = document.createElementNS(NS, 'svg');

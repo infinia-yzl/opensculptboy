@@ -2,7 +2,7 @@
 // Apache License, Version 2.0
 //
 // The studio's actions: one registry for every key, the help (F1), the command list (F3), the tooltips, the key caps
-// and the Ctrl overlay (DESIGN-0014, key map version 2). A part of the page registers each of its actions once, with
+// and the Ctrl overlay (key map version 2). A part of the page registers each of its actions once, with
 // its keys, its group in the help, its tier (how often it is used) and its scope (where its keys are live); the page's
 // single key handler (`dispatchKey`) finds the action of a key press here, so a key that the help lists works, and a
 // key that works is listed.
@@ -220,8 +220,8 @@ export function keyLine(id: string): string {
 }
 
 // ------------------------------------------------------------------ the browser's keys
-// keys a page cannot take in Chrome, and keys the studio leaves to the browser so that nothing surprising happens
-// (DESIGN-0014, "Keys the browser keeps"); no action may use them
+// keys a page cannot take in Chrome, and keys the studio leaves to the browser so that nothing surprising happens;
+// no action may use them
 export const BROWSER_KEPT = ['Ctrl+N', 'Ctrl+T', 'Ctrl+W', 'Ctrl+Tab', 'Ctrl+Shift+Tab', 'Ctrl+Shift+N', 'Ctrl+Shift+T', 'Ctrl+Shift+W',
   ...'123456789'.split('').map((d) => 'Ctrl+' + d), 'Alt+F4'];
 export const BROWSER_LEFT = ['F5', 'Ctrl+F5', 'Shift+F5', 'F11', 'F12', 'Ctrl+L', 'Ctrl+D', 'Ctrl+F', 'Ctrl+P', 'Ctrl+R', 'Ctrl+Shift+R',

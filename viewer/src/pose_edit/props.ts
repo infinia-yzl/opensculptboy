@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The studio's props, moved by hand (DESIGN-0013, "Props"): the parts of the prop tool that need no DOM, so node runs
+// The studio's props, moved by hand: the parts of the prop tool that need no DOM, so node runs
 // them (viewer/test/props.mjs). A prop is a rigid piece of the slot `prop` (a statue's sword, its base): the editor
 // (editor.ts) selects it in the view or in the panel's list, moves it with the Move and Turn tools, G and R, the arrows
 // and typed values, and changes the bone that holds it; the place itself is wearables/place.ts. This file gives the

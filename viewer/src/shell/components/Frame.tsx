@@ -90,7 +90,7 @@ export function Welcome() {
   if (!shown) return null;
   const starter = starterOfName(name);
   const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-  // a desktop: the six most used inputs (artboard 3i), with the starter's note when its package is missing
+  // a desktop: the six most used inputs, with the starter's note when its package is missing
   if (!touch && width !== 'phone') {
     return <FirstRun onClose={() => actions.dismissWelcome()} note={!starter && note ? (
       <p className="osb-note welcome-starter">The statue starters come as packages of their own. <a className="osb-link" href={note.link} target="_blank" rel="noopener noreferrer">{note.label}</a> and drop it on the page to start from it.</p>

@@ -95,7 +95,7 @@ export function Slider(p: SliderProps) {
       }
     };
     // the keys of the track: an arrow moves a step, Shift+arrow a tenth of a step, Page Up and Page Down ten steps,
-    // Home and End the ends (DESIGN-0014, "Everyday accessibility"); each press is one step of undo
+    // Home and End the ends; each press is one step of undo
     const rangeKey = (e: KeyboardEvent) => {
       const o = P.current, step = o.step ?? 0.01;
       const k = e.key;

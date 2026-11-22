@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The joints of the pose editor (DESIGN-0013, "Turning a joint"): each bone of the range table with its plain name,
+// The joints of the pose editor: each bone of the range table with its plain name,
 // the joint it turns at, and its Bend, Side-Side and Twist in its own joint frame (opensculptboy.posing.point_solve:
 // joint_frames, the coordinates c with D = exp(A (sign c))), in degrees, within the joint's range. A bone of a twist
 // group (the upper arm, the forearm and the wrist, the thigh, the shin) turns its group together: its Twist is the
@@ -126,7 +126,7 @@ export class Joints {
   }
 }
 
-// the joints of the body map (artboard 2a): the middle from the head down, then each side from the collarbone to the ankle
+// the joints of the body map: the middle from the head down, then each side from the collarbone to the ankle
 export const BODY_JOINTS: { label: string; at: [number, number] }[] = [
   { label: 'head', at: [110, 30] }, { label: 'neck02', at: [110, 62] }, { label: 'spine02', at: [110, 96] }, { label: 'spine04', at: [110, 130] },
   { label: 'spine05', at: [110, 158] },

@@ -1,7 +1,7 @@
 // OpenSculptBoy
 // Apache License, Version 2.0
 //
-// The pose editor of the studio (DESIGN-0013, phase 1: reference points). It ties the session (session.ts: places,
+// The pose editor of the studio. It ties the session (session.ts: places,
 // solves, history) to the page: the scan in the view (view3d.ts), the points over it (layer.ts), the pointer
 // (studio/pointer.ts: picking, dragging on the scan, the wheel's depth, Esc), the keys (studio/actions.ts, key map
 // version 2: Tab, Q W E, 1 to 5, G, [ ], A, Alt+G, Alt+R, Page Up and Down, the arrows, Shift+Z, Ctrl+Z), the status
@@ -542,7 +542,7 @@ export class PoseEditor {
     for (const e of placed) {
       if (e.method === 'none') continue;
       // as the Python placement: a point is on when its confidence reaches ON; the others need a look, and the solve
-      // leaves them out until the owner moves them or switches them on
+      // leaves them out until the person moves them or switches them on
       const t: Target = { position: e.position as V3, on: e.on, weight: 1, confidence: e.confidence, placed: 'auto', depth_mm: 0,
         auto: e.position as V3, reason: e.on ? undefined : reason(e) };
       if (!e.on) look++;
@@ -722,7 +722,7 @@ export class PoseEditor {
     this.statusSelected();
     if (opts.frame) { const f = this.framing(p, 1); if (f) cam().frameBounds(f.box, { label: f.label, pivot: f.pivot }); }
     else if (opts.pivot !== false) {
-      // turn round the selection (DESIGN-0014): the pivot moves to the point, the camera stays
+      // turn round the selection: the pivot moves to the point, the camera stays
       const t = this.target(p.name), at = t ? t.position : this.session?.positions([p]).get(p.name);
       if (at) { const w = this.frames.toWorld(at); cam().setPivot({ x: w[0], y: w[1], z: w[2] }, { history: false }); }
     }
@@ -1077,7 +1077,7 @@ export class PoseEditor {
   }
 
   // Grip: the hand and the prop; Squeeze closes its fingers onto the prop
-  // Grip (DESIGN-0013, "Grip a prop"; GraspIt's closing of the fingers) starts from the hand as it stands: each finger
+  // Grip (GraspIt's closing of the fingers) starts from the hand as it stands: each finger
   // clear of the prop closes from its present curl, and a finger that touches or enters the prop first opens along its
   // curl only as far as it must (contact.gripFrom). A statue's hand already wraps its prop, and a hand opened straight
   // drives a finger through the prop's guard (David's index finger crossed the sword's guard bar), so the open start
@@ -1242,7 +1242,7 @@ export class PoseEditor {
 
   setBalance(shown: boolean) { this.bal = null; this.publish({ balance: { ...editStore.get().balance, shown } }); }
 
-  // ---------------------------------------------------------------- props, moved by hand (DESIGN-0013, "Props")
+  // ---------------------------------------------------------------- props, moved by hand
   // A prop worn as a rigid piece (a statue's sword, its base) moves by hand. A click selects it in the view (a ray onto
   // its triangles when no skin lies in front of them) or in the panel's list. The Move tool's drag takes it along the
   // view's plane through its pivot and the move handle's arrows along one axis of the view; the Turn tool's rings turn it
@@ -1807,7 +1807,7 @@ export class PoseEditor {
     this.savedSig = this.signature();
   }
 
-  // ---------------------------------------------------------------- unsaved edits (DESIGN-0014, "Browser keys")
+  // ---------------------------------------------------------------- unsaved edits
   // the points, the pins and the pose as a string, to tell an unsaved edit from the state last opened or saved (an
   // edit undone back to that state is no edit)
   private savedSig: string | null = null;
@@ -2729,7 +2729,7 @@ export class PoseEditor {
       { id: 'pose.place', label: 'Place points', desc: "The stage's points on the scan, from the fitted character", group: 'Points', tier: 'occasional', scope: 'pose-edit', place: 'Pose › Edit',
         run: () => { this.placeStage(); } },
 
-      // the props (DESIGN-0013, "Props"): live while a prop is selected, in place of the point's and the joint's keys
+      // the props: live while a prop is selected, in place of the point's and the joint's keys
       { id: 'pose.prop.grab', label: 'Grab the prop', desc: 'The selected prop follows the mouse until a click or Enter; X, Y or Z keep to one axis, a number moves it that many millimetres',
         keys: ['G'], group: 'Props', tier: 'frequent', scope: 'pose-prop', run: () => this.startPropGrab() },
       { id: 'pose.prop.turn', label: 'Turn the prop', desc: 'The selected prop turns round its pivot with the mouse until a click or Enter; X, Y or Z keep to one axis, a number turns it that many degrees',
