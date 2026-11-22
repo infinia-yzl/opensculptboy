@@ -122,6 +122,7 @@ JOINTS = {
         slide=dict(
             radius=0.24,
             plain_keys=("up_in", "back_up"),
+            borrowed_keys=("overhead_back", "overhead_side"),
             bones=(
                 "upperarm01.L",
                 "upperarm02.L",
@@ -178,9 +179,14 @@ def cone_triangles(j):
     """triangles of the key directions on the sphere: the faces of their convex hull that face
     away from the centre (when the keys fill less than a hemisphere, the faces toward the
     centre are left out)"""
+    names, D = cone_targets(j, "L")
+    return hull_triangles(D)
+
+
+def hull_triangles(D):
+    """the outward faces of the convex hull of the unit directions D, as rows of D"""
     from scipy.spatial import ConvexHull
 
-    names, D = cone_targets(j, "L")
     hull = ConvexHull(D)
     tris = []
     for f, eq in zip(hull.simplices, hull.equations):
@@ -270,8 +276,13 @@ def cone_weights(j, d, side="L"):
     """barycentric weights of direction d in the key triangles (rest first); outside every
     triangle, the nearest triangle with its negative weights cut to zero"""
     names, D = cone_targets(j, side)
+    return triangle_weights(D, TRIS[j], d)[1:]
+
+
+def triangle_weights(D, tris, d):
+    """barycentric weights of direction d over the rows of D, in the triangles ``tris``"""
     best, best_w = None, None
-    for t in TRIS[j]:
+    for t in tris:
         M = D[t].T
         try:
             b = np.linalg.solve(M, d)
@@ -282,12 +293,12 @@ def cone_weights(j, d, side="L"):
         b = b / b.sum()
         if best is None or b.min() > best:
             best, best_w = b.min(), (t, b)
-    w = np.zeros(len(names))
+    w = np.zeros(len(D))
     t, b = best_w
     b = np.clip(b, 0, None)
     b /= b.sum()
     w[t] = b
-    return w[1:]
+    return w
 
 
 def weights(F, side):
@@ -305,6 +316,12 @@ def plain_keys(j):
     """the keys of a joint that the simulation leaves empty and the slide still fills: their
     shape slides the skin of plain skinning and adds no volume"""
     return JOINTS[j].get("slide", {}).get("plain_keys", ())
+
+
+def borrowed_keys(j):
+    """the keys of a joint that take their surface from the other keys: the driver's blend of
+    the simulated keys at the key's pose, before any slide. Their shape adds the slide alone"""
+    return JOINTS[j].get("slide", {}).get("borrowed_keys", ())
 
 
 def shape_names(j):
@@ -334,7 +351,9 @@ def train(force=False, only=None):
     for j, J in JOINTS.items():
         keys = J["keys"] if J["kind"] == "hinge" else list(J["targets"])
         for k, nm in zip(keys, shape_names(j)):
-            if k in J.get("empty", []) or (only and nm not in only):
+            if k in J.get("empty", []) or k in borrowed_keys(j):
+                continue
+            if only and nm not in only:
                 continue
             fn = cache / f"{nm}.npz"
             if fn.exists() and not force:
@@ -438,6 +457,11 @@ def fit_shapes():
             armpit = SM.armpit_triangles(Vs, T, c, up=(0.0, 1.0, 0.0))
         rows = np.repeat(np.arange(n_r * 3).reshape(n_r, 3), 3, axis=1).ravel()
         cols = np.tile(np.arange(n_r * 3).reshape(n_r, 3), (1, 3)).ravel()
+        unslid, older, older_tris = {}, None, None
+        if borrowed_keys(j):
+            names, dirs = cone_targets(j)
+            older = [i for i, n in enumerate(names) if n not in borrowed_keys(j)]
+            older_tris = hull_triangles(dirs[older])
         for k, nm in zip(keys, shape_names(j)):
             if k in J.get("empty", []) and k not in plain_keys(j):
                 continue
@@ -445,6 +469,17 @@ def fit_shapes():
                 p = key_pose(j, k)
                 F = P.fk(p)
                 d = dict(X=P.skin(F, Vs, si, sw))
+            elif k in borrowed_keys(j):
+                p = key_pose(j, k)
+                F = P.fk(p)
+                w = triangle_weights(
+                    dirs[older], older_tris, cone_dir(*J["targets"][k])
+                )
+                base = Vs.copy()
+                for i, share in zip(older, w):
+                    if share > 0 and names[i] in unslid:
+                        base += share * unslid[names[i]]
+                d = dict(X=P.skin(F, base, si, sw))
             else:
                 d = np.load(cache / f"{nm}.npz")
                 p = P.Pose()
@@ -470,6 +505,15 @@ def fit_shapes():
             delta = spla.spsolve(Mtx.tocsc(), b).reshape(n_r, 3)
             D = np.zeros_like(Vs)
             D[reg] = delta * mask[reg][:, None]
+            if (
+                older is not None
+                and k not in plain_keys(j)
+                and k not in borrowed_keys(j)
+            ):
+                b0 = np.einsum("nki,nk->ni", A, d["X"][reg] - Xl).ravel()
+                plain_delta = spla.spsolve(Mtx.tocsc(), b0).reshape(n_r, 3)
+                unslid[k] = np.zeros_like(Vs)
+                unslid[k][reg] = plain_delta * mask[reg][:, None]
             keep = np.linalg.norm(D, axis=1) > 2e-5
             left = np.where(keep)[0]
             shapes.append(dict(name=f"{nm}.L", idx=left, D=D[left]))
