@@ -1257,7 +1257,9 @@ def write_layered_pack(
                         1,
                     )
                     changed |= changed_pixels(base, other) & ~noise
-                    step = np.abs(base.astype(np.int16) - other.astype(np.int16)).max(-1)
+                    step = np.abs(base.astype(np.int16) - other.astype(np.int16)).max(
+                        -1
+                    )
                     strength = np.maximum(strength, np.where(noise, 0, step))
                     b = changed_box(base, np.where(noise[..., None], base, other))
                     if b:
