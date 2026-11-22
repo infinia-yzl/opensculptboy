@@ -61,6 +61,7 @@ export_glb("ada.glb", Character(name="ada", phenotype={"muscle": 0.7}), animatio
 | [Pose from a picture](docs/pose-from-picture.md) | posing a character from a photo or a drawing |
 | [Fit to a reference](docs/reference-fit.md) | rebuilding an existing 3D character on Anny's body |
 | [Budget tiers](docs/budget-tiers.md) | exporting one character at several levels of detail |
+| [Portrait pack](docs/portrait-pack.md) | still frames of a character, rendered by the web viewer, for an app that shows it as a 2D portrait that talks and blinks |
 | [Body model](docs/body-model.md) | the Python API: shapes, poses, rigs, topologies, hair and caching |
 | [Character card](docs/character-card.md) | the card format |
 | [Wearables](docs/wearables.md) | dressing a character: wearable packages, outfits, and the clothing of a reference character |

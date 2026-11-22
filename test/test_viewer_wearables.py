@@ -409,5 +409,24 @@ class TestViewerWearables(unittest.TestCase):
             )
 
 
+@unittest.skipUnless(
+    node_available(), "node 22 or later is needed to run the page's TypeScript"
+)
+class TestViewerCloakHang(unittest.TestCase):
+    """A cloak with spring chains hangs from the shoulders and the hips in the page, which simulates
+    no cloth: its vertices away from a limb take the limb's weights onto the torso bone the limb hangs
+    from (viewer/test/hang.mjs)."""
+
+    def test_hang(self):
+        r = subprocess.run(
+            ["node", str(REPO / "viewer" / "test" / "hang.mjs")],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertIn("ok", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

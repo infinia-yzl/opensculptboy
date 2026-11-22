@@ -90,6 +90,10 @@ pose = [
     "mediapipe",
     "contourpy",
 ]
+# the portrait pack (opensculptboy portrait-pack): the web viewer's page in headless Chromium
+portrait = [
+    "playwright",
+]
 dev = [
     "ruff==0.14.5",
     "build",
