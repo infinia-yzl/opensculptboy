@@ -23,6 +23,9 @@ import scipy.sparse.linalg as spla
 from scipy.spatial import cKDTree
 
 
+GIVE = 0.9
+
+
 def closest_on_triangles(
     p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray
 ) -> np.ndarray:
@@ -125,6 +128,48 @@ def _rest_triangles(rest: np.ndarray, faces: np.ndarray):
     return flat
 
 
+def _narrowest(points: np.ndarray, zone: np.ndarray, inverse: np.ndarray) -> np.ndarray:
+    edges = np.stack(
+        [
+            points[zone[:, 1]] - points[zone[:, 0]],
+            points[zone[:, 2]] - points[zone[:, 0]],
+        ],
+        axis=2,
+    )
+    return np.linalg.svd(edges @ inverse, compute_uv=False)[:, 1]
+
+
+def _normals(points: np.ndarray, zone: np.ndarray) -> np.ndarray:
+    return np.cross(
+        points[zone[:, 1]] - points[zone[:, 0]], points[zone[:, 2]] - points[zone[:, 0]]
+    )
+
+
+def _guarded(out, ids, moved, zone, column, inverse, floor, surface) -> np.ndarray:
+    before = out[ids]
+    facing = _normals(out, zone)
+    share = np.ones(len(ids))
+    trial = out.copy()
+    for attempt in range(6 + len(ids)):
+        placed = before + share[:, None] * (moved - before)
+        partial = (share > 0) & (share < 1)
+        if partial.any():
+            placed[partial] = surface.project(placed[partial])
+        trial[ids] = placed
+        broken = (_narrowest(trial, zone, inverse) < floor) | (
+            (_normals(trial, zone) * facing).sum(1) <= 0
+        )
+        if not broken.any():
+            return placed
+        touched = column[zone[broken]].ravel()
+        touched = np.unique(touched[(touched >= 0)])
+        touched = touched[share[touched] > 0]
+        if not len(touched):
+            break
+        share[touched] = 0.0 if attempt >= 5 else 0.5 * share[touched]
+    return before
+
+
 def slide(
     rest: np.ndarray,
     posed: np.ndarray,
@@ -132,6 +177,7 @@ def slide(
     free: np.ndarray,
     iterations: int = 60,
     hold: float = 0.02,
+    guard: float | None = 0.25,
 ) -> np.ndarray:
     """
     The posed surface with the vertices of ``free`` (V,) slid along it.
@@ -142,6 +188,15 @@ def slide(
     of the mean weight) and puts them back on the posed surface: on the triangles of the
     zone alone, so that a vertex never lands on another part of the body that the pose
     brings near. The other vertices stay.
+
+    ``guard`` keeps the slide from trading stretch for squeezed skin: after a round, the
+    narrower width of a triangle against its rest shape stays above :data:`GIVE` times
+    the lower of ``guard`` and its value before the slide, and the triangle may not turn
+    over. The vertices of a triangle that breaks
+    this take half of their move of the round, again and again, and stay in place when
+    that does not help, as the line searches of flip-free mappings do (Smith and Schaefer,
+    "Bijective Parameterization with Free Boundaries", 2015). ``None`` switches it off. A quarter of the rest
+    width stops triangles from collapsing; a higher guard holds more of the stretch back.
     The result has the shape of ``posed`` within the size of its triangles, and less uneven
     stretch against ``rest`` in the zone.
     """
@@ -177,6 +232,9 @@ def slide(
     held = hold * normal.diagonal().mean()
     solve = spla.factorized((normal + held * sp.identity(len(ids))).tocsc())
     out = posed.copy()
+    floor = None
+    if guard is not None:
+        floor = GIVE * np.minimum(_narrowest(out, zone, inverse), guard)
     for _ in range(iterations):
         edges = np.stack(
             [out[zone[:, 1]] - out[zone[:, 0]], out[zone[:, 2]] - out[zone[:, 0]]],
@@ -195,5 +253,9 @@ def slide(
             right[e * count : (e + 1) * count] = w[:, None] * target
         b = matrix.T @ right + held * out[ids]
         moved = np.stack([solve(b[:, axis]) for axis in range(3)], axis=1)
-        out[ids] = surface.project(moved)
+        moved = surface.project(moved)
+        if guard is None:
+            out[ids] = moved
+            continue
+        out[ids] = _guarded(out, ids, moved, zone, column, inverse, floor, surface)
     return out

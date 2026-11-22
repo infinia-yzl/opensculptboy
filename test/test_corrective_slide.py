@@ -127,6 +127,47 @@ class TestSlide(unittest.TestCase):
         zone = free[faces].any(1)
         self.assertLess(after[zone].max(), before[zone].max() - 0.2)
 
+    def test_the_guard_halves_a_move_that_squeezes(self):
+        V, F = sheet(nx=21, ny=11, width=0.2, length=0.1)
+        free = (np.abs(V[:, 0]) < 0.1 - 1e-9) & (np.abs(V[:, 1]) < 0.05 - 1e-9)
+        ids = np.where(free)[0]
+        column = -np.ones(len(V), dtype=np.int64)
+        column[ids] = np.arange(len(ids))
+        flat = SL._rest_triangles(V, F)
+        inverse = np.linalg.inv(np.stack([flat[:, 1], flat[:, 2]], axis=2))
+        floor = SL.GIVE * np.minimum(SL._narrowest(V, F, inverse), 0.5)
+        squeezed = int(np.argmin(np.linalg.norm(V - [-0.05, 0.0, 0.0], axis=1)))
+        easy = int(np.argmin(np.linalg.norm(V - [0.05, 0.0, 0.0], axis=1)))
+        moved = V[ids].copy()
+        moved[column[squeezed]] += [0.0099, 0.0, 0.0]
+        moved[column[easy]] += [0.002, 0.0, 0.0]
+        whole = V.copy()
+        whole[ids] = moved
+        self.assertLess(SL._narrowest(whole, F, inverse).min(), 0.02)
+        placed = SL._guarded(
+            V.copy(), ids, moved, F, column, inverse, floor, SL.Surface(V, F)
+        )
+        kept = V.copy()
+        kept[ids] = placed
+        self.assertTrue((SL._narrowest(kept, F, inverse) >= floor).all())
+        self.assertTrue((SL._normals(kept, F)[:, 2] > 0).all())
+        np.testing.assert_allclose(placed[column[easy]], moved[column[easy]], atol=0)
+        step = placed[column[squeezed], 0] - V[squeezed, 0]
+        self.assertGreater(step, 0.002)
+        self.assertLess(step, 0.006)
+        rest_of_them = np.ones(len(ids), bool)
+        rest_of_them[[column[squeezed], column[easy]]] = False
+        np.testing.assert_allclose(placed[rest_of_them], V[ids][rest_of_them], atol=0)
+
+    def test_the_guard_leaves_a_harmless_slide_alone(self):
+        V, F = sheet()
+        P = V.copy()
+        P[:, 0] = uneven(V[:, 0])
+        free = np.abs(V[:, 0]) < 0.2 - 1e-9
+        with_guard = SL.slide(V, P, F, free, iterations=30)
+        without = SL.slide(V, P, F, free, iterations=30, guard=None)
+        np.testing.assert_allclose(with_guard, without, atol=1e-9)
+
     def test_only_the_free_zone_moves(self):
         V, F = sheet()
         P = V.copy()
