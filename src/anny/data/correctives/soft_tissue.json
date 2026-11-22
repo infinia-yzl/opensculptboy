@@ -210,7 +210,7 @@
       -0.036834,
       0.906308
      ],
-     "shape": null
+     "shape": "shoulder_up_in.L"
     },
     {
      "name": "back_up",
@@ -219,7 +219,25 @@
       0.5,
       0.866025
      ],
-     "shape": null
+     "shape": "shoulder_back_up.L"
+    },
+    {
+     "name": "overhead_back",
+     "dir": [
+      0.620885,
+      0.166366,
+      0.766044
+     ],
+     "shape": "shoulder_overhead_back.L"
+    },
+    {
+     "name": "overhead_side",
+     "dir": [
+      0.408218,
+      -0.109382,
+      0.906308
+     ],
+     "shape": "shoulder_overhead_side.L"
     }
    ],
    "triangles": [
@@ -227,6 +245,16 @@
      14,
      12,
      8
+    ],
+    [
+     13,
+     16,
+     2
+    ],
+    [
+     13,
+     12,
+     16
     ],
     [
      9,
@@ -260,23 +288,23 @@
     ],
     [
      15,
-     3,
-     11
-    ],
-    [
-     15,
-     11,
-     2
-    ],
-    [
-     15,
-     2,
-     13
-    ],
-    [
-     15,
-     13,
+     16,
      12
+    ],
+    [
+     5,
+     3,
+     14
+    ],
+    [
+     5,
+     8,
+     4
+    ],
+    [
+     5,
+     14,
+     8
     ],
     [
      0,
@@ -314,9 +342,24 @@
      9
     ],
     [
+     17,
+     3,
+     5
+    ],
+    [
+     17,
+     15,
+     3
+    ],
+    [
+     17,
+     16,
+     15
+    ],
+    [
      6,
-     2,
-     11
+     5,
+     4
     ],
     [
      6,
@@ -334,34 +377,29 @@
      0
     ],
     [
-     5,
      11,
-     3
+     17,
+     5
     ],
     [
+     11,
      5,
-     3,
-     14
-    ],
-    [
-     5,
-     4,
      6
     ],
     [
-     5,
+     11,
+     16,
+     17
+    ],
+    [
+     11,
+     2,
+     16
+    ],
+    [
+     11,
      6,
-     11
-    ],
-    [
-     5,
-     8,
-     4
-    ],
-    [
-     5,
-     14,
-     8
+     2
     ]
    ]
   },
@@ -747,7 +785,7 @@
       -0.036834,
       0.906308
      ],
-     "shape": null
+     "shape": "shoulder_up_in.R"
     },
     {
      "name": "back_up",
@@ -756,13 +794,41 @@
       0.5,
       0.866025
      ],
-     "shape": null
+     "shape": "shoulder_back_up.R"
+    },
+    {
+     "name": "overhead_back",
+     "dir": [
+      -0.620885,
+      0.166366,
+      0.766044
+     ],
+     "shape": "shoulder_overhead_back.R"
+    },
+    {
+     "name": "overhead_side",
+     "dir": [
+      -0.408218,
+      -0.109382,
+      0.906308
+     ],
+     "shape": "shoulder_overhead_side.R"
     }
    ],
    "triangles": [
     [
      14,
      8,
+     12
+    ],
+    [
+     13,
+     2,
+     16
+    ],
+    [
+     13,
+     16,
      12
     ],
     [
@@ -797,23 +863,23 @@
     ],
     [
      15,
-     11,
+     12,
+     16
+    ],
+    [
+     5,
+     14,
      3
     ],
     [
-     15,
-     2,
-     11
+     5,
+     4,
+     8
     ],
     [
-     15,
-     13,
-     2
-    ],
-    [
-     15,
-     12,
-     13
+     5,
+     8,
+     14
     ],
     [
      0,
@@ -851,9 +917,24 @@
      1
     ],
     [
+     17,
+     5,
+     3
+    ],
+    [
+     17,
+     3,
+     15
+    ],
+    [
+     17,
+     15,
+     16
+    ],
+    [
      6,
-     11,
-     2
+     4,
+     5
     ],
     [
      6,
@@ -871,34 +952,29 @@
      10
     ],
     [
-     5,
-     3,
-     11
-    ],
-    [
-     5,
-     14,
-     3
-    ],
-    [
-     5,
-     6,
-     4
-    ],
-    [
-     5,
      11,
+     5,
+     17
+    ],
+    [
+     11,
+     6,
+     5
+    ],
+    [
+     11,
+     17,
+     16
+    ],
+    [
+     11,
+     16,
+     2
+    ],
+    [
+     11,
+     2,
      6
-    ],
-    [
-     5,
-     4,
-     8
-    ],
-    [
-     5,
-     8,
-     14
     ]
    ]
   },
@@ -1087,33 +1163,33 @@
  "shapes": [
   {
    "name": "elbow_000.L",
-   "vertices": 275,
-   "reference_radius": 0.07770067655940113
+   "vertices": 276,
+   "reference_radius": 0.07802355151942796
   },
   {
    "name": "elbow_000.R",
-   "vertices": 275,
-   "reference_radius": 0.07770067655940113
+   "vertices": 276,
+   "reference_radius": 0.07802355151942796
   },
   {
    "name": "elbow_090.L",
-   "vertices": 281,
-   "reference_radius": 0.07995351306027251
+   "vertices": 280,
+   "reference_radius": 0.079541645317341
   },
   {
    "name": "elbow_090.R",
-   "vertices": 281,
-   "reference_radius": 0.07995351306027251
+   "vertices": 280,
+   "reference_radius": 0.079541645317341
   },
   {
    "name": "elbow_130.L",
-   "vertices": 270,
-   "reference_radius": 0.07618543746777194
+   "vertices": 269,
+   "reference_radius": 0.07595558421137541
   },
   {
    "name": "elbow_130.R",
-   "vertices": 270,
-   "reference_radius": 0.07618543746777194
+   "vertices": 269,
+   "reference_radius": 0.07595558421137541
   },
   {
    "name": "knee_000.L",
@@ -1157,183 +1233,223 @@
   },
   {
    "name": "shoulder_down.L",
-   "vertices": 668,
-   "reference_radius": 0.12607031068881433
+   "vertices": 726,
+   "reference_radius": 0.13007888129809791
   },
   {
    "name": "shoulder_down.R",
-   "vertices": 668,
-   "reference_radius": 0.12607031068881433
+   "vertices": 726,
+   "reference_radius": 0.13007888129809791
   },
   {
    "name": "shoulder_side.L",
-   "vertices": 731,
-   "reference_radius": 0.13218934702967514
+   "vertices": 791,
+   "reference_radius": 0.13634969771916783
   },
   {
    "name": "shoulder_side.R",
-   "vertices": 731,
-   "reference_radius": 0.13218934702967514
+   "vertices": 791,
+   "reference_radius": 0.13634969771916783
   },
   {
    "name": "shoulder_up.L",
-   "vertices": 749,
-   "reference_radius": 0.13451985036104835
+   "vertices": 777,
+   "reference_radius": 0.13529838624096055
   },
   {
    "name": "shoulder_up.R",
-   "vertices": 749,
-   "reference_radius": 0.13451985036104835
+   "vertices": 777,
+   "reference_radius": 0.13529838624096055
   },
   {
    "name": "shoulder_forward.L",
-   "vertices": 738,
-   "reference_radius": 0.13271960882046757
+   "vertices": 799,
+   "reference_radius": 0.1366639009649149
   },
   {
    "name": "shoulder_forward.R",
-   "vertices": 738,
-   "reference_radius": 0.13271960882046757
+   "vertices": 799,
+   "reference_radius": 0.1366639009649149
   },
   {
    "name": "shoulder_forward_up.L",
-   "vertices": 755,
-   "reference_radius": 0.13434260976610105
+   "vertices": 799,
+   "reference_radius": 0.13637196308650562
   },
   {
    "name": "shoulder_forward_up.R",
-   "vertices": 755,
-   "reference_radius": 0.13434260976610105
+   "vertices": 799,
+   "reference_radius": 0.13637196007727673
   },
   {
    "name": "shoulder_side_forward.L",
-   "vertices": 723,
-   "reference_radius": 0.13088297878872
+   "vertices": 785,
+   "reference_radius": 0.13522385059491424
   },
   {
    "name": "shoulder_side_forward.R",
-   "vertices": 723,
-   "reference_radius": 0.13088297878872
+   "vertices": 785,
+   "reference_radius": 0.13522385059491424
   },
   {
    "name": "shoulder_back.L",
-   "vertices": 667,
-   "reference_radius": 0.12555333216671727
+   "vertices": 753,
+   "reference_radius": 0.13178250833111102
   },
   {
    "name": "shoulder_back.R",
-   "vertices": 667,
-   "reference_radius": 0.12555333216671727
+   "vertices": 753,
+   "reference_radius": 0.13178250833111102
   },
   {
    "name": "shoulder_across.L",
-   "vertices": 759,
-   "reference_radius": 0.13533120405153007
+   "vertices": 813,
+   "reference_radius": 0.13873062939424025
   },
   {
    "name": "shoulder_across.R",
-   "vertices": 759,
-   "reference_radius": 0.13533120405153007
+   "vertices": 813,
+   "reference_radius": 0.13873062939424025
   },
   {
    "name": "shoulder_across_low.L",
-   "vertices": 707,
-   "reference_radius": 0.12954996582372805
+   "vertices": 765,
+   "reference_radius": 0.13363928877574285
   },
   {
    "name": "shoulder_across_low.R",
-   "vertices": 707,
-   "reference_radius": 0.12954996582372805
+   "vertices": 765,
+   "reference_radius": 0.13363928877574288
   },
   {
    "name": "shoulder_forward_low.L",
-   "vertices": 671,
-   "reference_radius": 0.1260531965761189
+   "vertices": 752,
+   "reference_radius": 0.13158133025045862
   },
   {
    "name": "shoulder_forward_low.R",
-   "vertices": 671,
-   "reference_radius": 0.1260531965761189
+   "vertices": 752,
+   "reference_radius": 0.13158133025045865
   },
   {
    "name": "shoulder_side_up.L",
-   "vertices": 754,
-   "reference_radius": 0.1346096344992035
+   "vertices": 799,
+   "reference_radius": 0.13653961985177882
   },
   {
    "name": "shoulder_side_up.R",
-   "vertices": 754,
-   "reference_radius": 0.13460963449920346
+   "vertices": 799,
+   "reference_radius": 0.13653961985177882
   },
   {
    "name": "shoulder_back_high.L",
-   "vertices": 701,
-   "reference_radius": 0.12837742578584038
+   "vertices": 770,
+   "reference_radius": 0.1333569978564779
   },
   {
    "name": "shoulder_back_high.R",
-   "vertices": 701,
-   "reference_radius": 0.12837742578584038
+   "vertices": 770,
+   "reference_radius": 0.1333569978564779
   },
   {
    "name": "shoulder_back_side.L",
-   "vertices": 661,
-   "reference_radius": 0.12393882415166922
+   "vertices": 732,
+   "reference_radius": 0.12905269890021384
   },
   {
    "name": "shoulder_back_side.R",
-   "vertices": 661,
-   "reference_radius": 0.12393882415166922
+   "vertices": 732,
+   "reference_radius": 0.12905269890021384
+  },
+  {
+   "name": "shoulder_up_in.L",
+   "vertices": 688,
+   "reference_radius": 0.12629389807921346
+  },
+  {
+   "name": "shoulder_up_in.R",
+   "vertices": 688,
+   "reference_radius": 0.12629389807921346
+  },
+  {
+   "name": "shoulder_back_up.L",
+   "vertices": 685,
+   "reference_radius": 0.1261727273635101
+  },
+  {
+   "name": "shoulder_back_up.R",
+   "vertices": 685,
+   "reference_radius": 0.1261727273635101
+  },
+  {
+   "name": "shoulder_overhead_back.L",
+   "vertices": 777,
+   "reference_radius": 0.1340964706638779
+  },
+  {
+   "name": "shoulder_overhead_back.R",
+   "vertices": 777,
+   "reference_radius": 0.1340964706638779
+  },
+  {
+   "name": "shoulder_overhead_side.L",
+   "vertices": 792,
+   "reference_radius": 0.13569475752257007
+  },
+  {
+   "name": "shoulder_overhead_side.R",
+   "vertices": 792,
+   "reference_radius": 0.13569475752257007
   },
   {
    "name": "hip_flex45.L",
-   "vertices": 537,
-   "reference_radius": 0.14912027348621892
+   "vertices": 538,
+   "reference_radius": 0.14920537759793684
   },
   {
    "name": "hip_flex45.R",
-   "vertices": 537,
-   "reference_radius": 0.14912027348621892
+   "vertices": 538,
+   "reference_radius": 0.14920537759793684
   },
   {
    "name": "hip_flex90.L",
-   "vertices": 540,
-   "reference_radius": 0.1492560106511733
+   "vertices": 539,
+   "reference_radius": 0.14913638324087392
   },
   {
    "name": "hip_flex90.R",
-   "vertices": 540,
-   "reference_radius": 0.1492560106511733
+   "vertices": 539,
+   "reference_radius": 0.14913638324087394
   },
   {
    "name": "hip_flex125.L",
-   "vertices": 553,
-   "reference_radius": 0.15076157206102633
+   "vertices": 551,
+   "reference_radius": 0.15056802386034512
   },
   {
    "name": "hip_flex125.R",
-   "vertices": 553,
-   "reference_radius": 0.15076157206102633
+   "vertices": 551,
+   "reference_radius": 0.15056802386034512
   },
   {
    "name": "hip_flex90_out.L",
-   "vertices": 547,
-   "reference_radius": 0.1498132564182116
+   "vertices": 548,
+   "reference_radius": 0.14993218122957253
   },
   {
    "name": "hip_flex90_out.R",
-   "vertices": 547,
-   "reference_radius": 0.1498132564182116
+   "vertices": 548,
+   "reference_radius": 0.1499321812295725
   },
   {
    "name": "hip_flex125_out.L",
    "vertices": 548,
-   "reference_radius": 0.14984445869308752
+   "reference_radius": 0.1498855837133689
   },
   {
    "name": "hip_flex125_out.R",
    "vertices": 548,
-   "reference_radius": 0.14984445869308752
+   "reference_radius": 0.1498855837133689
   },
   {
    "name": "hip_back.L",
@@ -1357,275 +1473,443 @@
   },
   {
    "name": "hip_in.L",
-   "vertices": 536,
-   "reference_radius": 0.1483426063370867
+   "vertices": 535,
+   "reference_radius": 0.14823568011940644
   },
   {
    "name": "hip_in.R",
-   "vertices": 536,
-   "reference_radius": 0.1483426063370867
+   "vertices": 535,
+   "reference_radius": 0.14823568011940644
   },
   {
    "name": "hip_flex45_out.L",
-   "vertices": 544,
-   "reference_radius": 0.14935782536313347
+   "vertices": 545,
+   "reference_radius": 0.14952164345234634
   },
   {
    "name": "hip_flex45_out.R",
-   "vertices": 544,
-   "reference_radius": 0.14935782536313347
+   "vertices": 545,
+   "reference_radius": 0.14952164345234634
   },
   {
    "name": "hip_back_out.L",
-   "vertices": 531,
-   "reference_radius": 0.14644644638143306
+   "vertices": 530,
+   "reference_radius": 0.14630781675026286
   },
   {
    "name": "hip_back_out.R",
-   "vertices": 531,
-   "reference_radius": 0.14644644638143306
+   "vertices": 530,
+   "reference_radius": 0.14630781675026283
   }
  ],
  "fit": [
   {
    "key": "elbow_000",
-   "vertices": 275,
-   "largest_move_mm": 12.814242285525077,
-   "plain_mean_mm": 2.8788089797719656,
-   "fit_mean_mm": 0.041635006319122064,
-   "fit_max_mm": 0.36722479144338815
+   "vertices": 276,
+   "largest_move_mm": 12.853222213587722,
+   "plain_mean_mm": 2.88467882178846,
+   "fit_mean_mm": 0.04170009334865367,
+   "fit_max_mm": 0.37019858616869117
   },
   {
    "key": "elbow_090",
-   "vertices": 281,
-   "largest_move_mm": 15.715973485985142,
-   "plain_mean_mm": 3.508363992209347,
-   "fit_mean_mm": 0.052002595685234486,
-   "fit_max_mm": 0.39975296245852054
+   "vertices": 280,
+   "largest_move_mm": 15.714208964198603,
+   "plain_mean_mm": 3.4885761635538253,
+   "fit_mean_mm": 0.05248618437129333,
+   "fit_max_mm": 0.40057961966798844
   },
   {
    "key": "elbow_130",
-   "vertices": 270,
-   "largest_move_mm": 27.583985398918013,
-   "plain_mean_mm": 5.193406793762142,
-   "fit_mean_mm": 0.12594560499124233,
-   "fit_max_mm": 1.17848423839808
+   "vertices": 269,
+   "largest_move_mm": 27.34528763336982,
+   "plain_mean_mm": 5.22731440256739,
+   "fit_mean_mm": 0.1270657554941904,
+   "fit_max_mm": 1.1795156629260342
   },
   {
    "key": "knee_000",
    "vertices": 267,
-   "largest_move_mm": 4.140771811497987,
-   "plain_mean_mm": 0.690918272642176,
-   "fit_mean_mm": 0.01201856342789802,
-   "fit_max_mm": 0.09040104318631038
+   "largest_move_mm": 4.176833070685272,
+   "plain_mean_mm": 0.7022440100641346,
+   "fit_mean_mm": 0.0120701846744921,
+   "fit_max_mm": 0.09159098888033243
   },
   {
    "key": "knee_050",
    "vertices": 285,
-   "largest_move_mm": 15.76417753976357,
-   "plain_mean_mm": 3.262195216401625,
-   "fit_mean_mm": 0.055162013514209504,
-   "fit_max_mm": 0.3971406561004094
+   "largest_move_mm": 15.818234799146516,
+   "plain_mean_mm": 3.3199050932255876,
+   "fit_mean_mm": 0.05552918549019698,
+   "fit_max_mm": 0.40007818516915306
   },
   {
    "key": "knee_090",
    "vertices": 288,
-   "largest_move_mm": 33.396577383178176,
-   "plain_mean_mm": 5.532224549000394,
-   "fit_mean_mm": 0.17840199729511277,
-   "fit_max_mm": 1.7402001817941077
+   "largest_move_mm": 33.40031043482314,
+   "plain_mean_mm": 5.568456703813601,
+   "fit_mean_mm": 0.17859873086428046,
+   "fit_max_mm": 1.735468652242901
   },
   {
    "key": "knee_130",
    "vertices": 288,
-   "largest_move_mm": 60.52240264796763,
-   "plain_mean_mm": 8.250493161976767,
-   "fit_mean_mm": 0.416920844150278,
-   "fit_max_mm": 3.8141131452343893
+   "largest_move_mm": 60.81944200802439,
+   "plain_mean_mm": 8.285540463772254,
+   "fit_mean_mm": 0.4182115664056753,
+   "fit_max_mm": 3.827154509478795
   },
   {
    "key": "shoulder_down",
-   "vertices": 668,
-   "largest_move_mm": 15.436650458464586,
-   "plain_mean_mm": 2.172084580033982,
-   "fit_mean_mm": 0.1833925594455893,
-   "fit_max_mm": 1.8901626870814465
+   "vertices": 726,
+   "largest_move_mm": 12.69176218296242,
+   "plain_mean_mm": 2.201053037048346,
+   "fit_mean_mm": 0.17724760340301576,
+   "fit_max_mm": 1.8884582633651608,
+   "stretch_sim_p95": 1.244782112788204,
+   "stretch_sim_peak": 1.405592152711453,
+   "stretch_slid_p95": 1.114335520090294,
+   "stretch_slid_peak": 1.193049782201133,
+   "stretch_fit_p95": 1.108033452974059,
+   "stretch_fit_peak": 1.1399798441535982,
+   "crossing_sim": 53,
+   "crossing_fit": 57
   },
   {
    "key": "shoulder_side",
-   "vertices": 731,
-   "largest_move_mm": 21.806310320828302,
-   "plain_mean_mm": 2.7650131162819185,
-   "fit_mean_mm": 0.21140560678510364,
-   "fit_max_mm": 2.0858544796295844
+   "vertices": 791,
+   "largest_move_mm": 20.444622645521203,
+   "plain_mean_mm": 4.210982695339178,
+   "fit_mean_mm": 0.25357944608221505,
+   "fit_max_mm": 2.1195652595983385,
+   "stretch_sim_p95": 1.7816544705565756,
+   "stretch_sim_peak": 2.617716237432084,
+   "stretch_slid_p95": 1.454288429894842,
+   "stretch_slid_peak": 1.7574378420348011,
+   "stretch_fit_p95": 1.470380388590112,
+   "stretch_fit_peak": 1.909900274036312,
+   "crossing_sim": 0,
+   "crossing_fit": 0
   },
   {
    "key": "shoulder_up",
-   "vertices": 749,
-   "largest_move_mm": 98.19560296656147,
-   "plain_mean_mm": 6.799243935740288,
-   "fit_mean_mm": 0.22187462097382185,
-   "fit_max_mm": 6.570386686595295
+   "vertices": 777,
+   "largest_move_mm": 80.31228767686974,
+   "plain_mean_mm": 10.578613613552744,
+   "fit_mean_mm": 1.1894481374520316,
+   "fit_max_mm": 11.353126482323695,
+   "stretch_sim_p95": 2.9066008096636073,
+   "stretch_sim_peak": 4.643933112088177,
+   "stretch_slid_p95": 1.841728660893723,
+   "stretch_slid_peak": 2.2556648465171736,
+   "stretch_fit_p95": 1.9476379473204584,
+   "stretch_fit_peak": 2.605762225384664,
+   "crossing_sim": 0,
+   "crossing_fit": 0
   },
   {
    "key": "shoulder_forward",
-   "vertices": 738,
-   "largest_move_mm": 42.83809400951422,
-   "plain_mean_mm": 4.532714418146672,
-   "fit_mean_mm": 0.5005169198670092,
-   "fit_max_mm": 6.096066360159005
+   "vertices": 799,
+   "largest_move_mm": 40.71678774931699,
+   "plain_mean_mm": 7.019427404827972,
+   "fit_mean_mm": 0.5967312376474454,
+   "fit_max_mm": 7.096623211235201,
+   "stretch_sim_p95": 2.056048498464949,
+   "stretch_sim_peak": 2.761858947470075,
+   "stretch_slid_p95": 1.609140621704858,
+   "stretch_slid_peak": 2.5224648815009023,
+   "stretch_fit_p95": 1.5981403890123285,
+   "stretch_fit_peak": 2.5868271900012076,
+   "crossing_sim": 0,
+   "crossing_fit": 0
   },
   {
    "key": "shoulder_forward_up",
-   "vertices": 755,
-   "largest_move_mm": 44.218452337925065,
-   "plain_mean_mm": 5.688421805976849,
-   "fit_mean_mm": 0.8511984413289723,
-   "fit_max_mm": 11.827735043180738
+   "vertices": 799,
+   "largest_move_mm": 42.64926980914201,
+   "plain_mean_mm": 9.244283957201766,
+   "fit_mean_mm": 1.869300951058213,
+   "fit_max_mm": 18.017020971454812,
+   "stretch_sim_p95": 2.583321146024423,
+   "stretch_sim_peak": 3.855554735790971,
+   "stretch_slid_p95": 1.6921205738924032,
+   "stretch_slid_peak": 2.094360098072029,
+   "stretch_fit_p95": 1.865646490225853,
+   "stretch_fit_peak": 2.899741090285105,
+   "crossing_sim": 0,
+   "crossing_fit": 12
   },
   {
    "key": "shoulder_side_forward",
-   "vertices": 723,
-   "largest_move_mm": 21.234609931558605,
-   "plain_mean_mm": 3.0062592995715955,
-   "fit_mean_mm": 0.2736045718916682,
-   "fit_max_mm": 3.139396659042407
+   "vertices": 785,
+   "largest_move_mm": 22.200162618005116,
+   "plain_mean_mm": 5.068032603216401,
+   "fit_mean_mm": 0.34036192581315367,
+   "fit_max_mm": 3.1783946178108224,
+   "stretch_sim_p95": 1.9067084650417467,
+   "stretch_sim_peak": 2.727418586941111,
+   "stretch_slid_p95": 1.4600488493179202,
+   "stretch_slid_peak": 1.7374665038878752,
+   "stretch_fit_p95": 1.4761947848932444,
+   "stretch_fit_peak": 1.9623064619879569,
+   "crossing_sim": 0,
+   "crossing_fit": 0
   },
   {
    "key": "shoulder_back",
-   "vertices": 667,
-   "largest_move_mm": 19.558636210716454,
-   "plain_mean_mm": 2.878492348743426,
-   "fit_mean_mm": 0.2966632455933677,
-   "fit_max_mm": 4.173213261192777
+   "vertices": 753,
+   "largest_move_mm": 17.620129245253352,
+   "plain_mean_mm": 3.598100056090131,
+   "fit_mean_mm": 0.3173166327627048,
+   "fit_max_mm": 3.873947651888618,
+   "stretch_sim_p95": 1.5645730999701506,
+   "stretch_sim_peak": 2.160646438448566,
+   "stretch_slid_p95": 1.318328633727475,
+   "stretch_slid_peak": 1.8281907418905252,
+   "stretch_fit_p95": 1.3053170792471247,
+   "stretch_fit_peak": 1.7709233469264862,
+   "crossing_sim": 45,
+   "crossing_fit": 46
   },
   {
    "key": "shoulder_across",
-   "vertices": 759,
-   "largest_move_mm": 73.43006459028294,
-   "plain_mean_mm": 6.446598454116328,
-   "fit_mean_mm": 1.193088714600605,
-   "fit_max_mm": 18.54673627614033
+   "vertices": 813,
+   "largest_move_mm": 78.83319995114753,
+   "plain_mean_mm": 8.447107666642374,
+   "fit_mean_mm": 1.3766243934349482,
+   "fit_max_mm": 17.220400858370894,
+   "stretch_sim_p95": 2.3798343395961186,
+   "stretch_sim_peak": 3.453668817334608,
+   "stretch_slid_p95": 2.0316910290379417,
+   "stretch_slid_peak": 3.4331796314016074,
+   "stretch_fit_p95": 1.8205692781593388,
+   "stretch_fit_peak": 2.4907140872628677,
+   "crossing_sim": 121,
+   "crossing_fit": 115
   },
   {
    "key": "shoulder_across_low",
-   "vertices": 707,
-   "largest_move_mm": 32.793935045546725,
-   "plain_mean_mm": 4.38982828620593,
-   "fit_mean_mm": 0.46986034966723245,
-   "fit_max_mm": 6.336494744880356
+   "vertices": 765,
+   "largest_move_mm": 37.6536873153596,
+   "plain_mean_mm": 5.1269671606363705,
+   "fit_mean_mm": 0.5146092386824264,
+   "fit_max_mm": 6.562258000124133,
+   "stretch_sim_p95": 1.6730092432438948,
+   "stretch_sim_peak": 2.6380212216093506,
+   "stretch_slid_p95": 1.4992122435507653,
+   "stretch_slid_peak": 2.175914410062227,
+   "stretch_fit_p95": 1.3084579794336688,
+   "stretch_fit_peak": 1.7645508646725925,
+   "crossing_sim": 140,
+   "crossing_fit": 146
   },
   {
    "key": "shoulder_forward_low",
-   "vertices": 671,
-   "largest_move_mm": 24.598345506638562,
-   "plain_mean_mm": 3.059830961796659,
-   "fit_mean_mm": 0.290002459218584,
-   "fit_max_mm": 3.4313447470941676
+   "vertices": 752,
+   "largest_move_mm": 24.764260755113852,
+   "plain_mean_mm": 3.8137900801540936,
+   "fit_mean_mm": 0.3401552605742319,
+   "fit_max_mm": 3.656107110340005,
+   "stretch_sim_p95": 1.5533011784782158,
+   "stretch_sim_peak": 1.7643926063503692,
+   "stretch_slid_p95": 1.2749840392097727,
+   "stretch_slid_peak": 1.6435523121593962,
+   "stretch_fit_p95": 1.268607642883849,
+   "stretch_fit_peak": 1.633828557812351,
+   "crossing_sim": 57,
+   "crossing_fit": 63
   },
   {
    "key": "shoulder_side_up",
-   "vertices": 754,
-   "largest_move_mm": 38.8477913565791,
-   "plain_mean_mm": 4.579270106853669,
-   "fit_mean_mm": 0.43682127589283076,
-   "fit_max_mm": 6.146477224824228
+   "vertices": 799,
+   "largest_move_mm": 37.30234907839006,
+   "plain_mean_mm": 7.333678820276189,
+   "fit_mean_mm": 0.9247061412744604,
+   "fit_max_mm": 8.9582891532976,
+   "stretch_sim_p95": 2.3569775353559734,
+   "stretch_sim_peak": 3.729433180147158,
+   "stretch_slid_p95": 1.6512454974798692,
+   "stretch_slid_peak": 2.0452983499961244,
+   "stretch_fit_p95": 1.7432617965518349,
+   "stretch_fit_peak": 2.4050430023400136,
+   "crossing_sim": 0,
+   "crossing_fit": 0
   },
   {
    "key": "shoulder_back_high",
-   "vertices": 701,
-   "largest_move_mm": 28.745632761869924,
-   "plain_mean_mm": 4.115143098598234,
-   "fit_mean_mm": 0.4451592176722434,
-   "fit_max_mm": 5.4735951794157
+   "vertices": 770,
+   "largest_move_mm": 29.99889518123695,
+   "plain_mean_mm": 5.821165735168987,
+   "fit_mean_mm": 0.5237677222102259,
+   "fit_max_mm": 5.077705080559539,
+   "stretch_sim_p95": 1.9592129109418113,
+   "stretch_sim_peak": 2.306796361363019,
+   "stretch_slid_p95": 1.532900865794465,
+   "stretch_slid_peak": 2.2772610418016996,
+   "stretch_fit_p95": 1.5179334331567902,
+   "stretch_fit_peak": 2.141475350889903,
+   "crossing_sim": 39,
+   "crossing_fit": 45
   },
   {
    "key": "shoulder_back_side",
-   "vertices": 661,
-   "largest_move_mm": 15.016687360647223,
-   "plain_mean_mm": 1.9640615009735318,
-   "fit_mean_mm": 0.1643576341864527,
-   "fit_max_mm": 1.556912440152605
+   "vertices": 732,
+   "largest_move_mm": 14.618704171761623,
+   "plain_mean_mm": 3.0727557985812566,
+   "fit_mean_mm": 0.20162994692925254,
+   "fit_max_mm": 1.6114377971021336,
+   "stretch_sim_p95": 1.4669861574277947,
+   "stretch_sim_peak": 1.664437419805159,
+   "stretch_slid_p95": 1.281311195411283,
+   "stretch_slid_peak": 1.411552554363033,
+   "stretch_fit_p95": 1.277311621772693,
+   "stretch_fit_peak": 1.4713273465685384,
+   "crossing_sim": 0,
+   "crossing_fit": 0
+  },
+  {
+   "key": "shoulder_up_in",
+   "vertices": 688,
+   "largest_move_mm": 59.145143890450726,
+   "plain_mean_mm": 7.379920287288857,
+   "fit_mean_mm": 1.4945502406262532,
+   "fit_max_mm": 19.579328871983627,
+   "stretch_sim_p95": 3.2174642236734674,
+   "stretch_sim_peak": 6.542479110045872,
+   "stretch_slid_p95": 1.927479096787952,
+   "stretch_slid_peak": 2.851250028742562,
+   "stretch_fit_p95": 2.0548212749317027,
+   "stretch_fit_peak": 3.5158172969509147,
+   "crossing_sim": 78,
+   "crossing_fit": 89
+  },
+  {
+   "key": "shoulder_back_up",
+   "vertices": 685,
+   "largest_move_mm": 59.490833587658734,
+   "plain_mean_mm": 7.400979193669524,
+   "fit_mean_mm": 1.463054041933263,
+   "fit_max_mm": 15.545380952207168,
+   "stretch_sim_p95": 3.0706082141433817,
+   "stretch_sim_peak": 6.033033798541815,
+   "stretch_slid_p95": 1.8309960512922472,
+   "stretch_slid_peak": 2.0036868452274232,
+   "stretch_fit_p95": 2.0670452664810854,
+   "stretch_fit_peak": 2.9604559532783727,
+   "crossing_sim": 12,
+   "crossing_fit": 19
+  },
+  {
+   "key": "shoulder_overhead_back",
+   "vertices": 777,
+   "largest_move_mm": 37.3721858257292,
+   "plain_mean_mm": 6.576372024158098,
+   "fit_mean_mm": 0.733995170776934,
+   "fit_max_mm": 7.7132822640664696,
+   "stretch_sim_p95": 2.5381149398303564,
+   "stretch_sim_peak": 4.814479380205776,
+   "stretch_slid_p95": 1.7076470170353348,
+   "stretch_slid_peak": 2.142102833916858,
+   "stretch_fit_p95": 1.7678077359473363,
+   "stretch_fit_peak": 2.7060448893286093,
+   "crossing_sim": 0,
+   "crossing_fit": 0
+  },
+  {
+   "key": "shoulder_overhead_side",
+   "vertices": 792,
+   "largest_move_mm": 49.148511012829175,
+   "plain_mean_mm": 8.47026319807854,
+   "fit_mean_mm": 0.9075011441067006,
+   "fit_max_mm": 6.281795595622743,
+   "stretch_sim_p95": 2.762229221901153,
+   "stretch_sim_peak": 4.695445321428713,
+   "stretch_slid_p95": 1.7570852804681334,
+   "stretch_slid_peak": 2.1415436213203423,
+   "stretch_fit_p95": 1.8273703745564314,
+   "stretch_fit_peak": 2.56509199088339,
+   "crossing_sim": 0,
+   "crossing_fit": 0
   },
   {
    "key": "hip_flex45",
-   "vertices": 537,
-   "largest_move_mm": 38.668418240560136,
-   "plain_mean_mm": 6.741438649409662,
-   "fit_mean_mm": 0.04662532654362549,
-   "fit_max_mm": 0.3270201539917381
+   "vertices": 538,
+   "largest_move_mm": 38.80414956634439,
+   "plain_mean_mm": 6.770106553893665,
+   "fit_mean_mm": 0.046732125043278415,
+   "fit_max_mm": 0.32529956092185597
   },
   {
    "key": "hip_flex90",
-   "vertices": 540,
-   "largest_move_mm": 106.33890105352778,
-   "plain_mean_mm": 14.920743407965825,
-   "fit_mean_mm": 0.15536799262389508,
-   "fit_max_mm": 2.4185729986664994
+   "vertices": 539,
+   "largest_move_mm": 105.5125298916782,
+   "plain_mean_mm": 14.886644834851577,
+   "fit_mean_mm": 0.15547816764138178,
+   "fit_max_mm": 2.3890888571355897
   },
   {
    "key": "hip_flex125",
-   "vertices": 553,
-   "largest_move_mm": 147.59762312565798,
-   "plain_mean_mm": 17.63510108482794,
-   "fit_mean_mm": 0.32141070739146105,
-   "fit_max_mm": 5.185992043672377
+   "vertices": 551,
+   "largest_move_mm": 147.14732321095292,
+   "plain_mean_mm": 17.711661869147648,
+   "fit_mean_mm": 0.32183225877851007,
+   "fit_max_mm": 5.211500848111266
   },
   {
    "key": "hip_flex90_out",
-   "vertices": 547,
-   "largest_move_mm": 79.13821163049401,
-   "plain_mean_mm": 12.421233297477523,
-   "fit_mean_mm": 0.1528074720338173,
-   "fit_max_mm": 2.5755326563988064
+   "vertices": 548,
+   "largest_move_mm": 85.93875744066244,
+   "plain_mean_mm": 12.683029792397317,
+   "fit_mean_mm": 0.15097799069473952,
+   "fit_max_mm": 2.671765825264166
   },
   {
    "key": "hip_flex125_out",
    "vertices": 548,
-   "largest_move_mm": 122.29165008041784,
-   "plain_mean_mm": 15.053741656436463,
-   "fit_mean_mm": 0.30626307956337123,
-   "fit_max_mm": 5.211913403159228
+   "largest_move_mm": 121.79128527475845,
+   "plain_mean_mm": 15.047962394030266,
+   "fit_mean_mm": 0.30671371404007863,
+   "fit_max_mm": 5.203269749856489
   },
   {
    "key": "hip_back",
    "vertices": 528,
-   "largest_move_mm": 27.354397783716763,
-   "plain_mean_mm": 4.942267235509634,
-   "fit_mean_mm": 0.0325794079092509,
-   "fit_max_mm": 0.2416712872013214
+   "largest_move_mm": 27.40135284019184,
+   "plain_mean_mm": 4.9551312285439,
+   "fit_mean_mm": 0.03270870718572771,
+   "fit_max_mm": 0.24020830891768982
   },
   {
    "key": "hip_out",
    "vertices": 544,
-   "largest_move_mm": 27.938338786202117,
-   "plain_mean_mm": 5.438864171913159,
-   "fit_mean_mm": 0.04138270101412761,
-   "fit_max_mm": 0.40104255433593605
+   "largest_move_mm": 27.983146738316165,
+   "plain_mean_mm": 5.44263584047731,
+   "fit_mean_mm": 0.04152623156734822,
+   "fit_max_mm": 0.39609959291048025
   },
   {
    "key": "hip_in",
-   "vertices": 536,
-   "largest_move_mm": 24.053729912272114,
-   "plain_mean_mm": 4.14411753660053,
-   "fit_mean_mm": 0.0311710720780862,
-   "fit_max_mm": 0.2836638074145495
+   "vertices": 535,
+   "largest_move_mm": 24.081753978930223,
+   "plain_mean_mm": 4.163807027554642,
+   "fit_mean_mm": 0.03128633777493748,
+   "fit_max_mm": 0.28460211285001547
   },
   {
    "key": "hip_flex45_out",
-   "vertices": 544,
-   "largest_move_mm": 32.156774826421774,
-   "plain_mean_mm": 6.240564688131112,
-   "fit_mean_mm": 0.04392961698025135,
-   "fit_max_mm": 0.3361188472589484
+   "vertices": 545,
+   "largest_move_mm": 32.11998978488416,
+   "plain_mean_mm": 6.245681253432989,
+   "fit_mean_mm": 0.04391403599755275,
+   "fit_max_mm": 0.3358527754469009
   },
   {
    "key": "hip_back_out",
-   "vertices": 531,
-   "largest_move_mm": 19.45509281810348,
-   "plain_mean_mm": 3.8005571835361467,
-   "fit_mean_mm": 0.027427097661036265,
-   "fit_max_mm": 0.2500435025195179
+   "vertices": 530,
+   "largest_move_mm": 19.503484649726424,
+   "plain_mean_mm": 3.8027039637176285,
+   "fit_mean_mm": 0.027579614311921203,
+   "fit_max_mm": 0.24668666912268758
   }
  ]
 }

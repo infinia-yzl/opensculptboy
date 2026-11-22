@@ -41,6 +41,9 @@ from anny.poses.authoring import poselib as PL
 from anny.poses.authoring import posing as P
 from anny.poses.authoring.rig import ANNY_TO_LEGACY
 
+from . import skin_measures as SM
+from . import slide as SL
+
 IX, H = P.IDX, P.HEADS
 DATA_DIR = pathlib.Path(__file__).resolve().parents[2] / "data" / "correctives"
 
@@ -106,6 +109,8 @@ JOINTS = {
             "back_side": (60, -40),
             "up_in": (155, 175),
             "back_up": (150, -90),
+            "overhead_back": (140, -15),
+            "overhead_side": (155, 15),
         },
         # overhead and across or behind the head, the simulation folds the armpit in on itself,
         # so the correction fades out toward these keys
@@ -114,6 +119,26 @@ JOINTS = {
         # skin weights change from the torso to the arm; a lighter smoothness reaches the
         # simulation there
         smooth_keys={"up": 0.01},
+        slide=dict(
+            radius=0.24,
+            plain_keys=("up_in", "back_up"),
+            borrowed_keys=("overhead_back", "overhead_side"),
+            rolls=(-70, -35, 0, 35, 70),
+            roll_from=120,
+            roll_bones=("upperarm01", "upperarm02"),
+            bones=(
+                "upperarm01.L",
+                "upperarm02.L",
+                "shoulder01.L",
+                "clavicle.L",
+                "spine01",
+                "spine02",
+                "spine03",
+                "spine04",
+                "spine05",
+                "root",
+            ),
+        ),
     ),
     "hip": dict(
         kind="cone",
@@ -157,9 +182,14 @@ def cone_triangles(j):
     """triangles of the key directions on the sphere: the faces of their convex hull that face
     away from the centre (when the keys fill less than a hemisphere, the faces toward the
     centre are left out)"""
+    names, D = cone_targets(j, "L")
+    return hull_triangles(D)
+
+
+def hull_triangles(D):
+    """the outward faces of the convex hull of the unit directions D, as rows of D"""
     from scipy.spatial import ConvexHull
 
-    names, D = cone_targets(j, "L")
     hull = ConvexHull(D)
     tris = []
     for f, eq in zip(hull.simplices, hull.equations):
@@ -249,8 +279,13 @@ def cone_weights(j, d, side="L"):
     """barycentric weights of direction d in the key triangles (rest first); outside every
     triangle, the nearest triangle with its negative weights cut to zero"""
     names, D = cone_targets(j, side)
+    return triangle_weights(D, TRIS[j], d)[1:]
+
+
+def triangle_weights(D, tris, d):
+    """barycentric weights of direction d over the rows of D, in the triangles ``tris``"""
     best, best_w = None, None
-    for t in TRIS[j]:
+    for t in tris:
         M = D[t].T
         try:
             b = np.linalg.solve(M, d)
@@ -261,12 +296,12 @@ def cone_weights(j, d, side="L"):
         b = b / b.sum()
         if best is None or b.min() > best:
             best, best_w = b.min(), (t, b)
-    w = np.zeros(len(names))
+    w = np.zeros(len(D))
     t, b = best_w
     b = np.clip(b, 0, None)
     b /= b.sum()
     w[t] = b
-    return w[1:]
+    return w
 
 
 def weights(F, side):
@@ -278,6 +313,43 @@ def weights(F, side):
             hinge_weights(j, m) if J["kind"] == "hinge" else cone_weights(j, m, side)
         )
     return out
+
+
+def plain_keys(j):
+    """the keys of a joint that the simulation leaves empty and the slide still fills: their
+    shape slides the skin of plain skinning and adds no volume"""
+    return JOINTS[j].get("slide", {}).get("plain_keys", ())
+
+
+def borrowed_keys(j):
+    """the keys of a joint that take their surface from the other keys: the driver's blend of
+    the simulated keys at the key's pose, before any slide. Their shape adds the slide alone"""
+    return JOINTS[j].get("slide", {}).get("borrowed_keys", ())
+
+
+def roll_samples(j, key):
+    """the rolls of the limb, in degrees, that the shape of a key is fitted over: the driver
+    reads the limb's direction alone, so the shape of a raised key has to suit every roll"""
+    S = JOINTS[j].get("slide", {})
+    if "rolls" not in S or JOINTS[j]["targets"][key][0] < S["roll_from"]:
+        return (0,)
+    return S["rolls"]
+
+
+def rolled(pose, j, deg, side="L"):
+    """the pose with the limb rolled about its own axis, shared evenly over the joint's roll
+    bones as the shared poses share the upper arm's roll"""
+    J = JOINTS[j]
+    q = pose.copy()
+    F = P.fk(q)
+    a, b = (x + "." + side for x in J["bones"])
+    turn = P.qmat(
+        P.qaxis(unit(F[1][IX[b]] - F[1][IX[a]]), deg / len(J["slide"]["roll_bones"]))
+    )
+    for bone in J["slide"]["roll_bones"]:
+        F = P.fk(q)
+        P.set_world_rot(q, bone + "." + side, turn @ F[0][IX[bone + "." + side]], F)
+    return q
 
 
 def shape_names(j):
@@ -307,7 +379,9 @@ def train(force=False, only=None):
     for j, J in JOINTS.items():
         keys = J["keys"] if J["kind"] == "hinge" else list(J["targets"])
         for k, nm in zip(keys, shape_names(j)):
-            if k in J.get("empty", []) or (only and nm not in only):
+            if k in J.get("empty", []) or k in borrowed_keys(j):
+                continue
+            if only and nm not in only:
                 continue
             fn = cache / f"{nm}.npz"
             if fn.exists() and not force:
@@ -367,6 +441,16 @@ def fit_shapes():
     skinning to the simulation. Where the blend of bones is well conditioned the shape reaches
     the simulation; where the bones nearly cancel each other the smoothness term decides.
 
+    A key among the ``plain_keys`` of a joint's ``slide`` entry has no simulation; its
+    surface is plain skinning, so its shape holds the slide alone.
+
+    A joint with a ``slide`` entry first slides its own skin along the simulated surface
+    (:mod:`anny.correctives.authoring.slide`), so that the shape also spreads the stretch of
+    the skin; its report then holds the stretch of the armpit on the simulated surface, on
+    the slid surface and on the fitted shape (the value that 95 % of the area stays below,
+    and the peak), and the number of the joint's vertices where the simulated surface and the
+    fitted shape pass through themselves.
+
     Returns a list of dicts (name, idx, D) in the legacy frame, and a report per key.
     """
     import scipy.sparse as sp
@@ -394,17 +478,46 @@ def fit_shapes():
         reg = np.where(mask > 0)[0]
         n_r = len(reg)
         Lap = sp.kron(edge_laplacian(T, reg, len(Vs)), sp.eye(3)).tocsr()
+        free = armpit = None
+        if "slide" in J:
+            own = SL.own_skin(si, sw, [IX[b] for b in J["slide"]["bones"]])
+            free = SL.free_zone(Vs, T, c, J["slide"]["radius"], own & (mask > 0))
+            armpit = SM.armpit_triangles(Vs, T, c, up=(0.0, 1.0, 0.0))
         rows = np.repeat(np.arange(n_r * 3).reshape(n_r, 3), 3, axis=1).ravel()
         cols = np.tile(np.arange(n_r * 3).reshape(n_r, 3), (1, 3)).ravel()
+        unslid, older, older_tris = {}, None, None
+        if borrowed_keys(j):
+            names, dirs = cone_targets(j)
+            older = [i for i, n in enumerate(names) if n not in borrowed_keys(j)]
+            older_tris = hull_triangles(dirs[older])
         for k, nm in zip(keys, shape_names(j)):
-            if k in J.get("empty", []):
+            if k in J.get("empty", []) and k not in plain_keys(j):
                 continue
-            d = np.load(cache / f"{nm}.npz")
-            p = P.Pose()
-            p.q = d["q"]
-            p.root = d["root"]
-            F = P.fk(p)
-            Xt = d["X"][reg]
+            if k in plain_keys(j):
+                p = key_pose(j, k)
+                F = P.fk(p)
+                d = dict(X=P.skin(F, Vs, si, sw))
+            elif k in borrowed_keys(j):
+                p = key_pose(j, k)
+                F = P.fk(p)
+                w = triangle_weights(
+                    dirs[older], older_tris, cone_dir(*J["targets"][k])
+                )
+                base = Vs.copy()
+                for i, share in zip(older, w):
+                    if share > 0 and names[i] in unslid:
+                        base += share * unslid[names[i]]
+                d = dict(X=P.skin(F, base, si, sw))
+            else:
+                d = np.load(cache / f"{nm}.npz")
+                p = P.Pose()
+                p.q = d["q"]
+                p.root = d["root"]
+                F = P.fk(p)
+            X = d["X"]
+            if free is not None:
+                X = SL.slide(Vs, d["X"], T, free)
+            Xt = X[reg]
             Xl = P.skin(F, Vs[reg], si[reg], sw[reg])
             A = np.einsum("nk,nkij->nij", sw[reg], F[0][si[reg]])
             AtA = np.einsum("nki,nkj->nij", A, A)
@@ -417,6 +530,31 @@ def fit_shapes():
                 + mu * Lap
                 + J.get("ridge", 1e-8) * sp.eye(3 * n_r)
             )
+            own = np.zeros_like(Vs)
+            if k in borrowed_keys(j):
+                own = base - Vs
+            elif free is not None and k not in plain_keys(j):
+                b0 = np.einsum("nki,nk->ni", A, d["X"][reg] - Xl).ravel()
+                plain_delta = spla.spsolve(Mtx.tocsc(), b0).reshape(n_r, 3)
+                own[reg] = plain_delta * mask[reg][:, None]
+                unslid[k] = own
+            rolls = [r for r in roll_samples(j, k) if r != 0]
+            if rolls:
+                for r in rolls:
+                    Fr = P.fk(rolled(p, j, r))
+                    Xr = SL.slide(Vs, P.skin(Fr, Vs + own, si, sw), T, free)
+                    Ar = np.einsum("nk,nkij->nij", sw[reg], Fr[0][si[reg]])
+                    AtA = AtA + np.einsum("nki,nkj->nij", Ar, Ar)
+                    Xlr = P.skin(Fr, Vs[reg], si[reg], sw[reg])
+                    b = b + np.einsum("nki,nk->ni", Ar, Xr[reg] - Xlr).ravel()
+                AtA, b = AtA / (len(rolls) + 1), b / (len(rolls) + 1)
+                Mtx = (
+                    sp.coo_matrix(
+                        (AtA.ravel(), (rows, cols)), shape=(3 * n_r, 3 * n_r)
+                    ).tocsr()
+                    + mu * Lap
+                    + J.get("ridge", 1e-8) * sp.eye(3 * n_r)
+                )
             delta = spla.spsolve(Mtx.tocsc(), b).reshape(n_r, 3)
             D = np.zeros_like(Vs)
             D[reg] = delta * mask[reg][:, None]
@@ -450,6 +588,33 @@ def fit_shapes():
                 f"plain skinning {r['plain_mean_mm']:.2f} mm, fit {r['fit_mean_mm']:.2f} mm",
                 flush=True,
             )
+            if free is not None:
+                fitted = P.skin(F, Vs + D, si, sw)
+                for label, surface in (("sim", d["X"]), ("slid", X), ("fit", fitted)):
+                    s1, s2, area = SM.principal_stretches(Vs, surface, T)
+                    summary = SM.stretch_summary(s1, s2, area, armpit)
+                    r[f"stretch_{label}_p95"] = summary["p95"]
+                    r[f"stretch_{label}_peak"] = summary["peak"]
+                from .sim import crossing_vertices
+
+                r["crossing_sim"] = int(
+                    np.isin(crossing_vertices(d["X"], T), reg).sum()
+                )
+                r["crossing_fit"] = int(
+                    np.isin(crossing_vertices(fitted, T), reg).sum()
+                )
+                print(
+                    f"{'':>24}  vertices of the joint where the surface passes through itself: "
+                    f"simulation {r['crossing_sim']}, shape {r['crossing_fit']}",
+                    flush=True,
+                )
+                print(
+                    f"{'':>24}  armpit stretch (95 % / peak): simulation "
+                    f"{r['stretch_sim_p95']:.2f} / {r['stretch_sim_peak']:.2f}, slid "
+                    f"{r['stretch_slid_p95']:.2f} / {r['stretch_slid_peak']:.2f}, shape "
+                    f"{r['stretch_fit_p95']:.2f} / {r['stretch_fit_peak']:.2f}",
+                    flush=True,
+                )
     return shapes, report
 
 
@@ -502,7 +667,9 @@ def driver_spec():
             else:
                 names, D = cone_targets(j, side)
                 shp = [None] + [
-                    None if k in J.get("empty", []) else f"{n}.{side}"
+                    None
+                    if k in J.get("empty", []) and k not in plain_keys(j)
+                    else f"{n}.{side}"
                     for k, n in zip(J["targets"], shape_names(j))
                 ]
                 tris = TRIS[j] if side == "L" else [[t[0], t[2], t[1]] for t in TRIS[j]]
