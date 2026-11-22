@@ -41,6 +41,9 @@ from anny.poses.authoring import poselib as PL
 from anny.poses.authoring import posing as P
 from anny.poses.authoring.rig import ANNY_TO_LEGACY
 
+from . import skin_measures as SM
+from . import slide as SL
+
 IX, H = P.IDX, P.HEADS
 DATA_DIR = pathlib.Path(__file__).resolve().parents[2] / "data" / "correctives"
 
@@ -114,6 +117,22 @@ JOINTS = {
         # skin weights change from the torso to the arm; a lighter smoothness reaches the
         # simulation there
         smooth_keys={"up": 0.01},
+        slide=dict(
+            radius=0.24,
+            plain_keys=("up_in", "back_up"),
+            bones=(
+                "upperarm01.L",
+                "upperarm02.L",
+                "shoulder01.L",
+                "clavicle.L",
+                "spine01",
+                "spine02",
+                "spine03",
+                "spine04",
+                "spine05",
+                "root",
+            ),
+        ),
     ),
     "hip": dict(
         kind="cone",
@@ -280,6 +299,12 @@ def weights(F, side):
     return out
 
 
+def plain_keys(j):
+    """the keys of a joint that the simulation leaves empty and the slide still fills: their
+    shape slides the skin of plain skinning and adds no volume"""
+    return JOINTS[j].get("slide", {}).get("plain_keys", ())
+
+
 def shape_names(j):
     J = JOINTS[j]
     if J["kind"] == "hinge":
@@ -367,6 +392,15 @@ def fit_shapes():
     skinning to the simulation. Where the blend of bones is well conditioned the shape reaches
     the simulation; where the bones nearly cancel each other the smoothness term decides.
 
+    A key among the ``plain_keys`` of a joint's ``slide`` entry has no simulation; its
+    surface is plain skinning, so its shape holds the slide alone.
+
+    A joint with a ``slide`` entry first slides its own skin along the simulated surface
+    (:mod:`anny.correctives.authoring.slide`), so that the shape also spreads the stretch of
+    the skin; its report then holds the stretch of the armpit on the simulated surface, on
+    the slid surface and on the fitted shape (the value that 95 % of the area stays below,
+    and the peak).
+
     Returns a list of dicts (name, idx, D) in the legacy frame, and a report per key.
     """
     import scipy.sparse as sp
@@ -394,17 +428,30 @@ def fit_shapes():
         reg = np.where(mask > 0)[0]
         n_r = len(reg)
         Lap = sp.kron(edge_laplacian(T, reg, len(Vs)), sp.eye(3)).tocsr()
+        free = armpit = None
+        if "slide" in J:
+            own = SL.own_skin(si, sw, [IX[b] for b in J["slide"]["bones"]])
+            free = SL.free_zone(Vs, T, c, J["slide"]["radius"], own & (mask > 0))
+            armpit = SM.armpit_triangles(Vs, T, c, up=(0.0, 1.0, 0.0))
         rows = np.repeat(np.arange(n_r * 3).reshape(n_r, 3), 3, axis=1).ravel()
         cols = np.tile(np.arange(n_r * 3).reshape(n_r, 3), (1, 3)).ravel()
         for k, nm in zip(keys, shape_names(j)):
-            if k in J.get("empty", []):
+            if k in J.get("empty", []) and k not in plain_keys(j):
                 continue
-            d = np.load(cache / f"{nm}.npz")
-            p = P.Pose()
-            p.q = d["q"]
-            p.root = d["root"]
-            F = P.fk(p)
-            Xt = d["X"][reg]
+            if k in plain_keys(j):
+                p = key_pose(j, k)
+                F = P.fk(p)
+                d = dict(X=P.skin(F, Vs, si, sw))
+            else:
+                d = np.load(cache / f"{nm}.npz")
+                p = P.Pose()
+                p.q = d["q"]
+                p.root = d["root"]
+                F = P.fk(p)
+            X = d["X"]
+            if free is not None:
+                X = SL.slide(Vs, d["X"], T, free)
+            Xt = X[reg]
             Xl = P.skin(F, Vs[reg], si[reg], sw[reg])
             A = np.einsum("nk,nkij->nij", sw[reg], F[0][si[reg]])
             AtA = np.einsum("nki,nkj->nij", A, A)
@@ -450,6 +497,20 @@ def fit_shapes():
                 f"plain skinning {r['plain_mean_mm']:.2f} mm, fit {r['fit_mean_mm']:.2f} mm",
                 flush=True,
             )
+            if free is not None:
+                fitted = P.skin(F, Vs + D, si, sw)
+                for label, surface in (("sim", d["X"]), ("slid", X), ("fit", fitted)):
+                    s1, s2, area = SM.principal_stretches(Vs, surface, T)
+                    summary = SM.stretch_summary(s1, s2, area, armpit)
+                    r[f"stretch_{label}_p95"] = summary["p95"]
+                    r[f"stretch_{label}_peak"] = summary["peak"]
+                print(
+                    f"{'':>24}  armpit stretch (95 % / peak): simulation "
+                    f"{r['stretch_sim_p95']:.2f} / {r['stretch_sim_peak']:.2f}, slid "
+                    f"{r['stretch_slid_p95']:.2f} / {r['stretch_slid_peak']:.2f}, shape "
+                    f"{r['stretch_fit_p95']:.2f} / {r['stretch_fit_peak']:.2f}",
+                    flush=True,
+                )
     return shapes, report
 
 
@@ -502,7 +563,9 @@ def driver_spec():
             else:
                 names, D = cone_targets(j, side)
                 shp = [None] + [
-                    None if k in J.get("empty", []) else f"{n}.{side}"
+                    None
+                    if k in J.get("empty", []) and k not in plain_keys(j)
+                    else f"{n}.{side}"
                     for k, n in zip(J["targets"], shape_names(j))
                 ]
                 tris = TRIS[j] if side == "L" else [[t[0], t[2], t[1]] for t in TRIS[j]]

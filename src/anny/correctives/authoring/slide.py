@@ -114,6 +114,17 @@ def free_zone(
     return free
 
 
+def own_skin(
+    bone_indices: np.ndarray, bone_weights: np.ndarray, bones, share: float = 0.05
+) -> np.ndarray:
+    """
+    The vertices (V,) whose skin belongs to ``bones``: the weights (V, K) on every other
+    bone of ``bone_indices`` (V, K) sum to less than ``share``.
+    """
+    foreign = np.where(np.isin(bone_indices, list(bones)), 0.0, bone_weights)
+    return foreign.sum(1) < share
+
+
 def _rest_triangles(rest: np.ndarray, faces: np.ndarray):
     a0 = rest[faces[:, 1]] - rest[faces[:, 0]]
     b0 = rest[faces[:, 2]] - rest[faces[:, 0]]

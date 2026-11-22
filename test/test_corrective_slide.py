@@ -65,6 +65,18 @@ class TestSurface(unittest.TestCase):
         outside = SL.Surface(V, F).project(np.array([[0.3, 0.0, 0.02]]))
         np.testing.assert_allclose(outside, [[0.2, 0.0, 0.0]], atol=1e-12)
 
+    def test_own_skin_leaves_out_other_bones(self):
+        indices = np.array([[0, 1, 2], [0, 3, 0], [4, 1, 0], [2, 2, 2]])
+        weights = np.array(
+            [[0.5, 0.5, 0.0], [0.96, 0.04, 0.0], [0.2, 0.8, 0.0], [0.4, 0.3, 0.3]]
+        )
+        own = SL.own_skin(indices, weights, [0, 1, 2])
+        np.testing.assert_array_equal(own, [True, True, False, True])
+        np.testing.assert_array_equal(
+            SL.own_skin(indices, weights, [0, 1, 2], share=0.01),
+            [True, False, False, True],
+        )
+
     def test_free_zone_keeps_a_fixed_rim(self):
         V, F = sheet()
         free = SL.free_zone(V, F, np.zeros(3), 0.04)
