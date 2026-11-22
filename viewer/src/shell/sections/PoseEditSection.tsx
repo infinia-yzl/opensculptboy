@@ -2,8 +2,9 @@
 // Apache License, Version 2.0
 //
 // The Pose mode's Edit panel (DESIGN-0013, phase 1; artboards 1a to 1f): the figure and the scan (each shown or
-// hidden, Shift+Z to swap them; the scan see-through, ghost or solid), the reference points (Place points, the points
-// that need a look, the body map and the hand map), the selected point (its weight, Use this point, its depth in the
+// hidden, Shift+Z to swap them; the scan see-through, ghost or solid), the reference points in four stages from coarse
+// to fine (pose_edit/stages.ts: the figure, the head, hands and feet, the joints in between, the fingers; each with its
+// points on the body map, its line, its counts and its own placement), the selected point (its weight, Use this point, its depth in the
 // stone), contact pins, Grip with Squeeze, the balance mark, and Save points. The tools of the view (Select, Move, Turn) float at the view's top left. The panel
 // reads the editor's store (pose_edit/editor.ts), which changes on clicks, keys and the ends of drags only.
 
@@ -14,6 +15,7 @@ import { BodyMap, HandMap, JointMap } from '../../pose_edit/maps.tsx';
 import { AXES } from '../../pose_edit/joints.ts';
 import { FINGER_LABELS, PRESETS, gripWarning } from '../../pose_edit/hands.ts';
 import { SECTIONS } from '../../pose_edit/editor.ts';
+import { STAGES, stagePoints } from '../../pose_edit/stages.ts';
 import { runAction } from '../../studio/actions.ts';
 import { Chip, Fold, Note, Search, Seg, Switch, TextButton } from '../components/controls.tsx';
 import { Icon } from '../components/ui/icon.tsx';
@@ -511,7 +513,114 @@ function HandsPanel({ st }: { st: EditState }) {
         <Tip label={`Copy to the ${side === 'R' ? 'left' : 'right'} hand`} desc="The hand's pose mirrored onto the other hand"><button type="button" className="tb osb-btn" onClick={() => ed.copyHand()}>
           <Icon name="copy" size={16} /><span>Copy to the {side === 'R' ? 'left' : 'right'} hand</span></button></Tip>
       </div>
+      <FingerPoints st={st} />
     </div>
+  );
+}
+
+// the stages of the Points tab (pose_edit/stages.ts): a stepper to reach any stage, the stage's one instruction line,
+// its points alone on the body map with their counts, its own placement, and Back and Next
+function StageStepper({ st }: { st: EditState }) {
+  const ed = poseEditor()!;
+  return (
+    <ol className="pe-stages" aria-label="Stages">
+      {STAGES.map((s) => (
+        <li key={s.stage}><button type="button" className="pe-stage" aria-current={st.stage === s.stage ? 'step' : undefined} data-stage={s.stage}
+          title={s.title} onClick={() => ed.setStage(s.stage)}><b>{s.stage}</b><span>{s.short}</span></button></li>
+      ))}
+    </ol>
+  );
+}
+
+function FigureStage({ st }: { st: EditState }) {
+  const ed = poseEditor()!, r = st.root;
+  const started = useState({ on: false })[0];
+  return <>
+    <Note>{r.mm > 0.5 || Math.abs(r.turn) > 0.05 ? `The figure has moved ${r.mm.toFixed(0)} mm and turned ${r.turn.toFixed(1)}°.` : 'The figure has not moved yet.'}</Note>
+    <Range key="figure-turn" id="figure-turn" label="Turn the figure" unit="°" value={r.turn} min={-180} max={180} step={1} ends={['Clockwise', 'Anticlockwise']}
+      onStart={() => { if (!started.on) { (ed as any).record('Turn the figure'); started.on = true; } }} onEnd={() => { started.on = false; }}
+      onInput={(v) => ed.setFigureTurn(v, false)} />
+    <div className="btn-row">
+      <TextButton label="Reset the figure" icon="reset" quiet disabled={!(r.mm > 0.5 || Math.abs(r.turn) > 0.05)} onClick={() => ed.resetFigure()} />
+    </div>
+    <BodyMap points={[]} hands={st.hands} selected={null} onPick={() => {}} onHover={() => {}} onHand={() => {}} showHands={false}
+      figure={{ moved: r.moved, onPick: () => ed.frameFigure() }} />
+  </>;
+}
+
+function PointsStage({ st }: { st: EditState }) {
+  const ed = poseEditor()!, stage = st.stage, own = new Set(stagePoints(stage)), looks = st.looks;
+  const points = [...st.body, ...st.hands.R, ...st.hands.L].filter((p) => own.has(p.name));
+  const none = !st.counts.placed && !st.counts.look && !st.counts.off;
+  return <>
+    <ul className="pe-counts"><li><i className="pe-dot pe-dot--placed" />{st.counts.placed} placed</li><li><i className="pe-dot pe-dot--look" />{st.counts.look} need a look</li>
+      <li><i className="pe-dot pe-dot--off" />{st.counts.off} switched off</li></ul>
+    <BodyMap points={points} hands={st.hands} selected={st.selected} onPick={(n) => ed.select(n, { frame: true })} onHover={(n) => ed.hover(n)} onHand={(s) => ed.selectHand(s)}
+      showHands={false} />
+    {looks.length ? (
+      <div className="pe-looks" role="region" aria-label="Points that need a look">
+        <p className="pe-looks-head"><Icon name="alert" size={16} /><b>{looks.length} point{looks.length === 1 ? ' needs' : 's need'} a look</b></p>
+        <Note>A click on a row frames the point in the view.</Note>
+        <ul>{looks.map((p) => (
+          <li key={p.name}><button type="button" className="pe-look-row" onClick={() => ed.select(p.name, { frame: true })}>
+            <i className="pe-diamond">{p.number}</i><span><b>{p.label}</b><small>{p.reason}</small></span><Icon name="chevron" size={14} /></button></li>
+        ))}</ul>
+      </div>
+    ) : null}
+    {st.counts.placed + st.counts.look + st.counts.off < st.counts.total ? (
+      <div className="btn-row pe-place">
+        <Tip action="pose.place" label="Place these points" desc="The points of this stage that have no place yet, on the scan">
+          <button type="button" className={'tb osb-btn' + (none ? ' osb-btn--primary' : ' osb-btn--quiet')} disabled={!st.scan.available} onClick={() => ed.placeStage()}>
+            <Icon name="sparkle" size={16} /><span>Place these points</span></button></Tip>
+      </div>
+    ) : null}
+  </>;
+}
+
+function FingersStage() {
+  const ed = poseEditor()!;
+  return <>
+    <div className="btn-row">
+      <TextButton label="Open Hands" icon="hand" primary onClick={() => { ed.setSection('hands'); ed.setFingers(true); }} />
+    </div>
+    <div className="btn-row">
+      <TextButton label="Right hand's points" quiet onClick={() => ed.selectHand('R')} />
+      <TextButton label="Left hand's points" quiet onClick={() => ed.selectHand('L')} />
+    </div>
+  </>;
+}
+
+function StagePanel({ st }: { st: EditState }) {
+  const ed = poseEditor()!, info = STAGES[st.stage - 1];
+  return (
+    <div className="osb-section pe-points" data-stage={st.stage}>
+      <h3 className="osb-eyebrow">Stage {st.stage} of 4 <span className="osb-eyebrow-val">{st.stage === 1 ? (st.root.moved ? 'Moved' : 'Not moved yet') : `${st.counts.placed + st.counts.look + st.counts.off} of ${st.counts.total} placed`}</span></h3>
+      <StageStepper st={st} />
+      <p className="pe-point-name pe-stage-title">{info.title}</p>
+      <p className="pe-stage-line" role="status">{info.line}</p>
+      {st.stage === 1 ? <FigureStage st={st} /> : st.stage === 4 ? <FingersStage /> : <PointsStage st={st} />}
+      <div className="btn-row pe-stage-nav">
+        <TextButton label="Back" icon="chevronLeft" quiet disabled={st.stage === 1} onClick={() => ed.previousStage()} />
+        {st.stage < 4 ? <TextButton label="Next" icon="chevron" primary={st.stage === 1 ? st.root.moved : st.counts.placed > 0} onClick={() => ed.nextStage()} /> : null}
+      </div>
+    </div>
+  );
+}
+
+// the Hands tab's finger points (stage 4): below Grip, Fist and the presets, for fine-tuning one finger at a time
+function FingerPoints({ st }: { st: EditState }) {
+  const ed = poseEditor()!, side = st.handSide, list = st.hands[side];
+  const placed = list.filter((p) => p.state !== 'unplaced').length, look = list.filter((p) => p.state === 'look').length;
+  const sel = st.point && list.some((p) => p.name === st.point!.name) ? st.point : null;
+  return (
+    <Fold title="Finger points" count={placed ? `${placed} of 21 placed` : 'None placed'} className="pe-fold pe-finger-points" open={st.fingers} onToggle={(on) => ed.setFingers(on)}>
+      <Note>For fine-tuning: drag a point of the hand onto the statue, and its finger follows.</Note>
+      <HandMap side={side} points={list} selected={st.selected} onPick={(n) => ed.select(n)} onHover={(n) => ed.hover(n)} />
+      {look ? <Note>{look} point{look === 1 ? ' needs' : 's need'} a look.</Note> : null}
+      {placed < 21 ? <div className="btn-row"><TextButton label="Place this hand's points" icon="sparkle" quiet disabled={!st.scan.available}
+        onClick={() => ed.placeStage(4, { side })} /></div> : null}
+      {sel ? <PointPanel p={sel} st={st} /> : null}
+    </Fold>
   );
 }
 
@@ -533,50 +642,28 @@ export function PoseEditSection() {
       {st.section === 'joints' ? <JointsPanel st={st} /> : st.section === 'hands' ? <HandsPanel st={st} /> : st.section === 'limbs' ? <LimbsPanel st={st} />
         : st.section === 'library' ? <LibraryPanel st={st} /> : <>
       {st.point && st.point.depth > 0 ? <DepthInset p={st.point} /> : null}
-      <ScanBlock st={st} />
-      <div className="osb-section pe-points">
-        <h3 className="osb-eyebrow">Reference points <span className="osb-eyebrow-val">{st.counts.placed + st.counts.look + st.counts.off ? `${st.counts.placed + st.counts.look + st.counts.off} placed` : 'None placed'}</span></h3>
-        {hand ? <>
+      {hand ? (
+        <div className="osb-section pe-points">
+          <h3 className="osb-eyebrow">{hand === 'R' ? 'Right hand' : 'Left hand'} <span className="osb-eyebrow-val">{`${st.hands[hand].filter((p) => p.state !== 'unplaced').length} of 21 placed`}</span></h3>
           <div className="pe-hand-head">
-            <button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.selectHand(null, false)}><Icon name="chevronLeft" size={16} /><span>Whole body</span></button>
+            <button type="button" className="tb osb-btn osb-btn--quiet" onClick={() => ed.selectHand(null, false)}><Icon name="chevronLeft" size={16} /><span>Back to the stage</span></button>
             <Seg label="The hand" items={[{ value: 'L', label: 'Left' }, { value: 'R', label: 'Right' }]} value={hand} onPick={(v) => ed.selectHand(v as 'L' | 'R')} />
           </div>
           <HandMap side={hand} points={st.hands[hand]} selected={st.selected} onPick={(n) => ed.select(n)} onHover={(n) => ed.hover(n)} />
           <Legend />
-        </> : <>
-          <Note>Each point sits on the character's skin. Place it on the scan, and the pose follows it.</Note>
-          <Seg label="Which points" fill items={[{ value: 'all', label: 'All' }, { value: 'hands', label: 'Hands' }, { value: 'body', label: 'Body' }]} value={st.filter}
-            onPick={(v) => editStore.set({ filter: v as any, version: st.version + 1 })} />
-          <ul className="pe-counts"><li><i className="pe-dot pe-dot--placed" />{st.counts.placed} placed</li><li><i className="pe-dot pe-dot--look" />{st.counts.look} need a look</li>
-            <li><i className="pe-dot pe-dot--off" />{st.counts.off} switched off</li></ul>
-          <BodyMap points={st.body} hands={st.hands} selected={st.selected} onPick={(n) => ed.select(n, { frame: true })} onHover={(n) => ed.hover(n)} onHand={(s) => ed.selectHand(s)} />
-          {looks.length ? (
-            <div className="pe-looks" role="region" aria-label="Points that need a look">
-              <p className="pe-looks-head"><Icon name="alert" size={16} /><b>{looks.length} point{looks.length === 1 ? ' needs' : 's need'} a look</b></p>
-              <Note>A click on a row frames the point in the view.</Note>
-              <ul>{looks.map((p) => (
-                <li key={p.name}><button type="button" className="pe-look-row" onClick={() => ed.select(p.name, { frame: true })}>
-                  <i className="pe-diamond">{p.number}</i><span><b>{p.label}</b><small>{p.reason}</small></span><Icon name="chevron" size={14} /></button></li>
-              ))}</ul>
-            </div>
-          ) : null}
-          {!st.counts.placed && !st.counts.look ? (
-            <div className="btn-row pe-place">
-              <Tip action="pose.place"><button type="button" className="tb osb-btn osb-btn--primary" disabled={!st.scan.available} onClick={() => ed.placeAll()}><Icon name="sparkle" size={16} /><span>Place points</span></button></Tip>
-              <Tip label="Place by hand" desc="Select a point on a map, then click the scan with the Move tool"><button type="button" className="tb osb-btn osb-btn--quiet" disabled={!st.scan.available}
-                onClick={() => { runAction('pose.tool.move'); ed.selectHand('R'); }}><Icon name="cursor" size={16} /><span>Place by hand</span></button></Tip>
-            </div>
-          ) : null}
-        </>}
-      </div>
+        </div>
+      ) : <StagePanel st={st} />}
+      <ScanBlock st={st} />
       {st.point ? <div className="osb-section"><PointPanel p={st.point} st={st} /></div> : null}
-      {!hand ? <div className="osb-section pe-contact"><ContactFolds st={st} /></div> : null}
+      {!hand && st.stage >= 3 ? <div className="osb-section pe-contact"><ContactFolds st={st} /></div> : null}
       </>}
       <PropsBlock st={st} />
       {createPortal(<div className="pe-foot">
         {st.section !== 'points' ? <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />
           : hand ? <TextButton label="Reset the hand" icon="reset" quiet onClick={() => { const s = st.selected || `wrist.${hand}`; ed.resetPoint(s, true); }} />
-          : st.counts.placed || st.counts.look ? <TextButton label="Place again" icon="sparkle" quiet disabled={!st.scan.available} onClick={() => ed.placeAll()} /> : <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />}
+          : st.stage === 1 ? <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />
+          : st.counts.placed || st.counts.look ? <TextButton label="Place again" icon="sparkle" quiet disabled={!st.scan.available} onClick={() => ed.placeStage(st.stage, { again: true })} />
+          : <TextButton label="Rest pose" icon="reset" quiet onClick={() => ed.restPose()} />}
         <TextButton label={st.section === 'points' ? 'Save points' : 'Save the pose'} icon="saveCard" primary disabled={legacy.hosted} onClick={() => ed.savePoints(legacy.saveCard)} />
       </div>, poseFoot())}
     </div>

@@ -29,15 +29,19 @@ export interface PoseHost {
   // the page's frame of Anny's card frame: page = scale * rotation * x + offset (+ the body's lift on y)
   frame(): { scale: number; rotation: number[]; offset: number[] };
   lift(): number;
-  // the root's offset (page frame) and the figure's turn (the turntable's holder), applied after the pose
+  // the root's offset (page frame) and the figure's turn (the turntable's holder), applied after the pose. The offset
+  // leaves out the root's shift of the pose shown (rootShift: the card's pose.root in the page's axes, which moves the
+  // figure against its scan), so the card frame and the scan stay where they are when the figure moves
   rootOffset(): number[];
+  rootShift?(): number[];
   holder(): THREE.Matrix4;
   // the pose: a quaternion (x, y, z, w) per bone in the page's axes, each relative to its parent
   pose(): Float32Array;
   // show a pose at once (an edit): the clip stops, and the picture refines again. The figure stands on the floor that
   // this pose finds, as a pose of the library stands (the same pose, the same height); with hold, while a drag or a
-  // modal grab or turn lasts, the floor stays where it was
-  setPose(q: Float32Array, label?: string, hold?: boolean): void;
+  // modal grab or turn lasts, the floor stays where it was; shift (page frame, metres) moves the whole figure, and
+  // without it the pose keeps the shift it has
+  setPose(q: Float32Array, label?: string, hold?: boolean, shift?: number[]): void;
   // the coarse body (Anny's level-0 vertices of the current sliders, page frame), its skin (8 bone indices then 8
   // weights out of 255 per vertex), its quads, and the map from its rows to Anny's rows (card_coarse)
   body(): { coarse: Float32Array; skin: Uint8Array; nBody: number; quads: Uint32Array };

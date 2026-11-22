@@ -72,6 +72,16 @@ export class Frames {
     return [s * (R[0] * x[0] + R[1] * x[1] + R[2] * x[2]) + o[0], s * (R[3] * x[0] + R[4] * x[1] + R[5] * x[2]) + o[1] + l,
       s * (R[6] * x[0] + R[7] * x[1] + R[8] * x[2]) + o[2]];
   }
+  // the root's shift: card frame (Anny's axes, metres, the card's pose.root) to the page's axes (s A t) and back. The
+  // page draws the figure moved by it, and host.rootOffset() leaves it out, so the scan and the card frame stay put
+  shiftToPage(t: ArrayLike<number>): number[] {
+    const f = this.host.frame(), s = f.scale, R = f.rotation;
+    return [0, 1, 2].map((r) => s * (R[r * 3] * t[0] + R[r * 3 + 1] * t[1] + R[r * 3 + 2] * t[2]));
+  }
+  pageToShift(p: ArrayLike<number>): V3 {
+    const f = this.host.frame(), s = f.scale, R = f.rotation;
+    return [0, 1, 2].map((c) => (R[c] * p[0] + R[3 + c] * p[1] + R[6 + c] * p[2]) / s) as V3;
+  }
   // the root's head of the rest body (rest frame): the card frame's origin
   rootHead(): V3 { return this.toCard(this.host.restHeads()[this.host.root()]); }
   // the root's own turn of the pose shown (card axes)
@@ -164,11 +174,11 @@ export class Frames {
   }
 
   // the rig in the space of the turns (Python's PoseRig with an identity placement): the reference heads, and the
-  // frame of the root's turn, x_card = D_root (x - h_root)
-  rig(rotations?: number[][]): RigSpace {
+  // frame of the root's turn, x_card = D_root (x - h_root), moved by the root's shift (card frame, stage 1 of Points)
+  rig(rotations?: number[][], shift: ArrayLike<number> = [0, 0, 0]): RigSpace {
     const ref = this.reference(), root = this.host.root();
     const Dr = (rotations || this.cardRotations())[root], h = ref.heads[root];
-    const t = [0, 1, 2].map((r) => -(Dr[r * 3] * h[0] + Dr[r * 3 + 1] * h[1] + Dr[r * 3 + 2] * h[2]));
+    const t = [0, 1, 2].map((r) => shift[r] - (Dr[r * 3] * h[0] + Dr[r * 3 + 1] * h[1] + Dr[r * 3 + 2] * h[2]));
     return {
       labels: this.host.bones(), parents: this.host.parents(), heads: ref.heads,
       frame: [[Dr[0], Dr[1], Dr[2], t[0]], [Dr[3], Dr[4], Dr[5], t[1]], [Dr[6], Dr[7], Dr[8], t[2]], [0, 0, 0, 1]],

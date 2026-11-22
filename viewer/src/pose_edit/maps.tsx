@@ -68,11 +68,17 @@ export function HandMap({ side, points, selected, onPick, onHover }: { side: 'L'
 const BODY: Record<string, [number, number]> = {
   head_top: [110, 14], 'shoulder.R': [76, 70], 'shoulder.L': [144, 70], 'elbow.R': [60, 124], 'elbow.L': [160, 124], 'hip.R': [92, 162], 'hip.L': [128, 162],
   'knee.R': [90, 226], 'knee.L': [130, 226], 'ankle.R': [88, 280], 'ankle.L': [132, 280], 'heel.R': [76, 300], 'heel.L': [144, 300], 'toe.R': [96, 306], 'toe.L': [124, 306],
+  // the wrists where the hands' boxes stand, for the stages that show them without the hands
+  'wrist.R': [46, 176], 'wrist.L': [174, 176],
 };
+// the figure's handle of stage 1: the pelvis
+const PELVIS: [number, number] = [110, 150];
 const HANDS: Record<'L' | 'R', [number, number]> = { R: [44, 176], L: [176, 176] };
 
-export function BodyMap({ points, hands, selected, onPick, onHover, onHand }: { points: PointInfo[]; hands: Record<'L' | 'R', PointInfo[]>; selected: string | null;
-  onPick: (n: string) => void; onHover: (n: string | null) => void; onHand: (side: 'L' | 'R') => void }) {
+// showHands: the hands' boxes of 21 points (off in the stages before the fingers, which show the wrists instead);
+// figure: the figure's handle at the pelvis (stage 1), placed once the figure has moved
+export function BodyMap({ points, hands, selected, onPick, onHover, onHand, showHands = true, figure }: { points: PointInfo[]; hands: Record<'L' | 'R', PointInfo[]>; selected: string | null;
+  onPick: (n: string) => void; onHover: (n: string | null) => void; onHand: (side: 'L' | 'R') => void; showHands?: boolean; figure?: { moved: boolean; onPick: () => void } }) {
   const limb = (a: string, b: string) => [BODY[a], BODY[b]];
   const bone = (side: 'L' | 'R', list: [number, number][]) => <polyline points={list.map((p) => p.join(',')).join(' ')} stroke={SIDE[side]} />;
   return (
@@ -87,7 +93,15 @@ export function BodyMap({ points, hands, selected, onPick, onHover, onHand }: { 
       </g>
       <text x={20} y={318} fontSize={11} fill={SIDE.R} fontWeight={600}>R</text>
       <text x={194} y={318} fontSize={11} fill={SIDE.L} fontWeight={600}>L</text>
-      {(['R', 'L'] as const).map((s) => {
+      {figure ? (
+        <g className="map-point map-figure" data-name="figure" role="button" tabIndex={-1} aria-label={`The figure's point at the pelvis: ${figure.moved ? 'moved' : 'not moved yet'}`}
+          onClick={figure.onPick} style={{ cursor: 'pointer' }}>
+          <circle cx={PELVIS[0]} cy={PELVIS[1]} r={20} fill="transparent" />
+          <circle cx={PELVIS[0]} cy={PELVIS[1]} r={14} fill={figure.moved ? COL.placed : 'rgba(255,255,255,0.12)'} stroke={COL.outline} strokeWidth={1.6} />
+          <path d={`M${PELVIS[0] - 8} ${PELVIS[1]} H${PELVIS[0] + 8} M${PELVIS[0]} ${PELVIS[1] - 8} V${PELVIS[1] + 8}`} stroke={figure.moved ? '#ffffff' : 'currentColor'} strokeWidth={2.2} strokeLinecap="round" />
+        </g>
+      ) : null}
+      {showHands ? (['R', 'L'] as const).map((s) => {
         const [x, y] = HANDS[s], list = hands[s], look = list.filter((p) => p.state === 'look').length, placed = list.filter((p) => p.state !== 'unplaced').length;
         return (
           <g key={s} className="map-hand" role="button" tabIndex={-1} aria-label={`${s === 'R' ? 'Right' : 'Left'} hand: ${placed} of 21 placed${look ? `, ${look} need a look` : ''}`}
@@ -97,7 +111,7 @@ export function BodyMap({ points, hands, selected, onPick, onHover, onHand }: { 
             {look ? <polygon points={`${x + 12},${y + 3} ${x + 18},${y + 9} ${x + 12},${y + 15} ${x + 6},${y + 9}`} fill={COL.look} stroke={COL.outline} strokeWidth={1} /> : null}
           </g>
         );
-      })}
+      }) : null}
       {points.map((p) => { const at = BODY[p.name]; return at ? <Mark key={p.name} x={at[0]} y={at[1]} p={p} r={11} selected={p.name === selected} onPick={onPick} onHover={onHover} /> : null; })}
     </svg>
   );

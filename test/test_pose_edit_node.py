@@ -6,7 +6,9 @@ light scan compressed with EXT_meshopt_compression reads back into the card fram
 and closest points match a brute force, the points carry the screens' numbers and plain names,
 the editor's keys sit in the action registry without a conflict or a key the browser keeps, the
 messages join one, two and three names without a comma before "and", and each edit stands on the
-floor its own pose finds, held while a modal grab or turn lasts.
+floor its own pose finds, held while a modal grab or turn lasts. The stages of the Points tab
+(``viewer/test/pose_edit_stages.mjs``) split the points from coarse to fine, open a saved session
+where its work is left, and move the whole figure by its root without moving a placed point.
 It needs the viewer's node packages (``cd viewer && npm ci``).
 """
 
@@ -18,6 +20,7 @@ from test.test_viewer_card_file import node_available
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "viewer" / "test" / "pose_edit.mjs"
+STAGES = REPO / "viewer" / "test" / "pose_edit_stages.mjs"
 
 
 @unittest.skipUnless(
@@ -28,6 +31,13 @@ class TestPoseEditNode(unittest.TestCase):
     def test_scan_bvh_points_and_keys(self):
         out = subprocess.run(
             ["node", str(SCRIPT)], cwd=REPO / "viewer", capture_output=True, text=True
+        )
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        print(out.stdout.strip())
+
+    def test_stages_of_the_points(self):
+        out = subprocess.run(
+            ["node", str(STAGES)], cwd=REPO / "viewer", capture_output=True, text=True
         )
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         print(out.stdout.strip())
